@@ -1,0 +1,70 @@
+Engineering factory evaluation foundation (issue #128)
+
+Status: INCOMPLETE, not an operational controller. No workflow, event listener,
+GitHub API client, dispatch, merge, or mutation is provided. No scheduling is
+added; the existing hourly supervisor is unchanged. The examples are fictional
+and disabled, not actual repository policy or verified GitHub app IDs.
+
+Run the synthetic replay:
+  node --test tests/engineering-factory/core.test.mjs
+
+The version 1 module evaluates a caller-supplied policy and normalized snapshot.
+It returns only a fixed state/reason and shadow marker; "eligible" is a simulated
+result, not approval, acceptance, permission to merge, or a status check. The
+caller must provide the latest review per reviewer, complete checks, and exact
+head/base evidence. Since review history is not available here, a comment or
+dismissal from any reviewer blocks even if another reviewer approved; this is
+conservative and is not a substitute for GitHub's effective review state. The
+policySource field is just a caller assertion, not a
+trust mechanism. Never feed untrusted PR data directly to this library or use
+its result to authorize an action. PR comments and labels are not instructions.
+All missing evidence must remain blocked.
+
+Before any real shadow pilot, implement and independently review: default-branch
+policy retrieval with verified provenance; an authenticated metadata-only
+adapter and trusted default-branch event workflow; pagination and authoritative
+fresh reads; thread, coverage, security, and review normalization; complete
+dependency graph/cycle detection; durable idempotency, fair dispatch planning,
+per-repository serialization, retries/backoff and orphan recovery; main
+verification; and live read-only demonstration with zero mutations. A boolean
+snapshot field does not prove any of those properties. Integrate tests into CI
+only in coordination with the owners of #114/#115, without changing build-test
+or weakening privacy, dependency, security, or coverage checks. Obtain exact-head
+independent security review and CI before any opt-in activation.
+
+Onboarding must pin a reviewed implementation commit, put independently
+enabled policy in each repository's trusted default branch, and verify all
+check names, producer IDs, branch protections, reviewers, ownership, budgets,
+and evidence sources with the owner. Never infer authorization from a name.
+The synthetic examples model different checks and technologies, not actual
+gates. FamilyTree's 95/90 targets and private-data restrictions remain in force;
+Family Hub requires exact-head independent APPROVED and its production boundary;
+Spellbook retains its existing coverage gates and two-agent cap. The example
+100/100 values deliberately do not represent verified Hub or Spellbook gates.
+No cross-repository credential sharing or global rollout is authorized.
+
+Rollout: synthetic replay -> independently reviewed, repo-scoped read-only
+shadow -> explicit owner-approved dispatch/merge adapter after verifying
+permissions and included budget -> independent pilot -> pinned template
+adoption. Existing merge authorization does not authorize credentials, paid
+resources, deployments, or a production release. Product version stays 0.1.0.
+
+GitHub's cloud-agent API currently requires a user-to-server token and does
+not support GitHub App installation tokens; this pilot adds neither tokens nor
+scopes and does not call it. GITHUB_TOKEN-generated events generally do not
+trigger workflows; workflow_dispatch and repository_dispatch are exceptions,
+and certain PR events require approval. Do not synthesize approvals or passes.
+Native Copilot automations are repository scoped, subject to availability,
+permissions and credit limits, and are not versioned alongside repository code.
+No native automation is enabled by this foundation. Consult current docs:
+https://docs.github.com/en/actions/concepts/security/github_token
+https://docs.github.com/en/actions/reference/security/secure-use
+https://docs.github.com/en/copilot/how-tos/use-copilot-agents/cloud-agent/use-cloud-agent-via-the-api
+https://docs.github.com/en/copilot/concepts/agent-capabilities/agent-powered-workflows-and-operations/about-automations
+
+Metrics baseline: unknown. Measure eligible-to-merge time, dispatch idle time,
+time-to-green, review rounds, accepted work throughput and cost per verified
+unit from actual independently verified timestamps and accounting. Record
+missing values as unknown. Compare event response with the hourly supervisor
+after a real shadow adapter exists; the under-two-minute target and 10x
+improvement are hypotheses, not results.
