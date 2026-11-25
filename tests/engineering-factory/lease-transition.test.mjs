@@ -18,3 +18,9 @@ test('fail closed on invalid fields, stop and overflow',()=>{
  for(const x of [[],Object.create(l),{...l,worker:null},{...l,generation:0},{...l,expires:null},{...l,expires:-1}]) assert.equal(step(x,r,10).reason,'INVALID_LEASE');
  assert.equal(step({...l,generation:Number.MAX_SAFE_INTEGER},{...r,generation:Number.MAX_SAFE_INTEGER},110).reason,'INVALID_REQUEST');
 });
+
+test('acquire requires its own TTL',()=>{
+ const {ttl,...rest}=r;const inherited=Object.assign(Object.create({ttl}),rest);
+ assert.equal(step(null,inherited,10).reason,'INVALID_REQUEST');
+ assert.equal(step(null,rest,10).reason,'INVALID_REQUEST');
+});

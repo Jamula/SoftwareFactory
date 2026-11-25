@@ -12,7 +12,7 @@ export function leaseTransition(lease,request,now) {
    if(lease===null||lease.worker!==request.worker||lease.expires<=now) return deny('NOT_HELD');
    return {shadow:true,changed:true,reason:'RELEASED',lease:{...lease,expires:now}};
  }
- if(request.kind!=='acquire'||!positive(request.ttl)||request.ttl>120000||!Number.isSafeInteger(now+request.ttl)||!Number.isSafeInteger(generation+1)) return deny('INVALID_REQUEST');
+ if(request.kind!=='acquire'||!Object.hasOwn(request,'ttl')||!positive(request.ttl)||request.ttl>120000||!Number.isSafeInteger(now+request.ttl)||!Number.isSafeInteger(generation+1)) return deny('INVALID_REQUEST');
  if(lease!==null&&lease.expires>now) return deny('HELD');
  return {shadow:true,changed:true,reason:'ACQUIRED',lease:{worker:request.worker,generation:generation+1,expires:now+request.ttl}};
 }
