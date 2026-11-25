@@ -27,19 +27,17 @@ jobs:
         run: |
           node --version
           git rev-parse HEAD
-          node --test --experimental-test-coverage --test-coverage-include='tools/engineering-factory/core.mjs' --test-coverage-lines=95 --test-coverage-branches=90 tests/engineering-factory/*.test.mjs
+          node --test --experimental-test-coverage --test-coverage-include='tools/engineering-factory/core.mjs' --test-coverage-lines=95 --test-coverage-branches=90 tests/engineering-factory/core.test.mjs
 
       - name: Shadow runtime coverage
         run: node --test --experimental-test-coverage --test-coverage-include='tools/engineering-factory/shadow-runtime.mjs' --test-coverage-lines=95 --test-coverage-branches=90 tests/engineering-factory/shadow-runtime.test.mjs
       - name: CLI source coverage
         run: node --test --experimental-test-coverage --test-coverage-include='tools/engineering-factory/run.mjs' --test-coverage-lines=95 --test-coverage-branches=90 tests/engineering-factory/shadow-runtime.test.mjs
-      - name: Overall source coverage
-        run: node --test --experimental-test-coverage --test-coverage-include='tools/engineering-factory/*.mjs' --test-coverage-lines=95 --test-coverage-branches=90 tests/engineering-factory/*.test.mjs
       - name: Runnable synthetic factory
         run: node tools/engineering-factory/run.mjs --smoke
       - name: Install locked coverage reporter
         run: npm ci --ignore-scripts
-      - name: Generate overall Cobertura coverage report
+      - name: Overall source coverage and Cobertura report
         run: npm run test:coverage
       - name: Upload coverage artifact
         if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
