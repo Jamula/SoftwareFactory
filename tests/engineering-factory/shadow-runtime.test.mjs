@@ -78,3 +78,18 @@ test('scheduler rejects sparse task lists, path ownership and dependency evidenc
   const hidden=new Array(1);hidden.extra=task(1);
   assert.equal(plan(input(hidden)).reason,'INVALID_TASKS');
 });
+
+test('CLI injected inventory, smoke and error paths are deterministic',async()=>{
+ const {run}=await import('../../tools/engineering-factory/run.mjs');
+ const output=[],errors=[];
+ const io={write:x=>output.push(x),fail:x=>errors.push(x)};
+ assert.equal(await run([],io),0);
+ assert.equal(await run(['--smoke'],io),0);
+ assert.equal(await run(['--inventory'],{...io,inventory:async()=>({issues:[1],pulls:[],liveDispatch:false,liveMerge:false})}),0);
+ assert.deepEqual(JSON.parse(output.at(-1)).issues,[1]);
+ assert.equal(await run(['--inventory'],{...io,inventory:async()=>{throw Error('offline');}}),1);
+ assert.equal(errors.at(-1),'FACTORY_RUN_FAILED');
+ assert.equal(await run(['--smoke'],{...io,replay:()=>({reason:'FAILED',ready:[]})}),1);
+ assert.equal(await run(['--smoke'],{...io,replay:()=>({reason:'SHADOW_PLAN',ready:[2]})}),1);
+ assert.equal(await run(['--smoke','--inventory'],io),2);
+});
