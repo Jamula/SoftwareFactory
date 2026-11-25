@@ -43,7 +43,7 @@ test('durable local lease survives restart and denies stale workers',()=>{
   assert.equal(a.apply('2:2:'+'a'.repeat(40),r,10).lease.generation,1);
   assert.equal(a.apply(key,{...r,stop:true},111).reason,'STOPPED');
   for(const x of [null,'bad'])assert.equal(a.apply(x,r,10).reason,'INVALID_SCOPE');
-  const bad={...r,get kind(){throw Error('invalid request');}};
+  const bad={...r,generation:2,get kind(){throw Error('invalid request');}};
   assert.equal(a.apply(key,bad,111).reason,'STORE_UNAVAILABLE');
   assert.equal(b.apply(key,{...r,generation:2},111).reason,'HELD');
   a.close();assert.equal(a.apply(key,r,10).reason,'STORE_UNAVAILABLE');a=openLeaseStore(path);
