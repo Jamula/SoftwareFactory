@@ -19,6 +19,8 @@ Use the pinned Node.js 26.13.1 development and CI baseline. No npm install is re
 node --test tests/engineering-factory/*.test.mjs
 ```
 
+For an overall Cobertura coverage report, use the CI-pinned Node.js 26.13.1 and run `npm ci --ignore-scripts && npm run test:coverage`. This installs the locked `cobertura` development dependency and writes the gitignored `cobertura-coverage.xml`. Node.js 20 does not support the coverage flags. CI retains the independent per-component gates and runtime smoke tests; the report does not replace them.
+
 Target at least 95% source line and 90% source branch coverage per executable component and overall, with measured, reproducible results. Do not claim that thresholds are enforced until actual CI demonstrates this. No blanket exclusions or synthetic success statuses. New code must fail closed on malformed or absent evidence and remain deterministic where possible.
 
 | Area | Required regression examples |

@@ -44,6 +44,8 @@ Use Node.js 26.13.1, the pinned development and CI LTS baseline. No npm dependen
 node --test tests/engineering-factory/*.test.mjs
 ```
 
+For an overall Cobertura coverage report, use the CI-pinned Node.js 26.13.1 and run `npm ci --ignore-scripts && npm run test:coverage`. This installs the locked `cobertura` development dependency and writes the gitignored `cobertura-coverage.xml`. Node.js 20 does not support the coverage flags. CI retains the independent per-component gates and runtime smoke tests; the report does not replace them.
+
 The tests replay synthetic policy and evidence snapshots. All sample repository identities, check producers and quotas are fictional. A passing replay does not prove live repository safety, credentials, branch protection or budget.
 
 ## Target delivery loop
