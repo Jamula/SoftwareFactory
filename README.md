@@ -11,8 +11,12 @@ See [NOTICE](NOTICE) for provenance and license details.
 
 ## Development
 
-- Requires Node.js 20 or later; there are no npm dependencies.
+- Requires Node.js 20 or later; running the test suite needs no npm
+  dependencies, and coverage reporting needs a single zero-dependency
+  devDependency (`cobertura`).
 - Run the synthetic replay: `node --test tests/engineering-factory/*.test.mjs`
+- Run with a Cobertura coverage report: `npm ci && npm run test:coverage`
+  (writes `cobertura-coverage.xml`, gitignored).
 - Example consumer workflow: [docs/consumer-shadow-tests.yml](docs/consumer-shadow-tests.yml).
 - Review [architecture](docs/ARCHITECTURE.md), [onboarding](tools/engineering-factory/ONBOARDING.txt),
   and the [roadmap](docs/ROADMAP.md) before considering any consumer adoption.

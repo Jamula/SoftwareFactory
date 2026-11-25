@@ -1,0 +1,12 @@
+{
+  "name": "softwarefactory",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/engineering-factory/*.test.mjs",
+    "test:coverage": "node --test --experimental-test-coverage --test-coverage-include='tools/engineering-factory/core.mjs' --test-coverage-lines=95 --test-coverage-branches=90 --test-reporter=spec --test-reporter-destination=stdout --test-reporter=cobertura --test-reporter-destination=cobertura-coverage.xml tests/engineering-factory/*.test.mjs"
+  },
+  "devDependencies": {
+    "cobertura": "1.0.3"
+  }
+}
