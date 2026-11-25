@@ -40,7 +40,7 @@ PR head, and never synthesize approvals or check results.
 
 The reusable test workflow itself must also be referenced by immutable full
 commit SHA. The synthetic example configuration under `docs/` is pinned to
-workflow commit `bec3343664f9447ebd1428550b5c8eae7b1728bf` and grants no write
+workflow commit `b77b60fba66616e2002d3419aec37ad8f882ebb1` and grants no write
 permissions. It is not an enabled configuration for any actual consumer.
 
 ## Consumer model
