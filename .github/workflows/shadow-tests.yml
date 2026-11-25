@@ -16,7 +16,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: Jamula/SoftwareFactory
-          ref: 8492e707b296c16d08dc7e13b138cf0d9e2facc6
+          ref: 1208481843e73d1d2506085c654e84255303541d
           path: softwarefactory
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
