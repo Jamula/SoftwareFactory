@@ -1,4 +1,4 @@
-Engineering factory evaluation foundation (issue #128)
+SoftwareFactory evaluation foundation
 
 Status: INCOMPLETE, not an operational controller. Two test-only GitHub
 Actions workflows are provided: .github/workflows/validate.yml runs synthetic
@@ -7,12 +7,12 @@ is a read-only reusable workflow that runs pinned factory replay tests on Node.j
 26.13.1, not consumer code. docs/consumer-shadow-tests.yml is an inert example
 caller, not an activated consumer. Neither workflow authorizes a merge or dispatch.
 There is no operational event listener, GitHub API client, scheduler, dispatch,
-merge, or mutation controller. The existing hourly supervisor is unchanged.
+merge, or mutation controller. External supervisors are not provided by this repository.
 Examples are fictional and disabled, not actual repository policy or verified
 GitHub app IDs.
 
 Run the synthetic replay:
-  node --test tests/engineering-factory/core.test.mjs
+  node --test tests/engineering-factory/*.test.mjs
 
 The version 1 module evaluates a caller-supplied policy and normalized snapshot.
 It returns only a fixed state/reason and shadow marker; "eligible" is a simulated
@@ -71,6 +71,6 @@ https://docs.github.com/en/copilot/concepts/agent-capabilities/agent-powered-wor
 Metrics baseline: unknown. Measure eligible-to-merge time, dispatch idle time,
 time-to-green, review rounds, accepted work throughput and cost per verified
 unit from actual independently verified timestamps and accounting. Record
-missing values as unknown. Compare event response with the hourly supervisor
-after a real shadow adapter exists; the under-two-minute target and 10x
-improvement are hypotheses, not results.
+missing values as unknown. Compare event response against a verified external baseline after a real shadow
+adapter exists; the under-two-minute target and 25x program (including 10x)
+are hypotheses, not results.
