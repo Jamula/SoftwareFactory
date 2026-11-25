@@ -8,7 +8,7 @@ Owner direction: design for 25× verified engineering throughput, deliver increm
 | --- | --- | --- | --- | --- |
 | M01 | Repository setup | Repository settings | Complete Nov 24, 2026 | Apache-2.0, public, main, squash only, auto-merge enabled at repository level; operational queue unverified |
 | M02.01 | Shared foundation and docs | [#1](https://github.com/Jamula/SoftwareFactory/issues/1), [PR #2](https://github.com/Jamula/SoftwareFactory/pull/2), [PR #3](https://github.com/Jamula/SoftwareFactory/pull/3) | Nov 25–27, 2026 | Port, provenance, current-head tests and review; integrate docs; keep umbrella acceptance open |
-| M02.02 | Automated quality and review gates | [#4](https://github.com/Jamula/SoftwareFactory/issues/4) | Nov 27–Dec 1 | Actual candidate-head CI, >=95% lines / >=90% branches, trusted review evidence |
+| M02.02 | Automated quality and review gates | [#4](https://github.com/Jamula/SoftwareFactory/issues/4) | Nov 27–Dec 1 | Actual candidate-head CI, >=98% lines / >=95% branches for SoftwareFactory, trusted review evidence |
 | M02.03 | Aspire AppHost local development and dashboard | [#17](https://github.com/Jamula/SoftwareFactory/issues/17) | Nov 28–Dec 3, 2026 | #1/#4/#9; synthetic local smoke, Windows verification, local OTLP |
 | M03.01 | Trusted event/metadata adapter | [#5](https://github.com/Jamula/SoftwareFactory/issues/5) | Dec 2–9 | #1/#4; zero-mutation shadow and trusted provenance |
 | M03.02 | Critical-path queue, leases and ownership | [#6](https://github.com/Jamula/SoftwareFactory/issues/6) | Dec 2–12 | Foundation; agree adapter contracts; idempotency, concurrency and failure replay |
