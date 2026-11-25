@@ -1,6 +1,6 @@
 # Local development and observability
 
-Owner standard: Aspire for local orchestration, OpenTelemetry for telemetry. Implementation is tracked in [#17](https://github.com/Jamula/SoftwareFactory/issues/17) and [#9](https://github.com/Jamula/SoftwareFactory/issues/9). **Planned, not yet operational.** Current local synthetic tests remain `node --test tests/engineering-factory/*.test.mjs` once the foundation is available.
+Owner standard: Aspire for local orchestration, OpenTelemetry for telemetry. Implementation is tracked in [#17](https://github.com/Jamula/SoftwareFactory/issues/17) and [#9](https://github.com/Jamula/SoftwareFactory/issues/9). **AppHost scaffold merged; local runtime and OTLP reception not yet verified.** Run headless tests with `npm ci --ignore-scripts` then `npm run test:coverage`.
 
 ## Target local topology
 
@@ -17,7 +17,7 @@ The AppHost manages local processes and resource health; the evaluator stays det
 
 ## Local setup and acceptance
 
-Use a supported stable Aspire SDK/CLI, pinned supported Node LTS, and locked dependencies. Provide a reproducible launch command after implementation is verified. No mandatory Docker or remote service; explicitly document any container prerequisites. Bind dashboard and collector to loopback; keep authentication enabled where supported. No remote exporter by default. Stop/cleanup must not leave external agent runs, credentials or mutable consumer state. Use synthetic metadata, bounded scenarios and mocked adapters.
+Use a supported stable Aspire SDK/CLI, pinned supported Node LTS, and locked dependencies. Use the launch and evidence checklist in [Aspire synthetic smoke](ASPIRE-SYNTHETIC-SMOKE.md). No mandatory Docker or remote service; explicitly document any container prerequisites. Bind dashboard and collector to loopback; keep authentication enabled where supported. No remote exporter by default. Stop/cleanup must not leave external agent runs, credentials or mutable consumer state. Use synthetic metadata, bounded scenarios and mocked adapters.
 
 | Signal | Examples |
 | --- | --- |
@@ -31,7 +31,7 @@ Use low-cardinality allowlists for metric labels. Do not use raw repository/issu
 
 ## Verification checklist
 
-- Headless unit/replay and coverage tests independently pass, 95% lines/90% branches per executable component and overall, preserving stricter existing gates.
+- Headless unit/replay and coverage tests independently pass, 98% lines/95% branches per executable component and overall, preserving stricter existing gates.
 - Actual AppHost launch and shutdown on authorized Windows developer machine; document SDK versions, command, resource health and smoke evidence. CI build alone is not runtime verification.
 - Synthetic trace visible in local dashboard, corresponding metric sample and correlated structured log; prove no external export, no GitHub writes and no sensitive payloads.
 - Negative tests: malformed endpoints/config, unavailable exporter, stop, oversized or unsafe telemetry attributes, unsupported runtime, missing credentials/metadata. Independent exact-head security review.

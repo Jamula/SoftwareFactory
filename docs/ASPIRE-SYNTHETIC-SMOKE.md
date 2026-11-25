@@ -6,3 +6,16 @@ Prerequisites to verify locally: stable Aspire 17 CLI, compatible .NET SDK, Node
 Do not expose the dashboard or OTLP listener, disable dashboard auth, provide GitHub tokens, or deploy this AppHost. The actual Windows restore/launch and dashboard verification are not yet demonstrated. Future acceptance requires real local OTLP reception and pinned dependency restore, coverage for executable components, and independent review. No blanket exemption is claimed.
 
 Official reference: https://aspire.dev/get-started/add-aspire-existing-app/ and https://aspire.dev/app-host/console-apps/.
+
+## Windows evidence checklist (run on an authorized local workstation)
+From repository root in PowerShell, record the exact source revision and prerequisites:
+```powershell
+git rev-parse HEAD
+dotnet --info
+aspire --version
+node --version
+npm ci --ignore-scripts
+npm run test:coverage
+node tools/engineering-factory/aspire-smoke.mjs
+```
+Stop if restore, coverage (98% lines / 95% branches), or the headless smoke fails. Start `aspire run` only after verifying the configured dashboard and OTLP listeners are local-only and authentication is enabled. Start the explicit synthetic resource, capture its STOPPED result, stop the AppHost and verify its processes/listeners are gone. Record versions, redacted listener addresses, exit codes and exact commit. Never paste dashboard login tokens or personal data. Report trace, metric and correlated log reception separately; the existing runner does not export OTLP, so these checks remain outstanding until the exporter is implemented. Do not mark #17 accepted from this checklist alone.
