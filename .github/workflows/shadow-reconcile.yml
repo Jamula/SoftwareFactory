@@ -16,7 +16,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   inventory:
-    if: ${{ github.repository == 'Jamula/SoftwareFactory' && vars.FACTORY_SHADOW_ENABLED == 'true' }}
+    if: ${{ github.repository == 'Jamula/SoftwareFactory' && vars.FACTORY_SHADOW_ENABLED == 'true' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
