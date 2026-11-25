@@ -64,3 +64,19 @@ Use two-digit milestones M01, M02, etc., optional MNN.NN sub-milestones, and evi
 5. Pilot one consumer; expand only after verification. Each consumer can pause, pin or roll back independently.
 
 Until these steps pass, remain shadow-only. No self-issued approvals or synthetic success signals may authorize a live action.
+
+## 25× stretch program
+
+The owner approved designing for 25× accepted engineering throughput, with 2×, 5×, 10×, 15× and 20× evidence-based checkpoints. See [milestone roadmap](ROADMAP.md). The initial objectives above remain the baseline operating SLOs; the following are additional experimental stretch objectives, not enforced guarantees or permission to bypass mandatory gates.
+
+| Metric | Stretch objective |
+| --- | --- |
+| Event reconciliation and eligible dispatch | p95 <=15 seconds |
+| Eligible merge latency | p95 <=30 seconds |
+| Fast validation | p50 <=30 seconds |
+| Small independent PR turnaround | p50 <=10 minutes |
+| Productive agent utilization | 95% stretch; measure denominator and blocked time |
+| Validation cycles | One typical, without suppressing review or tests |
+| Accepted throughput | 25× comparable measured baseline |
+
+Use critical-path scheduling, contract-first decomposition, independent specialist ownership, trusted repository knowledge, verified reusable components, safe build reuse and integration trains. Do not count logical lanes as simultaneous active agents. Scale only with verified included quota, isolated ownership and demonstrated gains. Preserve 95/90 and stronger consumer gates, exact-head independent reviews, full integration/platform/security tests, $0 unapproved incremental spend, per-repo authorization and kill switches. Report failures and uncertainty. No new live enforcement is implied by this document.

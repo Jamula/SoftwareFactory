@@ -1,18 +1,42 @@
-# Milestone roadmap
+# SoftwareFactory milestone roadmap: 25× program
 
-ETAs are provisional planning estimates from 2026-11-25, not commitments.
-Confidence is low until the required owners and security reviewers confirm
-scope, access, and evidence sources. No release or activation is authorized.
+Owner direction: design for 25× verified engineering throughput, deliver incrementally and prove gains without reducing correctness, security, privacy, authorization, or cost controls. The original 10× objective is an intermediate milestone, not a measured achievement. All dates are provisional Pacific-time planning windows from November 24, 2026; all future windows have low confidence until dependencies, capacity and evidence are verified. Do not conflate implementation, review, merge, activation and final acceptance.
 
-| Milestone | Scope | Provisional ETA | Confidence | Exit criteria |
+## Milestones
+
+| ID | Scope | GitHub tracking | ETA (PT) | Exit criteria / dependencies |
 | --- | --- | --- | --- | --- |
-| M0 — portable foundation | Versioned strict policy, pure fail-closed evaluator, synthetic replay, provenance, docs | 2026-11-25 | Medium | Exact-source review, replay, and measured component coverage |
-| M1 — metadata-only adapter | Trusted default-branch workflow/event boundary, fresh read-only metadata, idempotency, serialized reconciliation, sanitized telemetry | 2026-12-09 | Low | Threat model, synthetic replay, zero-mutation proof, independent exact-head security review |
-| M2 — consumer validation | Independent synthetic profiles and read-only tests; baseline/target throughput methodology | 2026-12-16 | Low | Consumer owners validate their own policy and gates; measured data only |
-| M3 — guarded activation design | Reusable workflow and independently pinned consumer configuration; authorization, quotas, branch protections, kill switch | 2027-01-06 | Low | Separate owner approvals and verified supported permissions; otherwise remain shadow-only |
+| M01 | Repository setup | Repository settings | Complete Nov 24, 2026 | Apache-2.0, public, main, squash only, auto-merge disabled |
+| M02.01 | Shared foundation and docs | [#1](https://github.com/Jamula/SoftwareFactory/issues/1), [PR #2](https://github.com/Jamula/SoftwareFactory/pull/2), [PR #3](https://github.com/Jamula/SoftwareFactory/pull/3) | Nov 25–27, 2026 | Port, provenance, current-head tests and review; integrate docs; keep umbrella acceptance open |
+| M02.02 | Automated quality and review gates | [#4](https://github.com/Jamula/SoftwareFactory/issues/4) | Nov 27–Dec 1 | Actual candidate-head CI, >=95% lines / >=90% branches, trusted review evidence |
+| M03.01 | Trusted event/metadata adapter | [#5](https://github.com/Jamula/SoftwareFactory/issues/5) | Dec 2–9 | #1/#4; zero-mutation shadow and trusted provenance |
+| M03.02 | Critical-path queue, leases and ownership | [#6](https://github.com/Jamula/SoftwareFactory/issues/6) | Dec 2–12 | Foundation; agree adapter contracts; idempotency, concurrency and failure replay |
+| M03.03 | Agent dispatch and budget controls | [#7](https://github.com/Jamula/SoftwareFactory/issues/7) | Dec 9–Jan 6, 2027 | #5/#6; supported provider and verified included quota; mocks first |
+| M03.04 | Review and guarded merge controller | [#8](https://github.com/Jamula/SoftwareFactory/issues/8) | Dec 9–Jan 6 | #4/#5/#6; exact-head verification, main health and authorization; shadow first |
+| M03.05 | Metrics and retrospective experiments | [#9](https://github.com/Jamula/SoftwareFactory/issues/9) | Dec 2–16, 2026 | Agreed event schema; real baseline and sanitized measurements |
+| M04 | Self-pilot then FamilyTree pilot | [#10](https://github.com/Jamula/SoftwareFactory/issues/10) | Jan 6–20, 2027 | All M02/M03 gates; separate permission, quota and activation evidence |
+| M05 | Spellbook pilot | [#11](https://github.com/Jamula/SoftwareFactory/issues/11) | Jan 20–Feb 3 | #10 and consumer readiness; stricter gates and independent pin |
+| M06 | Family Hub pilot | [#12](https://github.com/Jamula/SoftwareFactory/issues/12) | TBD; Feb 2027 earliest planning window | #10, owner lifts migration freeze, exact-head approval gate verified |
+| M07 | Reusable onboarding and component catalog | [#13](https://github.com/Jamula/SoftwareFactory/issues/13) | Jan 13–Feb 3 | M03 contracts; independently pinned, synthetic consumer profiles |
+| M08.01 | Knowledge index, decomposition, specialists | [#14](https://github.com/Jamula/SoftwareFactory/issues/14) | Jan 20–Feb 17 | #6/#7/#13; controlled experiments |
+| M08.02 | Change-aware CI, cache, failure diagnosis | [#15](https://github.com/Jamula/SoftwareFactory/issues/15) | Jan 20–Feb 17 | #4/#9; equivalent full verification |
+| M08.03 | Integration trains and portfolio optimization | [#16](https://github.com/Jamula/SoftwareFactory/issues/16) | Feb 3–Mar 3 experiments; 25× TBD | #8/#9/#10/#14/#15; measured accepted work, unchanged quality and cost controls |
 
-No milestone assumes new credentials, paid services, deployments, private
-consumer data, or cross-repository rollout. Family Hub adoption must wait for
-its migration freeze to be lifted by its owner. An auto-merge setting is not
-activation approval. Any live dispatch or merge capability requires a distinct
-approved scope and independent security review.
+Parent M02: Nov 25–Dec 1, 2026. Parent M03: Dec 2–Jan 6, 2027, conditional on provider evidence. Parent M08: Jan 20–Mar 3 for experiments, not a 25× completion promise. M05 and M06 are independent consumers once M04 is proven; M07 and safe synthetic M08 design work can overlap. Missing prerequisites move the ETA, not the quality gate.
+
+## Throughput stages
+
+| Stage | Target vs measured baseline | Required demonstration |
+| --- | --- | --- |
+| S01 | 2× | Baseline plus reduced idle / rework |
+| S02 | 5× | Event-driven shadow and authorized scheduling, parallel review |
+| S03 | 10× | Guarded integration and pilot, unchanged quality |
+| S04 | 15× | Specialist routing and fresh repository knowledge |
+| S05 | 20× | Contract-first decomposition and reusable components |
+| S06 | 25× | Portfolio allocation and controlled continuous optimization |
+
+Stage targets are hypotheses, not dates or permission to scale agent concurrency. Measure comparable accepted work/day, failure/rework, p50/p95 latency, actual cost and security outcomes. No raw PR volume proxy. Retain verified per-repo concurrency caps and fail closed on unknown budget. The 20–50 logical lane aspiration is not an authorized active agent count.
+
+No live mutations, new credentials, paid services, production releases, protection changes or consumer activation without separately verified authority. Remain shadow-only until all required evidence passes. See [engineering standards](ENGINEERING-STANDARDS.md), [architecture](ARCHITECTURE.md) and [security policy](../SECURITY.md).
+
+Tracking: milestone IDs and ETA windows live on the issues and in this roadmap. They are logical groupings, not native GitHub milestone records; the currently available integration cannot create native milestones.
