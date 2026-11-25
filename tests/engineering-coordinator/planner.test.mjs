@@ -22,6 +22,15 @@ test('schedules at most one task per lane and fills capacity from independent la
   assert.deepEqual(result.scheduled.map(item => item.id), [1, 3]);
 });
 
+test('active inventory reserves its lane, paths and global capacity', () => {
+  const activeTask = task(1, 'api', 'active', ['src/api/shared']);
+  const result = planLanes(config(), [activeTask, task(2, 'api'), task(3, 'web')]);
+  assert.deepEqual(result.scheduled.map(item => item.id), [3]);
+  assert.deepEqual(planLanes(config(), [activeTask, task(3, 'web')],
+    [{id: 1, lane: 'api', paths: ['src/api/shared']}]).scheduled.map(item => item.id), [3]);
+  assert.equal(planLanes(config(), [activeTask, task(2, 'api', 'active')]).reason, 'INVALID_ACTIVE_LANE');
+});
+
 test('rejects an invalid config, inventory, task and active record', () => {
   assert.equal(planLanes({}, []).reason, 'INVALID_PROJECT_CONFIG');
   assert.equal(planLanes(config(), new Array(1)).reason, 'INVALID_INVENTORY');

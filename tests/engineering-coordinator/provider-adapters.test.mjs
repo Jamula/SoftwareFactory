@@ -47,6 +47,8 @@ test('agent adapter denies bad requests, results and exceptions', async () => {
   const good = createEngineeringAgentAdapter({inspect: async () => ({summary: 'ok', findings: 'invalid'})});
   assert.equal((await good.inspect({id: 1}, {mode: 'live'})).reason, 'INVALID_INSPECTION_REQUEST');
   assert.equal((await good.inspect({id: 1}, {mode: 'shadow'})).reason, 'INVALID_AGENT_RESULT');
+  const sparse = createEngineeringAgentAdapter({inspect: async () => ({summary: 'ok', findings: new Array(1)})});
+  assert.equal((await sparse.inspect({id: 1}, {mode: 'shadow'})).reason, 'INVALID_AGENT_RESULT');
   const broken = createEngineeringAgentAdapter({inspect: async () => { throw Error('private detail'); }});
   assert.equal((await broken.inspect({id: 1}, {mode: 'shadow'})).reason, 'AGENT_UNAVAILABLE');
   assert.throws(() => createEngineeringAgentAdapter({}), /INVALID_AGENT_ADAPTER/);

@@ -44,9 +44,9 @@ export async function readAfterUncertainWrite({write, read, matches, idempotency
     const observed = await withBoundedRetry(read, retry);
     if (!observed.ok) return {ok: false, reason: 'READ_AFTER_WRITE_FAILED', attempts: observed.attempts};
     let matched;
-    try { matched = matches(observed.value, idempotencyKey); }
+    try { matched = await matches(observed.value, idempotencyKey); }
     catch { return {ok: false, reason: 'RECONCILIATION_FAILED', attempts: observed.attempts}; }
-    if (matched)
+    if (matched === true)
       return {ok: true, reconciled: true, receipt: observed.value, attempts: observed.attempts};
     return {ok: false, reason: 'WRITE_OUTCOME_UNKNOWN', attempts: observed.attempts};
   }

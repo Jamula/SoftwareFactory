@@ -72,6 +72,19 @@ test('an expired lease can be reclaimed with a new fencing generation', () => wi
   store.close();
 }));
 
+test('renews only the current unexpired lease owner', () => withDb(filename => {
+  const store = createSQLiteStateStore(filename);
+  const claim = store.claim('api', 'worker-a', 1000, 1000);
+  assert.deepEqual(store.renew('api', claim.generation, 'worker-a', 1500, 1000), {leaseUntil: 2500});
+  assert.equal(store.claim('api', 'worker-b', 2499, 1000), null);
+  assert.equal(store.renew('api', claim.generation, 'worker-a', 2500, 1000), null);
+  const next = store.claim('api', 'worker-b', 2500, 1000);
+  assert.equal(next.generation, 2);
+  assert.equal(store.renew('api', claim.generation, 'worker-a', 2501, 1000), null);
+  assert.equal(store.renew('api', next.generation, 'worker-b', -1, 1000), null);
+  store.close();
+}));
+
 test('rejects generation overflow and rolls back failed writes', () => withDb(filename => {
   const store = createSQLiteStateStore(filename);
   const db = new DatabaseSync(filename);

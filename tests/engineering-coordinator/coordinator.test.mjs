@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {runTick} from '../../tools/engineering-coordinator/coordinator.mjs';
+import {runTick as executeTick} from '../../tools/engineering-coordinator/coordinator.mjs';
+
+const runTick = options => executeTick({...options,
+  clock: Object.hasOwn(options, 'clock') ? options.clock : () => options.now});
 
 const config = () => ({schemaVersion: 1,
   project: {key: 'alpha', repository: 'example/alpha', defaultBranch: 'main'},
@@ -11,8 +14,8 @@ const config = () => ({schemaVersion: 1,
 const tasks = () => [{id: 1, lane: 'api', state: 'approved', priority: 1, dependencies: [], paths: ['src/api/one']},
   {id: 2, lane: 'web', state: 'approved', priority: 2, dependencies: [], paths: ['src/web/two']}];
 function store(checkpoint = () => true) {
-  return {claim: (lane, owner, now) => ({laneId: lane, owner, generation: 1}),
-    checkpoint, release: () => true};
+  return {claim: (lane, owner, now, leaseMs) => ({laneId: lane, owner, generation: 1, leaseUntil: now + leaseMs}),
+    renew: (lane, generation, owner, now, leaseMs) => ({leaseUntil: now + leaseMs}), checkpoint, release: () => true};
 }
 const tracker = {readTask: async id => ({accepted: true, task: {id, state: 'approved'}})};
 const agent = {inspect: async () => ({shadow: true, accepted: true, findings: []})};
@@ -45,8 +48,9 @@ test('rejects malformed config, inventory, dependencies and active lane evidence
 test('validates the runtime one requirement at a time', async () => {
   const options = {config: config(), tasks: tasks(), store: store(), tracker, agent, workerId: 'worker', now: 1};
   for (const override of [
-    {store: null}, {store: {claim() {}, release() {}}}, {store: {claim() {}, checkpoint() {}}},
-    {tracker: null}, {tracker: {}}, {agent: null}, {agent: {}}, {workerId: 1}, {now: -1}
+    {store: null}, {store: {claim() {}, release() {}}}, {store: {claim() {}, checkpoint() {}, release() {}}},
+    {store: {...store(), renew: null}}, {clock: null}, {tracker: null}, {tracker: {}},
+    {agent: null}, {agent: {}}, {workerId: 1}, {now: -1}
   ]) assert.equal((await runTick({...options, ...override})).reason, 'INVALID_RUNTIME');
 });
 
@@ -105,6 +109,34 @@ test('rechecks authoritative task state after inspection and before checkpointin
   assert.equal(result.completed[0].reason, 'TASK_STATE_CHANGED');
   assert.equal(reads, 2);
   assert.equal(checkpoints, 0);
+});
+
+test('cancels inspection when lease renewal fails after a delayed task read', async () => {
+  let inspections = 0;
+  let checkpoints = 0;
+  const result = await runTick({config: config(), tasks: [tasks()[0]], store: {...store(), renew: () => null,
+    checkpoint: () => { checkpoints++; return true; }},
+    tracker: {readTask: async id => ({accepted: true, task: {id, state: 'approved'}})},
+    agent: {inspect: async () => { inspections++; return {shadow: true, accepted: true, findings: []}; }},
+    workerId: 'worker', now: 1, clock: () => 6000});
+  assert.equal(result.completed[0].reason, 'LEASE_LOST');
+  assert.equal(inspections, 0);
+  assert.equal(checkpoints, 0);
+});
+
+test('fails closed for unusable clocks and invalid lease renewal receipts', async () => {
+  const cases = [
+    {clock: () => { throw Error('clock'); }, reason: 'CLOCK_UNAVAILABLE'},
+    {clock: () => Number.NaN, reason: 'CLOCK_UNAVAILABLE'},
+    {clock: () => 1, store: {...store(), renew: () => { throw Error('store'); }}, reason: 'LEASE_UNAVAILABLE'},
+    {clock: () => 1, store: {...store(), renew: () => ({leaseUntil: Number.NaN})}, reason: 'LEASE_LOST'},
+    {clock: () => 1, store: {...store(), renew: (_lane, _generation, _owner, now) => ({leaseUntil: now})}, reason: 'LEASE_LOST'}
+  ];
+  for (const scenario of cases) {
+    const result = await runTick({config: config(), tasks: [tasks()[0]], store: scenario.store ?? store(), tracker, agent,
+      workerId: 'worker', now: 1, clock: scenario.clock});
+    assert.equal(result.completed[0].reason, scenario.reason);
+  }
 });
 
 test('a no-work tick is a shadow-only no-op', async () => {

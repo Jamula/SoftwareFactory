@@ -108,6 +108,19 @@ test('keeps unknown write outcomes blocked and handles confirmed writes', async 
   assert.deepEqual(confirmed, {ok: true, reconciled: false, receipt: 'receipt:same'});
 });
 
+test('awaits asynchronous comparison and accepts only explicit true', async () => {
+  const input = {write: async () => { throw Error('timeout'); }, read: async () => ({key: 'same'}),
+    idempotencyKey: 'same', retry: policy};
+  const matched = await readAfterUncertainWrite({...input, matches: async () => true});
+  assert.deepEqual(matched, {ok: true, reconciled: true, receipt: {key: 'same'}, attempts: 1});
+  const unmatched = await readAfterUncertainWrite({...input, matches: async () => false});
+  assert.deepEqual(unmatched, {ok: false, reason: 'WRITE_OUTCOME_UNKNOWN', attempts: 1});
+  const nonBoolean = await readAfterUncertainWrite({...input, matches: async () => 'yes'});
+  assert.deepEqual(nonBoolean, {ok: false, reason: 'WRITE_OUTCOME_UNKNOWN', attempts: 1});
+  const rejected = await readAfterUncertainWrite({...input, matches: async () => { throw Error('comparison unavailable'); }});
+  assert.deepEqual(rejected, {ok: false, reason: 'RECONCILIATION_FAILED', attempts: 1});
+});
+
 test('fails closed when read-after-write input, read or comparison is invalid', async () => {
   assert.equal((await readAfterUncertainWrite({write: null, read: async () => null, matches: () => false,
     idempotencyKey: 'same', retry: policy})).reason, 'INVALID_RECONCILIATION');

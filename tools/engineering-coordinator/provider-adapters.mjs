@@ -2,6 +2,8 @@ import {withBoundedRetry} from './retry.mjs';
 
 const validId = value => Number.isSafeInteger(value) && value > 0;
 const record = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+const dense = value => Array.isArray(value) && Object.keys(value).length === value.length &&
+  Array.from({length: value.length}, (_, index) => Object.hasOwn(value, index)).every(Boolean);
 const denied = reason => ({shadow: true, accepted: false, reason});
 
 export function createWorkTrackerAdapter(transport, retry) {
@@ -29,7 +31,7 @@ export function createEngineeringAgentAdapter(agent) {
         const result = await agent.inspect(Object.freeze({id: task.id, title: String(task.title ?? '').slice(0, 240)}),
           Object.freeze({mode: 'shadow', projectKey: context.projectKey}));
         if (!record(result) || typeof result.summary !== 'string' || result.summary.length > 1000 ||
-            !Array.isArray(result.findings) || result.findings.length > 50 ||
+            !dense(result.findings) || result.findings.length > 50 ||
             !result.findings.every(item => typeof item === 'string' && item.length <= 240))
           return denied('INVALID_AGENT_RESULT');
         return {shadow: true, accepted: true, summary: result.summary, findings: [...result.findings]};

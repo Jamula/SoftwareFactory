@@ -43,9 +43,23 @@ export function planLanes(config, tasks, active = []) {
   if (active.some(item => !exact(item, ['id', 'lane', 'paths']) || !positive(item.id) ||
       !lanes.has(item.lane) || !dense(item.paths) || !item.paths.length || !item.paths.every(validPath)))
     return blocked('INVALID_ACTIVE_LANE');
+  const reservations = [...active];
+  for (const task of tasks.filter(item => item.state === 'active')) {
+    const existing = reservations.find(item => item.id === task.id);
+    if (existing) {
+      if (existing.lane !== task.lane || existing.paths.length !== task.paths.length ||
+          !existing.paths.every((path, index) => path === task.paths[index])) return blocked('INVALID_ACTIVE_LANE');
+      continue;
+    }
+    if (reservations.some(item => item.lane === task.lane)) return blocked('INVALID_ACTIVE_LANE');
+    reservations.push({id: task.id, lane: task.lane, paths: task.paths});
+  }
+  if (reservations.length > 32 || new Set(reservations.map(item => item.id)).size !== reservations.length ||
+      new Set(reservations.map(item => item.lane)).size !== reservations.length)
+    return blocked('INVALID_ACTIVE_LANE');
   const laneCounts = new Map();
   const ownedPaths = [];
-  for (const item of active) {
+  for (const item of reservations) {
     laneCounts.set(item.lane, (laneCounts.get(item.lane) ?? 0) + 1);
     if (item.paths.some(path => ownedPaths.some(owned => overlaps(path, owned))))
       return blocked('ACTIVE_PATH_CONFLICT');
@@ -60,7 +74,7 @@ export function planLanes(config, tasks, active = []) {
   for (const task of candidates) {
     if ((counts.get(task.lane) ?? 0) >= 1 ||
         task.paths.some(path => ownedPaths.some(owned => overlaps(path, owned)))) continue;
-    if (scheduled.length + active.length >= config.limits.maxConcurrentLanes) break;
+    if (scheduled.length + reservations.length >= config.limits.maxConcurrentLanes) break;
     scheduled.push({id: task.id, lane: task.lane, paths: [...task.paths]});
     counts.set(task.lane, (counts.get(task.lane) ?? 0) + 1);
     ownedPaths.push(...task.paths);
