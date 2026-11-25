@@ -15,3 +15,8 @@ test('stale and unavailable specialty',()=>{
 test('reject malformed contracts',()=>{
   for(const [catalog,request] of [[null,q],[new Array(1),q],[[null],q],[[c],null],[[c],{...q,component:'!'}],[[c],{...q,revision:null}],[[{...c,component:null}],q],[[{...c,owner:null}],q],[[{...c,specialty:null}],q],[[{...c,revision:null}],q]]) assert.equal(route(catalog,request).reason,'INVALID_CONTRACT');
 });
+
+test('reject inherited and decorated array metadata',()=>{
+ for(const invalid of [Object.create(c),Object.assign([],c),{...c,owner:undefined},'record']) assert.equal(route([invalid],q).reason,'INVALID_CONTRACT');
+ for(const invalid of [Object.create(q),Object.assign([],q),{component:q.component,revision:q.revision},Object.assign(Object.create({allowedSpecialties:q.allowedSpecialties}),{component:q.component,revision:q.revision})]) assert.equal(route([c],invalid).reason,'INVALID_CONTRACT');
+});
