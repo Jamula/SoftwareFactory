@@ -9,7 +9,7 @@ test('bounds exponential delays, jitter and provider retry-after', () => {
   assert.equal(retryDelay(1, policy, () => 0), 75);
   assert.equal(retryDelay(2, policy, () => 1), 250);
   assert.equal(retryDelay(2, policy, () => 0.5, 900), 900);
-  assert.equal(retryDelay(8, policy, () => 0.5, 5000), 1000);
+  assert.equal(retryDelay(8, policy, () => 0.5, 5000), null);
   assert.equal(retryDelay(30, policy, () => 0.5), 1000);
 });
 
@@ -59,6 +59,17 @@ test('uses default jitter and respects provider retry-after in the bounded retry
   assert.deepEqual(result, {ok: true, value: 'read', attempts: 2});
   assert.deepEqual(delays, [500]);
   assert.equal(random(), 0.5);
+});
+
+test('fails closed when provider retry-after exceeds the configured retry window', async () => {
+  let calls = 0; const delays = [];
+  const result = await withBoundedRetry(async () => {
+    calls++;
+    throw {kind: 'RATE_LIMITED', retryAfterMs: 5000};
+  }, {...policy, sleep: async delay => delays.push(delay)});
+  assert.deepEqual(result, {ok: false, reason: 'INVALID_RETRY_POLICY', attempts: 1});
+  assert.equal(calls, 1);
+  assert.deepEqual(delays, []);
 });
 
 test('rejects each invalid retry dependency and handles classifier, delay and sleep failures', async () => {

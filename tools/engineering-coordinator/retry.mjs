@@ -3,7 +3,7 @@ export function retryDelay(attempt, policy, random = () => 0.5, retryAfterMs = 0
   if (!Number.isSafeInteger(attempt) || attempt < 1 || !policy ||
       !Number.isSafeInteger(policy.baseDelayMs) || !Number.isSafeInteger(policy.maxDelayMs) ||
       policy.baseDelayMs < 1 || policy.maxDelayMs < policy.baseDelayMs ||
-      !Number.isFinite(retryAfterMs) || retryAfterMs < 0) return null;
+      !Number.isFinite(retryAfterMs) || retryAfterMs < 0 || retryAfterMs > policy.maxDelayMs) return null;
   const sample = random();
   if (!Number.isFinite(sample) || sample < 0 || sample > 1) return null;
   const ceiling = Math.min(policy.maxDelayMs, policy.baseDelayMs * (2 ** Math.min(attempt - 1, 20)));

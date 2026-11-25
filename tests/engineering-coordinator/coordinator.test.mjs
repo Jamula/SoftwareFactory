@@ -73,6 +73,18 @@ test('blocks held leases, failed reads, failed reviews and stale checkpoints', a
   assert.equal(stale.completed[0].reason, 'STALE_CHECKPOINT');
 });
 
+test('does not review or checkpoint a task whose authoritative state changed after planning', async () => {
+  let inspections = 0;
+  let checkpoints = 0;
+  const result = await runTick({config: config(), tasks: tasks(), store: {...store(), checkpoint: () => { checkpoints++; return true; }},
+    tracker: {readTask: async id => ({accepted: true, task: {id, state: 'blocked'}})},
+    agent: {inspect: async () => { inspections++; return {shadow: true, accepted: true, findings: []}; }},
+    workerId: 'worker', now: 1});
+  assert.equal(result.completed[0].reason, 'TASK_STATE_CHANGED');
+  assert.equal(inspections, 0);
+  assert.equal(checkpoints, 0);
+});
+
 test('a no-work tick is a shadow-only no-op', async () => {
   const result = await runTick({config: config(), tasks: [], store: store(), tracker, agent, workerId: 'worker', now: 2});
   assert.deepEqual(result, {shadow: true, liveDispatch: false, liveMerge: false, completed: [], reason: 'NO_READY_WORK'});

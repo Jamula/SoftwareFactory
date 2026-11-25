@@ -22,6 +22,8 @@ export async function runTick({config, tasks, active = [], store, tracker, agent
       const evidence = await tracker.readTask(item.id);
       if (!evidence?.accepted || evidence.task?.id !== item.id)
         return {lane: item.lane, state: 'blocked', reason: 'TASK_READ_FAILED'};
+      if (evidence.task.state !== 'approved')
+        return {lane: item.lane, taskId: item.id, state: 'blocked', reason: 'TASK_STATE_CHANGED'};
       const review = await agent.inspect(byId.get(item.id), {mode: 'shadow', projectKey: config.project.key});
       if (!review?.accepted || review.shadow !== true)
         return {lane: item.lane, state: 'blocked', reason: 'AGENT_REVIEW_FAILED'};
