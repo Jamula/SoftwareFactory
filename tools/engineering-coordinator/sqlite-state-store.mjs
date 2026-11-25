@@ -10,9 +10,9 @@ export function createSQLiteStateStore(filename) {
   db.exec('PRAGMA journal_mode=WAL; PRAGMA busy_timeout=2000; CREATE TABLE IF NOT EXISTS coordinator_lanes (lane_id TEXT PRIMARY KEY, generation INTEGER NOT NULL, owner TEXT NOT NULL, lease_until INTEGER NOT NULL, payload TEXT NOT NULL)');
   const read = db.prepare('SELECT lane_id, generation, owner, lease_until, payload FROM coordinator_lanes WHERE lane_id = ?');
   const put = db.prepare('INSERT INTO coordinator_lanes(lane_id,generation,owner,lease_until,payload) VALUES(?,?,?,?,?) ON CONFLICT(lane_id) DO UPDATE SET generation=excluded.generation, owner=excluded.owner, lease_until=excluded.lease_until, payload=excluded.payload');
-  const update = db.prepare('UPDATE coordinator_lanes SET payload=? WHERE lane_id=? AND generation=? AND owner=?');
+  const update = db.prepare('UPDATE coordinator_lanes SET payload=? WHERE lane_id=? AND generation=? AND owner=? AND lease_until>?');
   const renewLease = db.prepare('UPDATE coordinator_lanes SET lease_until=? WHERE lane_id=? AND generation=? AND owner=? AND lease_until>?');
-  const release = db.prepare('UPDATE coordinator_lanes SET lease_until=? WHERE lane_id=? AND generation=? AND owner=?');
+  const release = db.prepare('UPDATE coordinator_lanes SET lease_until=0 WHERE lane_id=? AND generation=? AND owner=?');
   return Object.freeze({
     claim(laneId, owner, now, leaseMs) {
       if (!validLane(laneId) || !validOwner(owner) || !time(now) || !Number.isSafeInteger(leaseMs) ||
@@ -39,13 +39,14 @@ export function createSQLiteStateStore(filename) {
         return null;
       }
     },
-    checkpoint(laneId, generation, owner, payload) {
+    checkpoint(laneId, generation, owner, payload, now) {
       if (!validLane(laneId) || !Number.isSafeInteger(generation) || generation < 1 ||
-          !validOwner(owner) || payload === null || typeof payload !== 'object' || Array.isArray(payload)) return false;
+          !validOwner(owner) || payload === null || typeof payload !== 'object' ||
+          Array.isArray(payload) || !time(now)) return false;
       let encoded;
       try { encoded = JSON.stringify(payload); } catch { return false; }
       if (typeof encoded !== 'string' || encoded.length > 65536) return false;
-      try { return Number(update.run(encoded, laneId, generation, owner).changes) === 1; }
+      try { return Number(update.run(encoded, laneId, generation, owner, now).changes) === 1; }
       catch { return false; }
     },
     renew(laneId, generation, owner, now, leaseMs) {
@@ -60,7 +61,7 @@ export function createSQLiteStateStore(filename) {
     release(laneId, generation, owner, now) {
       if (!validLane(laneId) || !Number.isSafeInteger(generation) || generation < 1 ||
           !validOwner(owner) || !time(now)) return false;
-      try { return Number(release.run(now, laneId, generation, owner).changes) === 1; }
+      try { return Number(release.run(laneId, generation, owner).changes) === 1; }
       catch { return false; }
     },
     get(laneId) {

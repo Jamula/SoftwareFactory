@@ -65,6 +65,28 @@ test('checkpoints shadow-only results while isolating a failing lane', async () 
   assert.equal(outcomes.liveMerge, false);
 });
 
+test('passes the fresh lease check time to the checkpoint adapter', async () => {
+  const clockSamples = [1001, 1300];
+  const calls = [];
+  const result = await runTick({config: config(), tasks: [tasks()[0]],
+    store: store((...args) => { calls.push(args); return true; }),
+    tracker, agent, workerId: 'worker', now: 1000, clock: () => clockSamples.shift()});
+  assert.equal(result.completed[0].state, 'shadow-reviewed');
+  assert.deepEqual(calls, [['api', 1, 'worker', {
+    taskId: 1, observedState: 'approved', findings: [], completedAt: 1300
+  }, 1300]]);
+});
+
+test('blocks checkpointing if the clock moves backwards during inspection', async () => {
+  const clockSamples = [1300, 1200];
+  let wrote = false;
+  const result = await runTick({config: config(), tasks: [tasks()[0]],
+    store: store(() => { wrote = true; return true; }),
+    tracker, agent, workerId: 'worker', now: 1000, clock: () => clockSamples.shift()});
+  assert.equal(result.completed[0].reason, 'CLOCK_UNAVAILABLE');
+  assert.equal(wrote, false);
+});
+
 test('blocks held leases, failed reads, failed reviews and stale checkpoints', async () => {
   const held = await runTick({config: config(), tasks: tasks(), store: {...store(), claim: () => null}, tracker, agent, workerId: 'worker', now: 1});
   assert.equal(held.completed[0].reason, 'LEASE_HELD');
@@ -128,6 +150,7 @@ test('fails closed for unusable clocks and invalid lease renewal receipts', asyn
   const cases = [
     {clock: () => { throw Error('clock'); }, reason: 'CLOCK_UNAVAILABLE'},
     {clock: () => Number.NaN, reason: 'CLOCK_UNAVAILABLE'},
+    {clock: () => 0, reason: 'CLOCK_UNAVAILABLE'},
     {clock: () => 1, store: {...store(), renew: () => { throw Error('store'); }}, reason: 'LEASE_UNAVAILABLE'},
     {clock: () => 1, store: {...store(), renew: () => ({leaseUntil: Number.NaN})}, reason: 'LEASE_LOST'},
     {clock: () => 1, store: {...store(), renew: (_lane, _generation, _owner, now) => ({leaseUntil: now})}, reason: 'LEASE_LOST'}
