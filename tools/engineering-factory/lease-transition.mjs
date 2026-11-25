@@ -22,9 +22,29 @@ export function leaseTransition(lease,request,now) {
  * Never stores credentials, issue text or authorization to dispatch.
  */
 import {DatabaseSync} from 'node:sqlite';
+
+function initializeLeaseStore(db) {
+ const maxAttempts = 4;
+ const waitCell = new Int32Array(new SharedArrayBuffer(4));
+ db.exec('PRAGMA busy_timeout=250');
+ for (let attempt = 0; ; attempt++) {
+  try {
+   db.exec('PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS shadow_leases (scope TEXT PRIMARY KEY, worker TEXT NOT NULL, generation INTEGER NOT NULL, expires INTEGER NOT NULL)');
+   db.exec('PRAGMA busy_timeout=1000');
+   return;
+  } catch (error) {
+   const sqliteCode = error.errcode & 0xff;
+   // The initial move to WAL can return BUSY before the busy timeout elapses.
+   if ((sqliteCode !== 5 && sqliteCode !== 6) || attempt === maxAttempts - 1) throw error;
+   Atomics.wait(waitCell, 0, 0, 20 * 2 ** attempt);
+  }
+ }
+}
+
 export function openLeaseStore(path) {
  const db=new DatabaseSync(path);
- db.exec('PRAGMA busy_timeout=1000; PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS shadow_leases (scope TEXT PRIMARY KEY, worker TEXT NOT NULL, generation INTEGER NOT NULL, expires INTEGER NOT NULL)');
+ try { initializeLeaseStore(db); }
+ catch (error) { db.close(); throw error; }
  const read=db.prepare('SELECT worker,generation,expires FROM shadow_leases WHERE scope=?');
  const write=db.prepare('INSERT INTO shadow_leases(scope,worker,generation,expires) VALUES(?,?,?,?) ON CONFLICT(scope) DO UPDATE SET worker=excluded.worker,generation=excluded.generation,expires=excluded.expires');
  return {

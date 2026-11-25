@@ -26,7 +26,7 @@ test('acquire requires its own TTL',()=>{
 });
 
 import {openLeaseStore} from '../../tools/engineering-factory/lease-transition.mjs';
-import {mkdtempSync,rmSync} from 'node:fs';
+import {mkdtempSync,rmSync,writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 test('durable local lease survives restart and denies stale workers',()=>{
@@ -52,6 +52,26 @@ test('durable local lease survives restart and denies stale workers',()=>{
 
 import {DatabaseSync} from 'node:sqlite';
 import {spawn,spawnSync} from 'node:child_process';
+
+test('fails closed on persistent initialization locks and on a corrupt database', {timeout:10000}, () => {
+ const dir=mkdtempSync(join(tmpdir(),'factory-startup-'));
+ const path=join(dir,'leases.sqlite');
+ const blocker=new DatabaseSync(path);
+ try {
+  blocker.exec('CREATE TABLE unrelated (id INTEGER); BEGIN; SELECT * FROM unrelated');
+  assert.throws(() => openLeaseStore(path), /database is locked/);
+  blocker.exec('ROLLBACK');
+  openLeaseStore(path).close();
+
+  const brokenPath=join(dir,'broken.sqlite');
+  writeFileSync(brokenPath,'not a SQLite database');
+  assert.throws(() => openLeaseStore(brokenPath), /not a database/);
+ } finally {
+  blocker.close();
+  rmSync(dir,{recursive:true,force:true});
+ }
+});
+
 const leaseModule=new URL('../../tools/engineering-factory/lease-transition.mjs',import.meta.url).href;
 const runLeaseWorker=(path,key,worker,generation,now)=>new Promise((resolve,reject)=>{
  const source=`import {openLeaseStore} from ${JSON.stringify(leaseModule)};const store=openLeaseStore(process.argv[1]);try{console.log(JSON.stringify(store.apply(process.argv[2],{kind:'acquire',worker:process.argv[3],generation:Number(process.argv[4]),stop:false,ttl:100},Number(process.argv[5]))));}finally{store.close();}`;
