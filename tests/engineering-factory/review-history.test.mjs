@@ -26,3 +26,20 @@ test('newer stale approval supersedes only previous approval, not objections',()
   assert.equal(normalize(head,[r(1,'APPROVED'),r(2,'APPROVED',stale),r(3,'APPROVED')]).reviews[0].state,'APPROVED');
   assert.equal(normalize(head,[r(1,'APPROVED',head,'other'),r(2,'APPROVED'),r(3,'APPROVED',stale)]).reviews[0].reviewer,'other');
 });
+
+test('factory-only Copilot comments preserve prior objections and exact head',()=>{
+ const bot='copilot-pull-request-reviewer[bot]',repo='Jamula/SoftwareFactory';
+ const c=(sequence,state,commit=head)=>r(sequence,state,commit,bot);
+ const norm=(entries,repository=repo)=>normalize(head,entries,repository);
+ assert.deepEqual(norm([c(1,'COMMENTED')]).reviews,[{reviewer:bot,head,state:'COMMENTED'}]);
+ assert.equal(norm([c(1,'COMMENTED')],'other/repo').ok,false);
+ assert.deepEqual(norm([r(1,'COMMENTED')]).reviews,[]);
+ assert.deepEqual(norm([c(1,'COMMENTED',stale)]).reviews,[]);
+ assert.deepEqual(norm([c(1,'COMMENTED'),c(2,'COMMENTED',stale)]).reviews,[]);
+ for(const state of ['CHANGES_REQUESTED','DISMISSED','APPROVED'])
+   assert.equal(norm([c(1,state),c(2,'COMMENTED')]).reviews[0].state,state);
+ assert.equal(norm([c(1,'COMMENTED'),c(2,'CHANGES_REQUESTED')]).reviews[0].state,'CHANGES_REQUESTED');
+ assert.deepEqual(norm([c(1,'COMMENTED'),c(2,'APPROVED',stale)]).reviews,[]);
+ assert.equal(norm([r(1,'COMMENTED',head,'copilot-pull-request-reviewer')]).reviews[0].state,'COMMENTED');
+ assert.deepEqual(normalize(head,[r(1,'COMMENTED',head,'copilot-pull-request-reviewer')]).reviews,[]);
+});
