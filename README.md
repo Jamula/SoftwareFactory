@@ -1,22 +1,61 @@
 # SoftwareFactory
 
-Shared, policy-driven engineering-factory core. This repository currently
-contains a deterministic, read-only shadow evaluator and synthetic policies;
-it is not an operational controller and cannot dispatch work, approve or merge
-pull requests, or mutate GitHub.
+**One shared engineering engine. Independent project execution.**
 
-The initial evaluator and replay tests were ported from
-[Jamula/FamilyTree commit `1b871b76895f0d4943eda441a3295e843a127f58`](https://github.com/Jamula/FamilyTree/tree/1b871b76895f0d4943eda441a3295e843a127f58).
-See [NOTICE](NOTICE) for provenance and license details.
+SoftwareFactory is an Apache-2.0, policy-driven foundation for an event-driven autonomous software delivery system. The goal is to reduce idle time between approved issues, implementation, validation, review and integration without weakening project-specific security, quality or release gates.
 
-## Development
+> **Current maturity: read-only synthetic shadow evaluator (0.1.0 development).** The current code does not dispatch agents, approve PRs, merge changes, read live repository metadata or deploy products. An eligible shadow result is not authorization. The 25× program (including its intermediate 10× target) is a hypothesis, not a benchmark result.
 
-- Requires Node.js 20 or later; there are no npm dependencies.
-- Run the synthetic replay: `node --test tests/engineering-factory/*.test.mjs`
-- Example consumer workflow: [docs/consumer-shadow-tests.yml](docs/consumer-shadow-tests.yml).
-- Review [architecture](docs/ARCHITECTURE.md), [onboarding](tools/engineering-factory/ONBOARDING.txt),
-  and the [roadmap](docs/ROADMAP.md) before considering any consumer adoption.
+![Target architecture: one shared versioned core with independently pinned consumer adapters, project policy and CI](docs/images/architecture.svg)
 
-All example repositories, identities, check names, app IDs, budgets and gates
-are synthetic. No consumer is enabled. Shadow eligibility is not approval or
-authorization to take an action.
+## Start here
+
+| I want to… | Read |
+| --- | --- |
+| Aspire local development and OpenTelemetry | [Local development and observability](docs/LOCAL-DEVELOPMENT.md) |
+| Run the current evaluator locally | [Quickstart](docs/QUICKSTART.md) |
+| Understand how the system works | [Architecture](docs/ARCHITECTURE.md), [delivery lifecycle](docs/DELIVERY-LIFECYCLE.md) |
+| Integrate a repository without enabling writes | [Consumer onboarding](docs/CONSUMER-ONBOARDING.md) |
+| Use or build GitHub workflows | [Workflow guide](docs/WORKFLOWS.md) |
+| Understand policy and evidence | [Policy guide](docs/POLICY.md) |
+| Operate, pause and troubleshoot | [Operations](docs/OPERATIONS.md) |
+| Report a security issue | [Security policy](SECURITY.md), [threat model](docs/THREAT-MODEL.md) |
+| Engineering standards, PR velocity and quality gates | [Engineering standards](docs/ENGINEERING-STANDARDS.md) |
+| Contribute | [Contributing](CONTRIBUTING.md), [agent rules](AGENTS.md) |
+| Track what is implemented | [Roadmap](docs/ROADMAP.md), [documentation index](docs/README.md) |
+
+## Engineering expectations
+
+| Metric | Objective |
+| --- | --- |
+| Source line / branch coverage | >=95% / >=90% per component and overall; retain stricter consumer gates |
+| Eligible work dispatch / merge | p95 <=2 minutes each |
+| Standard fast CI | p50 <=90 seconds |
+| Small PR turnaround | p50 <=30 minutes |
+| Security bypass / duplicate dispatch / unapproved spending | Zero |
+
+These are documented standards and targets, not verified automation capabilities. See [Engineering standards](docs/ENGINEERING-STANDARDS.md) for precise measurement and mandatory gates.
+
+## Local development
+
+Use Node.js 26.13.1, the pinned development and CI LTS baseline. No npm dependencies are required by the current evaluator.
+
+```sh
+node --test tests/engineering-factory/*.test.mjs
+```
+
+The tests replay synthetic policy and evidence snapshots. All sample repository identities, check producers and quotas are fictional. A passing replay does not prove live repository safety, credentials, branch protection or budget.
+
+## Target delivery loop
+
+![Proposed issue-to-merge lifecycle with review and fail-closed gates](docs/images/lifecycle.svg)
+
+Consumers adopt independently, pin immutable reviewed workflow revisions and retain their own CI, permissions, budgets and kill switches. FamilyTree is the intended first pilot; Spellbook and Family Hub follow after their own readiness checks. No project is enabled by this documentation.
+
+## License and provenance
+
+Apache License 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE). The initial evaluator and replay tests were ported from [FamilyTree commit 1b871b76895f0d4943eda441a3295e843a127f58](https://github.com/Jamula/FamilyTree/tree/1b871b76895f0d4943eda441a3295e843a127f58). Preserve applicable attribution.
+
+## Platform standards
+
+Aspire AppHost is the required local orchestration standard; OpenTelemetry/OTLP is the required observability standard. Current shadow replay remains independently runnable; the Aspire and telemetry implementation is tracked in [#17](https://github.com/Jamula/SoftwareFactory/issues/17) and [#9](https://github.com/Jamula/SoftwareFactory/issues/9), not yet available. See [local development](docs/LOCAL-DEVELOPMENT.md).

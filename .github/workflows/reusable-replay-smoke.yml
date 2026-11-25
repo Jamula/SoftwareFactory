@@ -1,0 +1,13 @@
+name: Reusable replay smoke
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: reusable-replay-smoke-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  pinned-synthetic-replay:
+    uses: Jamula/SoftwareFactory/.github/workflows/shadow-tests.yml@fbecbf99b4c8e1696194bd6fa5220b2328cd1379
