@@ -1,6 +1,8 @@
 name: event-envelope component validation
 on:
   pull_request:
+  merge_group:
+    types: [checks_requested]
   push:
     branches: [main]
 permissions:
