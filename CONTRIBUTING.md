@@ -38,3 +38,7 @@ Update behavior, examples, architecture and limitations alongside changes. Label
 ## Required engineering expectations
 
 Follow the canonical [engineering standards](docs/ENGINEERING-STANDARDS.md) for exact-head review, measurable PR velocity, per-component and overall coverage, evidence and merge eligibility. Distinguish velocity SLOs from mandatory gates. Keep ownership isolated, preserve stronger consumer policies and document blocked work; no velocity target permits a gate bypass.
+
+## Local runtime standard
+
+Follow [local development and observability](docs/LOCAL-DEVELOPMENT.md): Aspire AppHost and OpenTelemetry/OTLP for runnable components; headless synthetic tests remain mandatory. Do not claim local startup or dashboard evidence until actually verified.

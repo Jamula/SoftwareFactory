@@ -9,11 +9,12 @@ Owner direction: design for 25× verified engineering throughput, deliver increm
 | M01 | Repository setup | Repository settings | Complete Nov 24, 2026 | Apache-2.0, public, main, squash only, auto-merge disabled |
 | M02.01 | Shared foundation and docs | [#1](https://github.com/Jamula/SoftwareFactory/issues/1), [PR #2](https://github.com/Jamula/SoftwareFactory/pull/2), [PR #3](https://github.com/Jamula/SoftwareFactory/pull/3) | Nov 25–27, 2026 | Port, provenance, current-head tests and review; integrate docs; keep umbrella acceptance open |
 | M02.02 | Automated quality and review gates | [#4](https://github.com/Jamula/SoftwareFactory/issues/4) | Nov 27–Dec 1 | Actual candidate-head CI, >=95% lines / >=90% branches, trusted review evidence |
+| M02.03 | Aspire AppHost local development and dashboard | [#17](https://github.com/Jamula/SoftwareFactory/issues/17) | Nov 28–Dec 3, 2026 | #1/#4/#9; synthetic local smoke, Windows verification, local OTLP |
 | M03.01 | Trusted event/metadata adapter | [#5](https://github.com/Jamula/SoftwareFactory/issues/5) | Dec 2–9 | #1/#4; zero-mutation shadow and trusted provenance |
 | M03.02 | Critical-path queue, leases and ownership | [#6](https://github.com/Jamula/SoftwareFactory/issues/6) | Dec 2–12 | Foundation; agree adapter contracts; idempotency, concurrency and failure replay |
 | M03.03 | Agent dispatch and budget controls | [#7](https://github.com/Jamula/SoftwareFactory/issues/7) | Dec 9–Jan 6, 2027 | #5/#6; supported provider and verified included quota; mocks first |
 | M03.04 | Review and guarded merge controller | [#8](https://github.com/Jamula/SoftwareFactory/issues/8) | Dec 9–Jan 6 | #4/#5/#6; exact-head verification, main health and authorization; shadow first |
-| M03.05 | Metrics and retrospective experiments | [#9](https://github.com/Jamula/SoftwareFactory/issues/9) | Dec 2–16, 2026 | Agreed event schema; real baseline and sanitized measurements |
+| M03.05 | OpenTelemetry, metrics and retrospective experiments | [#9](https://github.com/Jamula/SoftwareFactory/issues/9) | Dec 2–16, 2026 | Agreed event schema; real baseline and sanitized measurements |
 | M04 | Self-pilot then FamilyTree pilot | [#10](https://github.com/Jamula/SoftwareFactory/issues/10) | Jan 6–20, 2027 | All M02/M03 gates; separate permission, quota and activation evidence |
 | M05 | Spellbook pilot | [#11](https://github.com/Jamula/SoftwareFactory/issues/11) | Jan 20–Feb 3 | #10 and consumer readiness; stricter gates and independent pin |
 | M06 | Family Hub pilot | [#12](https://github.com/Jamula/SoftwareFactory/issues/12) | TBD; Feb 2027 earliest planning window | #10, owner lifts migration freeze, exact-head approval gate verified |
@@ -22,7 +23,7 @@ Owner direction: design for 25× verified engineering throughput, deliver increm
 | M08.02 | Change-aware CI, cache, failure diagnosis | [#15](https://github.com/Jamula/SoftwareFactory/issues/15) | Jan 20–Feb 17 | #4/#9; equivalent full verification |
 | M08.03 | Integration trains and portfolio optimization | [#16](https://github.com/Jamula/SoftwareFactory/issues/16) | Feb 3–Mar 3 experiments; 25× TBD | #8/#9/#10/#14/#15; measured accepted work, unchanged quality and cost controls |
 
-Parent M02: Nov 25–Dec 1, 2026. Parent M03: Dec 2–Jan 6, 2027, conditional on provider evidence. Parent M08: Jan 20–Mar 3 for experiments, not a 25× completion promise. M05 and M06 are independent consumers once M04 is proven; M07 and safe synthetic M08 design work can overlap. Missing prerequisites move the ETA, not the quality gate.
+Parent M02: Nov 25–Dec 3, 2026 (conditional on Aspire verification). Parent M03: Dec 2–Jan 6, 2027, conditional on provider evidence. Parent M08: Jan 20–Mar 3 for experiments, not a 25× completion promise. M05 and M06 are independent consumers once M04 is proven; M07 and safe synthetic M08 design work can overlap. Missing prerequisites move the ETA, not the quality gate.
 
 ## Throughput stages
 

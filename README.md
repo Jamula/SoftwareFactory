@@ -12,6 +12,7 @@ SoftwareFactory is an Apache-2.0, policy-driven foundation for an event-driven a
 
 | I want to… | Read |
 | --- | --- |
+| Aspire local development and OpenTelemetry | [Local development and observability](docs/LOCAL-DEVELOPMENT.md) |
 | Run the current evaluator locally | [Quickstart](docs/QUICKSTART.md) |
 | Understand how the system works | [Architecture](docs/ARCHITECTURE.md), [delivery lifecycle](docs/DELIVERY-LIFECYCLE.md) |
 | Integrate a repository without enabling writes | [Consumer onboarding](docs/CONSUMER-ONBOARDING.md) |
@@ -54,3 +55,7 @@ Consumers adopt independently, pin immutable reviewed workflow revisions and ret
 ## License and provenance
 
 Apache License 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE). The initial evaluator and replay tests were ported from [FamilyTree commit 1b871b76895f0d4943eda441a3295e843a127f58](https://github.com/Jamula/FamilyTree/tree/1b871b76895f0d4943eda441a3295e843a127f58). Preserve applicable attribution.
+
+## Platform standards
+
+Aspire AppHost is the required local orchestration standard; OpenTelemetry/OTLP is the required observability standard. Current shadow replay remains independently runnable; the Aspire and telemetry implementation is tracked in [#17](https://github.com/Jamula/SoftwareFactory/issues/17) and [#9](https://github.com/Jamula/SoftwareFactory/issues/9), not yet available. See [local development](docs/LOCAL-DEVELOPMENT.md).

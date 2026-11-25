@@ -2,6 +2,7 @@
 
 | Document | Audience | Purpose |
 | --- | --- | --- |
+| [Local development and observability](LOCAL-DEVELOPMENT.md) | Developers / operators | Aspire AppHost, OTel/OTLP and safe local smoke |
 | [Quickstart](QUICKSTART.md) | Developer | Run current synthetic tests |
 | [Architecture](ARCHITECTURE.md) | Engineer | Current implementation boundary |
 | [Delivery lifecycle](DELIVERY-LIFECYCLE.md) | Maintainer | Target event-to-acceptance state machine |
