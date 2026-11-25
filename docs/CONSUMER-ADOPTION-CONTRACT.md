@@ -1,5 +1,5 @@
 # Independent consumer adoption contract (draft)
-Contributes to #13, #10, #11, #12. No consumer is activated.
+Contributes to #13, #10, #36, #11, #12. No consumer is activated.
 
 ## Required enrollment evidence
 | Evidence | Required proof |
@@ -14,9 +14,9 @@ Contributes to #13, #10, #11, #12. No consumer is activated.
 
 ## Independent pilot lanes
 - SoftwareFactory: first demonstrate synthetic reusable workflow execution, trusted shadow evidence, expected-head safeguards and rollback.
-- FamilyTree (#10; consumer #128/#120): after factory pilot, use synthetic data only, retain 95/90 and no product release. No duplicate core.
-- Spellbook (#11; consumer #103): preserve 97% app line / 90% branch, WebKit/iOS gates and current two-agent cap until measured capacity approval.
-- FamilyHub (#12; consumer #81): verify migrated repository identity and migration readiness separately; preserve existing explicit independent review, required validation, up-to-date and production isolation. Development resumption is not factory activation authorization.
+- FamilyTree (M05, #36; consumer #128/#120): after M04 autonomous self-pilot acceptance, use synthetic data only, retain 95/90 and no product release. No duplicate core.
+- Spellbook (M06, #11; consumer #103): preserve 97% app line / 90% branch, WebKit/iOS gates and current two-agent cap until measured capacity approval.
+- FamilyHub (M07, #12; consumer #81): verify migrated repository identity and migration readiness separately; preserve existing explicit independent review, required validation, up-to-date and production isolation. Development resumption is not factory activation authorization.
 
 ## Verification and negative fixtures
 Use synthetic profiles with distinct repository IDs and independent policies. Test wrong identity, stale pin, missing check producer, stale/dismissed review, exhausted or unknown quota, revoked enrollment and rollback. Every unknown fails closed. Do not copy credentials, live policy from PR heads or private data. No live dispatch, merge, deployment or extra spending without separate verified authority.
