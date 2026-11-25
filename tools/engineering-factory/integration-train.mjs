@@ -11,3 +11,22 @@ export function nextIntegration(state) {
  if(!c) return blocked('NO_ELIGIBLE_CANDIDATE');
  return {...blocked('SHADOW_NEXT'),pr:c.pr,expectedHead:c.head,expectedBase:c.base,method:'squash'};
 }
+
+import {types} from 'node:util';
+const data=(o,keys)=>o!==null&&typeof o==='object'&&!types.isProxy(o)&&!Array.isArray(o)&&keys.every(k=>Object.hasOwn(Object.getOwnPropertyDescriptor(o,k)??{},'value'));
+const queueBlocked=reason=>({shadow:true,liveMerge:false,reason});
+// An explicit GraphQL enqueue operation, never a direct merge or queue jump.
+// The transport is injected for mock validation; no live credentials are wired here.
+export async function queueAdapter(intent,fresh,transport){
+ if(!data(intent,['pr','expectedHead','expectedBase'])||!positive(intent.pr)||!sha(intent.expectedHead)||!sha(intent.expectedBase))return queueBlocked('INTENT_UNKNOWN');
+ if(!data(fresh,['pr','id','repository','head','base','branch','queueRequired','authority','checks','review','threads','security','coverage','mainHealthy','stop','queued']))return queueBlocked('EVIDENCE_UNKNOWN');
+ if(fresh.stop!==false||fresh.repository!=='Jamula/SoftwareFactory'||fresh.branch!=='main'||fresh.pr!==intent.pr||fresh.head!==intent.expectedHead||fresh.base!==intent.expectedBase)return queueBlocked('SCOPE_OR_HEAD_CHANGED');
+ if(fresh.queued===true)return queueBlocked('ALREADY_QUEUED');
+ if(fresh.queued!==false||[fresh.queueRequired,fresh.authority,fresh.checks,fresh.review,fresh.threads,fresh.security,fresh.coverage,fresh.mainHealthy].some(x=>x!==true)||typeof fresh.id!=='string'||!/^PR_[A-Za-z0-9_-]{1,100}$/.test(fresh.id)||typeof transport!=='function')return queueBlocked('GATES_UNKNOWN');
+ try{
+  const response=await transport({query:'mutation Enqueue($id: ID!, $head: GitObjectID!) { enqueuePullRequest(input: {pullRequestId: $id, expectedHeadOid: $head, jump: false}) { mergeQueueEntry { id } } }',variables:{id:fresh.id,head:intent.expectedHead}});
+  const entry=response?.data?.enqueuePullRequest?.mergeQueueEntry;
+  if(response?.errors?.length||typeof entry?.id!=='string'||!entry.id)return queueBlocked('QUEUE_RECEIPT_UNKNOWN');
+  return {...queueBlocked('QUEUE_RECEIPT_MOCK'),queueEntry:entry.id};
+ }catch{return queueBlocked('QUEUE_RECEIPT_UNKNOWN');}
+}

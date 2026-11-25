@@ -16,3 +16,34 @@ export function leaseTransition(lease,request,now) {
  if(lease!==null&&lease.expires>now) return deny('HELD');
  return {shadow:true,changed:true,reason:'ACQUIRED',lease:{worker:request.worker,generation:generation+1,expires:now+request.ttl}};
 }
+
+/** Local durable shadow lease store. Caller must supply a private local path.
+ * BEGIN IMMEDIATE serializes competing processes; generation survives restart.
+ * Never stores credentials, issue text or authorization to dispatch.
+ */
+import {DatabaseSync} from 'node:sqlite';
+export function openLeaseStore(path) {
+ const db=new DatabaseSync(path);
+ db.exec('PRAGMA busy_timeout=1000; PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS shadow_leases (scope TEXT PRIMARY KEY, worker TEXT NOT NULL, generation INTEGER NOT NULL, expires INTEGER NOT NULL)');
+ const read=db.prepare('SELECT worker,generation,expires FROM shadow_leases WHERE scope=?');
+ const write=db.prepare('INSERT INTO shadow_leases(scope,worker,generation,expires) VALUES(?,?,?,?) ON CONFLICT(scope) DO UPDATE SET worker=excluded.worker,generation=excluded.generation,expires=excluded.expires');
+ return {
+  apply(scope,request,now){
+   if(typeof scope!=='string'||!/^[1-9][0-9]{0,15}:[1-9][0-9]{0,15}:[a-f0-9]{40}$/.test(scope))return deny('INVALID_SCOPE');
+   try {
+    db.exec('BEGIN IMMEDIATE');
+   } catch { return deny('STORE_UNAVAILABLE'); }
+   try {
+    const row=read.get(scope);
+    const result=leaseTransition(row??null,request,now);
+    if(result.changed)write.run(scope,result.lease.worker,result.lease.generation,result.lease.expires);
+    db.exec('COMMIT');
+    return result;
+   } catch {
+    db.exec('ROLLBACK');
+    return deny('STORE_UNAVAILABLE');
+   }
+  },
+  close(){db.close();}
+ };
+}

@@ -24,3 +24,28 @@ test('acquire requires its own TTL',()=>{
  assert.equal(step(null,inherited,10).reason,'INVALID_REQUEST');
  assert.equal(step(null,rest,10).reason,'INVALID_REQUEST');
 });
+
+import {openLeaseStore} from '../../tools/engineering-factory/lease-transition.mjs';
+import {mkdtempSync,rmSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+test('durable local lease survives restart and denies stale workers',()=>{
+ const dir=mkdtempSync(join(tmpdir(),'factory-lease-'));
+ const path=join(dir,'leases.sqlite'),key='1:2:'+'a'.repeat(40);
+ let a=openLeaseStore(path),b=openLeaseStore(path);
+ try {
+  assert.equal(a.apply(key,r,10).lease.generation,1);
+  assert.equal(b.apply(key,r,11).reason,'STALE_GENERATION');
+  assert.equal(b.apply(key,{...r,generation:1},11).reason,'HELD');
+  a.close();a=openLeaseStore(path);
+  assert.equal(a.apply(key,{...r,worker:'worker-b',generation:1},110).lease.generation,2);
+  assert.equal(b.apply(key,{...r,generation:1,kind:'release'},111).reason,'STALE_GENERATION');
+  assert.equal(a.apply('2:2:'+'a'.repeat(40),r,10).lease.generation,1);
+  assert.equal(a.apply(key,{...r,stop:true},111).reason,'STOPPED');
+  for(const x of [null,'bad'])assert.equal(a.apply(x,r,10).reason,'INVALID_SCOPE');
+  const bad={...r,get kind(){throw Error('invalid request');}};
+  assert.equal(a.apply(key,bad,111).reason,'STORE_UNAVAILABLE');
+  assert.equal(b.apply(key,{...r,generation:2},111).reason,'HELD');
+  a.close();assert.equal(a.apply(key,r,10).reason,'STORE_UNAVAILABLE');a=openLeaseStore(path);
+ }finally{a.close();b.close();rmSync(dir,{recursive:true,force:true});}
+});
