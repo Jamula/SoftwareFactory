@@ -1,7 +1,8 @@
 const sha=x=>typeof x==='string'&&/^[a-f0-9]{40}$/.test(x);
 const own=(x,k)=>x!==null&&typeof x==='object'&&!Array.isArray(x)&&k.every(p=>Object.hasOwn(Object.getOwnPropertyDescriptor(x,p)??{},'value'));
 const name=x=>typeof x==='string'&&/^[a-z0-9][a-z0-9._-]{0,79}$/.test(x);
-const dense=x=>Array.isArray(x)&&x.length<=250&&Object.keys(x).length===x.length&&Array.from({length:x.length},(_,i)=>Object.hasOwn(x,i)).every(Boolean);
+// Accept ordinary, bounded data arrays only; reject accessors and custom behavior.
+const dense=x=>Array.isArray(x)&&Object.getPrototypeOf(x)===Array.prototype&&x.length<=250&&Reflect.ownKeys(x).length===x.length+1&&Array.from({length:x.length},(_,i)=>Object.hasOwn(Object.getOwnPropertyDescriptor(x,i)??{},'value')).every(Boolean);
 const count=(a,b)=>Number.isSafeInteger(a)&&Number.isSafeInteger(b)&&a>=0&&b>0&&a<=b&&b<=100000000;
 const deny=reason=>({shadow:true,valid:false,reason});
 export function coverageEvidence(head,expected,reports){
