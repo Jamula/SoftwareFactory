@@ -49,5 +49,9 @@ FamilyTree is the first intended consumer; Spellbook and Family Hub must adopt
 independently, pinned to a reviewed immutable SoftwareFactory commit. Each
 consumer owns its trusted policy and retains its own branch protections,
 security and coverage gates, review rules, budgets, and release process.
-Family Hub's migration freeze remains in force. Repository identity alone,
+Family Hub migration readiness and separate consumer activation approval remain required. Repository identity alone,
 existing auto-merge settings, and a shadow result grant no permissions.
+
+## Required local runtime design (planned)
+
+Aspire AppHost will orchestrate the synthetic shadow runner and local authenticated dashboard. Instrument runner/adapter boundaries with OpenTelemetry and use local OTLP; keep evaluator pure. No public endpoint, external telemetry or live provider access. See [local development](LOCAL-DEVELOPMENT.md) and issues #17/#9. Existing architecture remains read-only synthetic until verified.
