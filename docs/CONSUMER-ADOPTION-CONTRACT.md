@@ -7,7 +7,7 @@ Contributes to #13, #10, #36, #11, #12. No consumer is activated.
 | Repository identity | Authoritative stable repository ID, owner, default branch, explicit enrollment decision |
 | Implementation | Immutable reviewed factory workflow SHA and matching versioned consumer policy |
 | Review | Independent exact-candidate approval, no unresolved threads, trusted check producers |
-| Coverage | Actual covered/total source lines and branches for each executable component and overall; minimum 95% source-line and 90% branch coverage in both scopes; stricter local rules prevail |
+| Coverage | Actual covered/total source lines and branches for each executable component and overall; consumer baseline minimum 95% source-line and 90% branch coverage in both scopes; SoftwareFactory itself requires 98%/95%; stricter local rules prevail |
 | Capacity | Verified included quota and overage controls, repository-specific concurrency and stop switch |
 | Access | Separate least-privilege read-only shadow access; no shared admin token |
 | Reversibility | Disable enrollment, revoke scoped access, revert pin via reviewed PR, confirm no queued live mutations |

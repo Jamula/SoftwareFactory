@@ -25,8 +25,8 @@ Establish a reproducible baseline before claiming gains. Report end-to-end accep
 
 | Gate | Required policy |
 | --- | --- |
-| Source line coverage | >=95% per executable component and overall |
-| Source branch coverage | >=90% per executable component and overall |
+| Source line coverage | SoftwareFactory >=98% per executable component and overall; shared consumer baseline >=95% |
+| Source branch coverage | SoftwareFactory >=95% per executable component and overall; shared consumer baseline >=90% |
 | Stronger consumer gates | Retain the stricter existing threshold (e.g., Spellbook >=97% application line coverage) |
 | Tests | All required build, unit, integration, E2E, platform and negative-path tests pass for the exact candidate |
 | Security | Required scanning, dependency and secret checks pass; no unresolved blocking findings; independent security review for auth, persistence, CI, policy, privileges and other high-risk changes |
@@ -79,7 +79,7 @@ The owner approved designing for 25× accepted engineering throughput, with 2×,
 | Validation cycles | One typical, without suppressing review or tests |
 | Accepted throughput | 25× comparable measured baseline |
 
-Use critical-path scheduling, contract-first decomposition, independent specialist ownership, trusted repository knowledge, verified reusable components, safe build reuse and integration trains. Do not count logical lanes as simultaneous active agents. Scale only with verified included quota, isolated ownership and demonstrated gains. Preserve 95/90 and stronger consumer gates, exact-head independent reviews, full integration/platform/security tests, $0 unapproved incremental spend, per-repo authorization and kill switches. Report failures and uncertainty. No new live enforcement is implied by this document.
+Use critical-path scheduling, contract-first decomposition, independent specialist ownership, trusted repository knowledge, verified reusable components, safe build reuse and integration trains. Do not count logical lanes as simultaneous active agents. Scale only with verified included quota, isolated ownership and demonstrated gains. Preserve SoftwareFactory 98/95 and independent consumer gates (95/90 baseline or stricter), exact-head independent reviews, full integration/platform/security tests, $0 unapproved incremental spend, per-repo authorization and kill switches. Report failures and uncertainty. No new live enforcement is implied by this document.
 
 ## Local development and observability standard (owner-approved)
 

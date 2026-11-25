@@ -27,6 +27,7 @@ export function validPolicy(p) {
     p.reviewers.every(text) && unique(p.reviewers.map(identity)) &&
     exact(p.coverage, ['line', 'branch']) &&
     [p.coverage.line, p.coverage.branch].every(n => Number.isFinite(n) && n >= 0 && n <= 100) &&
+    (identity(p.repository) !== 'jamula/softwarefactory' || (p.coverage.line >= 98 && p.coverage.branch >= 95)) &&
     dense(p.owners) && p.owners.length > 0 &&
     p.owners.every(o => exact(o, ['prefix', 'owner']) && pathValid(o.prefix) && text(o.owner)) &&
     unique(p.owners.map(o => o.prefix)) && integer(p.maxActive) &&
