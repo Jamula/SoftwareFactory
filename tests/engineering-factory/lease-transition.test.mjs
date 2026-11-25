@@ -53,6 +53,31 @@ test('durable local lease survives restart and denies stale workers',()=>{
 import {DatabaseSync} from 'node:sqlite';
 import {spawn,spawnSync} from 'node:child_process';
 
+test('initialization recovers after a transient SQLite lock', t => {
+ const dir=mkdtempSync(join(tmpdir(),'factory-startup-retry-'));
+ const path=join(dir,'leases.sqlite');
+ const blocker=new DatabaseSync(path);
+ let store;
+ try {
+  blocker.exec('CREATE TABLE unrelated (id INTEGER); BEGIN; SELECT * FROM unrelated');
+  // Release the real SQLite lock at the first retry boundary, without relying on process timing.
+  const backoff=t.mock.method(Atomics,'wait',(_cell,index,expected,delay) => {
+   assert.deepEqual([index,expected,delay],[0,0,20]);
+   blocker.exec('ROLLBACK');
+   return 'timed-out';
+  });
+  store=openLeaseStore(path);
+  assert.equal(backoff.mock.callCount(),1);
+  const result=store.apply('1:2:'+'a'.repeat(40),r,10);
+  assert.equal(result.reason,'ACQUIRED');
+  assert.deepEqual(result.lease,l);
+ } finally {
+  if(store) store.close();
+  blocker.close();
+  rmSync(dir,{recursive:true,force:true});
+ }
+});
+
 test('fails closed on persistent initialization locks and on a corrupt database', {timeout:10000}, () => {
  const dir=mkdtempSync(join(tmpdir(),'factory-startup-'));
  const path=join(dir,'leases.sqlite');
