@@ -4,7 +4,7 @@
 
 SoftwareFactory is an Apache-2.0, policy-driven foundation for an event-driven autonomous software delivery system. The goal is to reduce idle time between approved issues, implementation, validation, review and integration without weakening project-specific security, quality or release gates.
 
-> **Current maturity: read-only synthetic shadow evaluator (0.1.0 development).** The current code does not dispatch agents, approve PRs, merge changes, read live repository metadata or deploy products. An eligible shadow result is not authorization. The 10× throughput objective is a hypothesis, not a benchmark result.
+> **Current maturity: read-only synthetic shadow evaluator (0.1.0 development).** The current code does not dispatch agents, approve PRs, merge changes, read live repository metadata or deploy products. An eligible shadow result is not authorization. The 25× program (including its intermediate 10× target) is a hypothesis, not a benchmark result.
 
 ![Target architecture: one shared versioned core with independently pinned consumer adapters, project policy and CI](docs/images/architecture.svg)
 
@@ -38,7 +38,7 @@ These are documented standards and targets, not verified automation capabilities
 
 ## Local development
 
-Use Node.js 20 or later (prefer a currently supported LTS release). No npm dependencies are required by the current evaluator.
+Use Node.js 26.13.1, the pinned development and CI LTS baseline. No npm dependencies are required by the current evaluator.
 
 ```sh
 node --test tests/engineering-factory/*.test.mjs

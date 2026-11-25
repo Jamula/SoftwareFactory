@@ -17,7 +17,7 @@ Owner direction: design for 25× verified engineering throughput, deliver increm
 | M03.05 | OpenTelemetry, metrics and retrospective experiments | [#9](https://github.com/Jamula/SoftwareFactory/issues/9) | Dec 2–16, 2026 | Agreed event schema; real baseline and sanitized measurements |
 | M04 | Self-pilot then FamilyTree pilot | [#10](https://github.com/Jamula/SoftwareFactory/issues/10) | Jan 6–20, 2027 | All M02/M03 gates; separate permission, quota and activation evidence |
 | M05 | Spellbook pilot | [#11](https://github.com/Jamula/SoftwareFactory/issues/11) | Jan 20–Feb 3 | #10 and consumer readiness; stricter gates and independent pin |
-| M06 | Family Hub pilot | [#12](https://github.com/Jamula/SoftwareFactory/issues/12) | TBD; Feb 2027 earliest planning window | #10, owner lifts migration freeze, exact-head approval gate verified |
+| M06 | Family Hub pilot | [#12](https://github.com/Jamula/SoftwareFactory/issues/12) | TBD; Feb 2027 earliest planning window | #10, migration readiness and separate activation approval, exact-head approval gate verified |
 | M07 | Reusable onboarding and component catalog | [#13](https://github.com/Jamula/SoftwareFactory/issues/13) | Jan 13–Feb 3 | M03 contracts; independently pinned, synthetic consumer profiles |
 | M08.01 | Knowledge index, decomposition, specialists | [#14](https://github.com/Jamula/SoftwareFactory/issues/14) | Jan 20–Feb 17 | #6/#7/#13; controlled experiments |
 | M08.02 | Change-aware CI, cache, failure diagnosis | [#15](https://github.com/Jamula/SoftwareFactory/issues/15) | Jan 20–Feb 17 | #4/#9; equivalent full verification |

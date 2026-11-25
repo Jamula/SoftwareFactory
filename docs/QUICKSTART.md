@@ -3,7 +3,7 @@
 **No GitHub credential, cloud service, agent subscription or production repository is needed to run the synthetic replay.**
 
 1. Clone `https://github.com/Jamula/SoftwareFactory.git` and check out the reviewed commit you intend to inspect. Development PR branches are not releases.
-2. Install a supported Node.js LTS (the current code requires Node.js 20+).
+2. Install Node.js 26.13.1, the pinned development and CI LTS baseline.
 3. From the repository root run:
 
 ```sh

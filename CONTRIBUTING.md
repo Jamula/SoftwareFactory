@@ -13,7 +13,7 @@ Thank you for helping build a reusable, secure engineering factory. Read [AGENTS
 
 ## Development and quality
 
-Use Node.js 20+ (prefer supported LTS). No npm install is required for the current core.
+Use the pinned Node.js 26.13.1 development and CI baseline. No npm install is required for the current core.
 
 ```sh
 node --test tests/engineering-factory/*.test.mjs

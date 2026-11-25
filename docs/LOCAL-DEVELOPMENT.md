@@ -35,6 +35,6 @@ Use low-cardinality allowlists for metric labels. Do not use raw repository/issu
 - Actual AppHost launch and shutdown on authorized Windows developer machine; document SDK versions, command, resource health and smoke evidence. CI build alone is not runtime verification.
 - Synthetic trace visible in local dashboard, corresponding metric sample and correlated structured log; prove no external export, no GitHub writes and no sensitive payloads.
 - Negative tests: malformed endpoints/config, unavailable exporter, stop, oversized or unsafe telemetry attributes, unsupported runtime, missing credentials/metadata. Independent exact-head security review.
-- Consumer-specific adoption only via reviewed immutable pins and local policies, no forced framework rewrite or automatic activation. Family Hub freeze remains in force.
+- Consumer-specific adoption only via reviewed immutable pins and local policies, no forced framework rewrite or automatic activation. Family Hub requires independent migration readiness verification and activation approval.
 
 Official references: [Aspire existing app integration](https://aspire.dev/get-started/add-aspire-existing-app/), [JavaScript AppHost integration](https://aspire.dev/integrations/frameworks/javascript/), [Aspire telemetry](https://aspire.dev/fundamentals/telemetry/), [OpenTelemetry JavaScript](https://opentelemetry.io/docs/languages/js/).

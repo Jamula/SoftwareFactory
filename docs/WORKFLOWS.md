@@ -2,7 +2,7 @@
 
 ## Current implementation
 
-The draft foundation provides `.github/workflows/shadow-tests.yml`, a reusable **synthetic replay** workflow called through `workflow_call`, and [an example caller](consumer-shadow-tests.yml). It grants contents read permission, checks out pinned SoftwareFactory test code with credential persistence disabled and runs synthetic tests. It does not inspect consumer PR data, run consumer source, dispatch agents, publish required approval checks or merge anything.
+The merged foundation provides `.github/workflows/shadow-tests.yml`, a reusable **synthetic replay** workflow called through `workflow_call`, and [an example caller](consumer-shadow-tests.yml). It grants contents read permission, checks out pinned SoftwareFactory test code with credential persistence disabled and runs synthetic tests. It does not inspect consumer PR data, run consumer source, dispatch agents, publish required approval checks or merge anything.
 
 A consumer caller must pin a **reviewed, available full SHA** that contains the tested reusable workflow. The following is intentionally a non-runnable template until the placeholder is replaced:
 

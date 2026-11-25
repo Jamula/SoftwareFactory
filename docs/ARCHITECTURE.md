@@ -40,7 +40,7 @@ PR head, and never synthesize approvals or check results.
 
 The reusable test workflow itself must also be referenced by immutable full
 commit SHA. The synthetic example configuration under `docs/` is pinned to
-workflow commit `b77b60fba66616e2002d3419aec37ad8f882ebb1` and grants no write
+workflow commit `fbecbf99b4c8e1696194bd6fa5220b2328cd1379` and grants no write
 permissions. It is not an enabled configuration for any actual consumer.
 
 ## Consumer model
@@ -49,7 +49,7 @@ FamilyTree is the first intended consumer; Spellbook and Family Hub must adopt
 independently, pinned to a reviewed immutable SoftwareFactory commit. Each
 consumer owns its trusted policy and retains its own branch protections,
 security and coverage gates, review rules, budgets, and release process.
-Family Hub's migration freeze remains in force. Repository identity alone,
+Family Hub migration readiness and separate consumer activation approval remain required. Repository identity alone,
 existing auto-merge settings, and a shadow result grant no permissions.
 
 ## Required local runtime design (planned)
