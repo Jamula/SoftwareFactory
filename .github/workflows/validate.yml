@@ -48,6 +48,7 @@ jobs:
           node --test --experimental-test-coverage --test-coverage-include='tools/engineering-factory/coverage-evidence.mjs' --test-coverage-lines=98 --test-coverage-branches=95 tests/engineering-factory/coverage-evidence.test.mjs
           node --test --experimental-test-coverage --test-coverage-include='tools/engineering-factory/dispatch-intent.mjs' --test-coverage-lines=98 --test-coverage-branches=95 tests/engineering-factory/dispatch-intent.test.mjs
           node --test --experimental-test-coverage --test-coverage-include='tools/engineering-factory/pilot-readiness.mjs' --test-coverage-lines=98 --test-coverage-branches=95 tests/engineering-factory/pilot-readiness.test.mjs
+          node --test --experimental-test-coverage --test-coverage-include='tools/engineering-factory/queue-inspection.mjs' --test-coverage-lines=98 --test-coverage-branches=95 tests/engineering-factory/queue-inspection.test.mjs
       - name: Engineering Coordinator component coverage gates
         run: |
           set -euo pipefail
