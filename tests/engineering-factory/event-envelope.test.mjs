@@ -12,3 +12,11 @@ test('reject incomplete and malformed evidence',()=>{
  for(const x of [{...e,repositoryId:2},{...e,workflowSha:'c'.repeat(40)}]) assert.equal(normalize(x,trust,100).reason,'PROVENANCE_MISMATCH');
  for(const now of [null,99,120101]) assert.equal(normalize(e,trust,now).reason,'STALE_EVENT');
 });
+
+test('reject accessor metadata without invoking getters',()=>{
+ const bad=()=>{throw Error('getter must not run');};
+ assert.equal(normalize({...e,get head(){return bad();}},trust,100).reason,'INVALID_EVENT');
+ assert.equal(normalize(e,{...trust,get workflowSha(){return bad();}},100).reason,'TRUST_UNKNOWN');
+ let reads=0; const x={...e,get head(){return ++reads===1?e.head:'bad';}};
+ assert.equal(normalize(x,trust,100).reason,'INVALID_EVENT');assert.equal(reads,0);
+});

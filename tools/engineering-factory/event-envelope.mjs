@@ -1,7 +1,7 @@
 const kinds=new Set(['issue','pull','review','check','main','manual']);
 const positive=n=>Number.isSafeInteger(n)&&n>0;
 const sha=s=>typeof s==='string'&&/^[a-f0-9]{40}$/.test(s);
-const own=(v,keys)=>v!==null&&typeof v==='object'&&!Array.isArray(v)&&keys.every(k=>Object.hasOwn(v,k));
+const own=(v,keys)=>v!==null&&typeof v==='object'&&!Array.isArray(v)&&keys.every(k=>Object.hasOwn(Object.getOwnPropertyDescriptor(v,k)??{},'value'));
 const deny=reason=>({shadow:true,accepted:false,reason});
 export function eventEnvelope(event,trust,now) {
  if(!own(trust,['repositoryId','workflowSha'])||!positive(trust.repositoryId)||!sha(trust.workflowSha)) return deny('TRUST_UNKNOWN');
