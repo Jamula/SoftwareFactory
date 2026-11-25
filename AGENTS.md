@@ -9,3 +9,11 @@
   release requirements. Repository names do not grant authorization.
 - Keep source provenance and Apache-2.0 notices when adapting upstream material.
 - Run the Node.js replay tests after changes to the evaluator or its tests.
+
+## Delivery rules
+
+Follow [engineering standards](docs/ENGINEERING-STANDARDS.md). Reuse issues and PRs; one independent owner per lane; no overlapping edits or duplicate dispatch. Batch fixes, record exact-head tests and covered/total line and branch counts, require independent review, and preserve stricter consumer gates. Target 95% line and 90% branch coverage per executable component and overall; do not invent coverage or hide failures. Keep partial acceptance open. Speed objectives never authorize bypassing security, budget, permissions, review or release gates.
+
+## Platform standard
+
+Use Aspire AppHost for local orchestration and OpenTelemetry traces, metrics and correlated structured logs via local OTLP. Preserve pure evaluator behavior and headless tests. No real provider calls, private data, external telemetry, secrets or paid hosting. Follow [local development](docs/LOCAL-DEVELOPMENT.md). Prioritize SoftwareFactory with verified available included capacity; do not dispatch when budget is unknown.
