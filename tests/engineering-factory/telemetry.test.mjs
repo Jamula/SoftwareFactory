@@ -25,3 +25,19 @@ test('telemetry exporter/instrument failures cannot change work outcome',async()
  const run2=createSignals({clock:(()=>{let i=1;return()=>--i})(),meter:{createCounter:()=>({add:()=>{}}),createHistogram:()=>({record:()=>assert.fail()})},tracer:{startSpan:()=>({setAttributes:fail,end:fail})}});
  assert.equal((await run2('verify-main',async()=>({outcome:'unknown'}))).outcome,'unknown');
 });
+
+test('instrument creation failures independently fall back to no-op',async()=>{
+ const fail=()=>{throw Error('instrument initialization failed')};
+ const events=[];
+ for(const meter of [
+   {createCounter:fail,createHistogram:()=>({record:(...x)=>events.push(x)})},
+   {createCounter:()=>({add:(...x)=>events.push(x)}),createHistogram:fail},
+   {createCounter:fail,createHistogram:fail}
+ ]){
+   const run=createSignals({clock:()=>0,meter,tracer:{startSpan:fail}});
+   const value={outcome:'eligible',reason:'NONE'};
+   assert.equal(await run('evaluate',async()=>value),value);
+   await assert.rejects(()=>run('review',async()=>{throw Error('work failed')}),/work failed/);
+ }
+ assert.equal(events.length,4);
+});
