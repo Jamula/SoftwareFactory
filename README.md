@@ -28,7 +28,7 @@ SoftwareFactory is an Apache-2.0, policy-driven foundation for an event-driven a
 
 | Metric | Objective |
 | --- | --- |
-| Source line / branch coverage | >=95% / >=90% per component and overall; retain stricter consumer gates |
+| Source line / branch coverage | >=98% / >=95% for SoftwareFactory per component and overall; consumer-specific gates remain independent |
 | Eligible work dispatch / merge | p95 <=2 minutes each |
 | Standard fast CI | p50 <=90 seconds |
 | Small PR turnaround | p50 <=30 minutes |
