@@ -99,3 +99,16 @@ test('sparse snapshot evidence fails closed, including mixed valid and missing e
   const inherited = new Array(1); Object.setPrototypeOf(inherited, Object.assign(Object.create(Array.prototype),{0:snapshot.checks[0]}));
   assert.equal(evaluate(policy,{...snapshot,checks:inherited}).reason,'CHECKS_INCOMPLETE');
 });
+
+ test('SoftwareFactory requires 98/95 while consumer thresholds remain independent', () => {
+  const factory = {...policy, repository:'Jamula/SoftwareFactory', coverage:{line:98,branch:95}};
+  const input = {...snapshot, repository:factory.repository, coverage:{head,line:98,branch:95,complete:true}};
+  assert.equal(validPolicy(factory),true);
+  assert.equal(evaluate(factory,input).reason,'SHADOW_ELIGIBLE');
+  assert.equal(validPolicy({...factory,coverage:{line:97,branch:95}}),false);
+  assert.equal(validPolicy({...factory,repository:'jamula/softwarefactory',coverage:{line:98,branch:94}}),false);
+  assert.equal(evaluate(factory,{...input,coverage:{...input.coverage,line:97}}).reason,'COVERAGE_INCOMPLETE');
+  assert.equal(evaluate(factory,{...input,coverage:{...input.coverage,branch:94}}).reason,'COVERAGE_INCOMPLETE');
+  assert.equal(validPolicy({...factory,coverage:{line:100,branch:100}}),true);
+  assert.equal(evaluate(policy,snapshot).reason,'SHADOW_ELIGIBLE');
+});

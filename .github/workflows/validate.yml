@@ -27,27 +27,27 @@ jobs:
         run: |
           node --version
           git rev-parse HEAD
-          node --test --experimental-test-coverage --test-coverage-include='tools/engineering-factory/core.mjs' --test-coverage-lines=95 --test-coverage-branches=90 tests/engineering-factory/core.test.mjs
+          node --test --experimental-test-coverage --test-coverage-include='tools/engineering-factory/core.mjs' --test-coverage-lines=98 --test-coverage-branches=95 tests/engineering-factory/core.test.mjs
 
       - name: Shadow runtime coverage
-        run: node --test --experimental-test-coverage --test-coverage-include='tools/engineering-factory/shadow-runtime.mjs' --test-coverage-lines=95 --test-coverage-branches=90 tests/engineering-factory/shadow-runtime.test.mjs
+        run: node --test --experimental-test-coverage --test-coverage-include='tools/engineering-factory/shadow-runtime.mjs' --test-coverage-lines=98 --test-coverage-branches=95 tests/engineering-factory/shadow-runtime.test.mjs
       - name: CLI source coverage
-        run: node --test --experimental-test-coverage --test-coverage-include='tools/engineering-factory/run.mjs' --test-coverage-lines=95 --test-coverage-branches=90 tests/engineering-factory/shadow-runtime.test.mjs
+        run: node --test --experimental-test-coverage --test-coverage-include='tools/engineering-factory/run.mjs' --test-coverage-lines=98 --test-coverage-branches=95 tests/engineering-factory/shadow-runtime.test.mjs
       - name: Per-component coverage gates (consolidated)
         run: |
           set -euo pipefail
-          node --test --experimental-test-coverage --test-coverage-include='tools/engineering-factory/budget.mjs' --test-coverage-lines=95 --test-coverage-branches=90 tests/engineering-factory/budget.test.mjs
-          node --test --experimental-test-coverage --test-coverage-include='tools/engineering-factory/telemetry.mjs' --test-coverage-lines=95 --test-coverage-branches=90 tests/engineering-factory/telemetry.test.mjs
-          node --test --experimental-test-coverage --test-coverage-include='tools/engineering-factory/review-history.mjs' --test-coverage-lines=95 --test-coverage-branches=90 tests/engineering-factory/review-history.test.mjs
-          node --test --experimental-test-coverage --test-coverage-include='tools/engineering-factory/contract-routing.mjs' --test-coverage-lines=95 --test-coverage-branches=90 tests/engineering-factory/contract-routing.test.mjs
-          node --test --experimental-test-coverage --test-coverage-include='tools/engineering-factory/event-envelope.mjs' --test-coverage-lines=95 --test-coverage-branches=90 tests/engineering-factory/event-envelope.test.mjs
-          node --test --experimental-test-coverage --test-coverage-include='tools/engineering-factory/lease-transition.mjs' --test-coverage-lines=95 --test-coverage-branches=90 tests/engineering-factory/lease-transition.test.mjs
-          node --test --experimental-test-coverage --test-coverage-include='tools/engineering-factory/integration-train.mjs' --test-coverage-lines=95 --test-coverage-branches=90 tests/engineering-factory/integration-train.test.mjs
-          node --test --experimental-test-coverage --test-coverage-include='tools/engineering-factory/validation-diagnosis.mjs' --test-coverage-lines=95 --test-coverage-branches=90 tests/engineering-factory/validation-diagnosis.test.mjs
-          node --test --experimental-test-coverage --test-coverage-include='tools/engineering-factory/stage-aggregate.mjs' --test-coverage-lines=95 --test-coverage-branches=90 tests/engineering-factory/stage-aggregate.test.mjs
-          node --test --experimental-test-coverage --test-coverage-include='tools/engineering-factory/coverage-evidence.mjs' --test-coverage-lines=95 --test-coverage-branches=90 tests/engineering-factory/coverage-evidence.test.mjs
-          node --test --experimental-test-coverage --test-coverage-include='tools/engineering-factory/dispatch-intent.mjs' --test-coverage-lines=95 --test-coverage-branches=90 tests/engineering-factory/dispatch-intent.test.mjs
-          node --test --experimental-test-coverage --test-coverage-include='tools/engineering-factory/pilot-readiness.mjs' --test-coverage-lines=95 --test-coverage-branches=90 tests/engineering-factory/pilot-readiness.test.mjs
+          node --test --experimental-test-coverage --test-coverage-include='tools/engineering-factory/budget.mjs' --test-coverage-lines=98 --test-coverage-branches=95 tests/engineering-factory/budget.test.mjs
+          node --test --experimental-test-coverage --test-coverage-include='tools/engineering-factory/telemetry.mjs' --test-coverage-lines=98 --test-coverage-branches=95 tests/engineering-factory/telemetry.test.mjs
+          node --test --experimental-test-coverage --test-coverage-include='tools/engineering-factory/review-history.mjs' --test-coverage-lines=98 --test-coverage-branches=95 tests/engineering-factory/review-history.test.mjs
+          node --test --experimental-test-coverage --test-coverage-include='tools/engineering-factory/contract-routing.mjs' --test-coverage-lines=98 --test-coverage-branches=95 tests/engineering-factory/contract-routing.test.mjs
+          node --test --experimental-test-coverage --test-coverage-include='tools/engineering-factory/event-envelope.mjs' --test-coverage-lines=98 --test-coverage-branches=95 tests/engineering-factory/event-envelope.test.mjs
+          node --test --experimental-test-coverage --test-coverage-include='tools/engineering-factory/lease-transition.mjs' --test-coverage-lines=98 --test-coverage-branches=95 tests/engineering-factory/lease-transition.test.mjs
+          node --test --experimental-test-coverage --test-coverage-include='tools/engineering-factory/integration-train.mjs' --test-coverage-lines=98 --test-coverage-branches=95 tests/engineering-factory/integration-train.test.mjs
+          node --test --experimental-test-coverage --test-coverage-include='tools/engineering-factory/validation-diagnosis.mjs' --test-coverage-lines=98 --test-coverage-branches=95 tests/engineering-factory/validation-diagnosis.test.mjs
+          node --test --experimental-test-coverage --test-coverage-include='tools/engineering-factory/stage-aggregate.mjs' --test-coverage-lines=98 --test-coverage-branches=95 tests/engineering-factory/stage-aggregate.test.mjs
+          node --test --experimental-test-coverage --test-coverage-include='tools/engineering-factory/coverage-evidence.mjs' --test-coverage-lines=98 --test-coverage-branches=95 tests/engineering-factory/coverage-evidence.test.mjs
+          node --test --experimental-test-coverage --test-coverage-include='tools/engineering-factory/dispatch-intent.mjs' --test-coverage-lines=98 --test-coverage-branches=95 tests/engineering-factory/dispatch-intent.test.mjs
+          node --test --experimental-test-coverage --test-coverage-include='tools/engineering-factory/pilot-readiness.mjs' --test-coverage-lines=98 --test-coverage-branches=95 tests/engineering-factory/pilot-readiness.test.mjs
       - name: Aspire headless synthetic runner
         run: node tools/engineering-factory/aspire-smoke.mjs
       - name: Runnable synthetic factory
