@@ -17,6 +17,11 @@ test('orders ready work and respects accepted dependencies and path owners', () 
   assert.equal(result.reason, 'SHADOW_PLAN');
 });
 
+test('schedules at most one task per lane and fills capacity from independent lanes', () => {
+  const result = planLanes(config(), [task(1), task(2), task(3, 'web')]);
+  assert.deepEqual(result.scheduled.map(item => item.id), [1, 3]);
+});
+
 test('rejects an invalid config, inventory, task and active record', () => {
   assert.equal(planLanes({}, []).reason, 'INVALID_PROJECT_CONFIG');
   assert.equal(planLanes(config(), new Array(1)).reason, 'INVALID_INVENTORY');

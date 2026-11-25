@@ -58,7 +58,7 @@ export function planLanes(config, tasks, active = []) {
   const counts = new Map(laneCounts);
   const scheduled = [];
   for (const task of candidates) {
-    if ((counts.get(task.lane) ?? 0) >= config.limits.maxConcurrentLanes ||
+    if ((counts.get(task.lane) ?? 0) >= 1 ||
         task.paths.some(path => ownedPaths.some(owned => overlaps(path, owned)))) continue;
     if (scheduled.length + active.length >= config.limits.maxConcurrentLanes) break;
     scheduled.push({id: task.id, lane: task.lane, paths: [...task.paths]});

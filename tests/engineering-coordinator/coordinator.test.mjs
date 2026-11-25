@@ -76,12 +76,34 @@ test('blocks held leases, failed reads, failed reviews and stale checkpoints', a
 test('does not review or checkpoint a task whose authoritative state changed after planning', async () => {
   let inspections = 0;
   let checkpoints = 0;
-  const result = await runTick({config: config(), tasks: tasks(), store: {...store(), checkpoint: () => { checkpoints++; return true; }},
+  const result = await runTick({config: config(), tasks: [tasks()[0]], store: {...store(), checkpoint: () => { checkpoints++; return true; }},
     tracker: {readTask: async id => ({accepted: true, task: {id, state: 'blocked'}})},
     agent: {inspect: async () => { inspections++; return {shadow: true, accepted: true, findings: []}; }},
     workerId: 'worker', now: 1});
   assert.equal(result.completed[0].reason, 'TASK_STATE_CHANGED');
   assert.equal(inspections, 0);
+  assert.equal(checkpoints, 0);
+});
+
+test('blocks checkpointing when the final authoritative read is unavailable', async () => {
+  let reads = 0;
+  let checkpoints = 0;
+  const result = await runTick({config: config(), tasks: [tasks()[0]], store: {...store(), checkpoint: () => { checkpoints++; return true; }},
+    tracker: {readTask: async id => ++reads === 1 ? {accepted: true, task: {id, state: 'approved'}} : {accepted: false}},
+    agent, workerId: 'worker', now: 1});
+  assert.equal(result.completed[0].reason, 'TASK_READ_FAILED');
+  assert.equal(reads, 2);
+  assert.equal(checkpoints, 0);
+});
+
+test('rechecks authoritative task state after inspection and before checkpointing', async () => {
+  let reads = 0;
+  let checkpoints = 0;
+  const result = await runTick({config: config(), tasks: [tasks()[0]], store: {...store(), checkpoint: () => { checkpoints++; return true; }},
+    tracker: {readTask: async id => ({accepted: true, task: {id, state: ++reads === 1 ? 'approved' : 'blocked'}})},
+    agent, workerId: 'worker', now: 1});
+  assert.equal(result.completed[0].reason, 'TASK_STATE_CHANGED');
+  assert.equal(reads, 2);
   assert.equal(checkpoints, 0);
 });
 

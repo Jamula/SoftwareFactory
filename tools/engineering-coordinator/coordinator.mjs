@@ -27,8 +27,13 @@ export async function runTick({config, tasks, active = [], store, tracker, agent
       const review = await agent.inspect(byId.get(item.id), {mode: 'shadow', projectKey: config.project.key});
       if (!review?.accepted || review.shadow !== true)
         return {lane: item.lane, state: 'blocked', reason: 'AGENT_REVIEW_FAILED'};
+      const finalEvidence = await tracker.readTask(item.id);
+      if (!finalEvidence?.accepted || finalEvidence.task?.id !== item.id)
+        return {lane: item.lane, state: 'blocked', reason: 'TASK_READ_FAILED'};
+      if (finalEvidence.task.state !== 'approved')
+        return {lane: item.lane, taskId: item.id, state: 'blocked', reason: 'TASK_STATE_CHANGED'};
       const checkpointed = store.checkpoint(item.lane, claim.generation, workerId,
-        {taskId: item.id, observedState: evidence.task.state, findings: review.findings ?? [], completedAt: now});
+        {taskId: item.id, observedState: finalEvidence.task.state, findings: review.findings ?? [], completedAt: now});
       return checkpointed ? {lane: item.lane, taskId: item.id, state: 'shadow-reviewed'} :
         {lane: item.lane, taskId: item.id, state: 'blocked', reason: 'STALE_CHECKPOINT'};
     } catch {
