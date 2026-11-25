@@ -27,14 +27,20 @@ capabilities.
 
 There is no trusted event/API adapter, durable idempotency store, per-repository
 serialization, dependency graph/cycle detector, queue or dispatch, live
-authoritative evidence acquisition, telemetry pipeline, reusable workflow, or
-consumer activation configuration. The evaluator's input checks do not prove
-that a snapshot came from a trusted source. Do not use it to authorize actions.
+authoritative evidence acquisition, or sanitized telemetry pipeline. The
+reusable workflow runs only this repository's pinned synthetic tests; it does
+not inspect consumer PR metadata or execute consumer code. The evaluator's
+input checks do not prove that a snapshot came from a trusted source. Do not
+use it to authorize actions.
 
 Those features require separately reviewed, least-privilege implementation and
 validation before activation. In particular, never check out or execute
 untrusted pull-request code in a privileged workflow, never trust policy from a
 PR head, and never synthesize approvals or check results.
+
+The reusable test workflow itself must also be referenced by immutable full
+commit SHA. The example configuration under `docs/` is deliberately pinned to
+the initial workflow commit and does not grant write permissions.
 
 ## Consumer model
 
