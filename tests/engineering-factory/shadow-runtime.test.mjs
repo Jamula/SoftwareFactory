@@ -2,6 +2,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {fileURLToPath} from 'node:url';
 import {spawnSync} from 'node:child_process';
+import {fileURLToPath} from 'node:url';
 import {plan,readInventory,smoke} from '../../tools/engineering-factory/shadow-runtime.mjs';
 const task=(id,over={})=>({id,priority:0,state:'approved',dependencies:[],paths:['src/'+id],...over});
 const input=(tasks,over={})=>({enabled:true,stop:false,capacity:2,quotaVerified:true,tasks,...over});
