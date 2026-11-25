@@ -8,4 +8,4 @@ permissions:
 
 jobs:
   replay:
-    uses: Jamula/SoftwareFactory/.github/workflows/shadow-tests.yml@b77b60fba66616e2002d3419aec37ad8f882ebb1
+    uses: Jamula/SoftwareFactory/.github/workflows/shadow-tests.yml@fbecbf99b4c8e1696194bd6fa5220b2328cd1379
