@@ -19,3 +19,7 @@ npm run test:coverage
 node tools/engineering-factory/aspire-smoke.mjs
 ```
 Stop if restore, coverage (98% lines / 95% branches), or the headless smoke fails. Start `aspire run` only after verifying the configured dashboard and OTLP listeners are local-only and authentication is enabled. Start the explicit synthetic resource, capture its STOPPED result, stop the AppHost and verify its processes/listeners are gone. Record versions, redacted listener addresses, exit codes and exact commit. Never paste dashboard login tokens or personal data. Report trace, metric and correlated log reception separately; the existing runner does not export OTLP, so these checks remain outstanding until the exporter is implemented. Do not mark #17 accepted from this checklist alone.
+
+## Build evidence
+
+The Factory validation job restores and compiles the file-based AppHost with .NET SDK 10.0.404 and Aspire CLI 17.0.0. It installs Aspire into the runner's temporary tools directory and disables .NET and Aspire CLI usage telemetry. Review the candidate commit's `Restore and build the pinned Aspire AppHost` step for the result. This compilation check starts no AppHost resources. The Windows launch and local OTLP evidence in the acceptance checklist still require a separate run.
