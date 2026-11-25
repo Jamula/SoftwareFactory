@@ -1,0 +1,27 @@
+name: Factory validation
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: factory-validate-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22.23.0'
+      - name: Exact candidate replay and source coverage
+        run: |
+          node --version
+          git rev-parse HEAD
+          node --test --experimental-test-coverage --test-coverage-include='tools/engineering-factory/core.mjs' --test-coverage-lines=95 --test-coverage-branches=90 tests/engineering-factory/*.test.mjs
