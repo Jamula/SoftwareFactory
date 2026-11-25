@@ -22,3 +22,5 @@ Replace any required legacy contexts with the verified consolidated build-test c
 Measure wall-clock critical path and runner-job counts for comparable PR and merge-group runs. Removing thirteen standalone jobs does not guarantee proportional elapsed-time improvement. New production components must be added to the consolidated coverage gates; no coverage exclusions or lowered thresholds. Actual Windows/Aspire runtime and OTLP acceptance remain distinct from headless smoke. No consumer activation, deployment, or spending increase.
 
 Owner update (Nov 25, 2026): SoftwareFactory enforces at least 98% source lines and 95% source branches for each executable component and overall. Existing consumer repository thresholds are unchanged. Keep consolidated check names and independent review/security gates intact.
+
+Run the headless Aspire fixture under the Node test runner so its assertions and executable source are included in the fixture gate and the full coverage report. This measures the JavaScript fixture. The Windows AppHost and local OTLP acceptance still require runtime evidence.
