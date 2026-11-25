@@ -16,7 +16,7 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           repository: Jamula/SoftwareFactory
-          ref: c8e1480efd32e752525a23c4696c14cc72d5e02e
+          ref: 8492e707b296c16d08dc7e13b138cf0d9e2facc6
           path: softwarefactory
           persist-credentials: false
       - name: Verify Node.js runtime
