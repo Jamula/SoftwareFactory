@@ -1,0 +1,7 @@
+# Native merge queue readiness (#4, #8, #15, #16)
+
+This change adds merge_group checks_requested triggers to existing candidate validation workflows. PRs still validate their exact heads; merge groups validate the exact combined SHA. Keep every existing test, component/overall coverage threshold, pinned action, and permission boundary. The reusable smoke still replays its pinned fixture; it is not candidate validation. No queue or branch protection is enabled here.
+
+Before enabling a queue, inventory actual required contexts and trusted producers in the main ruleset, including any workflows merged after this change. Verify each external check supports merge groups; do not replace an independent PR approval with a group check. In a separately approved configuration change, keep squash, required reviews, conversation resolution, security and existing quality gates. Begin with one build lane, verify included capacity, then increase only with observed throughput and unchanged safety. Keep merge-group and PR validation evidence distinct. Validate a real group and main before claiming operational queue support. If a required check cannot report against the group, stop and resolve the integration rather than bypass it.
+
+Measure queue admission to last merge receipt and separately main verification; report the 120-second target as a target, not a result. GitHub documents the required event at https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/managing-a-merge-queue .
