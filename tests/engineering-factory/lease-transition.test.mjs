@@ -49,3 +49,31 @@ test('durable local lease survives restart and denies stale workers',()=>{
   a.close();assert.equal(a.apply(key,r,10).reason,'STORE_UNAVAILABLE');a=openLeaseStore(path);
  }finally{a.close();b.close();rmSync(dir,{recursive:true,force:true});}
 });
+
+import {DatabaseSync} from 'node:sqlite';
+import {spawnSync} from 'node:child_process';
+test('contended and interrupted SQLite transactions preserve committed leases', {timeout:10000},()=>{
+ const dir=mkdtempSync(join(tmpdir(),'factory-contention-')),path=join(dir,'leases.sqlite'),key='1:2:'+'a'.repeat(40);
+ const store=openLeaseStore(path),lock=new DatabaseSync(path);
+ try{
+  assert.equal(store.apply(key,r,10).lease.generation,1);
+  lock.exec('BEGIN IMMEDIATE');
+  assert.equal(store.apply(key,{...r,generation:1},110).reason,'STORE_UNAVAILABLE');
+  lock.exec('ROLLBACK');
+  assert.equal(store.apply(key,{...r,generation:1},110).lease.generation,2);
+  const child=spawnSync(process.execPath,['--input-type=module','-e',
+    "import {DatabaseSync} from 'node:sqlite'; const db=new DatabaseSync(process.argv[1]); db.exec('BEGIN IMMEDIATE; UPDATE shadow_leases SET generation=99'); process.exit(17);",path],{timeout:5000,encoding:'utf8'});
+  assert.equal(child.status,17,child.stderr);
+  assert.equal(store.apply(key,{...r,generation:2},111).reason,'HELD');
+  assert.equal(store.apply(key,{...r,generation:2},210).lease.generation,3);
+ }finally{lock.close();store.close();rmSync(dir,{recursive:true,force:true});}
+});
+test('rollback cleanup failure still returns a storage denial',()=>{
+ const dir=mkdtempSync(join(tmpdir(),'factory-rollback-')),path=join(dir,'leases.sqlite'),key='1:2:'+'a'.repeat(40);
+ const store=openLeaseStore(path);
+ let closed=false;
+ try{
+  const broken={...r,get kind(){store.close();closed=true;throw Error('connection lost');}};
+  assert.equal(store.apply(key,broken,10).reason,'STORE_UNAVAILABLE');
+ }finally{if(!closed)store.close();rmSync(dir,{recursive:true,force:true});}
+});

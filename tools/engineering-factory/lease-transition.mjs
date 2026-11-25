@@ -40,7 +40,8 @@ export function openLeaseStore(path) {
     db.exec('COMMIT');
     return result;
    } catch {
-    db.exec('ROLLBACK');
+    // SQLite may already have rolled back, or the connection may be unavailable.
+    try { db.exec('ROLLBACK'); } catch {}
     return deny('STORE_UNAVAILABLE');
    }
   },
