@@ -22,6 +22,7 @@ Owner direction: design for 25× verified engineering throughput, deliver increm
 | M08.01 | Knowledge index, decomposition, specialists | [#14](https://github.com/Jamula/SoftwareFactory/issues/14) | Jan 20–Feb 17 | #6/#7/#13; controlled experiments |
 | M08.02 | Change-aware CI, cache, failure diagnosis | [#15](https://github.com/Jamula/SoftwareFactory/issues/15) | Jan 20–Feb 17 | #4/#9; equivalent full verification |
 | M08.03 | Integration trains and portfolio optimization | [#16](https://github.com/Jamula/SoftwareFactory/issues/16) | Feb 3–Mar 3 experiments; 25× TBD | #8/#9/#10/#14/#15; measured accepted work, unchanged quality and cost controls |
+| M08.04 | Engineering intelligence dashboard | [#18](https://github.com/Jamula/SoftwareFactory/issues/18) | TBD; first local view after M04/#9 | Read-only historical OTel aggregates, baseline comparison, throughput, efficiency, quality and cost; separate from Aspire diagnostics |
 
 Parent M02: Nov 25–Dec 3, 2026 (conditional on Aspire verification). Parent M03: Dec 2–Jan 6, 2027, conditional on provider evidence. Parent M08: Jan 20–Mar 3 for experiments, not a 25× completion promise. M05 and M06 are independent consumers once M04 is proven; M07 and safe synthetic M08 design work can overlap. Missing prerequisites move the ETA, not the quality gate.
 
@@ -41,3 +42,7 @@ Stage targets are hypotheses, not dates or permission to scale agent concurrency
 No live mutations, new credentials, paid services, production releases, protection changes or consumer activation without separately verified authority. Remain shadow-only until all required evidence passes. See [engineering standards](ENGINEERING-STANDARDS.md), [architecture](ARCHITECTURE.md) and [security policy](../SECURITY.md).
 
 Tracking: milestone IDs and ETA windows live on the issues and in this roadmap. They are logical groupings, not native GitHub milestone records; the currently available integration cannot create native milestones.
+
+## Engineering intelligence dashboard
+
+M08.04 measures verified accepted work, actual speedup, agent utilization, latency distributions, quality, cost and bottlenecks by authorized repository and time window. Aspire Dashboard is for local resource and telemetry diagnostics; the later portfolio dashboard is for durable historical engineering analytics. Use the #9 metric contract, #17 local development standard and #10 pilot evidence. No dashboard work blocks the first usable factory. ETA is TBD until baseline data and retention are verified. Synthetic and real metrics must be labeled separately; missing evidence is unknown. See [#18](https://github.com/Jamula/SoftwareFactory/issues/18).
