@@ -19,7 +19,10 @@ export function normalizeReviewHistory(head, history) {
     // A comment is not a decision and cannot overwrite an earlier objection.
     if (entry.state === 'COMMENTED') continue;
     // A stale approval cannot supersede an outstanding objection or qualify.
-    if (entry.state === 'APPROVED' && entry.head !== head) continue;
+    if (entry.state === 'APPROVED' && entry.head !== head) {
+      if (byReviewer.get(reviewer)?.state === 'APPROVED') byReviewer.delete(reviewer);
+      continue;
+    }
     byReviewer.set(reviewer,{reviewer,head:entry.head,state:entry.state});
   }
   return {ok:true,reviews:[...byReviewer.values()],reason:'NORMALIZED_ONLY'};
