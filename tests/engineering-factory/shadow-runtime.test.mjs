@@ -69,3 +69,12 @@ test('CLI smoke and invalid invocation',()=>{
   const bad=spawnSync(process.execPath,[file.pathname,'--invalid'],{encoding:'utf8'});
   assert.equal(bad.status,2);
 });
+
+
+test('scheduler rejects sparse task lists, path ownership and dependency evidence',()=>{
+  for(const tasks of [new Array(1),[task(1,{paths:new Array(1)})],[task(1,{dependencies:new Array(1)})]]) {
+    assert.equal(plan(input(tasks)).reason,'INVALID_TASKS');
+  }
+  const hidden=new Array(1);hidden.extra=task(1);
+  assert.equal(plan(input(hidden)).reason,'INVALID_TASKS');
+});

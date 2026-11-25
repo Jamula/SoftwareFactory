@@ -1,5 +1,7 @@
 // Shadow scheduling and public metadata inventory. No mutation, agent dispatch or merge.
 const deny = reason => ({shadow:true, ready:[], reason});
+const dense = a => Array.isArray(a) && Object.keys(a).length===a.length &&
+  Array.from({length:a.length},(_,i)=>Object.hasOwn(a,i)).every(Boolean);
 const positive = n => Number.isSafeInteger(n) && n > 0;
 const pathOk = p => typeof p === 'string' && /^[a-zA-Z0-9_. /-]+$/.test(p) &&
   !p.split('/').some(s => !s || s === '.' || s === '..');
@@ -9,13 +11,13 @@ export function plan(input) {
   if (!input || input.enabled!==true || input.stop!==false) return deny('STOPPED');
   if (!positive(input.capacity) || input.capacity>50 || input.quotaVerified!==true)
     return deny('CAPACITY_UNKNOWN');
-  if (!Array.isArray(input.tasks) || input.tasks.length>250) return deny('INVALID_TASKS');
+  if (!dense(input.tasks) || input.tasks.length>250) return deny('INVALID_TASKS');
   const tasks=input.tasks;
   if (tasks.some(t=>!t || !positive(t.id) || !Number.isSafeInteger(t.priority) ||
       t.priority<0 || t.priority>100 || !['approved','active','accepted','pending'].includes(t.state) ||
-      !Array.isArray(t.dependencies) || t.dependencies.some(d=>!positive(d)) ||
+      !dense(t.dependencies) || t.dependencies.some(d=>!positive(d)) ||
       new Set(t.dependencies).size!==t.dependencies.length ||
-      !Array.isArray(t.paths) || !t.paths.length || !t.paths.every(pathOk))) return deny('INVALID_TASKS');
+      !dense(t.paths) || !t.paths.length || !t.paths.every(pathOk))) return deny('INVALID_TASKS');
   const byId=new Map(tasks.map(t=>[t.id,t]));
   if (byId.size!==tasks.length || tasks.some(t=>t.dependencies.some(d=>!byId.has(d))))
     return deny('UNKNOWN_DEPENDENCY');
@@ -86,7 +88,7 @@ export async function readInventory(request=fetch) {
         headers:{accept:'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28'}
       });
       const rows=await boundedJson(response);
-      if(!Array.isArray(rows)||rows.length>100||rows.some(r=>!r||!positive(r.number)))
+      if(!dense(rows)||rows.length>100||rows.some(r=>!r||!positive(r.number)))
         throw new Error('GITHUB_INVALID_METADATA');
       for(const row of rows) {
         if(kind==='issues' && Object.hasOwn(row,'pull_request')) continue;
