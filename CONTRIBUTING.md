@@ -8,7 +8,7 @@ read-only behavior unless a separately approved scope explicitly says otherwise.
 ## Requirements and tests
 
 - Node.js 20 or later; no package installation is required.
-- Run `node --test tests/engineering-factory/core.test.mjs`.
+- Run `node --test tests/engineering-factory/*.test.mjs`.
 - Verify that examples remain synthetic and disabled.
 - Explain security implications and provenance for changes derived from
   another repository.

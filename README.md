@@ -12,7 +12,8 @@ See [NOTICE](NOTICE) for provenance and license details.
 ## Development
 
 - Requires Node.js 20 or later; there are no npm dependencies.
-- Run the synthetic replay: `node --test tests/engineering-factory/core.test.mjs`
+- Run the synthetic replay: `node --test tests/engineering-factory/*.test.mjs`
+- Example consumer workflow: [docs/consumer-shadow-tests.yml](docs/consumer-shadow-tests.yml).
 - Review [architecture](docs/ARCHITECTURE.md), [onboarding](tools/engineering-factory/ONBOARDING.txt),
   and the [roadmap](docs/ROADMAP.md) before considering any consumer adoption.
 
