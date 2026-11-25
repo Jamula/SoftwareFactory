@@ -1,9 +1,15 @@
 Engineering factory evaluation foundation (issue #128)
 
-Status: INCOMPLETE, not an operational controller. No workflow, event listener,
-GitHub API client, dispatch, merge, or mutation is provided. No scheduling is
-added; the existing hourly supervisor is unchanged. The examples are fictional
-and disabled, not actual repository policy or verified GitHub app IDs.
+Status: INCOMPLETE, not an operational controller. Two test-only GitHub
+Actions workflows are provided: .github/workflows/validate.yml runs synthetic
+replay and source coverage on the exact candidate; .github/workflows/shadow-tests.yml
+is a read-only reusable workflow that runs pinned factory replay tests on Node.js
+26.13.1, not consumer code. docs/consumer-shadow-tests.yml is an inert example
+caller, not an activated consumer. Neither workflow authorizes a merge or dispatch.
+There is no operational event listener, GitHub API client, scheduler, dispatch,
+merge, or mutation controller. The existing hourly supervisor is unchanged.
+Examples are fictional and disabled, not actual repository policy or verified
+GitHub app IDs.
 
 Run the synthetic replay:
   node --test tests/engineering-factory/core.test.mjs

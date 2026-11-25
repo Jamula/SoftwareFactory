@@ -4,6 +4,9 @@ const exact = (value, keys) => value !== null && typeof value === 'object' &&
   keys.every(key => Object.hasOwn(value, key));
 const text = value => typeof value === 'string' && value.length > 0;
 const integer = value => Number.isSafeInteger(value) && value > 0;
+// JSON-shaped arrays must have an own entry at every index.
+const dense = value => Array.isArray(value) && Object.keys(value).length === value.length &&
+  Array.from({length: value.length}, (_, i) => Object.hasOwn(value, i)).every(Boolean);
 const unique = values => new Set(values).size === values.length;
 const sha = value => typeof value === 'string' && /^[0-9a-f]{40}$/.test(value);
 const identity = value => value.toLowerCase();
@@ -17,18 +20,18 @@ export function validPolicy(p) {
   return p.version === 1 && text(p.repository) && /^[^/]+\/[^/]+$/.test(p.repository) &&
     text(p.defaultBranch) && ['merge', 'squash', 'rebase'].includes(p.mergeMethod) &&
     ['disabled', 'shadow'].includes(p.mode) && typeof p.killSwitch === 'boolean' &&
-    Array.isArray(p.checks) && p.checks.length > 0 &&
+    dense(p.checks) && p.checks.length > 0 &&
     p.checks.every(c => exact(c, ['name', 'appId']) && text(c.name) && integer(c.appId)) &&
     unique(p.checks.map(c => c.name)) &&
-    Array.isArray(p.reviewers) && p.reviewers.length > 0 &&
+    dense(p.reviewers) && p.reviewers.length > 0 &&
     p.reviewers.every(text) && unique(p.reviewers.map(identity)) &&
     exact(p.coverage, ['line', 'branch']) &&
     [p.coverage.line, p.coverage.branch].every(n => Number.isFinite(n) && n >= 0 && n <= 100) &&
-    Array.isArray(p.owners) && p.owners.length > 0 &&
+    dense(p.owners) && p.owners.length > 0 &&
     p.owners.every(o => exact(o, ['prefix', 'owner']) && pathValid(o.prefix) && text(o.owner)) &&
     unique(p.owners.map(o => o.prefix)) && integer(p.maxActive) &&
     Number.isFinite(p.creditLimit) && p.creditLimit > 0 &&
-    Array.isArray(p.riskClasses) && p.riskClasses.length > 0 &&
+    dense(p.riskClasses) && p.riskClasses.length > 0 &&
     p.riskClasses.every(text) && unique(p.riskClasses);
 }
 
@@ -52,11 +55,11 @@ export function evaluate(policy, s) {
   if (s.providerReady !== true) return result('blocked', 'PROVIDER_UNKNOWN');
   if (!policy.riskClasses.includes(s.risk) || !Number.isSafeInteger(s.priority))
     return result('blocked', 'RISK_OR_PRIORITY_UNKNOWN');
-  if (!Array.isArray(s.paths) || !s.paths.length || !s.paths.every(pathValid) ||
+  if (!dense(s.paths) || !s.paths.length || !s.paths.every(pathValid) ||
       s.paths.some(path => !policy.owners.some(owner => path === owner.prefix ||
         path.startsWith(owner.prefix.endsWith('/') ? owner.prefix : `${owner.prefix}/`))))
     return result('blocked', 'PATH_OWNERSHIP_UNKNOWN');
-  if (!Array.isArray(s.dependencies) || s.dependencies.some(d =>
+  if (!dense(s.dependencies) || s.dependencies.some(d =>
     !exact(d, ['issue', 'accepted']) || !integer(d.issue) || d.issue === s.issue ||
     d.accepted !== true)) return result('blocked', 'DEPENDENCIES_BLOCKED');
   if (s.acceptanceComplete !== true) return result('blocked', 'ACCEPTANCE_INCOMPLETE');
@@ -70,14 +73,14 @@ export function evaluate(policy, s) {
       s.coverage.line < policy.coverage.line || s.coverage.branch < policy.coverage.branch ||
       s.coverage.line > 100 || s.coverage.branch > 100)
     return result('blocked', 'COVERAGE_INCOMPLETE');
-  if (!Array.isArray(s.checks) || s.checks.some(c =>
+  if (!dense(s.checks) || s.checks.some(c =>
     !exact(c, ['name', 'head', 'appId', 'status', 'conclusion'])) || policy.checks.some(required => {
     const matches = s.checks.filter(c => c.name === required.name);
     return matches.length !== 1 || matches[0].head !== s.head ||
       matches[0].appId !== required.appId || matches[0].status !== 'completed' ||
       matches[0].conclusion !== 'success';
   })) return result('blocked', 'CHECKS_INCOMPLETE');
-  if (!Array.isArray(s.reviews) || !text(s.author) || !text(s.agent))
+  if (!dense(s.reviews) || !text(s.author) || !text(s.agent))
     return result('blocked', 'REVIEW_MISSING');
   // A later comment or dismissal does not establish that an earlier request was cleared.
   if (s.reviews.some(r => !exact(r, ['reviewer', 'head', 'state']) || !text(r.reviewer) ||
