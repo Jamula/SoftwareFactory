@@ -41,3 +41,35 @@ test('instrument creation failures independently fall back to no-op',async()=>{
  }
  assert.equal(events.length,4);
 });
+
+test('active context and provider failure never repeat work',async()=>{
+ const meter={createCounter:()=>({add(){}}),createHistogram:()=>({record(){}})};
+ const spans=[];let active=null,calls=0;
+ const tracer={startActiveSpan(name,fn){
+  const parent=active;const span={name,parent,setAttributes(){},setStatus(s){this.status=s;},end(){this.ended=true;}};
+  spans.push(span);active=span;
+  const result=fn(span);active=parent;return result;
+ }};
+ const run=createSignals({meter,tracer});
+ await run('reconcile',async()=>run('evaluate',async()=>({outcome:'failed'})));
+ assert.equal(spans[1].parent,spans[0]);assert.deepEqual(spans[1].status,{code:2});assert.ok(spans.every(s=>s.ended));
+ const error=Error('original');
+ const failAfter={startActiveSpan(name,fn){fn({end(){}});throw Error('provider');}};
+ const observe=createSignals({meter,tracer:failAfter});
+ assert.equal(await observe('queue',async()=>{calls++;return 42;}),42);
+ await assert.rejects(()=>observe('queue',async()=>{calls++;throw error;}),e=>e===error);
+ assert.equal(calls,2);
+ const failBefore=createSignals({meter,tracer:{startActiveSpan(){throw Error('provider');}}});
+ assert.equal(await failBefore('queue',async()=>{calls++;return 7;}),7);assert.equal(calls,3);
+});
+test('clock failure cannot mask work result or prevent span cleanup',async()=>{
+ const error=Error('work error');let ends=0,records=0,counts=0;
+ for(const failAt of [1,2]){
+  let i=0;
+  const run=createSignals({clock:()=>{if(++i===failAt)throw Error('clock');return i;},
+   meter:{createCounter:()=>({add(){counts++;}}),createHistogram:()=>({record(){records++;}})},
+   tracer:{startSpan:()=>({end(){ends++;},setStatus(){throw Error('status');}})}});
+  await assert.rejects(()=>run('review',async()=>{throw error;}),e=>e===error);
+ }
+ assert.equal(ends,2);assert.equal(counts,2);assert.equal(records,0);
+});
