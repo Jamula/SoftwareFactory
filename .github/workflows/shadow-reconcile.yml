@@ -1,0 +1,49 @@
+name: Factory shadow reconciliation
+on:
+  workflow_dispatch:
+  issues:
+    types: [opened, edited, labeled, unlabeled, closed, reopened]
+  pull_request_target:
+    branches: [main]
+    types: [opened, reopened, synchronize, ready_for_review, closed]
+  workflow_run:
+    workflows: ["Factory validation"]
+    types: [completed]
+permissions:
+  contents: read
+concurrency:
+  group: factory-shadow-reconcile
+  cancel-in-progress: false
+jobs:
+  inventory:
+    if: ${{ github.repository == 'Jamula/SoftwareFactory' && vars.FACTORY_SHADOW_ENABLED == 'true' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check case-sensitive opt-in before checkout
+        id: optin
+        shell: bash
+        env:
+          FACTORY_SHADOW_ENABLED: ${{ vars.FACTORY_SHADOW_ENABLED }}
+        run: |
+          if [[ "$FACTORY_SHADOW_ENABLED" == true ]]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+      # Never check out a PR head, consume artifacts, or evaluate event text.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.optin.outputs.enabled == 'true'
+        with:
+          ref: refs/heads/main
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: steps.optin.outputs.enabled == 'true'
+        with:
+          node-version: '26.13.1'
+          package-manager-cache: false
+      - name: Record trusted checkout and bounded public metadata inventory
+        if: steps.optin.outputs.enabled == 'true'
+        run: |
+          git rev-parse HEAD
+          node tools/engineering-factory/run.mjs --inventory
