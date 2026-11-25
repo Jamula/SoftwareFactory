@@ -19,7 +19,7 @@ Use the pinned Node.js 26.13.1 development and CI baseline. No npm install is re
 node --test tests/engineering-factory/*.test.mjs
 ```
 
-To check coverage locally as in CI, run `npm ci && npm run test:coverage`. This installs the `cobertura` devDependency and writes the gitignored `cobertura-coverage.xml` report.
+To check coverage locally as in CI, use the CI-pinned Node.js 26.13.1 and run `npm ci && npm run test:coverage`. This installs the `cobertura` devDependency and writes the gitignored `cobertura-coverage.xml` report. Node.js 20 does not support the coverage flags used by this command.
 
 Target at least 95% source line and 90% source branch coverage per executable component and overall, with measured, reproducible results. Do not claim that thresholds are enforced until actual CI demonstrates this. No blanket exclusions or synthetic success statuses. New code must fail closed on malformed or absent evidence and remain deterministic where possible.
 

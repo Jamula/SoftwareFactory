@@ -44,7 +44,7 @@ Use Node.js 26.13.1, the pinned development and CI LTS baseline. No npm dependen
 node --test tests/engineering-factory/*.test.mjs
 ```
 
-For a Cobertura coverage report, run `npm ci && npm run test:coverage`. This installs the `cobertura` devDependency and writes the gitignored `cobertura-coverage.xml`.
+For a Cobertura coverage report, use the CI-pinned Node.js 26.13.1 and run `npm ci && npm run test:coverage`. This installs the `cobertura` devDependency and writes the gitignored `cobertura-coverage.xml`. Node.js 20 does not support the coverage flags used by this command.
 
 The tests replay synthetic policy and evidence snapshots. All sample repository identities, check producers and quotas are fictional. A passing replay does not prove live repository safety, credentials, branch protection or budget.
 
