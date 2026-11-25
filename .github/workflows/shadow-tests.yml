@@ -13,14 +13,18 @@ jobs:
       contents: read
     steps:
       - name: Check out the pinned evaluator and synthetic replay
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: Jamula/SoftwareFactory
           ref: 8492e707b296c16d08dc7e13b138cf0d9e2facc6
           path: softwarefactory
           persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '26.13.1'
+          package-manager-cache: false
       - name: Verify Node.js runtime
-        run: node -e "if (Number(process.versions.node.split('.')[0]) < 20) process.exit(1)"
+        run: node --version
       - name: Run synthetic replay tests
         run: node --test tests/engineering-factory/core.test.mjs
         working-directory: softwarefactory
