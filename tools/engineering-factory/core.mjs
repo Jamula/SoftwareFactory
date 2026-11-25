@@ -83,14 +83,20 @@ export function evaluate(policy, s) {
   })) return result('blocked', 'CHECKS_INCOMPLETE');
   if (!dense(s.reviews) || !text(s.author) || !text(s.agent))
     return result('blocked', 'REVIEW_MISSING');
+  // A trusted adapter must establish reviewer identity, complete history and resolved findings.
+  // Only SoftwareFactory permits the explicitly allowlisted Copilot bot's current-head review comment.
+  const acceptableReview = r => r.state === 'APPROVED' ||
+    (identity(policy.repository) === 'jamula/softwarefactory' && r.state === 'COMMENTED' &&
+      ['copilot-pull-request-reviewer','copilot-pull-request-reviewer[bot]'].includes(identity(r.reviewer)) &&
+      policy.reviewers.map(identity).includes(identity(r.reviewer)) && r.head === s.head);
   // A later comment or dismissal does not establish that an earlier request was cleared.
   if (s.reviews.some(r => !exact(r, ['reviewer', 'head', 'state']) || !text(r.reviewer) ||
         !sha(r.head) || !['APPROVED', 'CHANGES_REQUESTED', 'COMMENTED', 'DISMISSED'].includes(r.state)) ||
       !unique(s.reviews.map(r => identity(r.reviewer))) ||
-      s.reviews.some(r => r.state !== 'APPROVED') ||
+      s.reviews.some(r => !acceptableReview(r)) ||
       !s.reviews.some(r => policy.reviewers.map(identity).includes(identity(r.reviewer)) &&
         identity(r.reviewer) !== identity(s.author) && identity(r.reviewer) !== identity(s.agent) &&
-        r.head === s.head && r.state === 'APPROVED'))
+        r.head === s.head && acceptableReview(r)))
     return result('blocked', 'REVIEW_MISSING');
   return result('eligible', 'SHADOW_ELIGIBLE');
 }

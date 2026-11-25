@@ -112,3 +112,23 @@ test('sparse snapshot evidence fails closed, including mixed valid and missing e
   assert.equal(validPolicy({...factory,coverage:{line:100,branch:100}}),true);
   assert.equal(evaluate(policy,snapshot).reason,'SHADOW_ELIGIBLE');
 });
+
+test('SoftwareFactory accepts only allowlisted current-head independent Copilot review comments', () => {
+  const bot='copilot-pull-request-reviewer[bot]';
+  const factory={...policy,repository:'Jamula/SoftwareFactory',reviewers:[bot],coverage:{line:98,branch:95}};
+  const review={reviewer:bot,head,state:'COMMENTED'};
+  const input={...snapshot,repository:factory.repository,coverage:{head,line:98,branch:95,complete:true},reviews:[review]};
+  assert.equal(evaluate(factory,input).reason,'SHADOW_ELIGIBLE');
+  for(const change of [
+    {reviews:[{...review,head:base}]},
+    {reviews:[{...review,reviewer:'untrusted-reviewer'}]},
+    {reviews:[{...review,state:'DISMISSED'}]},
+    {reviews:[review,{reviewer:'other-reviewer',head,state:'CHANGES_REQUESTED'}]},
+    {author:bot},{agent:bot}
+  ]) assert.equal(evaluate(factory,{...input,...change}).reason,'REVIEW_MISSING');
+  assert.equal(evaluate(factory,{...input,threadsResolved:false}).reason,'THREADS_OR_SECURITY_UNKNOWN');
+  assert.equal(evaluate({...factory,reviewers:['other-reviewer']},input).reason,'REVIEW_MISSING');
+  const consumer={...factory,repository:policy.repository};
+  assert.equal(evaluate(consumer,{...input,repository:consumer.repository}).reason,'REVIEW_MISSING');
+  assert.equal(evaluate({...factory,reviewers:['copilot-pull-request-reviewer']},{...input,reviews:[{...review,reviewer:'copilot-pull-request-reviewer'}]}).reason,'SHADOW_ELIGIBLE');
+});

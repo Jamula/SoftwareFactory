@@ -12,7 +12,7 @@
 
 ## Delivery rules
 
-Follow [engineering standards](docs/ENGINEERING-STANDARDS.md). Reuse issues and PRs; one independent owner per lane; no overlapping edits or duplicate dispatch. Batch fixes, record exact-head tests and covered/total line and branch counts, require independent review, and preserve stricter consumer gates. Target 95% line and 90% branch coverage per executable component and overall; do not invent coverage or hide failures. Keep partial acceptance open. Speed objectives never authorize bypassing security, budget, permissions, review or release gates.
+Follow [engineering standards](docs/ENGINEERING-STANDARDS.md). Reuse issues and PRs; one independent owner per lane; no overlapping edits or duplicate dispatch. Batch fixes, record exact-head tests and covered/total line and branch counts, require independent review, and preserve stricter consumer gates. Require SoftwareFactory 98% line and 95% branch coverage per executable component and overall; preserve consumer-specific stricter gates; do not invent coverage or hide failures. Keep partial acceptance open. Speed objectives never authorize bypassing security, budget, permissions, review or release gates.
 
 ## Platform standard
 
