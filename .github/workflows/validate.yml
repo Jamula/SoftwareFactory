@@ -25,3 +25,8 @@ jobs:
           node --version
           git rev-parse HEAD
           node --test --experimental-test-coverage --test-coverage-include='tools/engineering-factory/core.mjs' --test-coverage-lines=95 --test-coverage-branches=90 tests/engineering-factory/*.test.mjs
+
+      - name: Shadow runtime coverage
+        run: node --test --experimental-test-coverage --test-coverage-include='tools/engineering-factory/shadow-runtime.mjs' --test-coverage-lines=95 --test-coverage-branches=90 tests/engineering-factory/shadow-runtime.test.mjs
+      - name: Runnable synthetic factory
+        run: node tools/engineering-factory/run.mjs --smoke

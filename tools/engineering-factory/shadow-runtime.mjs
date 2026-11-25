@@ -1,0 +1,110 @@
+// Shadow scheduling and public metadata inventory. No mutation, agent dispatch or merge.
+const deny = reason => ({shadow:true, ready:[], reason});
+const positive = n => Number.isSafeInteger(n) && n > 0;
+const pathOk = p => typeof p === 'string' && /^[a-zA-Z0-9_. /-]+$/.test(p) &&
+  !p.split('/').some(s => !s || s === '.' || s === '..');
+const overlap = (a,b) => a===b || a.startsWith(b+'/') || b.startsWith(a+'/');
+
+export function plan(input) {
+  if (!input || input.enabled!==true || input.stop!==false) return deny('STOPPED');
+  if (!positive(input.capacity) || input.capacity>50 || input.quotaVerified!==true)
+    return deny('CAPACITY_UNKNOWN');
+  if (!Array.isArray(input.tasks) || input.tasks.length>250) return deny('INVALID_TASKS');
+  const tasks=input.tasks;
+  if (tasks.some(t=>!t || !positive(t.id) || !Number.isSafeInteger(t.priority) ||
+      t.priority<0 || t.priority>100 || !['approved','active','accepted','pending'].includes(t.state) ||
+      !Array.isArray(t.dependencies) || t.dependencies.some(d=>!positive(d)) ||
+      new Set(t.dependencies).size!==t.dependencies.length ||
+      !Array.isArray(t.paths) || !t.paths.length || !t.paths.every(pathOk))) return deny('INVALID_TASKS');
+  const byId=new Map(tasks.map(t=>[t.id,t]));
+  if (byId.size!==tasks.length || tasks.some(t=>t.dependencies.some(d=>!byId.has(d))))
+    return deny('UNKNOWN_DEPENDENCY');
+  const visited=new Set(), visiting=new Set();
+  function visit(id) {
+    if (visiting.has(id)) return false;
+    if (visited.has(id)) return true;
+    visiting.add(id);
+    if (!byId.get(id).dependencies.every(visit)) return false;
+    visiting.delete(id);visited.add(id);return true;
+  }
+  if (!tasks.every(t=>visit(t.id))) return deny('DEPENDENCY_CYCLE');
+  function descendants(id) {
+    const seen=new Set();
+    function walk(n) {
+      for(const t of tasks) if(t.dependencies.includes(n)&&!seen.has(t.id)) {
+        seen.add(t.id);walk(t.id);
+      }
+    }
+    walk(id);return seen.size;
+  }
+  const active=tasks.filter(t=>t.state==='active');
+  const owned=[];
+  for(const t of active) {
+    if(t.paths.some(p=>owned.some(o=>overlap(p,o)))) return deny('ACTIVE_OWNERSHIP_CONFLICT');
+    owned.push(...t.paths);
+  }
+  const free=Math.max(0,input.capacity-active.length);
+  const candidates=tasks.filter(t=>t.state==='approved' &&
+    t.dependencies.every(d=>byId.get(d).state==='accepted'))
+    .map(t=>({...t,weight:descendants(t.id)}))
+    .sort((a,b)=>a.priority-b.priority||b.weight-a.weight||a.id-b.id);
+  const ready=[];
+  for(const t of candidates) {
+    if(ready.length>=free) break;
+    if(t.paths.some(p=>owned.some(o=>overlap(p,o)))) continue;
+    ready.push(t.id);owned.push(...t.paths);
+  }
+  return {shadow:true,ready,reason:ready.length?'SHADOW_PLAN':'NO_READY_WORK'};
+}
+
+const api='https://api.github.com/repos/Jamula/SoftwareFactory';
+async function boundedJson(response) {
+  if(!response.ok || !response.body) throw new Error('GITHUB_READ_FAILED');
+  const reader=response.body.getReader();
+  const decoder=new TextDecoder('utf-8',{fatal:true});
+  let bytes=0,raw='';
+  try {
+    while(true) {
+      const {done,value}=await reader.read();
+      if(done) break;
+      bytes+=value.byteLength;
+      if(bytes>2*1024*1024) throw new Error('GITHUB_RESPONSE_LIMIT');
+      raw+=decoder.decode(value,{stream:true});
+    }
+    raw+=decoder.decode();
+    return JSON.parse(raw);
+  } finally {
+    await reader.cancel().catch(()=>{});
+  }
+}
+export async function readInventory(request=fetch) {
+  async function read(kind) {
+    const ids=[];
+    for(let page=1;page<=5;page++) {
+      const response=await request(api+'/'+kind+'?state=open&per_page=100&page='+page,{
+        method:'GET',redirect:'error',signal:AbortSignal.timeout(5000),
+        headers:{accept:'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28'}
+      });
+      const rows=await boundedJson(response);
+      if(!Array.isArray(rows)||rows.length>100||rows.some(r=>!r||!positive(r.number)))
+        throw new Error('GITHUB_INVALID_METADATA');
+      for(const row of rows) {
+        if(kind==='issues' && Object.hasOwn(row,'pull_request')) continue;
+        if(ids.includes(row.number)) throw new Error('GITHUB_DUPLICATE_METADATA');
+        ids.push(row.number);
+      }
+      if(rows.length<100) return ids.sort((a,b)=>a-b);
+    }
+    throw new Error('GITHUB_INVENTORY_LIMIT');
+  }
+  const [issues,pulls]=await Promise.all([read('issues'),read('pulls')]);
+  return {shadow:true,repository:'Jamula/SoftwareFactory',issues,pulls,
+    evidenceComplete:false,liveDispatch:false,liveMerge:false};
+}
+export function smoke() {
+  return plan({enabled:true,stop:false,capacity:2,quotaVerified:true,tasks:[
+    {id:1,priority:0,state:'approved',dependencies:[],paths:['src/api']},
+    {id:2,priority:1,state:'approved',dependencies:[],paths:['src/web']},
+    {id:3,priority:0,state:'approved',dependencies:[1],paths:['src/integration']}
+  ]});
+}
