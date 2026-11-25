@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "project": {
+    "key": "softwarefactory",
+    "repository": "Jamula/SoftwareFactory",
+    "defaultBranch": "main"
+  },
+  "execution": {"enabled": false, "mode": "shadow", "stop": true},
+  "limits": {
+    "maxConcurrentLanes": 1,
+    "leaseMs": 60000,
+    "maxAttempts": 3,
+    "baseDelayMs": 5000,
+    "maxDelayMs": 60000
+  },
+  "adapters": {
+    "workTracker": "mock",
+    "engineeringAgent": "mock",
+    "state": "sqlite"
+  },
+  "lanes": [
+    {"id": "engineering-coordinator", "owners": ["tools/engineering-coordinator", "tests/engineering-coordinator"], "prompt": "agents/engineering-coordinator.md"}
+  ]
+}
