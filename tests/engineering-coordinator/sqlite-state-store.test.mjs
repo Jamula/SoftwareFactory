@@ -24,13 +24,13 @@ test('claims isolated lanes and denies a live duplicate claim', () => withDb(fil
 test('persists checkpoints across restart and rejects stale generation updates', () => withDb(filename => {
   const firstStore = createSQLiteStateStore(filename);
   const claim = firstStore.claim('api', 'worker-a', 1000, 1000);
-  assert.equal(firstStore.checkpoint('api', claim.generation, 'worker-a', {taskId: 9, phase: 'reviewed'}), true);
+  assert.equal(firstStore.checkpoint('api', claim.generation, 'worker-a', {taskId: 9, phase: 'reviewed'}, 1001), true);
   firstStore.close();
   const nextStore = createSQLiteStateStore(filename);
   const next = nextStore.claim('api', 'worker-b', 2000, 1000);
   assert.equal(next.generation, 2);
   assert.deepEqual(next.payload, {taskId: 9, phase: 'reviewed'});
-  assert.equal(nextStore.checkpoint('api', 1, 'worker-a', {phase: 'stale'}), false);
+  assert.equal(nextStore.checkpoint('api', 1, 'worker-a', {phase: 'stale'}, 2001), false);
   assert.equal(nextStore.release('api', next.generation, 'worker-b', 2001), true);
   nextStore.close();
   const finalStore = createSQLiteStateStore(filename);
@@ -48,13 +48,14 @@ test('validates lane, owner, time, lease and checkpoints', () => withDb(filename
   assert.equal(store.claim('api', 'worker', 1, 3600001), null);
   assert.equal(store.claim('api', 'worker', 1, Number.NaN), null);
   assert.equal(store.claim('api', 'worker', Number.MAX_SAFE_INTEGER - 500, 1000), null);
-  assert.equal(store.checkpoint('api', 0, 'worker', {}), false);
-  assert.equal(store.checkpoint('../api', 1, 'worker', {}), false);
-  assert.equal(store.checkpoint('api', 1, 'bad worker', {}), false);
-  assert.equal(store.checkpoint('api', 1, 'worker', null), false);
-  assert.equal(store.checkpoint('api', 1, 'worker', []), false);
+  assert.equal(store.checkpoint('api', 0, 'worker', {}, 1001), false);
+  assert.equal(store.checkpoint('../api', 1, 'worker', {}, 1001), false);
+  assert.equal(store.checkpoint('api', 1, 'bad worker', {}, 1001), false);
+  assert.equal(store.checkpoint('api', 1, 'worker', null, 1001), false);
+  assert.equal(store.checkpoint('api', 1, 'worker', [], 1001), false);
+  assert.equal(store.checkpoint('api', 1, 'worker', {}, -1), false);
   const claim = store.claim('api', 'worker', 1000, 5000);
-  assert.equal(store.checkpoint('api', claim.generation, 'worker', {toJSON() { throw Error('bad'); }}), false);
+  assert.equal(store.checkpoint('api', claim.generation, 'worker', {toJSON() { throw Error('bad'); }}, 1001), false);
   assert.equal(store.release('api', 0, 'worker', 1001), false);
   assert.equal(store.release('../api', 1, 'worker', 1001), false);
   assert.equal(store.release('api', 1, 'bad worker', 1001), false);
@@ -70,6 +71,22 @@ test('an expired lease can be reclaimed with a new fencing generation', () => wi
   assert.equal(store.claim('docs', 'worker-b', 1999, 1000), null);
   assert.equal(store.claim('docs', 'worker-b', 2000, 1000).generation, 2);
   store.close();
+}));
+
+test('checkpoints stop at expiry and after release even before another worker claims the lane', () => withDb(filename => {
+  const store = createSQLiteStateStore(filename);
+  try {
+    const first = store.claim('api', 'worker-a', 1000, 1000);
+    const receipt = {phase: 'reviewed'};
+    assert.equal(store.checkpoint('api', first.generation, first.owner, receipt, 1999), true);
+    assert.equal(store.checkpoint('api', first.generation, first.owner, {}, 2000), false);
+    assert.deepEqual(store.get('api').payload, receipt);
+    const second = store.claim('api', 'worker-b', 2000, 1000);
+    assert.equal(store.release('api', second.generation, second.owner, 2001), true);
+    assert.equal(store.checkpoint('api', second.generation, second.owner, {}, 2001), false);
+    assert.equal(store.checkpoint('api', second.generation, second.owner, {}, 2000), false);
+    assert.deepEqual(store.get('api').payload, receipt);
+  } finally { store.close(); }
 }));
 
 test('renews only the current unexpired lease owner', () => withDb(filename => {
@@ -118,7 +135,7 @@ test('handles persistence calls after close and rejects inaccessible paths', () 
   const store = createSQLiteStateStore(filename);
   const claim = store.claim('api', 'worker', 1, 1000);
   store.close();
-  assert.equal(store.checkpoint('api', claim.generation, 'worker', {phase: 'late'}), false);
+  assert.equal(store.checkpoint('api', claim.generation, 'worker', {phase: 'late'}, 2), false);
   assert.equal(store.release('api', claim.generation, 'worker', 2), false);
   assert.equal(store.get('api'), null);
 }));

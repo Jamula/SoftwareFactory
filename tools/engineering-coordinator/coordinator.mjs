@@ -18,14 +18,17 @@ export async function runTick({config, tasks, active = [], store, tracker, agent
   const outcomes = await Promise.allSettled(plan.scheduled.map(async item => {
     const claim = store.claim(item.lane, workerId, now, config.limits.leaseMs);
     if (!claim) return {lane: item.lane, state: 'blocked', reason: 'LEASE_HELD'};
+    let lastObservedTime = now;
     const renewLease = () => {
       let currentTime;
-      try { currentTime = clock(); } catch { return 'CLOCK_UNAVAILABLE'; }
-      if (!Number.isSafeInteger(currentTime) || currentTime < 0) return 'CLOCK_UNAVAILABLE';
+      try { currentTime = clock(); } catch { return {reason: 'CLOCK_UNAVAILABLE'}; }
+      if (!Number.isSafeInteger(currentTime) || currentTime < lastObservedTime) return {reason: 'CLOCK_UNAVAILABLE'};
+      lastObservedTime = currentTime;
       try {
         const renewed = store.renew(item.lane, claim.generation, workerId, currentTime, config.limits.leaseMs);
-        return renewed && Number.isSafeInteger(renewed.leaseUntil) && renewed.leaseUntil > currentTime ? null : 'LEASE_LOST';
-      } catch { return 'LEASE_UNAVAILABLE'; }
+        return renewed && Number.isSafeInteger(renewed.leaseUntil) && renewed.leaseUntil > currentTime ?
+          {time: currentTime} : {reason: 'LEASE_LOST'};
+      } catch { return {reason: 'LEASE_UNAVAILABLE'}; }
     };
     try {
       const evidence = await tracker.readTask(item.id);
@@ -34,7 +37,8 @@ export async function runTick({config, tasks, active = [], store, tracker, agent
       if (evidence.task.state !== 'approved')
         return {lane: item.lane, taskId: item.id, state: 'blocked', reason: 'TASK_STATE_CHANGED'};
       const beforeInspection = renewLease();
-      if (beforeInspection) return {lane: item.lane, taskId: item.id, state: 'blocked', reason: beforeInspection};
+      if (beforeInspection.reason)
+        return {lane: item.lane, taskId: item.id, state: 'blocked', reason: beforeInspection.reason};
       const review = await agent.inspect(byId.get(item.id), {mode: 'shadow', projectKey: config.project.key});
       if (!review?.accepted || review.shadow !== true)
         return {lane: item.lane, state: 'blocked', reason: 'AGENT_REVIEW_FAILED'};
@@ -44,15 +48,17 @@ export async function runTick({config, tasks, active = [], store, tracker, agent
       if (finalEvidence.task.state !== 'approved')
         return {lane: item.lane, taskId: item.id, state: 'blocked', reason: 'TASK_STATE_CHANGED'};
       const beforeCheckpoint = renewLease();
-      if (beforeCheckpoint) return {lane: item.lane, taskId: item.id, state: 'blocked', reason: beforeCheckpoint};
+      if (beforeCheckpoint.reason)
+        return {lane: item.lane, taskId: item.id, state: 'blocked', reason: beforeCheckpoint.reason};
+      const completedAt = beforeCheckpoint.time;
       const checkpointed = store.checkpoint(item.lane, claim.generation, workerId,
-        {taskId: item.id, observedState: finalEvidence.task.state, findings: review.findings ?? [], completedAt: now});
+        {taskId: item.id, observedState: finalEvidence.task.state, findings: review.findings ?? [], completedAt}, completedAt);
       return checkpointed ? {lane: item.lane, taskId: item.id, state: 'shadow-reviewed'} :
         {lane: item.lane, taskId: item.id, state: 'blocked', reason: 'STALE_CHECKPOINT'};
     } catch {
       return {lane: item.lane, taskId: item.id, state: 'blocked', reason: 'LANE_FAILED'};
     } finally {
-      store.release(item.lane, claim.generation, workerId, now);
+      store.release(item.lane, claim.generation, workerId, lastObservedTime);
     }
   }));
   const completed = outcomes.map((outcome, index) => outcome.status === 'fulfilled' ? outcome.value :
