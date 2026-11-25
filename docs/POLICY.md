@@ -15,3 +15,7 @@ All examples are fictional and disabled. The `policySource` assertion does not p
 ## Canonical quality and velocity policy
 
 See [Engineering standards](ENGINEERING-STANDARDS.md) for mandatory merge and acceptance gates, coverage measurement, consumer-specific stricter thresholds and velocity SLOs. Those standards do not extend the current version-1 schema or prove automated enforcement. Unknown evidence blocks eligibility; speed is never permission to relax a gate.
+
+## SoftwareFactory review semantics
+
+Owner direction Nov 25, 2026: a completed, independently verified Copilot review with state `COMMENTED` on the exact current head can satisfy the SoftwareFactory review gate only if its authenticated reviewer identity is explicitly allowlisted, findings are addressed, threads resolved, no outstanding blocking review exists, and all other gates pass. A conversation comment, stale or dismissed review, or self-review never qualifies. Other consumer policies retain formal approval requirements. The pure evaluator accepts normalized assertions; live history, identity and finding resolution still require authoritative adapter verification. No live authorization is implied.
