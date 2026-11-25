@@ -10,8 +10,10 @@ export function localEndpoint(value) {
   } catch { return null; }
 }
 export function createSignals({tracer,meter,clock=()=>performance.now()}) {
-  const count=meter.createCounter('factory.stage.count');
-  const duration=meter.createHistogram('factory.stage.duration',{unit:'ms'});
+  let count={add:()=>{}};
+  let duration={record:()=>{}};
+  try {count=meter.createCounter('factory.stage.count');} catch {}
+  try {duration=meter.createHistogram('factory.stage.duration',{unit:'ms'});} catch {}
   return async function observe(stage,work) {
     if(!stages.has(stage)) throw new Error('UNKNOWN_STAGE');
     const start=clock();
