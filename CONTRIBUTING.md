@@ -34,3 +34,7 @@ Workflow and privilege changes require independent security review. No untrusted
 ## Documentation
 
 Update behavior, examples, architecture and limitations alongside changes. Label target capabilities separately from implemented features. Use local relative links and accessible diagrams with alt text. Keep examples disabled and synthetic. Document new decisions and version compatibility; do not imply an unreleased commit is a supported release.
+
+## Required engineering expectations
+
+Follow the canonical [engineering standards](docs/ENGINEERING-STANDARDS.md) for exact-head review, measurable PR velocity, per-component and overall coverage, evidence and merge eligibility. Distinguish velocity SLOs from mandatory gates. Keep ownership isolated, preserve stronger consumer policies and document blocked work; no velocity target permits a gate bypass.

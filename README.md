@@ -19,8 +19,21 @@ SoftwareFactory is an Apache-2.0, policy-driven foundation for an event-driven a
 | Understand policy and evidence | [Policy guide](docs/POLICY.md) |
 | Operate, pause and troubleshoot | [Operations](docs/OPERATIONS.md) |
 | Report a security issue | [Security policy](SECURITY.md), [threat model](docs/THREAT-MODEL.md) |
+| Engineering standards, PR velocity and quality gates | [Engineering standards](docs/ENGINEERING-STANDARDS.md) |
 | Contribute | [Contributing](CONTRIBUTING.md), [agent rules](AGENTS.md) |
 | Track what is implemented | [Roadmap](docs/ROADMAP.md), [documentation index](docs/README.md) |
+
+## Engineering expectations
+
+| Metric | Objective |
+| --- | --- |
+| Source line / branch coverage | >=95% / >=90% per component and overall; retain stricter consumer gates |
+| Eligible work dispatch / merge | p95 <=2 minutes each |
+| Standard fast CI | p50 <=90 seconds |
+| Small PR turnaround | p50 <=30 minutes |
+| Security bypass / duplicate dispatch / unapproved spending | Zero |
+
+These are documented standards and targets, not verified automation capabilities. See [Engineering standards](docs/ENGINEERING-STANDARDS.md) for precise measurement and mandatory gates.
 
 ## Local development
 

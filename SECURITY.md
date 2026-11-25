@@ -18,3 +18,5 @@ Do not open a public issue containing exploit details, credentials, private repo
 - No live dispatch, merge, deployment, new credentials or metered spend without separately verified scope and authorization. Each consumer owns an independent stop control and release policy.
 
 For threat scenarios and validation requirements see [threat model](docs/THREAT-MODEL.md), [policy guide](docs/POLICY.md) and [operations](docs/OPERATIONS.md).
+
+Velocity targets never override mandatory security gates. Refer to the [engineering standards](docs/ENGINEERING-STANDARDS.md) for independent exact-head review, coverage evidence, authorization, exceptions and rollout requirements. No synthetic replay result or administrative setting is authority to merge.

@@ -11,3 +11,7 @@ The current pure evaluator validates versioned policy and normalized snapshots. 
 | Control | Enabled mode and kill switch; missing or malformed policy blocks |
 
 All examples are fictional and disabled. The `policySource` assertion does not prove the source is trusted. The eventual adapter must verify the source from reviewed default-branch configuration and construct evidence from authoritative reads rather than PR text. Fail closed for any missing, contradictory, malformed or stale evidence. A shadow result is neither an approval nor authorization. See [architecture](ARCHITECTURE.md) and [threat model](THREAT-MODEL.md).
+
+## Canonical quality and velocity policy
+
+See [Engineering standards](ENGINEERING-STANDARDS.md) for mandatory merge and acceptance gates, coverage measurement, consumer-specific stricter thresholds and velocity SLOs. Those standards do not extend the current version-1 schema or prove automated enforcement. Unknown evidence blocks eligibility; speed is never permission to relax a gate.

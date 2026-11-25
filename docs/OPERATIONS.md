@@ -19,3 +19,5 @@ Before activation, prove a repository-local kill switch actually blocks dispatch
 ## Measurement
 
 Collect comparable per-repository timestamps for approved-ready, dispatch, review, CI, eligible, merge, main verification and accepted work. Report median/p95 idle and cycle time, verified work units per day, review rounds, duplicate actions, failures and cost per accepted unit. Do not count PR volume alone or invent data. The 10× target is not a guarantee. Avoid logging issue contents, private records or tokens.
+
+Use the precise metric definitions and p50/p95 objectives in [Engineering standards](ENGINEERING-STANDARDS.md). Escalate blockers promptly and report confirmed data separately from targets. No duplicate recurring reports or schedules.
