@@ -79,3 +79,23 @@ test('a different repository and check can be evaluated independently', () => {
   };
   assert.equal(evaluate(second, input).reason, 'SHADOW_ELIGIBLE');
 });
+
+
+test('sparse policy arrays cannot skip required validation', () => {
+  for (const field of ['checks','reviewers','owners','riskClasses']) {
+    const sparse = new Array(1);
+    assert.equal(validPolicy({...policy,[field]:sparse}),false);
+    assert.equal(evaluate({...policy,[field]:sparse},snapshot).reason,'INVALID_POLICY');
+    const hidden = new Array(1); hidden.extra = policy[field][0];
+    assert.equal(validPolicy({...policy,[field]:hidden}),false);
+  }
+});
+test('sparse snapshot evidence fails closed, including mixed valid and missing entries', () => {
+  for (const [field,reason] of [['paths','PATH_OWNERSHIP_UNKNOWN'],['dependencies','DEPENDENCIES_BLOCKED'],['checks','CHECKS_INCOMPLETE'],['reviews','REVIEW_MISSING']]) {
+    const sparse = new Array(2);
+    if(snapshot[field].length) sparse[1] = snapshot[field][0];
+    assert.equal(evaluate(policy,{...snapshot,[field]:sparse}).reason,reason);
+  }
+  const inherited = new Array(1); Object.setPrototypeOf(inherited, Object.assign(Object.create(Array.prototype),{0:snapshot.checks[0]}));
+  assert.equal(evaluate(policy,{...snapshot,checks:inherited}).reason,'CHECKS_INCOMPLETE');
+});
