@@ -1,5 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
+import {fileURLToPath} from 'node:url';
 import {spawnSync} from 'node:child_process';
 import {plan,readInventory,smoke} from '../../tools/engineering-factory/shadow-runtime.mjs';
 const task=(id,over={})=>({id,priority:0,state:'approved',dependencies:[],paths:['src/'+id],...over});
@@ -63,10 +64,10 @@ test('inventory rejects errors, malformed data, duplicate records and bounded pa
   }),/GITHUB_INVENTORY_LIMIT/);
 });
 test('CLI smoke and invalid invocation',()=>{
-  const file=new URL('../../tools/engineering-factory/run.mjs',import.meta.url);
-  const ok=spawnSync(process.execPath,[file.pathname,'--smoke'],{encoding:'utf8'});
+  const file=fileURLToPath(new URL('../../tools/engineering-factory/run.mjs',import.meta.url));
+  const ok=spawnSync(process.execPath,[file,'--smoke'],{encoding:'utf8'});
   assert.equal(ok.status,0);assert.deepEqual(JSON.parse(ok.stdout).ready,[1,2]);
-  const bad=spawnSync(process.execPath,[file.pathname,'--invalid'],{encoding:'utf8'});
+  const bad=spawnSync(process.execPath,[file,'--invalid'],{encoding:'utf8'});
   assert.equal(bad.status,2);
 });
 

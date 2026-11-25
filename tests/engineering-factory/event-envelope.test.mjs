@@ -20,3 +20,16 @@ test('reject accessor metadata without invoking getters',()=>{
  let reads=0; const x={...e,get head(){return ++reads===1?e.head:'bad';}};
  assert.equal(normalize(x,trust,100).reason,'INVALID_EVENT');assert.equal(reads,0);
 });
+
+import {readPullIdentity} from '../../tools/engineering-factory/event-envelope.mjs';
+test('read-only bounded pull metadata without user content or mutation',async()=>{
+ const repo={id:1,full_name:'Jamula/SoftwareFactory'},p={number:2,base:{repo,ref:'main',sha:trust.workflowSha},head:{repo,sha:e.head},state:'open',draft:false,body:'do not trust'};
+ let calls=0;const read=async(url,opts)=>{calls++;assert.equal(url,'https://api.github.com/repos/Jamula/SoftwareFactory/pulls/2');assert.equal(opts.method,'GET');assert.equal(opts.redirect,'error');return new Response(JSON.stringify(p));};
+ assert.deepEqual(await readPullIdentity(2,read),{shadow:true,evidenceComplete:false,reason:'IDENTITY_ONLY',repositoryId:1,number:2,head:e.head,base:trust.workflowSha,state:'open',draft:false});assert.equal((await readPullIdentity(0,read)).reason,'INVALID_PULL');assert.equal(calls,1);
+ for(const status of [403,429])assert.equal((await readPullIdentity(2,async()=>new Response(null,{status}))).reason,'RATE_OR_PERMISSION_UNKNOWN');
+ for(const status of [404,204])assert.equal((await readPullIdentity(2,async()=>new Response(null,{status}))).reason,'READ_FAILED');
+ assert.equal((await readPullIdentity(2,async()=>new Response('x'.repeat(524289)))).reason,'RESPONSE_LIMIT');
+ for(const change of [null,{...p,number:3},{...p,base:null},{...p,head:null},{...p,base:{...p.base,ref:'dev'}},{...p,base:{...p.base,sha:'bad'}},{...p,head:{...p.head,sha:'bad'}},{...p,base:{...p.base,repo:{...repo,id:0}}},{...p,head:{...p.head,repo:{...repo,id:2}}},{...p,state:'unknown'},{...p,draft:null}])assert.equal((await readPullIdentity(2,async()=>new Response(JSON.stringify(change)))).reason,'IDENTITY_UNKNOWN');
+ assert.equal((await readPullIdentity(2,async()=>new Response('invalid'))).reason,'READ_FAILED');
+ assert.equal((await readPullIdentity(2,async()=>{throw Error('offline');})).reason,'READ_FAILED');
+});
