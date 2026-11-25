@@ -1,0 +1,11 @@
+name: Engineering factory synthetic replay (example)
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  replay:
+    uses: Jamula/SoftwareFactory/.github/workflows/shadow-tests.yml@fbecbf99b4c8e1696194bd6fa5220b2328cd1379

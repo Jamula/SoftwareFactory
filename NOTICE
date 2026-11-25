@@ -1,0 +1,13 @@
+SoftwareFactory contains material derived from Jamula/FamilyTree issue #128,
+ported from source commit 1b871b76895f0d4943eda441a3295e843a127f58:
+
+- tools/engineering-factory/core.mjs
+- tools/engineering-factory/example-policies.json
+- tools/engineering-factory/ONBOARDING.txt
+- tests/engineering-factory/core.test.mjs
+
+The source is distributed under the Apache License, Version 2.0. The repository
+LICENSE is included and applies to this work. The upstream commit and issue are
+available at:
+https://github.com/Jamula/FamilyTree/commit/1b871b76895f0d4943eda441a3295e843a127f58
+https://github.com/Jamula/FamilyTree/issues/128
