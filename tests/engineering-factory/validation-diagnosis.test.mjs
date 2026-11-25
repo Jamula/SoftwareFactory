@@ -12,3 +12,7 @@ test('invalid and stale evidence is unknown',()=>{
  for(const x of [null,[],Object.create(e),{...e,head:'b'.repeat(40)},{...e,complete:false},{...e,category:'bad'},{...e,attempt:0.1},{...e,attempt:-1},{...e,retryLimit:0.1},{...e,retryLimit:-1},{...e,retryLimit:3}]) assert.equal(classify(x,head).category,'unknown');
  assert.equal(classify(e,'bad').category,'unknown');
 });
+
+test('transient evidence must be boolean',()=>{
+ for(const transient of [null,'true',0,undefined]) assert.deepEqual(classify({...e,transient},head),{shadow:true,category:'unknown',action:'investigate',skipRequiredChecks:false,liveRetry:false});
+});
