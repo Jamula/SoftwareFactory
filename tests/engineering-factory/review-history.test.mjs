@@ -19,3 +19,10 @@ test('empty history grants no approval and distinct reviewers remain distinct',(
   assert.deepEqual(normalize(head,[]).reviews,[]);
   assert.equal(normalize(head,[r(1,'APPROVED'),r(2,'CHANGES_REQUESTED',head,'other')]).reviews.length,2);
 });
+
+test('newer stale approval supersedes only previous approval, not objections',()=>{
+  assert.deepEqual(normalize(head,[r(1,'APPROVED'),r(2,'APPROVED',stale)]).reviews,[]);
+  assert.equal(normalize(head,[r(1,'DISMISSED'),r(2,'APPROVED',stale)]).reviews[0].state,'DISMISSED');
+  assert.equal(normalize(head,[r(1,'APPROVED'),r(2,'APPROVED',stale),r(3,'APPROVED')]).reviews[0].state,'APPROVED');
+  assert.equal(normalize(head,[r(1,'APPROVED',head,'other'),r(2,'APPROVED'),r(3,'APPROVED',stale)]).reviews[0].reviewer,'other');
+});
