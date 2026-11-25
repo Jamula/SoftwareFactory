@@ -51,8 +51,40 @@ test('durable local lease survives restart and denies stale workers',()=>{
 });
 
 import {DatabaseSync} from 'node:sqlite';
-import {spawnSync} from 'node:child_process';
-test('contended and interrupted SQLite transactions preserve committed leases', {timeout:10000},()=>{
+import {spawn,spawnSync} from 'node:child_process';
+const leaseModule=new URL('../../tools/engineering-factory/lease-transition.mjs',import.meta.url).href;
+const runLeaseWorker=(path,key,worker,generation,now)=>new Promise((resolve,reject)=>{
+ const source=`import {openLeaseStore} from ${JSON.stringify(leaseModule)};const store=openLeaseStore(process.argv[1]);try{console.log(JSON.stringify(store.apply(process.argv[2],{kind:'acquire',worker:process.argv[3],generation:Number(process.argv[4]),stop:false,ttl:100},Number(process.argv[5]))));}finally{store.close();}`;
+ const child=spawn(process.execPath,['--input-type=module','-e',source,path,key,worker,String(generation),String(now)],{stdio:['ignore','pipe','pipe']});
+ let stdout='',stderr='',settled=false;
+ const timeout=setTimeout(()=>{if(!settled){settled=true;child.kill();reject(new Error(`lease worker timed out: ${stderr}`));}},5000);
+ child.stdout.setEncoding('utf8').on('data',chunk=>stdout+=chunk);
+ child.stderr.setEncoding('utf8').on('data',chunk=>stderr+=chunk);
+ child.on('error',error=>{if(!settled){settled=true;clearTimeout(timeout);reject(error);}});
+ child.on('close',code=>{if(settled)return;settled=true;clearTimeout(timeout);if(code!==0){reject(new Error(`lease worker exited ${code}: ${stderr}`));return;}try{resolve(JSON.parse(stdout.trim()));}catch(error){reject(new Error(`invalid lease worker output: ${stdout} ${stderr}`,{cause:error}));}});
+});
+test('competing workers serialize acquisition and locked writes can retry', {timeout:15000},async()=>{
+ const dir=mkdtempSync(join(tmpdir(),'factory-workers-')),path=join(dir,'leases.sqlite'),key='1:2:'+'a'.repeat(40);
+ const lock=new DatabaseSync(path),reader=new DatabaseSync(path);
+ try{
+  const outcomes=await Promise.all([runLeaseWorker(path,key,'worker-a',0,10),runLeaseWorker(path,key,'worker-b',0,10)]);
+  assert.equal(outcomes.filter(x=>x.reason==='ACQUIRED').length,1);
+  assert.equal(outcomes.filter(x=>x.reason==='STALE_GENERATION').length,1);
+  const row=reader.prepare('SELECT generation,worker FROM shadow_leases WHERE scope=?').get(key);
+  assert.equal(row.generation,1);
+  const winner=outcomes.find(x=>x.reason==='ACQUIRED').lease.worker;
+  lock.exec('BEGIN IMMEDIATE');
+  const before=lock.prepare('SELECT generation,worker FROM shadow_leases WHERE scope=?').get(key);
+  const denied=await runLeaseWorker(path,key,`${winner}-retry`,1,110);
+  assert.equal(denied.reason,'STORE_UNAVAILABLE');
+  assert.deepEqual(lock.prepare('SELECT generation,worker FROM shadow_leases WHERE scope=?').get(key),before);
+  lock.exec('ROLLBACK');
+  const retried=await runLeaseWorker(path,key,`${winner}-retry`,1,110);
+  assert.equal(retried.reason,'ACQUIRED');
+  assert.equal(retried.lease.generation,2);
+ }finally{reader.close();lock.close();rmSync(dir,{recursive:true,force:true});}
+});
+test('interrupted SQLite transactions preserve committed leases', {timeout:10000},()=>{
  const dir=mkdtempSync(join(tmpdir(),'factory-contention-')),path=join(dir,'leases.sqlite'),key='1:2:'+'a'.repeat(40);
  const store=openLeaseStore(path),lock=new DatabaseSync(path);
  try{
