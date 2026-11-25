@@ -1,0 +1,6 @@
+import test from 'node:test';import assert from 'node:assert/strict';import {dispatchIntent as plan} from '../../tools/engineering-factory/dispatch-intent.mjs';
+const e={repositoryId:1,approvedRepositoryId:1,issue:2,head:'a'.repeat(40),generation:3,approved:true,stop:false,includedOnly:true,overageDisabled:true,capacity:1,leaseVerified:true,alreadyDispatched:false};
+test('dry run only, deterministic idempotency',()=>{assert.deepEqual(plan(e),{shadow:true,liveDispatch:false,reason:'DRY_RUN_ONLY',key:'1:2:'+e.head+':3',repositoryId:1,issue:2});});
+test('deny unknown permission quota and duplicate',()=>{for(const x of [null,[],Object.create(e)])assert.equal(plan(x).reason,'EVIDENCE_UNKNOWN');for(const x of [{stop:true},{repositoryId:0},{approvedRepositoryId:2},{issue:0},{head:'bad'},{generation:0},{approved:false},{leaseVerified:false},{includedOnly:false},{overageDisabled:false},{capacity:0},{alreadyDispatched:true},{alreadyDispatched:null}])assert.notEqual(plan({...e,...x}).reason,'DRY_RUN_ONLY');});
+
+test('own accessor for each required field is denied without a read',()=>{let calls=0;for(const field of Object.keys(e)){const x={...e};Object.defineProperty(x,field,{get(){calls++;throw Error('unexpected getter');}});assert.equal(plan(x).reason,'EVIDENCE_UNKNOWN',field);}assert.equal(calls,0);});
