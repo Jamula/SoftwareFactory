@@ -11,11 +11,19 @@ The opening cohort is November 25, 2026, 00:00 through November 26, 2026, 00:00 
 | PR created → merged | 69 | 61 | 7 | 1 | 0 | 27m 51s | 6h 6m 21s |
 | Issue created → closed | 3 | 1 | 2 | — | 0 | 3h 3m 23s | 3h 3m 23s |
 
-The source was the [GitHub pull request list](https://api.github.com/repos/Jamula/SoftwareFactory/pulls?state=all&per_page=100&sort=created&direction=desc) and [issue list](https://api.github.com/repos/Jamula/SoftwareFactory/issues?state=all&per_page=100&sort=created&direction=desc), currently mutable views. Each returned fewer than 100 rows (78 PRs, 97 issue-list rows). Removing the 78 embedded PRs from the issue list left 19 actual issues. Numeric IDs, timestamps, and state were the only input fields retained for aggregation. A one-sample percentile is the same observation.
+The source was the [GitHub pull request list](https://api.github.com/repos/Jamula/SoftwareFactory/pulls?state=all&per_page=100&sort=created&direction=desc) and [issue list](https://api.github.com/repos/Jamula/SoftwareFactory/issues?state=all&per_page=100&sort=created&direction=desc). Each returned fewer than 100 rows (78 PRs, 97 issue-list rows). Removing the 78 embedded PRs from the issue list left 19 actual issues. Use the [committed evidence snapshot](evidence/softwarefactory-github-proxies-2026-11-25.json) to reproduce this table. It records the sanitized rows, exact query, repository allowlist and source page counts at acquisition. The GitHub URLs will show newer data when fetched again. A one-sample percentile is the same observation.
 
 Censored includes items still open in the source and items with an end at or after the cutoff. The issue proxy uses the close timestamp visible in the snapshot. It does not reconstruct earlier closures or reopened transitions. Draft and review waiting is part of the PR proxy. An issue close or PR merge does not establish readiness, accepted work, main health, causal issue linkage, cost, or an SLO result. See [the separate CI baseline](VALIDATION-TIMING-BASELINE.md) and [the metric contract](ENGINEERING-METRIC-CONTRACT.md).
 
 ## Reproduce or consume the report
+
+From the repository root, replay the frozen snapshot offline. The resulting p50 and p95 values are in milliseconds.
+
+```shell
+node --input-type=module -e "import {readFileSync} from 'node:fs'; import {aggregateGithubTiming} from './tools/engineering-factory/stage-aggregate.mjs'; const {rows, query, authorizedRepositoryIds} = JSON.parse(readFileSync('docs/evidence/softwarefactory-github-proxies-2026-11-25.json','utf8')); for (const [metric, samples] of Object.entries(rows)) console.log(JSON.stringify(aggregateGithubTiming(samples, {...query, metric}, authorizedRepositoryIds)));"
+```
+
+For a new report:
 
 1. Fetch the relevant authorized repository's public PR and issue metadata without retaining bodies, titles, or actor fields. Follow pagination to the end of the relevant cohort. If source coverage cannot be established, set `sourceComplete: false`. Discard rows with `pull_request` from the issue dataset.
 2. For each metric retain only `id` (issue or PR number), `repositoryId`, `metric`, `openedMs`, `endedMs`, and `state`. Use integer UTC epoch milliseconds. For `pr-created-to-merge` use the merge timestamp and `completed`, or the close timestamp and `closed-unmerged`. For `issue-created-to-close` use the visible close timestamp and `completed`. Leave the end null for `open` or `unknown`. Represent unavailable terminal timestamps with `unknown`. Do not combine metrics or repositories in a call.
