@@ -28,14 +28,16 @@ test('serializes a project capacity limit across SQLite connections and counts r
     const original = a.claim('api', 'worker-a', 1000, 1000, 1);
     assert.equal(original.generation, 1);
     assert.equal(b.claim('web', 'worker-b', 1999, 1000, 1), null);
-    assert.equal(b.claim('web', 'worker-b', 2000, 1000, 1, ['docs']), null);
-    assert.equal(b.claim('web', 'worker-b', 2000, 1000, 2, ['web']), null);
-    const next = b.claim('web', 'worker-b', 2000, 1000, 2, ['docs', 'docs']);
-    assert.equal(next.generation, 1);
-    assert.equal(a.claim('api', 'worker-a', 2001, 1000, 2, ['web', 'docs']), null);
-    assert.equal(a.claim('api', 'worker-a', 2001, 1000, 2, ['web']).generation, 2);
-    assert.equal(b.release('web', next.generation, 'worker-b', 2002), true);
-    assert.equal(b.claim('docs', 'worker-b', 2002, 1000, 2).generation, 1);
+    assert.equal(a.observeReserved(['docs', 'api', 'docs'], 1500, 2000), true);
+    assert.equal(b.claim('web', 'worker-b', 1900, 1000, 3).generation, 1);
+    assert.equal(a.claim('other', 'worker-a', 2000, 1000, 3), null);
+    assert.equal(b.observeReserved(['api'], 2000, 1000), true);
+    assert.equal(b.observeReserved([], 2001, 1000), true);
+    assert.equal(b.claim('web', 'worker-b', 2001, 1000, 4), null);
+    assert.equal(b.claim('api', 'worker-b', 3000, 1000, 4), null, 'shorter reports must not lower expiry');
+    assert.equal(a.claim('api', 'worker-a', 3500, 1000, 1).generation, 2);
+    assert.equal(a.release('api', 2, 'worker-a', 3501), true);
+    assert.equal(b.claim('docs', 'worker-b', 3501, 1000, 1).generation, 1);
   } finally { a.close(); b.close(); }
 }));
 
@@ -68,7 +70,9 @@ test('validates lane, owner, time, lease and checkpoints', () => withDb(filename
   assert.equal(store.claim('api', 'worker', Number.MAX_SAFE_INTEGER - 500, 1000), null);
   for (const maximum of [0, 1.5, 33]) assert.equal(store.claim('api', 'worker', 1, 1000, maximum), null);
   for (const reserved of [null, new Array(1), new Array(33), ['bad lane']])
-    assert.equal(store.claim('api', 'worker', 1, 1000, 2, reserved), null);
+    assert.equal(store.observeReserved(reserved, 1, 1000), false);
+  for (const [now, duration] of [[-1, 1000], [1, 1000.1], [1, 999], [1, 3600001], [Number.MAX_SAFE_INTEGER, 1000]])
+    assert.equal(store.observeReserved(['api'], now, duration), false);
   assert.equal(store.checkpoint('api', 0, 'worker', {}, 1001), false);
   assert.equal(store.checkpoint('../api', 1, 'worker', {}, 1001), false);
   assert.equal(store.checkpoint('api', 1, 'bad worker', {}, 1001), false);
@@ -156,6 +160,7 @@ test('handles persistence calls after close and rejects inaccessible paths', () 
   const store = createSQLiteStateStore(filename);
   const claim = store.claim('api', 'worker', 1, 1000);
   store.close();
+  assert.equal(store.observeReserved(['web'], 1001, 1000), false);
   assert.equal(store.checkpoint('api', claim.generation, 'worker', {phase: 'late'}, 2), false);
   assert.equal(store.release('api', claim.generation, 'worker', 2), false);
   assert.equal(store.get('api'), null);

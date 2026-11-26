@@ -8,25 +8,40 @@ export function createSQLiteStateStore(filename) {
   if (typeof filename !== 'string' || filename.length === 0) throw new TypeError('INVALID_STATE_PATH');
   const db = new DatabaseSync(filename);
   db.exec('PRAGMA journal_mode=WAL; PRAGMA busy_timeout=2000; CREATE TABLE IF NOT EXISTS coordinator_lanes (lane_id TEXT PRIMARY KEY, generation INTEGER NOT NULL, owner TEXT NOT NULL, lease_until INTEGER NOT NULL, payload TEXT NOT NULL)');
+  db.exec('CREATE TABLE IF NOT EXISTS coordinator_reservations (lane_id TEXT PRIMARY KEY, expires INTEGER NOT NULL)');
   const read = db.prepare('SELECT lane_id, generation, owner, lease_until, payload FROM coordinator_lanes WHERE lane_id = ?');
-  const live = db.prepare('SELECT lane_id FROM coordinator_lanes WHERE lease_until > ?');
+  const live = db.prepare('SELECT lane_id FROM coordinator_lanes WHERE lease_until > ? UNION SELECT lane_id FROM coordinator_reservations WHERE expires > ?');
+  const prune = db.prepare('DELETE FROM coordinator_reservations WHERE expires <= ?');
+  const reserve = db.prepare('INSERT INTO coordinator_reservations(lane_id,expires) VALUES(?,?) ON CONFLICT(lane_id) DO UPDATE SET expires=max(coordinator_reservations.expires,excluded.expires)');
   const put = db.prepare('INSERT INTO coordinator_lanes(lane_id,generation,owner,lease_until,payload) VALUES(?,?,?,?,?) ON CONFLICT(lane_id) DO UPDATE SET generation=excluded.generation, owner=excluded.owner, lease_until=excluded.lease_until, payload=excluded.payload');
   const update = db.prepare('UPDATE coordinator_lanes SET payload=? WHERE lane_id=? AND generation=? AND owner=? AND lease_until>?');
   const renewLease = db.prepare('UPDATE coordinator_lanes SET lease_until=? WHERE lane_id=? AND generation=? AND owner=? AND lease_until>?');
   const release = db.prepare('UPDATE coordinator_lanes SET lease_until=0 WHERE lane_id=? AND generation=? AND owner=?');
   return Object.freeze({
-    claim(laneId, owner, now, leaseMs, maxConcurrentLanes = 32, reserved = []) {
+    observeReserved(reserved, now, leaseMs) {
+      if (!Array.isArray(reserved) || reserved.length > 32 || !time(now) || !Number.isSafeInteger(leaseMs) ||
+          leaseMs < 1000 || leaseMs > 3600000 || !time(now + leaseMs)) return false;
+      try {
+        const lanes = Array.from(reserved);
+        if (!lanes.every(validLane)) return false;
+        db.exec('BEGIN IMMEDIATE');
+        prune.run(now);
+        for (const laneId of lanes) reserve.run(laneId, now + leaseMs);
+        db.exec('COMMIT');
+        return true;
+      } catch {
+        try { db.exec('ROLLBACK'); } catch {}
+        return false;
+      }
+    },
+    claim(laneId, owner, now, leaseMs, maxConcurrentLanes = 32) {
       if (!validLane(laneId) || !validOwner(owner) || !time(now) || !Number.isSafeInteger(leaseMs) ||
           leaseMs < 1000 || leaseMs > 3600000 || !time(now + leaseMs) ||
-          !Number.isSafeInteger(maxConcurrentLanes) || maxConcurrentLanes < 1 || maxConcurrentLanes > 32 ||
-          !Array.isArray(reserved) || reserved.length > 32) return null;
+          !Number.isSafeInteger(maxConcurrentLanes) || maxConcurrentLanes < 1 || maxConcurrentLanes > 32) return null;
       try {
-        const reservedLanes = Array.from(reserved);
-        if (!reservedLanes.every(validLane)) return null;
         db.exec('BEGIN IMMEDIATE');
-        const occupied = new Set(reservedLanes);
-        for (const row of live.all(now)) occupied.add(row.lane_id);
-        if (occupied.has(laneId) || occupied.size >= maxConcurrentLanes) {
+        const occupied = live.all(now, now);
+        if (occupied.length >= maxConcurrentLanes || occupied.some(row => row.lane_id === laneId)) {
           db.exec('COMMIT');
           return null;
         }

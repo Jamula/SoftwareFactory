@@ -19,7 +19,8 @@ const tasks = () => [{id: 1, lane: 'api', state: 'approved', priority: 1, depend
   {id: 2, lane: 'web', state: 'approved', priority: 2, dependencies: [], paths: ['src/web/two']}];
 function store(checkpoint = () => true) {
   return {claim: (lane, owner, now, leaseMs) => ({laneId: lane, owner, generation: 1, leaseUntil: now + leaseMs}),
-    renew: (lane, generation, owner, now, leaseMs) => ({leaseUntil: now + leaseMs}), checkpoint, release: () => true};
+    observeReserved: () => true, renew: (lane, generation, owner, now, leaseMs) => ({leaseUntil: now + leaseMs}),
+    checkpoint, release: () => true};
 }
 const tracker = {readTask: async id => ({accepted: true, task: {id, state: 'approved'}})};
 const agent = {inspect: async () => ({shadow: true, accepted: true, findings: []})};
@@ -53,7 +54,7 @@ test('validates the runtime one requirement at a time', async () => {
   const options = {config: config(), tasks: tasks(), store: store(), tracker, agent, workerId: 'worker', now: 1};
   for (const override of [
     {store: null}, {store: {claim() {}, release() {}}}, {store: {claim() {}, checkpoint() {}, release() {}}},
-    {store: {...store(), renew: null}}, {clock: null}, {tracker: null}, {tracker: {}},
+    {store: {...store(), renew: null}}, {store: {...store(), observeReserved: null}}, {clock: null}, {tracker: null}, {tracker: {}},
     {agent: null}, {agent: {}}, {workerId: 1}, {now: -1}
   ]) assert.equal((await runTick({...options, ...override})).reason, 'INVALID_RUNTIME');
 });
@@ -106,29 +107,42 @@ test('blocks held leases, failed reads, failed reviews and stale checkpoints', a
 test('passes one reservation per lane and the project capacity to the claim adapter', async () => {
   const [active, approved] = tasks();
   const requests = [];
+  const reports = [];
   const firstStore = store();
   const result = await runTick({config: config(), tasks: [{...active, state: 'active'}, approved],
     active: [{id: active.id, lane: active.lane, paths: active.paths}],
-    store: {...firstStore, claim: (...args) => {
+    store: {...firstStore, observeReserved: (...args) => { reports.push(args); return true; }, claim: (...args) => {
       requests.push(args);
       return firstStore.claim(...args);
     }},
     tracker, agent, workerId: 'worker', now: 1000});
-  assert.deepEqual(requests, [['web', 'worker', 1000, 5000, 2, ['api']]]);
+  assert.deepEqual(reports, [[['api'], 1000, 5000]]);
+  assert.deepEqual(requests, [['web', 'worker', 1000, 5000, 2]]);
   assert.equal(result.completed[0].state, 'shadow-reviewed');
 });
 
-test('overlapping ticks share the project capacity even with different candidate inventories', async () => {
+test('never claims a lane when a reported reservation cannot be persisted', async () => {
+  const [active, approved] = tasks();
+  for (const observeReserved of [() => false, () => { throw Error('unavailable'); }]) {
+    const result = await runTick({config: config(), tasks: [{...active, state: 'active'}, approved],
+      store: {...store(), observeReserved, claim() { assert.fail('unexpected claim'); }},
+      tracker, agent, workerId: 'worker', now: 1000});
+    assert.deepEqual(result, {shadow: true, completed: [], reason: 'ACTIVE_RESERVATIONS_UNAVAILABLE'});
+  }
+});
+
+test('overlapping ticks share capacity when only one inventory reports the active external lane', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'coordinator-shared-capacity-'));
   const path = join(directory, 'state.sqlite');
   const firstStore = createSQLiteStateStore(path);
   const secondStore = createSQLiteStateStore(path);
   const settings = config();
-  settings.limits.maxConcurrentLanes = 1;
+  settings.lanes.push({id: 'docs', owners: ['docs'], prompt: 'agent.md'});
   const [api, web] = tasks();
   const entered = Promise.withResolvers();
   const finish = Promise.withResolvers();
   const first = runTick({config: settings, tasks: [api], store: firstStore, tracker, workerId: 'worker-a',
+    active: [{id: 3, lane: 'docs', paths: ['docs/notes.md']}],
     now: 1000, agent: {inspect: async () => {
       entered.resolve();
       await finish.promise;
@@ -155,6 +169,17 @@ test('overlapping ticks share the project capacity even with different candidate
     secondStore.close();
     rmSync(directory, {recursive: true, force: true});
   }
+});
+
+test('persists validated reservations even if a tick has no approved candidates', async () => {
+  const state = createSQLiteStateStore(':memory:');
+  try {
+    const [active] = tasks();
+    const result = await runTick({config: config(), tasks: [{...active, state: 'active'}],
+      store: state, tracker, agent, workerId: 'worker', now: 1000});
+    assert.equal(result.reason, 'NO_READY_WORK');
+    assert.equal(state.claim('web', 'test', 1001, 1000, 1), null);
+  } finally { state.close(); }
 });
 
 test('does not review or checkpoint a task whose authoritative state changed after planning', async () => {
