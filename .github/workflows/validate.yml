@@ -86,6 +86,69 @@ jobs:
           aspire --version
           dotnet restore apphost.cs --source https://api.nuget.org/v3/index.json
           dotnet build apphost.cs --configuration Release --no-restore
+      - name: Exercise the isolated Aspire AppHost
+        if: github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
+        env:
+          DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+          ASPIRE_CLI_TELEMETRY_OPTOUT: 'true'
+          ASPIRE_DASHBOARD_TELEMETRY_OPTOUT: 'true'
+          ASPIRE_DASHBOARD_UNSECURED_ALLOW_ANONYMOUS: 'false'
+          ASPIRE_ALLOW_UNSECURED_TRANSPORT: 'false'
+          ASPIRE_CLI_START_TIMEOUT: '60'
+        run: |
+          set -euo pipefail
+          export ASPIRE_HOME="$RUNNER_TEMP/softwarefactory-aspire"
+          export PATH="$RUNNER_TEMP/softwarefactory-aspire-tools:$PATH"
+          umask 077
+          output="$(mktemp "$RUNNER_TEMP/softwarefactory-aspire-smoke.XXXXXXXX")"
+          certificate="$output.pem"
+          cleanup() {
+            timeout 30s aspire stop --apphost apphost.cs --non-interactive >/dev/null 2>&1 || true
+            rm -f -- "$output" "$certificate"
+          }
+          trap cleanup EXIT
+          if ! timeout 120s aspire start --apphost apphost.cs --isolated --non-interactive --nologo >"$output" 2>&1; then
+            echo "::error::Isolated Aspire startup failed"
+            exit 1
+          fi
+          if ! grep -Eq 'https://(localhost|127\.0\.0\.1|\[::1\]):[0-9]+/login\?t=[^[:space:]]+' "$output"; then
+            echo "::error::Aspire did not report a loopback HTTPS dashboard login"
+            exit 1
+          fi
+          echo "Aspire reported a loopback HTTPS dashboard login"
+          dashboard="$(grep -Eom1 'https://(localhost|127\.0\.0\.1|\[::1\]):[0-9]+/login\?t=' "$output")"
+          origin="$(printf '%s\n' "$dashboard" | cut -d/ -f1-3)"
+          if ! dotnet dev-certs https --export-path "$certificate" --format PEM >"$output" 2>&1 ||
+             ! challenge="$(curl --silent --show-error --noproxy '*' --max-time 10 --cacert "$certificate" \
+                  --output /dev/null --write-out '%{http_code} %{redirect_url}' "$origin/resources" 2>"$output")"; then
+            echo "::error::Could not verify the dashboard over trusted loopback TLS"
+            exit 1
+          fi
+          case "$challenge" in
+            "302 $origin/login"|"302 $origin/login?"*) echo "Dashboard required login for an unauthenticated HTTPS request" ;;
+            *) echo "::error::Unauthenticated dashboard request did not require login"; exit 1 ;;
+          esac
+          if ! timeout 30s aspire resource synthetic-shadow start --apphost apphost.cs --non-interactive >"$output" 2>&1; then
+            echo "::error::Synthetic resource could not be started"
+            exit 1
+          fi
+          if ! timeout 30s aspire wait synthetic-shadow --status down --timeout 20 --apphost apphost.cs >"$output" 2>&1; then
+            echo "::error::Synthetic resource did not exit"
+            exit 1
+          fi
+          if ! timeout 20s aspire logs synthetic-shadow --apphost apphost.cs --non-interactive >"$output" 2>&1 ||
+             ! grep -Fq '{"scenario":"local-synthetic-stop","state":"blocked","reason":"STOPPED","shadow":true}' "$output"; then
+            echo "::error::Expected synthetic STOPPED result was not observed"
+            exit 1
+          fi
+          echo "Synthetic resource emitted STOPPED and exited"
+          if ! timeout 30s aspire stop --apphost apphost.cs --non-interactive >"$output" 2>&1; then
+            echo "::error::Aspire shutdown failed"
+            exit 1
+          fi
+          trap - EXIT
+          rm -f -- "$output" "$certificate"
+          echo "Isolated AppHost stopped"
       - name: Upload coverage artifact
         if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
