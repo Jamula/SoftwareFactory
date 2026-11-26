@@ -34,6 +34,9 @@ export function openEventJournal(filename) {
       );
       CREATE INDEX IF NOT EXISTS coordinator_events_pending
         ON coordinator_events (repository_id, completed, id);
+      -- Keep the correlated active-lease guard bounded as the pending queue grows.
+      CREATE INDEX IF NOT EXISTS coordinator_events_active
+        ON coordinator_events (repository_id, expires) WHERE completed = 0;
     `);
     const enqueue = db.prepare(`
       INSERT INTO coordinator_events (repository_id, delivery_id, kind, subject, head)
