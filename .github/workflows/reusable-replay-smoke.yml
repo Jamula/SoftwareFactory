@@ -1,6 +1,17 @@
 name: Reusable replay smoke
 on:
+  # The exact candidate evaluator is tested by Factory validation on every PR.
+  # The immutable consumer replay is separately exercised when its contract,
+  # runtime, or workflow configuration changes, and on every merge group/main.
   pull_request:
+    paths:
+      - '.github/workflows/**'
+      - 'tools/engineering-factory/core.mjs'
+      - 'tests/engineering-factory/core.test.mjs'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.node-version'
+      - '.nvmrc'
   merge_group:
     types: [checks_requested]
   push:
