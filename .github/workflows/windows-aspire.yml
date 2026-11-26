@@ -73,7 +73,6 @@ jobs:
           $out = Join-Path $tmp 'out.txt'
           $err = Join-Path $tmp 'err.txt'
           $cert = Join-Path $tmp 'dev.pem'
-          $archive = Join-Path $tmp 'dashboard.zip'
           $dataRoot = Join-Path $tmp 'dashboard-data'
           New-Item -ItemType Directory -Path $dataRoot | Out-Null
           $env:ASPIRE_DASHBOARD_DATA_DIRECTORY = $dataRoot
@@ -137,6 +136,8 @@ jobs:
             Write-Host 'Windows runtime stage: scoped certificate ready'
             $env:NODE_EXTRA_CA_CERTS = $cert
             $env:ASPIRE_DASHBOARD_OTLP_HTTP_ENDPOINT_URL = 'https://127.0.0.1:18890'
+            # Per-run random secondary API key, never logged or passed as an argument.
+            $env:DASHBOARD__API__SECONDARYAPIKEY = [Convert]::ToHexString([System.Security.Cryptography.RandomNumberGenerator]::GetBytes(32))
             $startup = Invoke-Aspire @('start','--apphost','apphost.cs','--isolated','--non-interactive','--nologo') 120
             $login = [regex]::Match($startup,'https://(?:localhost|127\.0\.0\.1|\[::1\]):[0-9]+/login\?t=[^\s]+')
             if (-not $login.Success) { throw 'No authenticated loopback HTTPS dashboard' }
@@ -150,8 +151,10 @@ jobs:
             if (-not $logs.Contains('{"scenario":"local-synthetic-stop","state":"blocked","reason":"STOPPED","shadow":true}')) { throw 'STOPPED fixture missing' }
             if ($logs -notmatch '(?m)(^|\s)LOCAL_SDK_SHUTDOWN_COMPLETE[ \t\r]*$') { throw 'SDK shutdown completion missing' }
             Write-Host 'Synthetic resource emitted STOPPED, completed SDK shutdown and exited'
-            $null = Invoke-Aspire @('export','--apphost','apphost.cs','--output',$archive,'--non-interactive') 30
-            python tests/engineering-factory/verify-dashboard-export.py $archive
+            # Equivalent authenticated dashboard readback via documented HTTPS API.
+            $env:FACTORY_DASHBOARD_ORIGIN = $origin
+            $env:FACTORY_DASHBOARD_CA = $cert
+            python tests/engineering-factory/verify-dashboard-api.py
             if ($LASTEXITCODE -ne 0) { throw 'Dashboard trace/log readback failed' }
             $null = Invoke-Aspire @('stop','--apphost','apphost.cs','--non-interactive') 30
             $appHostStopped = $true
@@ -164,5 +167,6 @@ jobs:
             if (-not $appHostStopped) {
               try { $null = Invoke-Aspire @('stop','--apphost','apphost.cs','--non-interactive') 30 } catch { }
             }
+            Remove-Item Env:DASHBOARD__API__SECONDARYAPIKEY,Env:FACTORY_DASHBOARD_ORIGIN,Env:FACTORY_DASHBOARD_CA -ErrorAction SilentlyContinue
             Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
           }
