@@ -34,6 +34,7 @@ export async function runTick({config, tasks, active = [], store, tracker, agent
         !Number.isSafeInteger(claim.workGeneration) || claim.workGeneration < 1)
       return {lane: item.lane, taskId: item.id, state: 'blocked', reason: 'WORK_RESERVATION_UNKNOWN'};
     let lastObservedTime = now;
+    let releaseClaim = true;
     const renewLease = () => {
       let currentTime;
       try { currentTime = clock(); } catch { return {reason: 'CLOCK_UNAVAILABLE'}; }
@@ -42,7 +43,8 @@ export async function runTick({config, tasks, active = [], store, tracker, agent
       try {
         const renewed = store.renew(item.lane, claim.generation, workerId, currentTime, config.limits.leaseMs,
           workKey, claim.workGeneration);
-        return renewed && Number.isSafeInteger(renewed.leaseUntil) && renewed.leaseUntil > currentTime ?
+        return renewed && Number.isSafeInteger(currentTime + config.limits.leaseMs) &&
+          Number.isSafeInteger(renewed.leaseUntil) && renewed.leaseUntil >= currentTime + config.limits.leaseMs ?
           {time: currentTime} : {reason: 'LEASE_LOST'};
       } catch { return {reason: 'LEASE_UNAVAILABLE'}; }
     };
@@ -55,7 +57,33 @@ export async function runTick({config, tasks, active = [], store, tracker, agent
       const beforeInspection = renewLease();
       if (beforeInspection.reason)
         return {lane: item.lane, taskId: item.id, state: 'blocked', reason: beforeInspection.reason};
-      const review = await agent.inspect(byId.get(item.id), {mode: 'shadow', projectKey: config.project.key});
+      const cancellation = new AbortController();
+      let heartbeat;
+      const leaseFailure = new Promise(resolve => {
+        heartbeat = setInterval(() => {
+          const renewed = renewLease();
+          if (renewed.reason) {
+            clearInterval(heartbeat);
+            releaseClaim = false;
+            resolve(renewed);
+            cancellation.abort();
+          }
+        }, Math.floor(config.limits.leaseMs / 3));
+      });
+      let inspection;
+      try {
+        inspection = await Promise.race([
+          Promise.resolve().then(() => agent.inspect(byId.get(item.id),
+            {mode: 'shadow', projectKey: config.project.key, signal: cancellation.signal}))
+            .then(review => ({review})),
+          leaseFailure
+        ]);
+      } finally {
+        clearInterval(heartbeat);
+      }
+      if (inspection.reason)
+        return {lane: item.lane, taskId: item.id, state: 'blocked', reason: inspection.reason};
+      const review = inspection.review;
       if (!review?.accepted || review.shadow !== true)
         return {lane: item.lane, state: 'blocked', reason: 'AGENT_REVIEW_FAILED'};
       const finalEvidence = await tracker.readTask(item.id);
@@ -75,7 +103,8 @@ export async function runTick({config, tasks, active = [], store, tracker, agent
     } catch {
       return {lane: item.lane, taskId: item.id, state: 'blocked', reason: 'LANE_FAILED'};
     } finally {
-      store.release(item.lane, claim.generation, workerId, lastObservedTime, workKey, claim.workGeneration);
+      if (releaseClaim)
+        store.release(item.lane, claim.generation, workerId, lastObservedTime, workKey, claim.workGeneration);
     }
   }));
   const completed = outcomes.map((outcome, index) => outcome.status === 'fulfilled' ? outcome.value :
@@ -83,4 +112,3 @@ export async function runTick({config, tasks, active = [], store, tracker, agent
   return {shadow: true, liveDispatch: false, liveMerge: false, completed,
     reason: completed.length ? 'SHADOW_TICK_COMPLETE' : plan.reason};
 }
-

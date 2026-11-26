@@ -239,6 +239,90 @@ test('prevents overlapping stale inventories from assigning one repository issue
   }
 });
 
+test('renews both fences during a pending inspection beyond the original expiry', async t => {
+  t.mock.timers.enable({apis: ['setInterval']});
+  const state = createSQLiteStateStore(':memory:');
+  const settings = config();
+  settings.limits.leaseMs = 1000;
+  const entered = Promise.withResolvers();
+  const finish = Promise.withResolvers();
+  let time = 1000;
+  const first = runTick({config: settings, tasks: [{...tasks()[0], id: 9}], store: state, tracker,
+    workerId: 'worker-a', now: time, clock: () => time, agent: {inspect: async () => {
+      entered.resolve();
+      await finish.promise;
+      return {shadow: true, accepted: true};
+    }}});
+  try {
+    await entered.promise;
+    time = 1800;
+    t.mock.timers.tick(333);
+    time = 2600;
+    t.mock.timers.tick(333);
+    let inspections = 0;
+    const second = await runTick({config: settings, tasks: [{...tasks()[1], id: 9}], store: state, tracker,
+      workerId: 'worker-b', now: time, agent: {inspect: async () => { inspections++; }}});
+    assert.equal(second.completed[0].reason, 'LEASE_HELD');
+    assert.equal(inspections, 0);
+    finish.resolve();
+    assert.equal((await first).completed[0].state, 'shadow-reviewed');
+  } finally {
+    finish.resolve();
+    await first;
+    state.close();
+  }
+});
+
+test('aborts pending inspection and blocks checkpoint when a heartbeat loses its lease', async t => {
+  t.mock.timers.enable({apis: ['setInterval']});
+  const state = createSQLiteStateStore(':memory:');
+  const settings = config();
+  settings.limits.leaseMs = 1000;
+  const entered = Promise.withResolvers();
+  let time = 1000;
+  let signal;
+  const first = runTick({config: settings, tasks: [{...tasks()[0], id: 9}], store: state, tracker,
+    workerId: 'worker-a', now: time, clock: () => time, agent: {inspect: (_task, context) => {
+      signal = context.signal;
+      entered.resolve();
+      return new Promise(resolve => signal.addEventListener('abort',
+        () => resolve({shadow: true, accepted: true})));
+    }}});
+  try {
+    await entered.promise;
+    time = 2000;
+    const next = state.claim('web', 'worker-b', time, 1000, 2, 'example/alpha#9');
+    assert.ok(next);
+    t.mock.timers.tick(333);
+    assert.equal(signal.aborted, true);
+    assert.equal((await first).completed[0].reason, 'LEASE_LOST');
+    assert.deepEqual(state.get('api').payload, {});
+    assert.equal(state.claim('docs', 'worker-c', time, 1000, 2, 'example/alpha#9'), null);
+  } finally { state.close(); }
+});
+
+test('does not release an uncertain claim after a failed heartbeat', async t => {
+  t.mock.timers.enable({apis: ['setInterval']});
+  let renewals = 0;
+  let releases = 0;
+  const entered = Promise.withResolvers();
+  let signal;
+  const backingStore = store();
+  const result = runTick({config: config(), tasks: [tasks()[0]], tracker, workerId: 'worker', now: 1,
+    store: {...backingStore, renew: (...args) => ++renewals === 1 ? backingStore.renew(...args) : null,
+      release: () => { releases++; }},
+    agent: {inspect: (_task, context) => {
+      signal = context.signal;
+      entered.resolve();
+      return new Promise(() => {});
+    }}});
+  await entered.promise;
+  t.mock.timers.tick(Math.floor(config().limits.leaseMs / 3));
+  assert.equal((await result).completed[0].reason, 'LEASE_LOST');
+  assert.equal(signal.aborted, true);
+  assert.equal(releases, 0);
+});
+
 test('persists validated reservations even if a tick has no approved candidates', async () => {
   const state = createSQLiteStateStore(':memory:');
   try {
@@ -304,7 +388,8 @@ test('fails closed for unusable clocks and invalid lease renewal receipts', asyn
     {clock: () => 0, reason: 'CLOCK_UNAVAILABLE'},
     {clock: () => 1, store: {...store(), renew: () => { throw Error('store'); }}, reason: 'LEASE_UNAVAILABLE'},
     {clock: () => 1, store: {...store(), renew: () => ({leaseUntil: Number.NaN})}, reason: 'LEASE_LOST'},
-    {clock: () => 1, store: {...store(), renew: (_lane, _generation, _owner, now) => ({leaseUntil: now})}, reason: 'LEASE_LOST'}
+    {clock: () => 1, store: {...store(), renew: (_lane, _generation, _owner, now) => ({leaseUntil: now})}, reason: 'LEASE_LOST'},
+    {clock: () => 1, store: {...store(), renew: (_lane, _generation, _owner, now) => ({leaseUntil: now + 1})}, reason: 'LEASE_LOST'}
   ];
   for (const scenario of cases) {
     const result = await runTick({config: config(), tasks: [tasks()[0]], store: scenario.store ?? store(), tracker, agent,
@@ -326,4 +411,3 @@ test('contains claim and release exceptions to their own lane', async () => {
     tracker, agent, workerId: 'worker', now: 1});
   assert.equal(releaseFailure.completed[0].reason, 'LANE_FAILED');
 });
-

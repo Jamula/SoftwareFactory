@@ -43,6 +43,19 @@ test('agent inspection receives only bounded synthetic context and returns bound
   assert.equal((await adapter.dispatch()).reason, 'LIVE_DISPATCH_DISABLED');
 });
 
+test('agent adapter forwards the inspection cancellation signal', async () => {
+  const controller = new AbortController();
+  let received;
+  const adapter = createEngineeringAgentAdapter({inspect: async (_task, context) => {
+    received = context.signal;
+    return {summary: 'ok', findings: []};
+  }});
+  await adapter.inspect({id: 1}, {mode: 'shadow', signal: controller.signal});
+  assert.equal(received, controller.signal);
+  controller.abort();
+  assert.equal(received.aborted, true);
+});
+
 test('agent adapter denies bad requests, results and exceptions', async () => {
   const good = createEngineeringAgentAdapter({inspect: async () => ({summary: 'ok', findings: 'invalid'})});
   assert.equal((await good.inspect({id: 1}, {mode: 'live'})).reason, 'INVALID_INSPECTION_REQUEST');
