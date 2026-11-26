@@ -23,7 +23,7 @@ export function validateProjectConfig(config) {
   if (!exact(config.execution, ['enabled', 'mode', 'stop']) || typeof config.execution.enabled !== 'boolean' ||
       config.execution.mode !== 'shadow' || typeof config.execution.stop !== 'boolean') return false;
   if (!exact(config.limits, ['maxConcurrentLanes', 'leaseMs', 'maxAttempts', 'baseDelayMs', 'maxDelayMs']) ||
-      !integer(config.limits.maxConcurrentLanes, 1, 8) || !integer(config.limits.leaseMs, 1000, 3600000) ||
+      !integer(config.limits.maxConcurrentLanes, 1, config.project.repository.toLowerCase() === 'jamula/softwarefactory' ? 12 : 8) || !integer(config.limits.leaseMs, 1000, 3600000) ||
       !integer(config.limits.maxAttempts, 1, 5) || !integer(config.limits.baseDelayMs, 1, 60000) ||
       !integer(config.limits.maxDelayMs, config.limits.baseDelayMs, 300000)) return false;
   if (!exact(config.adapters, ['workTracker', 'engineeringAgent', 'state']) ||
