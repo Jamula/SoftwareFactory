@@ -73,6 +73,7 @@ jobs:
           $out = Join-Path $tmp 'out.txt'
           $err = Join-Path $tmp 'err.txt'
           $cert = Join-Path $tmp 'dev.pem'
+          $archive = Join-Path $tmp 'dashboard.zip'
           function Invoke-Aspire([string[]]$arguments, [int]$seconds) {
             $p = Start-Process -FilePath (Get-Command aspire -ErrorAction Stop).Source -ArgumentList $arguments -RedirectStandardOutput $out -RedirectStandardError $err -NoNewWindow -PassThru
             if (-not $p.WaitForExit($seconds * 1000)) {
@@ -99,6 +100,9 @@ jobs:
             $logs = Invoke-Aspire @('logs','synthetic-shadow','--apphost','apphost.cs','--non-interactive') 20
             if (-not $logs.Contains('{"scenario":"local-synthetic-stop","state":"blocked","reason":"STOPPED","shadow":true}')) { throw 'STOPPED fixture missing' }
             Write-Host 'Synthetic resource emitted STOPPED and exited'
+            $null = Invoke-Aspire @('export','--apphost','apphost.cs','--output',$archive,'--non-interactive') 30
+            python tests/engineering-factory/verify-dashboard-export.py $archive
+            if ($LASTEXITCODE -ne 0) { throw 'Dashboard trace/log readback failed' }
             $null = Invoke-Aspire @('stop','--apphost','apphost.cs','--non-interactive') 30
             Write-Host 'Isolated Windows AppHost stopped'
           } finally {

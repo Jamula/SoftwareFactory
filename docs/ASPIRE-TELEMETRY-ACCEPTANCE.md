@@ -7,3 +7,7 @@ The SDK consumes AppHost-provided OTEL_EXPORTER_OTLP_ENDPOINT, OTEL_EXPORTER_OTL
 References: https://aspire.dev/app-host/configuration/ and https://aspire.dev/dashboard/apis/ .
 
 Shutdown regression tests use the real pinned HTTP/protobuf exporters against authenticated synthetic loopback receivers returning HTTP 400 or leaving requests unanswered. Each signal must attempt export; the work result must remain unchanged and provider shutdown must settle within the 10-second regression bound (3-second configured exporter timeout, with scheduling margin). Exporter failure may be reported through SDK diagnostics or an explicit aggregate cleanup error; neither is proof of dashboard receipt. The separate in-flight observation drain has a 3-second limit.
+
+## Dashboard-side verification
+
+Both hosted runtime lanes export the authenticated dashboard data into an isolated runner-temporary ZIP and verify exact trace/span ID correlation for the fixed synthetic span and structured log. No export is uploaded; private exports are deleted at cleanup. The CLI export documents traces and structured logs but not metrics; this test must not be presented as metric persistence evidence. The dashboard's authenticated Manage logs and telemetry UI can export metrics as OTLP JSON; independently verify the synthetic service's counter and histogram before closing #17. Reference: https://aspire.dev/reference/cli/commands/aspire-export/ and https://aspire.dev/dashboard/explore/.
