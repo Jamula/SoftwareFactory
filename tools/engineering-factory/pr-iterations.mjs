@@ -15,7 +15,7 @@ export function prIterations(e){
   if(!own(a,['id','head','at','kind','cause','passed'])||!token(a.id)||seen.has(a.id)||!sha(a.head)||!time(a.at)||a.at<last||a.at>e.observed||!['candidate','retry','queue'].includes(a.kind)||typeof a.passed!=='boolean')return unknown('ATTEMPT_UNKNOWN');
   seen.add(a.id);last=a.at;
   if(a.kind==='candidate'){
-   if(heads.has(a.head)||!Object.hasOwn(causes,a.cause)||(heads.size===0)!==(a.cause==='initial'))return unknown('CANDIDATE_UNKNOWN');
+   if(heads.has(a.head)||typeof a.cause!=='string'||!Object.hasOwn(causes,a.cause)||(heads.size===0)!==(a.cause==='initial'))return unknown('CANDIDATE_UNKNOWN');
    heads.add(a.head);causes[a.cause]++;
   }else if(a.kind==='retry'){
    if(!heads.has(a.head)||a.cause!=='infrastructure')return unknown('RETRY_UNKNOWN');
@@ -27,5 +27,5 @@ export function prIterations(e){
   if(a.head===e.finalHead&&a.kind!=='queue')finalPassed=a.passed;
  }
  if(!heads.has(e.finalHead)||(e.merged&&!finalPassed))return unknown('FINAL_EVIDENCE_UNKNOWN');
- return {known:true,censored:!e.merged,candidateRounds:heads.size,reworkRounds:heads.size-1,infrastructureRetries:retries,queueRevalidations:queue,causes,firstPass:e.merged?heads.size===1&&retries===0:null};
+ return {known:true,censored:!e.merged,candidateRounds:heads.size,reworkRounds:heads.size-1,infrastructureRetries:retries,queueRevalidations:queue,causes,firstPass:e.merged?heads.size===1:null};
 }

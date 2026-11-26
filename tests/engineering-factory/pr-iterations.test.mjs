@@ -25,3 +25,10 @@ test('unknown, duplicate and stale evidence is rejected',()=>{
  const f=base();f.attempts[0].passed=false;assert.equal(measure(f).reason,'FINAL_EVIDENCE_UNKNOWN');
  const k=base();Object.defineProperty(k.attempts,'0',{get(){throw Error('getter');}});assert.equal(measure(k).reason,'HISTORY_UNKNOWN');
 });
+
+test('same-head infrastructure retry does not lower candidate first-pass yield',()=>{
+ const e=base();e.attempts[0].passed=false;e.attempts.push(a('2',h,2,'retry','infrastructure',true));const result=measure(e);assert.equal(result.firstPass,true);assert.equal(result.infrastructureRetries,1);
+});
+test('candidate cause must be a string without coercion',()=>{
+ for(const cause of [['reviewRepair'],{toString(){throw Error('coercion');}}]){const e=base();e.attempts.push(a('2',j,2,'candidate',cause,true));assert.equal(measure(e).reason,'CANDIDATE_UNKNOWN');}
+});
