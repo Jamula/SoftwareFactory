@@ -53,3 +53,19 @@ test('reads a bounded regular file through one open handle; rejects invalid and 
     assert.throws(()=>readMetricDocument(dir));
   }finally{rmSync(dir,{recursive:true,force:true});}
 });
+
+test('rejects contradictory cumulative samples even after a valid sample or across documents',()=>{
+  for(const index of [0,1]){
+    const points=d=>index===0?metrics(d)[0].sum.dataPoints:metrics(d)[1].histogram.dataPoints;
+    const invalid=fixture();
+    if(index===0)points(invalid)[0].asDouble=2;
+    else points(invalid)[0].count='2';
+    const mixed=fixture();
+    points(mixed).push(points(invalid)[0]);
+    assert.throws(()=>verifyDashboardMetrics([mixed]),/DASHBOARD_METRICS_MISSING/);
+    points(mixed).reverse();
+    assert.throws(()=>verifyDashboardMetrics([mixed]),/DASHBOARD_METRICS_MISSING/);
+    assert.throws(()=>verifyDashboardMetrics([fixture(),invalid]),/DASHBOARD_METRICS_MISSING/);
+    assert.throws(()=>verifyDashboardMetrics([invalid,fixture()]),/DASHBOARD_METRICS_MISSING/);
+  }
+});

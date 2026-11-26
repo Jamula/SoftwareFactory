@@ -20,10 +20,19 @@ export function verifyDashboardMetrics(documents){
         if(scope.scope?.name!=='softwarefactory')continue;
         for(const metric of scope.metrics??[]){
           if(metric.name==='factory.stage.count'&&metric.sum?.isMonotonic===true){
-            counter||=(metric.sum.dataPoints??[]).some(p=>hasAttributes(p.attributes,expectedLabels)&&positiveInteger(p.asInt??p.asDouble)&&Number(p.asInt??p.asDouble)===1);
+            for(const p of metric.sum.dataPoints??[]){
+              if(!hasAttributes(p.attributes,expectedLabels))continue;
+              const value=p.asInt??p.asDouble;
+              if(!positiveInteger(value)||Number(value)!==1)throw Error('DASHBOARD_METRICS_MISSING');
+              counter=true;
+            }
           }
           if(metric.name==='factory.stage.duration'&&metric.unit==='ms'){
-            histogram||=(metric.histogram?.dataPoints??[]).some(p=>hasAttributes(p.attributes,expectedLabels)&&positiveInteger(p.count)&&Number(p.count)===1&&nonnegativeNumber(p.sum));
+            for(const p of metric.histogram?.dataPoints??[]){
+              if(!hasAttributes(p.attributes,expectedLabels))continue;
+              if(!positiveInteger(p.count)||Number(p.count)!==1||!nonnegativeNumber(p.sum))throw Error('DASHBOARD_METRICS_MISSING');
+              histogram=true;
+            }
           }
         }
       }
