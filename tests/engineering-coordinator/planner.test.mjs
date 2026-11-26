@@ -114,3 +114,63 @@ test('validates a dense reordered dependency graph before scheduling', () => {
     ...ready.at(-1), dependencies: [...acceptedIds, 251]
   }]).reason, 'DEPENDENCY_UNKNOWN');
 });
+
+const ready = (id, readySince = 0, risk = 'low') => ({id, readySince, risk});
+const policy = (entries, now = 10000) => ({now, agingMs: 1000, riskCeiling: 'medium', ready: entries});
+
+test('ages waiting work into priority zero and breaks ties by readiness, then dependency depth', () => {
+  const settings = config();
+  settings.limits.maxConcurrentLanes = 1;
+  const older = {...task(1), priority: 5};
+  const newer = {...task(2, 'web'), priority: 0};
+  const metadata = [ready(1), ready(2, 4000)];
+  assert.equal(planLanes(settings, [older, newer], [], policy(metadata, 4000)).scheduled[0].id, 2);
+  assert.equal(planLanes(settings, [newer, older], [], policy(metadata, 5000)).scheduled[0].id, 1);
+  const dependent = task(3, 'web', 'approved', ['src/web/3'], [2]);
+  const readySameTime = [ready(1), ready(2), ready(3)];
+  assert.equal(planLanes(settings, [older, newer, dependent], [], policy(readySameTime)).scheduled[0].id, 2);
+  assert.equal(planLanes(settings, [newer, older], [], policy(readySameTime.slice(0, 2))).scheduled[0].id, 1);
+  assert.equal(planLanes(settings, [older, newer]).scheduled[0].id, 2, 'legacy priority sorting is unchanged');
+});
+
+test('reports risk, dependencies, lane and project capacity in deterministic order', () => {
+  const settings = config();
+  settings.limits.maxConcurrentLanes = 1;
+  const tasks = [
+    {...task(1), priority: 0},
+    {...task(2, 'web'), priority: 0},
+    task(3),
+    task(4, 'web', 'approved', ['src/web/4'], [1]),
+    task(5, 'web', 'blocked'),
+    task(6, 'api', 'accepted'),
+    task(7, 'web')
+  ];
+  const meta = [ready(7, 0, 'high'), ready(4, 100, 'medium'), ready(3), ready(2, 5000), ready(1)];
+  assert.deepEqual(planLanes(settings, tasks.reverse(), [], policy(meta)), {
+    shadow: true, scheduled: [{id: 1, lane: 'api', paths: ['src/api/1']}], reason: 'SHADOW_PLAN',
+    blockedTasks: [
+      {id: 2, reason: 'CAPACITY_FULL'},
+      {id: 3, reason: 'LANE_OR_PATH_RESERVED'},
+      {id: 4, reason: 'DEPENDENCY_UNACCEPTED'},
+      {id: 5, reason: 'TASK_BLOCKED'},
+      {id: 7, reason: 'RISK_ABOVE_CEILING'}
+    ]
+  });
+  assert.deepEqual(planLanes(settings, [task(5, 'web', 'blocked')], [], policy([])),
+    {shadow: true, scheduled: [], reason: 'NO_READY_WORK', blockedTasks: [{id: 5, reason: 'TASK_BLOCKED'}]});
+  assert.deepEqual(planLanes(settings, [task(1), task(2)], [], policy([ready(1), ready(2)]))
+    .blockedTasks, [{id: 2, reason: 'LANE_OR_PATH_RESERVED'}]);
+});
+
+test('fails closed on incomplete or malformed scheduling-policy evidence', () => {
+  const validPolicy = policy([ready(1), ready(2)]);
+  const tasks = [task(1), task(2, 'web'), task(3, 'web', 'accepted')];
+  for (const supplied of [
+    null, {...validPolicy, now: -1}, {...validPolicy, agingMs: 0}, {...validPolicy, riskCeiling: 'unknown'},
+    {...validPolicy, ready: new Array(2)}, {...validPolicy, ready: [ready(1), ready(2), ready(3), ready(4)]},
+    policy([]), policy([null, ready(2)]), policy([ready(1), ready(1)]), policy([ready(1), ready(3)]),
+    policy([ready(1), ready(9)]), policy([ready(1), ready(2, 1, 'unknown')]),
+    policy([ready(1), ready(2, -1)]), policy([ready(1), ready(2, 10001)])
+  ]) assert.deepEqual(planLanes(config(), tasks, [], supplied),
+    {shadow: true, scheduled: [], reason: 'SCHEDULING_POLICY_UNKNOWN'});
+});
