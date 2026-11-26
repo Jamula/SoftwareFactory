@@ -15,6 +15,15 @@ test('stop, unhealthy main, active train and malformed candidates',()=>{
  for(const x of [{main:'bad'},{mainHealthy:false},{active:true}]) assert.equal(next({...s,...x}).reason,'MAIN_OR_TRAIN_UNREADY');
  for(const candidates of [null,new Array(1),[null],[Object.create(c)],[{...c,pr:0}],[{...c,head:'bad'}],[{...c,observedHead:'bad'}],[{...c,base:'bad'}],[c,c]]) assert.equal(next({...s,candidates}).reason,'INVALID_CANDIDATES');
 });
+test('candidate arrays reject custom prototypes and extra own keys before array methods',()=>{
+ const hiddenMethod=[c];
+ Object.defineProperty(hiddenMethod,'some',{value(){throw Error('must not run');}});
+ const symbolCandidate=[c];
+ Object.defineProperty(symbolCandidate,Symbol.iterator,{get(){throw Error('must not run');}});
+ const customPrototype=Object.setPrototypeOf([c],{});
+ for(const candidates of [hiddenMethod,symbolCandidate,customPrototype])
+  assert.equal(next({...s,candidates}).reason,'INVALID_CANDIDATES');
+});
 
 import {queueAdapter} from '../../tools/engineering-factory/integration-train.mjs';
 test('protected queue adapter exact-head, no bypass, no merge claim',async()=>{
@@ -79,5 +88,12 @@ test('refuses missing, ambiguous and invalid experiment evidence without invokin
    ...Object.getOwnPropertyDescriptors(changed)});
   assert.deepEqual(compare([sample, {...second, candidate:proof}]), refused('SAMPLE_UNKNOWN'));
  }
+ const symbolPair = [sample, second];
+ Object.defineProperty(symbolPair, Symbol.iterator, {get() {throw Error('must not run');}});
+ const hiddenPair = [sample, second];
+ Object.defineProperty(hiddenPair, 'map', {value() {throw Error('must not run');}});
+ const customPrototype = Object.setPrototypeOf([sample, second], {});
+ for (const pairs of [symbolPair, hiddenPair, customPrototype])
+  assert.deepEqual(compare(pairs), refused('SAMPLE_UNKNOWN'));
 });
 
