@@ -29,7 +29,8 @@ test('explicit local exporters and SDK lifecycle, with no implicit discovery',as
  assert.equal(events[0].autoDetectResources,false);
  assert.deepEqual(events[0].instrumentations,[]);
  assert.deepEqual(events[0].resource,{'service.name':'softwarefactory-shadow'});
- assert.equal(events[0].metricReaders[0].options.exportIntervalMillis,1000);
+ assert.equal(events[0].metricReaders[0].options.exportIntervalMillis,3000);
+ assert.ok(events[0].metricReaders[0].options.exportIntervalMillis>=events[0].metricReaders[0].options.exportTimeoutMillis);
  assert.equal(events[1],'start');
  assert.deepEqual(await sdk.observe('evaluate',async()=>({outcome:'blocked',reason:'POLICY'})),{outcome:'blocked',reason:'POLICY'});
  assert.equal(events[2].body,'factory.stage.completed');

@@ -30,7 +30,7 @@ export async function startLocalSdk(config,load=loadPinnedSdk) {
     resource:api.resourceFromAttributes({'service.name':'softwarefactory-shadow'}),
     instrumentations:[],
     spanProcessors:[new api.SimpleSpanProcessor(new api.OTLPTraceExporter(options('traces')))],
-    metricReaders:[new api.PeriodicExportingMetricReader({exporter:new api.OTLPMetricExporter(options('metrics')),exportIntervalMillis:1000,exportTimeoutMillis:3000})],
+    metricReaders:[new api.PeriodicExportingMetricReader({exporter:new api.OTLPMetricExporter(options('metrics')),exportIntervalMillis:3000,exportTimeoutMillis:3000})],
     logRecordProcessors:[new api.SimpleLogRecordProcessor(new api.OTLPLogExporter(options('logs')))]
   });
   sdk.start();
