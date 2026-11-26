@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {reviewDecision, createReviewProvider} from '../../tools/engineering-coordinator/review-provider.mjs';
+import {reviewDecision, createReviewProvider as createProvider} from '../../tools/engineering-coordinator/review-provider.mjs';
 const target={repository:'example/synthetic',number:1,head:'a'.repeat(40)};
 const observed=(state='needed')=>({...target,reviewState:state});
 const reservation={...target,included:true,overageDisabled:true,reserved:true};
@@ -17,6 +17,7 @@ test('invalid candidates and scoped evidence fail closed',()=>{
  reason(reviewDecision(target,observed('reviewed'),null),'HEAD_REVIEWED');
  reason(reviewDecision(target,observed(),reservation),'SIMULATE_REQUEST');
 });
+const createReviewProvider=(transport,retry,intents={claim:()=>true})=>createProvider(transport,retry,intents);
 const mock=(readReview,simulateRequest)=>({mode:'shadow',readReview,simulateRequest});
 test('only shadow transport, no live request when invalid or no capacity',async()=>{
  const transport=mock(async()=>observed(),async()=>{assert.fail('unexpected request')});
@@ -42,4 +43,17 @@ test('conflict re-read, timeout reconciliation, unknown write never repeated',as
   const p=createReviewProvider(mock(async()=>{if(++reads===1)return observed();if(second===null)throw Error('offline');return second;},async()=>{writes++;if(status===0)throw Error('timeout');return {status}}),retry);
   reason(await p.request(target,reservation),expected);assert.equal(writes,1);
  }
+});
+
+test('durable intent guard fails closed and prevents a repeated write',async()=>{
+ const seen=new Set(); let writes=0;
+ const transport=mock(async()=>observed(),async()=>{writes++;throw Error('timeout')});
+ for(const guard of [null,{}, {claim:null}])assert.throws(()=>createProvider(transport,retry,guard),/INVALID_REVIEW_PROVIDER/);
+ for(const guard of [{claim:()=>false},{claim:()=>{throw Error('offline')}},{claim:()=>1}])
+  reason(await createProvider(transport,retry,guard).request(target,reservation),'INTENT_UNAVAILABLE_OR_CLAIMED');
+ const intents={claim:key=>{if(seen.has(key))return false;seen.add(key);return true;}};
+ reason(await createProvider(transport,retry,intents).request(target,reservation),'REQUEST_OUTCOME_UNKNOWN');
+ reason(await createProvider(transport,retry,intents).request({...target,repository:'Example/Synthetic'},{...reservation,repository:'Example/Synthetic'}),'STALE_OR_UNKNOWN_EVIDENCE');
+ reason(await createProvider(transport,retry,intents).request(target,reservation),'INTENT_UNAVAILABLE_OR_CLAIMED');
+ assert.equal(writes,1);
 });

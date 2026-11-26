@@ -26,9 +26,9 @@ export function reviewDecision(candidate, observed, reservation) {
   return accepted('SIMULATE_REQUEST');
 }
 
-export function createReviewProvider(transport, retry) {
+export function createReviewProvider(transport, retry, intents) {
   if (!transport || transport.mode !== 'shadow' || typeof transport.readReview !== 'function' ||
-      typeof transport.simulateRequest !== 'function' || !retry)
+      typeof transport.simulateRequest !== 'function' || !retry || typeof intents?.claim !== 'function')
     throw new TypeError('INVALID_REVIEW_PROVIDER');
   return Object.freeze({
     async request(candidate, reservation) {
@@ -39,7 +39,10 @@ export function createReviewProvider(transport, retry) {
       if (!observed.ok) return denied('REVIEW_READ_FAILED');
       const decision = reviewDecision(target, observed.value, reservation);
       if (decision.reason !== 'SIMULATE_REQUEST') return decision;
-      const key = [target.repository, target.number, target.head].join(':');
+      const key = [target.repository.toLowerCase(), target.number, target.head].join(':');
+      // The atomic durable claim is consumed before a possible write, including on crash.
+      try { if (intents.claim(key) !== true) return denied('INTENT_UNAVAILABLE_OR_CLAIMED'); }
+      catch { return denied('INTENT_UNAVAILABLE_OR_CLAIMED'); }
       const result = await readAfterUncertainWrite({
         write: idempotencyKey => transport.simulateRequest(target, idempotencyKey),
         read, retry, idempotencyKey: key,

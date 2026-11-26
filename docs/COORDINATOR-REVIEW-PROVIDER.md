@@ -23,3 +23,7 @@ ledger, billing and stop-path verification, scheduling and an authorized authent
 transport. This slice sends no network request, changes no credentials or settings,
 and does not close #8 or enable live review dispatch. Review credits and Actions
 minutes must both be verified before actual use.
+
+## Durable intent fencing
+
+The shadow provider now requires an atomic intent-store adapter before simulation. The SQLite implementation persists a canonical lower-case repository/PR/head key before a possible request, rejects duplicate and unavailable claims, and never automatically clears uncertain intents. Storage is capped at 10,000 entries; reaching that cap stops requests. A crashed or ambiguous request therefore requires explicit reconciliation, not a second write. This is not billing authority: actual credit reservation, stable repository identity, cross-host shared persistence and authenticated transport still require a verified host. The review provider is default-off shadow-only.
