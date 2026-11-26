@@ -83,9 +83,13 @@ jobs:
           output="$(mktemp "$RUNNER_TEMP/softwarefactory-aspire-smoke.XXXXXXXX")"
           certificate="$output.pem"
           archive="$output.zip"
+          data_root="$(mktemp -d "$RUNNER_TEMP/softwarefactory-aspire-data.XXXXXXXX")"
+          export ASPIRE_DASHBOARD_DATA_DIRECTORY="$data_root"
+          export ASPIRE_DASHBOARD_PERSISTENCE_MODE=Run
           cleanup() {
             timeout 30s aspire stop --apphost apphost.cs --non-interactive >/dev/null 2>&1 || true
             rm -f -- "$output" "$certificate" "$archive"
+            rm -rf -- "$data_root"
           }
           trap cleanup EXIT
           dotnet dev-certs https --export-path "$certificate" --format PEM >"$output" 2>&1
@@ -134,12 +138,15 @@ jobs:
             exit 1
           fi
           python tests/engineering-factory/verify-dashboard-export.py "$archive"
+          python tests/engineering-factory/test-dashboard-metric-schema.py
           if ! timeout 30s aspire stop --apphost apphost.cs --non-interactive >"$output" 2>&1; then
             echo "::error::Aspire shutdown failed"
             exit 1
           fi
+          python tests/engineering-factory/inspect-dashboard-metric-schema.py "$data_root"
           trap - EXIT
           rm -f -- "$output" "$certificate" "$archive"
+          rm -rf -- "$data_root"
           echo "Isolated AppHost stopped"
       - name: Upload coverage artifact
         if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
