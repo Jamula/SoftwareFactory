@@ -21,7 +21,7 @@ test('shadow allocation respects both global and repository caps',()=>{
  const a=allocateShadowCapacity(e,scopes,candidates);
  assert.equal(a.reason,'SHADOW_ALLOCATION');assert.equal(a.liveDispatch,false);
  assert.deepEqual(a.selected,[candidates[0],...candidates.slice(2,5)]);
- assert.equal(allocateShadowCapacity(e,[{...scopes[0],active:2}],[candidate(1,1)]).reason,'NO_SCOPED_CAPACITY');
+ assert.equal(allocateShadowCapacity({...e,active:2},[{...scopes[0],active:2}],[candidate(1,1)]).reason,'NO_SCOPED_CAPACITY');
  assert.equal(allocateShadowCapacity(e,scopes,[]).reason,'NO_SCOPED_CAPACITY');
 });
 test('unknown or contradictory evidence never allocates',()=>{
@@ -33,4 +33,16 @@ test('unknown or contradictory evidence never allocates',()=>{
  for(const bad of [null,candidate(3,1),candidate(1,0),{...candidate(1,1),head:0},{...candidate(1,1),head:'bad'}])
   assert.equal(allocateShadowCapacity(e,scopes,[bad]).reason,'CANDIDATE_UNKNOWN');
  assert.equal(allocateShadowCapacity(e,scopes,[candidate(1,1),{...candidate(1,1),head:'b'.repeat(40)}]).reason,'DUPLICATE_CANDIDATE');
+});
+
+
+test('reject scoped active counts exceeding global activity; allow partial scopes',()=>{
+ const candidates=[candidate(1,1),candidate(2,1)];
+ const inconsistent=[scopes[0],{...scopes[1],active:1}];
+ assert.deepEqual(allocateShadowCapacity(e,inconsistent,candidates),{shadow:true,liveDispatch:false,reason:'SCOPE_UNKNOWN',selected:[]});
+ assert.equal(allocateShadowCapacity(e,[{...scopes[0],active:2}],[candidate(1,1)]).reason,'SCOPE_UNKNOWN');
+ assert.deepEqual(allocateShadowCapacity({...e,active:2},scopes,candidates).selected,candidates);
+ assert.deepEqual(allocateShadowCapacity({...e,active:2},inconsistent,candidates).selected,candidates);
+ const max=Number.MAX_SAFE_INTEGER;
+ assert.equal(allocateShadowCapacity({...e,maxActive:max,active:max-1},[{repositoryId:1,maxActive:max,active:max-1},{repositoryId:2,maxActive:max,active:1}],candidates).reason,'SCOPE_UNKNOWN');
 });

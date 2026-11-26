@@ -24,10 +24,14 @@ export function allocateShadowCapacity(e, scopes, candidates) {
  const dense=a=>Array.isArray(a)&&a.length<=250&&Array.from({length:a.length},(_,i)=>Object.hasOwn(a,i)).every(Boolean);
  if(!dense(scopes)||!dense(candidates)||!scopes.length)return denied('SCOPE_UNKNOWN');
  const caps=new Map();
+ // Subtract rather than sum: each count is safe, but an aggregate could overflow.
+ let unaccountedActive=e.active;
  for(const scope of scopes){
   if(!scope||!positive(scope.repositoryId)||!positive(scope.maxActive)||
      !Number.isSafeInteger(scope.active)||scope.active<0||scope.active>scope.maxActive||
      caps.has(scope.repositoryId))return denied('SCOPE_UNKNOWN');
+  if(scope.active>unaccountedActive)return denied('SCOPE_UNKNOWN');
+  unaccountedActive-=scope.active;
   caps.set(scope.repositoryId,scope.maxActive-scope.active);
  }
  const seen=new Set();
