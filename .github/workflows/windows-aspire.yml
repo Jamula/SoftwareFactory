@@ -98,14 +98,7 @@ jobs:
             $null = Invoke-Aspire @('wait','synthetic-shadow','--status','down','--timeout','20','--apphost','apphost.cs') 30
             $logs = Invoke-Aspire @('logs','synthetic-shadow','--apphost','apphost.cs','--non-interactive') 20
             if (-not $logs.Contains('{"scenario":"local-synthetic-stop","state":"blocked","reason":"STOPPED","shadow":true}')) { throw 'STOPPED fixture missing' }
-            if ($logs -notmatch '(?m)(^|\s)LOCAL_SDK_SHUTDOWN_COMPLETE[ \t\r]*
-            $null = Invoke-Aspire @('stop','--apphost','apphost.cs','--non-interactive') 30
-            Write-Host 'Isolated Windows AppHost stopped'
-          } finally {
-            try { $null = Invoke-Aspire @('stop','--apphost','apphost.cs','--non-interactive') 30 } catch { }
-            Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
-          }
-) { throw 'SDK shutdown completion missing' }
+            if ($logs -notmatch '(?m)(^|\s)LOCAL_SDK_SHUTDOWN_COMPLETE[ \t\r]*$') { throw 'SDK shutdown completion missing' }
             Write-Host 'Synthetic resource emitted STOPPED, completed SDK shutdown and exited'
             $null = Invoke-Aspire @('stop','--apphost','apphost.cs','--non-interactive') 30
             Write-Host 'Isolated Windows AppHost stopped'
