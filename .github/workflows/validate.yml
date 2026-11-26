@@ -101,9 +101,10 @@ jobs:
           export PATH="$RUNNER_TEMP/softwarefactory-aspire-tools:$PATH"
           umask 077
           output="$(mktemp "$RUNNER_TEMP/softwarefactory-aspire-smoke.XXXXXXXX")"
+          certificate="$output.pem"
           cleanup() {
             timeout 30s aspire stop --apphost apphost.cs --non-interactive >/dev/null 2>&1 || true
-            rm -f -- "$output"
+            rm -f -- "$output" "$certificate"
           }
           trap cleanup EXIT
           if ! timeout 120s aspire start --apphost apphost.cs --isolated --non-interactive --nologo >"$output" 2>&1; then
@@ -115,6 +116,18 @@ jobs:
             exit 1
           fi
           echo "Aspire reported a loopback HTTPS dashboard login"
+          dashboard="$(grep -Eom1 'https://(localhost|127\.0\.0\.1|\[::1\]):[0-9]+/login\?t=' "$output")"
+          origin="$(printf '%s\n' "$dashboard" | cut -d/ -f1-3)"
+          if ! dotnet dev-certs https --export-path "$certificate" --format PEM >"$output" 2>&1 ||
+             ! challenge="$(curl --silent --show-error --noproxy '*' --max-time 10 --cacert "$certificate" \
+                  --output /dev/null --write-out '%{http_code} %{redirect_url}' "$origin/resources" 2>"$output")"; then
+            echo "::error::Could not verify the dashboard over trusted loopback TLS"
+            exit 1
+          fi
+          case "$challenge" in
+            "302 $origin/login"|"302 $origin/login?"*) echo "Dashboard required login for an unauthenticated HTTPS request" ;;
+            *) echo "::error::Unauthenticated dashboard request did not require login"; exit 1 ;;
+          esac
           if ! timeout 30s aspire resource synthetic-shadow start --apphost apphost.cs --non-interactive >"$output" 2>&1; then
             echo "::error::Synthetic resource could not be started"
             exit 1
@@ -134,7 +147,7 @@ jobs:
             exit 1
           fi
           trap - EXIT
-          rm -f -- "$output"
+          rm -f -- "$output" "$certificate"
           echo "Isolated AppHost stopped"
       - name: Upload coverage artifact
         if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
