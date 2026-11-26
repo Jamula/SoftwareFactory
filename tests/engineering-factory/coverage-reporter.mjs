@@ -8,7 +8,10 @@ const component=path=>relative(root,resolve(root,path)).split(sep).join('/').rep
 export default async function* reporter(events){
  const head=execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim();
  const expectedHead=process.env.FACTORY_EXPECTED_HEAD;
- if(!expectedHead||head!==expectedHead)throw Error('COVERAGE_HEAD_MISMATCH');
+ // CI must supply the independent candidate SHA. Local runs may use the
+ // checkout's HEAD for diagnostic coverage only, never trusted CI evidence.
+ if((process.env.GITHUB_ACTIONS==='true'&&!expectedHead)||(expectedHead&&head!==expectedHead))
+  throw Error('COVERAGE_HEAD_MISMATCH');
  const paths=execFileSync('git',['ls-files','-z','--','tools/engineering-factory/*.mjs','tools/engineering-coordinator/*.mjs'],{encoding:'utf8'}).split('\0').filter(Boolean);
  const expected=paths.map(component);
  let evidence;
@@ -21,5 +24,5 @@ export default async function* reporter(events){
   if(!evidence.valid)throw Error('COVERAGE_EVIDENCE_'+evidence.reason);
  }
  if(!evidence)throw Error('MISSING_COVERAGE_SUMMARY');
- yield JSON.stringify(evidence)+'\n';
+ yield JSON.stringify({...evidence,localDiagnostic:process.env.GITHUB_ACTIONS!=='true'})+'\n';
 }
