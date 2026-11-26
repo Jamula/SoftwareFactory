@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {aggregateStage as aggregate} from '../../tools/engineering-factory/stage-aggregate.mjs';
+import {aggregateStage as aggregate,compareStageWindows}  from '../../tools/engineering-factory/stage-aggregate.mjs';
 const q={repositoryId:1,stage:'review',from:10,to:20,complete:true,source:'synthetic',observedMs:20,nowMs:22,maxAgeMs:10};
 const r={id:'sample-1',repositoryId:1,stage:'review',at:10,duration:5,source:'synthetic'};
 test('bounded window and nearest-rank percentiles',()=>{
@@ -22,4 +22,22 @@ test('freshness is about snapshot acquisition, not historical sample age',()=>{
  assert.equal(aggregate([r],{...q,nowMs:30}).sampleCount,1);
  const oversized=new Array(10001);Object.defineProperty(oversized,0,{get(){throw Error('must not read oversized array');}});
  assert.equal(aggregate(oversized,q).reason,'INVALID_ROWS');
+});
+
+test('compare only equally sized nonoverlapping complete windows with enough samples',()=>{
+ const before={...q,from:10,to:20,observedMs:40,nowMs:40};
+ const after={...before,from:30,to:40};
+ const rows=(query,offset)=>Array.from({length:5},(_,i)=>({...r,id:'row-'+i,at:query.from+i,duration:i+offset}));
+ const a=rows(before,10),b=rows(after,5);
+ const result=compareStageWindows(a,before,b,after);
+ assert.equal(result.state,'synthetic');assert.equal(result.before.sampleCount,5);
+ assert.equal(result.deltaP50,-5);assert.equal(result.deltaP95,-5);
+ assert.equal(compareStageWindows([],before,b,after).reason,'EVIDENCE_UNKNOWN');
+ assert.equal(compareStageWindows(a,before,[],after).reason,'EVIDENCE_UNKNOWN');
+ assert.equal(compareStageWindows(a.slice(0,4),before,b,after).reason,'INSUFFICIENT_SAMPLES');
+ assert.equal(compareStageWindows(a,before,b.slice(0,4),after).reason,'INSUFFICIENT_SAMPLES');
+ for(const change of [{repositoryId:2},{stage:'ci'},{from:15,to:25},{to:41,observedMs:41,nowMs:41}]){
+  const alt={...after,...change};const sample=rows(alt,5).map(row=>({...row,repositoryId:alt.repositoryId,stage:alt.stage}));
+  assert.equal(compareStageWindows(a,before,sample,alt).reason,'WINDOWS_NOT_COMPARABLE');
+ }
 });
