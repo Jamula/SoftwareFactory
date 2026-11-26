@@ -13,7 +13,7 @@ flowchart TD
   E -->|Local OTLP| F[Authenticated Aspire Dashboard]
 ```
 
-The AppHost manages local processes and resource health; the evaluator stays deterministic and free of telemetry side effects. The runner emits telemetry around evaluation, metadata normalization and future queue stages. No actual GitHub mutation or production deployment in this environment.
+The AppHost manages local processes and resource health; the evaluator stays deterministic and free of telemetry side effects. The CLI runner accepts an optional `observe(stage, work)` adapter around synthetic evaluation and the current read-only inventory, issue and pull reconciliation commands. Its default adapter is a no-op; `createSignals` from `telemetry.mjs` can be injected by a trusted local bootstrap. The CLI does not create an SDK provider, exporter, endpoint or credentials. Queue, review, merge and main-verification stages remain uninstrumented until their trusted adapters exist. No actual GitHub mutation or production deployment is enabled.
 
 ## Local setup and acceptance
 
