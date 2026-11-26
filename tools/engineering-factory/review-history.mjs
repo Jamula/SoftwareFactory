@@ -23,17 +23,22 @@ export function normalizeReviewHistory(head, history, repository) {
     if (entry.state === 'COMMENTED') {
       if (!factory || !copilot(reviewer)) continue;
       const previous = byReviewer.get(reviewer);
-      if (previous && previous.state !== 'COMMENTED') continue;
+      if (previous && ['CHANGES_REQUESTED','DISMISSED'].includes(previous.state)) continue;
+      if (previous?.state === 'APPROVED' && (entry.head !== head || entry.summaryDisposition === 'clear')) continue;
       if (entry.head !== head) {
-        byReviewer.delete(reviewer);
+        if (previous?.state !== 'COMMENTED' || previous.summaryDisposition === 'clear') byReviewer.delete(reviewer);
         continue;
       }
-      byReviewer.set(reviewer,{reviewer,head:entry.head,state:'COMMENTED'});
+      // Only an explicitly normalized favorable summary qualifies; missing or
+      // contradictory summary evidence cannot become approval.
+      const summaryDisposition = ['clear','actionable','uncertain'].includes(entry.summaryDisposition) ? entry.summaryDisposition : 'uncertain';
+      byReviewer.set(reviewer,{reviewer,head:entry.head,state:'COMMENTED',summaryDisposition});
       continue;
     }
     // A stale approval cannot supersede an outstanding objection or qualify.
     if (entry.state === 'APPROVED' && entry.head !== head) {
-      if (['APPROVED','COMMENTED'].includes(byReviewer.get(reviewer)?.state)) byReviewer.delete(reviewer);
+      const previous = byReviewer.get(reviewer);
+      if (previous?.state === 'APPROVED' || (previous?.state === 'COMMENTED' && previous.summaryDisposition === 'clear')) byReviewer.delete(reviewer);
       continue;
     }
     byReviewer.set(reviewer,{reviewer,head:entry.head,state:entry.state});

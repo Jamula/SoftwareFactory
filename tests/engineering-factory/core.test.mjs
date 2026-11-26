@@ -116,13 +116,17 @@ test('sparse snapshot evidence fails closed, including mixed valid and missing e
 test('SoftwareFactory accepts only allowlisted current-head independent Copilot review comments', () => {
   const bot='copilot-pull-request-reviewer[bot]';
   const factory={...policy,repository:'Jamula/SoftwareFactory',reviewers:[bot],coverage:{line:98,branch:95}};
-  const review={reviewer:bot,head,state:'COMMENTED'};
+  const review={reviewer:bot,head,state:'COMMENTED',summaryDisposition:'clear'};
   const input={...snapshot,repository:factory.repository,coverage:{head,line:98,branch:95,complete:true},reviews:[review]};
   assert.equal(evaluate(factory,input).reason,'SHADOW_ELIGIBLE');
   for(const change of [
     {reviews:[{...review,head:base}]},
     {reviews:[{...review,reviewer:'untrusted-reviewer'}]},
-    {reviews:[{...review,state:'DISMISSED'}]},
+    {reviews:[{reviewer:bot,head,state:'DISMISSED'}]},
+    {reviews:[{reviewer:bot,head,state:'COMMENTED'}]},
+    {reviews:[{...review,summaryDisposition:'uncertain'}]},
+    {reviews:[{...review,summaryDisposition:'actionable'}]},
+    {reviews:[{...review,summaryDisposition:'unrecognized'}]},
     {reviews:[review,{reviewer:'other-reviewer',head,state:'CHANGES_REQUESTED'}]},
     {author:bot},{agent:bot}
   ]) assert.equal(evaluate(factory,{...input,...change}).reason,'REVIEW_MISSING');
