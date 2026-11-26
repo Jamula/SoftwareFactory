@@ -82,9 +82,10 @@ jobs:
           umask 077
           output="$(mktemp "$RUNNER_TEMP/softwarefactory-aspire-smoke.XXXXXXXX")"
           certificate="$output.pem"
+          archive="$output.zip"
           cleanup() {
             timeout 30s aspire stop --apphost apphost.cs --non-interactive >/dev/null 2>&1 || true
-            rm -f -- "$output" "$certificate"
+            rm -f -- "$output" "$certificate" "$archive"
           }
           trap cleanup EXIT
           dotnet dev-certs https --export-path "$certificate" --format PEM >"$output" 2>&1
@@ -128,12 +129,17 @@ jobs:
             exit 1
           fi
           echo "Synthetic resource emitted STOPPED, completed SDK shutdown and exited"
+          if ! timeout 30s aspire export --apphost apphost.cs --output "$archive" --non-interactive >"$output" 2>&1; then
+            echo "::error::Dashboard export failed"
+            exit 1
+          fi
+          python tests/engineering-factory/verify-dashboard-export.py "$archive"
           if ! timeout 30s aspire stop --apphost apphost.cs --non-interactive >"$output" 2>&1; then
             echo "::error::Aspire shutdown failed"
             exit 1
           fi
           trap - EXIT
-          rm -f -- "$output" "$certificate"
+          rm -f -- "$output" "$certificate" "$archive"
           echo "Isolated AppHost stopped"
       - name: Upload coverage artifact
         if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
