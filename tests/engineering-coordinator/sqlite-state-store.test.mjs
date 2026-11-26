@@ -73,12 +73,27 @@ test('requires the exact work association for all operations on a work-backed la
     assert.equal(store.renew('api', first.generation, first.owner, 1500, 1000, other.workKey, other.workGeneration), null);
     assert.equal(store.checkpoint('api', first.generation, first.owner, {}, 1500, other.workKey, other.workGeneration), false);
     assert.equal(store.release('api', first.generation, first.owner, 1500, other.workKey, other.workGeneration), false);
+    assert.equal(store.checkpoint('api', first.generation + 1, first.owner, {phase: 'stale'}, 1500,
+      first.workKey, first.workGeneration), false);
+    assert.deepEqual(store.get('api').payload, {});
     assert.equal(store.get('api').leaseUntil, 2000);
     const next = store.claim('docs', 'worker-b', 2000, 1000, 4, first.workKey);
     assert.equal(next.workGeneration, 2);
     assert.equal(store.checkpoint('api', first.generation, first.owner, {}, 2001), false);
     assert.equal(store.renew('api', first.generation, first.owner, 2001, 1000, first.workKey, first.workGeneration), null);
   } finally { store.close(); }
+}));
+
+test('rolls back a failed association upgrade and permits recovery', () => withDb(filename => {
+  const db = new DatabaseSync(filename);
+  db.exec('CREATE TABLE coordinator_lanes (lane_id TEXT PRIMARY KEY)');
+  assert.throws(() => createSQLiteStateStore(filename));
+  assert.equal(db.prepare("SELECT name FROM sqlite_master WHERE name='coordinator_lane_work'").get(), undefined);
+  db.exec('DROP TABLE coordinator_lanes');
+  db.close();
+  const recovered = createSQLiteStateStore(filename);
+  assert.equal(recovered.claim('api', 'worker', 1000, 1000).generation, 1);
+  recovered.close();
 }));
 
 test('upgrading old state fences unknown in-flight associations until expiry', () => withDb(filename => {
