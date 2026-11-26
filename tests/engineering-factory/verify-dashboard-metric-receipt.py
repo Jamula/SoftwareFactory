@@ -42,6 +42,7 @@ def verify(conn):
         if not dimensions:
             raise ValueError("missing dimension")
         period = None
+        histogram_sum = None
         recorded_dimension = None
         for (dimension_id,) in dimensions:
             attrs = bounded(conn, """
@@ -81,6 +82,9 @@ def verify(conn):
                         raise ValueError("histogram count")
                     if type(total) not in (float, int) or not math.isfinite(total) or total < 0:
                         raise ValueError("histogram sum")
+                    if histogram_sum is not None and total != histogram_sum:
+                        raise ValueError("contradictory histogram sum")
+                    histogram_sum = total
                     if histogram_start is not None and histogram_start != start:
                         raise ValueError("histogram aggregation period")
         if period is None:
@@ -104,7 +108,24 @@ def verify_run(root):
     with closing(sqlite3.connect(db.as_uri() + "?mode=ro", uri=True, timeout=2)) as conn:
         conn.execute("PRAGMA query_only=ON")
         conn.execute("PRAGMA trusted_schema=OFF")
-        return verify(conn)
+        result = verify(conn)
+        # Temporary schema-encoding evidence, restricted to fixed synthetic
+        # instruments. Only small integer discriminators are emitted.
+        types = bounded(conn, """
+            SELECT DISTINCT i.instrument_name, i.instrument_type, p.point_type
+            FROM telemetry_metric_instruments i
+            JOIN telemetry_metric_dimensions d ON d.instrument_id=i.instrument_id
+            JOIN telemetry_metric_points p ON p.dimension_id=d.dimension_id
+            WHERE i.instrument_name IN (?, ?) AND (COALESCE(p.flags,0) & 1)=0
+            ORDER BY i.instrument_name, i.instrument_type, p.point_type
+            """, NAMES, limit=8)
+        if not types or any(name not in NAMES or type(kind) is not int or
+                            type(point) is not int or not 0 <= kind <= 255 or
+                            not 0 <= point <= 255 for name, kind, point in types):
+            raise ValueError("unknown discriminator encoding")
+        for name, kind, point in types:
+            print(f"Metric type encoding: {name} instrument={kind} point={point}")
+        return result
 
 if __name__ == "__main__":
     try:

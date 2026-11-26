@@ -41,6 +41,7 @@ class Receipt(unittest.TestCase):
             "UPDATE telemetry_metric_points SET integer_value=2 WHERE dimension_id=1",
             "UPDATE telemetry_metric_points SET double_value=2 WHERE dimension_id=1",
             "UPDATE telemetry_metric_points SET histogram_count=2 WHERE dimension_id=2",
+            "INSERT INTO telemetry_metric_points VALUES(2,100,300,NULL,NULL,8.5,1,0,100)",
             "UPDATE telemetry_metric_dimension_attributes SET attribute_value='eligible' WHERE attribute_key='outcome'",
             "UPDATE telemetry_resources SET resource_name='wrong'",
             "INSERT INTO telemetry_metric_points VALUES(1,201,300,1,NULL,NULL,NULL,0,NULL)",
