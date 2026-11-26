@@ -1,7 +1,22 @@
 const sha = s => typeof s === 'string' && /^[a-f0-9]{40}$/.test(s);
 const token = s => typeof s === 'string' && /^[a-z0-9][a-z0-9-]*$/.test(s);
-const dense = a => Array.isArray(a) && Object.keys(a).length === a.length &&
-  Array.from({length:a.length},(_,i)=>Object.hasOwn(a,i)).every(Boolean);
+const exactArray = (value, max = 500) => {
+  if (types.isProxy(value) || !Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype)
+    return false;
+  const length = value.length;
+  if (length > max) return false;
+  const keys = Reflect.ownKeys(value);
+  if (keys.length !== length + 1) return false;
+  const lengthDescriptor = Object.getOwnPropertyDescriptor(value, 'length');
+  if (!lengthDescriptor || !Object.hasOwn(lengthDescriptor, 'value') || lengthDescriptor.value !== length)
+    return false;
+  for (let i = 0; i < length; i++) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, String(i));
+    if (!descriptor || !Object.hasOwn(descriptor, 'value')) return false;
+  }
+  return true;
+};
+const dense = a => exactArray(a);
 const record = (v, keys) => v !== null && typeof v === 'object' && !Array.isArray(v) && keys.every(k=>Object.hasOwn(v,k));
 const blocked = reason => ({state:'blocked',reason});
 export function routeContract(catalog, request) {
@@ -28,10 +43,14 @@ const repository = value => typeof value === 'string' && value.length <= 160 &&
 const path = value => typeof value === 'string' && value.length <= 240 &&
   /^[a-zA-Z0-9_.-]+(?:\/[a-zA-Z0-9_.-]+)*$/.test(value) &&
   value.split('/').every(part => part !== '.' && part !== '..');
-const list = (value, max, valid) => !types.isProxy(value) && Array.isArray(value) &&
-  value.length <= max && Object.keys(value).length === value.length &&
-  Array.from({length: value.length}, (_, i) => Object.getOwnPropertyDescriptor(value, String(i)))
-    .every(item => item && Object.hasOwn(item, 'value') && valid(item.value));
+const list = (value, max, valid) => {
+  if (!exactArray(value, max)) return false;
+  for (let i = 0; i < value.length; i++) {
+    const item = Object.getOwnPropertyDescriptor(value, String(i));
+    if (!item || !Object.hasOwn(item, 'value') || !valid(item.value)) return false;
+  }
+  return true;
+};
 const containsPath = (prefix, changed) => changed === prefix || changed.startsWith(prefix + '/');
 const unique = values => new Set(values).size === values.length;
 
