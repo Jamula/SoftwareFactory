@@ -1,0 +1,13 @@
+{
+  "profiles": {
+    "https": {
+      "applicationUrl": "https://localhost:18888",
+      "environmentVariables": {
+        "ASPIRE_DASHBOARD_OTLP_HTTP_ENDPOINT_URL": "https://127.0.0.1:18890",
+        "ASPIRE_DASHBOARD_UNSECURED_ALLOW_ANONYMOUS": "false",
+        "ASPIRE_ALLOW_UNSECURED_TRANSPORT": "false",
+        "ASPIRE_RESOURCE_SERVICE_ENDPOINT_URL": "https://localhost:18891"
+      }
+    }
+  }
+}
