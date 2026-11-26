@@ -1,32 +1,113 @@
 # SoftwareFactory delivery roadmap
 
-The first operational milestone is one repository that can take an approved issue through implementation, independent review, protected integration, and verified acceptance without a person advancing routine steps. Prove that loop on SoftwareFactory before expanding it to consumers. Optimize for comparable accepted work per day and cost per accepted outcome.
+The first unattended pilot takes an approved issue through implementation, independent review, protected integration, and verified acceptance without a person advancing routine steps. Prove that loop on SoftwareFactory before expanding it to consumers. Optimize for comparable accepted work per day and cost per accepted outcome.
 
 ## Starting point · November 25, 2026 PT
 
 The shared foundation is tracked in [#1](https://github.com/Jamula/SoftwareFactory/issues/1) (closed). The portable coordinator, durable event journal, critical-path scheduler, shadow review provider, synthetic quota allocation and fresh-evidence reconciliation have merged ([#50](https://github.com/Jamula/SoftwareFactory/pull/50), [#59](https://github.com/Jamula/SoftwareFactory/pull/59), [#60](https://github.com/Jamula/SoftwareFactory/pull/60), [#61](https://github.com/Jamula/SoftwareFactory/pull/61), [#63](https://github.com/Jamula/SoftwareFactory/pull/63), [#64](https://github.com/Jamula/SoftwareFactory/pull/64)). They supply pieces of the delivery loop. The pilot validator has synthetic repeatability tests ([#65](https://github.com/Jamula/SoftwareFactory/pull/65)). Unattended delivery, real provider capacity and end-to-end cost still require evidence.
 
-M02 has native coverage measurement and hosted Linux and Windows Aspire runtime checks. The SDK work in [#73](https://github.com/Jamula/SoftwareFactory/pull/73) exercises actual pinned exporters against a synthetic receiver. The remaining integration proof is a trace, metric and correlated log received by the authenticated Aspire dashboard for the same synthetic workload. A dedicated workstation is optional. The issue audits record the remaining quality and runtime evidence ([#4](https://github.com/Jamula/SoftwareFactory/issues/4), [#17](https://github.com/Jamula/SoftwareFactory/issues/17)).
+M02 has native coverage measurement and hosted Linux and Windows Aspire runtime checks. The SDK work in [#73](https://github.com/Jamula/SoftwareFactory/pull/73) exercises actual pinned exporters against a synthetic receiver. [PR #78](https://github.com/Jamula/SoftwareFactory/pull/78) adds dashboard-side trace and log checks. Full acceptance also requires dashboard-side metric receipt for the same synthetic workload. A dedicated workstation is optional. The issue audits record the remaining quality and runtime evidence ([#4](https://github.com/Jamula/SoftwareFactory/issues/4), [#17](https://github.com/Jamula/SoftwareFactory/issues/17)).
 
-## Delivery order and exit evidence
+## Milestones in delivery order
 
-Existing issue and milestone IDs remain the tracking keys. The order below governs remaining work. Dates in earlier plans are historical estimates. Advance on observed exit evidence. An issue spanning several steps stays open until its full acceptance criteria are met.
+M01 is the delivered foundation. **M02 is the first open milestone.** The numbers below govern the work queue and match the [GitHub milestones](https://github.com/Jamula/SoftwareFactory/milestones) and issue titles. Each parent ends with a capability someone can use and evidence that demonstrates it. Record that evidence on its tracking issues before closing the milestone. A merged PR can satisfy one step while the parent remains open.
 
-| Order | Milestone and issues | Evidence required to advance |
+Follow the sub-milestones from top to bottom within each parent. Numbers set priority among eligible items. The critical path to the first unattended factory is **M02 → M03 → M04 → M05**. After M05, M06 measurement and M07 adoption can proceed independently. Both M08 and M09 depend on M07 and their own repository's readiness. Family Hub's freeze does not hold up Spellbook or factory improvements.
+
+### M01 · Reusable factory foundation
+
+**Value at completion.** A maintainer can run the shared evaluator on a synthetic project and inspect a repeatable policy decision.
+
+| Step | Work and evidence | Tracking |
 | --- | --- | --- |
-| 1 | **M02 · Accept the factory's own build** — [#4](https://github.com/Jamula/SoftwareFactory/issues/4), [#17](https://github.com/Jamula/SoftwareFactory/issues/17), telemetry integration from [#9](https://github.com/Jamula/SoftwareFactory/issues/9) | Complete the SDK PR and dashboard receipt evidence on the standard hosted Linux and Windows path. Retain the pinned build, full native tests, source coverage counts, security and review evidence for the candidate and successful validation on merged main. Exercise denial of stale evidence and open findings. |
-| 2 | **M03 · Rehearse one complete decision in shadow** — [#5](https://github.com/Jamula/SoftwareFactory/issues/5), [#6](https://github.com/Jamula/SoftwareFactory/issues/6), [#8](https://github.com/Jamula/SoftwareFactory/issues/8), [#9](https://github.com/Jamula/SoftwareFactory/issues/9) | Follow one approved issue through fresh event reads, dependency/ownership selection, a durable lease, independent review, merge eligibility and main verification. Link the evidence across stages. Replay duplicate and out-of-order events, head changes, findings, failed main and restart. Show one owner per lane, zero live mutations, measured queue and decision times, and rejection of stale or untrusted evidence. |
-| 3 | **M03 · Make execution affordable and recoverable** — [#7](https://github.com/Jamula/SoftwareFactory/issues/7), operational parts of #5–#9, minimum failure diagnosis from [#15](https://github.com/Jamula/SoftwareFactory/issues/15) and serialized integration from [#16](https://github.com/Jamula/SoftwareFactory/issues/16) | Verify the supported provider, existing identity, included allowance, overage prevention, cancellation and repository cap. Demonstrate reservation/reconciliation, bounded retries, read-after-uncertain-write, stop and orphan recovery. Identify the actual event receiver, runner, durable state and restart owner. Verify the existing unified hourly coordinator's responsibilities and use one reconcile owner. Exercise the complete dispatch–repair–review–merge path with mocks before seeking live authority. |
-| 4 | **M04 · Prove unattended SoftwareFactory delivery** — [#10](https://github.com/Jamula/SoftwareFactory/issues/10) | After separate bounded activation authorization, complete **three independently accepted small issues**, including actionable review feedback and overlapping candidates. Each starts at approved and ready, and ends with a protected squash, healthy main and verified issue acceptance. Show zero routine human interventions, zero unauthorized writes or incremental spend, and no duplicate work. Record elapsed time, retries, cost and interventions for every attempt, including failures. |
-| 5 | **M08 minimum → M05 · Repeat on a second repository** — portable onboarding [#13](https://github.com/Jamula/SoftwareFactory/issues/13), then FamilyTree [#36](https://github.com/Jamula/SoftwareFactory/issues/36) | Before adoption, test the immutable factory pin, independent policy and rollback on two synthetic profiles. After M04 acceptance, verify FamilyTree #128/#120, its ownership, coverage, capacity and separate authorization. Demonstrate its own shadow checks, rollback and bounded unattended issue-to-healthy-main cycle. Keep the reusable core in SoftwareFactory. |
-| 6 | **M06/M07 · Expand independently** — Spellbook [#11](https://github.com/Jamula/SoftwareFactory/issues/11), Family Hub [#12](https://github.com/Jamula/SoftwareFactory/issues/12), remaining M08 catalog under #13 | After M04/M05, authorize and pin each consumer independently. Preserve Spellbook's 97/90 app gates, WebKit/iOS checks and two-agent cap. Family Hub requires confirmed repository identity, lifted migration freeze, strict up-to-date checks and formal independent approval. Either consumer can wait without delaying the other. |
-| 7 | **M09 · Scale the measured bottleneck** — routing [#14](https://github.com/Jamula/SoftwareFactory/issues/14), validation [#15](https://github.com/Jamula/SoftwareFactory/issues/15), integration trains [#16](https://github.com/Jamula/SoftwareFactory/issues/16), historical dashboard [#18](https://github.com/Jamula/SoftwareFactory/issues/18) | Start matched experiments once comparable outcomes exist. Change one constraint at a time. Keep a change when it improves accepted throughput or latency while preserving quality, keeping rework and cost per accepted outcome at or below baseline, and staying within verified capacity. Report the 2×, 5×, 10×, 15×, 20× and 25× checkpoints against a reproducible baseline. Independent experiments can overlap consumer rollout. |
+| M01.01 | Run the shared evaluator using the documented quickstart and synthetic policy. | [#1](https://github.com/Jamula/SoftwareFactory/issues/1) |
+| M01.02 | Use the shared repository, policy and contribution guides to reproduce the result. | [Quickstart](QUICKSTART.md) |
 
-### Parallel work that shortens the critical path
+### M02 · Trust each factory build
 
-- **While M02 closes**, collect baseline GitHub timings (#9 T01–T03 and the first read-only #18 report). Record missing ready/accepted timestamps explicitly. Link #9 T04 telemetry to #17. Give the SDK and CI files one owner each. Check the availability of provider and quota evidence early so an external dependency is visible before M04.
-- **While the M03 event and lease work is integrated**, rehearse review remediation and post-merge failure handling on separate fixtures. Implement only the #15/#16 pieces the self-pilot needs first. Start the two synthetic onboarding profiles when the coordinator contracts stabilize.
-- **After the self-pilot**, prioritize the stage causing the most verified delay or rework. If independent review dominates, batch coherent fixes before requesting review on the new head. If validation dominates, use trusted change selection for early feedback and verified cache identity. Preserve full required acceptance and security checks.
+**Value at completion.** A maintainer can decide whether a change is safe to integrate and use the authenticated local dashboard to diagnose its execution.
+
+| Step | Work and evidence | Tracking |
+| --- | --- | --- |
+| M02.01 | Validate the candidate source, trusted check producers, coverage counts and independent review. Exercise stale or missing evidence and unresolved findings. | [#4](https://github.com/Jamula/SoftwareFactory/issues/4) |
+| M02.02 | Run the pinned synthetic workload on hosted Linux and Windows. Show a trace, a metric and a correlated log from the same workload at the authenticated Aspire dashboard. | [#17](https://github.com/Jamula/SoftwareFactory/issues/17), [#9](https://github.com/Jamula/SoftwareFactory/issues/9) |
+| M02.03 | Integrate through existing protections and verify the squash commit on main. Link the candidate, checks, review, dashboard receipt and healthy main so another maintainer can reproduce the decision. | [#4](https://github.com/Jamula/SoftwareFactory/issues/4), [#17](https://github.com/Jamula/SoftwareFactory/issues/17) |
+
+### M03 · A queue that explains its decisions
+
+**Value at completion.** An operator can inspect an approved issue and see what can run next, who owns it, why it is blocked and what changed after a restart.
+
+| Step | Work and evidence | Tracking |
+| --- | --- | --- |
+| M03.01 | Read fresh issue, PR, review, check and main events in read-only shadow mode. Record trusted origin, repository and candidate. | [#5](https://github.com/Jamula/SoftwareFactory/issues/5) |
+| M03.02 | Order ready work by dependencies and file ownership. Recover a durable lease on restart and demonstrate duplicate and out-of-order event handling. | [#6](https://github.com/Jamula/SoftwareFactory/issues/6) |
+| M03.03 | Show the eligibility or blocking reason for a real candidate using its independent review, coverage, protection and base evidence. Rehearse a changed head and failed main. | [#8](https://github.com/Jamula/SoftwareFactory/issues/8) |
+| M03.04 | Publish a repeatable read-only report of queue and stage times with issue links, sample counts and missing data. Demonstrate the whole shadow decision with zero repository mutations. | [#9](https://github.com/Jamula/SoftwareFactory/issues/9), [#18](https://github.com/Jamula/SoftwareFactory/issues/18) |
+
+### M04 · Dispatch within budget and recover safely
+
+**Value at completion.** Before activation, an operator can use the factory to decide whether an approved job fits verified included capacity and recover interrupted work without assigning it twice.
+
+| Step | Work and evidence | Tracking |
+| --- | --- | --- |
+| M04.01 | Verify a supported provider, the existing identity, included allowance, overage control, cancellation and repository caps. Demonstrate that unknown or exhausted capacity blocks dispatch. | [#7](https://github.com/Jamula/SoftwareFactory/issues/7) |
+| M04.02 | Identify the event receiver, runner, durable store and restart owner. Account for the existing hourly coordinator. Exercise quota reservation, cancellation, stale leases and restart under concurrency in dry run. | [#7](https://github.com/Jamula/SoftwareFactory/issues/7), [#6](https://github.com/Jamula/SoftwareFactory/issues/6) |
+| M04.03 | Rehearse a failed check, review finding, revised head, competing merges and failed main. Record bounded repairs, read-after-uncertain-write, serialized integration and stop/rollback. Show one reservation and one disposition per job. | [#5](https://github.com/Jamula/SoftwareFactory/issues/5), [#7](https://github.com/Jamula/SoftwareFactory/issues/7), [#8](https://github.com/Jamula/SoftwareFactory/issues/8), [#15](https://github.com/Jamula/SoftwareFactory/issues/15), [#16](https://github.com/Jamula/SoftwareFactory/issues/16) |
+
+### M05 · Unattended SoftwareFactory delivery
+
+**Value at completion.** Three real SoftwareFactory issues reach verified acceptance with zero routine human interventions and $0 incremental spend.
+
+| Step | Work and evidence | Tracking |
+| --- | --- | --- |
+| M05.01 | Verify readiness and obtain the separate bounded authorization for this repository. Confirm the effective checks, queue or serialized equivalent, quota, stop control and rollback. | [#10](https://github.com/Jamula/SoftwareFactory/issues/10) |
+| M05.02 | Deliver one approved issue from ready through implementation, independent review, protected squash and verified main. Retain the receipt and verify the issue's acceptance criteria. | [#10](https://github.com/Jamula/SoftwareFactory/issues/10) |
+| M05.03 | Complete at least two more independently accepted issues. Across the three, include a review-fix cycle and parallel candidates. Publish timings, human touches, failures, quota use and attributable cost for the full cohort. | [#10](https://github.com/Jamula/SoftwareFactory/issues/10) |
+
+### M06 · Improve delivery speed at the same cost
+
+**Value at completion.** Maintainers can identify the largest measured delay and use a verified improvement that preserves quality and cost per accepted outcome.
+
+| Step | Work and evidence | Tracking |
+| --- | --- | --- |
+| M06.01 | Use the early baseline to provide a historical view of comparable accepted outcomes, stage delays, rework, human interventions and actual cost, with isolated views for each authorized repository. Show provenance and unknowns. | [#18](https://github.com/Jamula/SoftwareFactory/issues/18), [#9](https://github.com/Jamula/SoftwareFactory/issues/9) |
+| M06.02 | Classify failures and benchmark full CI against safe fast feedback, identical-input reuse or bounded repair. Keep all required platform and security verification. | [#15](https://github.com/Jamula/SoftwareFactory/issues/15) |
+| M06.03 | Use a fresh repository and ownership map to decompose approved work and route specialists within verified capacity. Compare exploration time and rework. | [#14](https://github.com/Jamula/SoftwareFactory/issues/14) |
+| M06.04 | Test serialized integration trains and allocation on comparable cohorts. Adopt the measured improvement with a rollback path. Report the 2×, 5×, 10×, 15×, 20× and 25× experiments with sample sizes; retain full issue acceptance for the stretch program. | [#16](https://github.com/Jamula/SoftwareFactory/issues/16) |
+
+### M07 · An independent FamilyTree delivery
+
+**Value at completion.** FamilyTree can adopt or roll back a pinned factory version and complete a separately authorized issue using its own policy.
+
+| Step | Work and evidence | Tracking |
+| --- | --- | --- |
+| M07.01 | Deliver a reusable onboarding package, component catalog, immutable adoption and rollback pins. Demonstrate two synthetic project profiles with different policies. | [#13](https://github.com/Jamula/SoftwareFactory/issues/13) |
+| M07.02 | Verify FamilyTree #128/#120, identity, ownership, quota, stricter local gates and rollback. Exercise the pinned adapter in shadow with synthetic data. | [#36](https://github.com/Jamula/SoftwareFactory/issues/36) |
+| M07.03 | After separate authorization, complete a bounded unattended FamilyTree issue through healthy main. Verify 95/90 or stronger local coverage and record throughput and cost. | [#36](https://github.com/Jamula/SoftwareFactory/issues/36) |
+
+### M08 · Spellbook can evaluate its own changes
+
+**Value at completion.** Spellbook maintainers can run a pinned read-only adapter and see a trustworthy decision under their app, WebKit and iOS requirements.
+
+| Step | Work and evidence | Tracking |
+| --- | --- | --- |
+| M08.01 | Verify Spellbook identity, included capacity, existing two-agent cap, 97/90 app coverage and native platform checks. | [#11](https://github.com/Jamula/SoftwareFactory/issues/11) |
+| M08.02 | Run the pinned adapter against a candidate. Show the reason for its decision, stale-head denial, independent review, stop and rollback under Spellbook's own policy. Any live operation needs its own authorization. | [#11](https://github.com/Jamula/SoftwareFactory/issues/11) |
+
+### M09 · Family Hub can evaluate changes after migration
+
+**Value at completion.** After the migration freeze lifts, Family Hub maintainers can inspect a pinned review decision under their own branch protections and production isolation.
+
+| Step | Work and evidence | Tracking |
+| --- | --- | --- |
+| M09.01 | Confirm the repository identity, owner release of the migration freeze, exact-head formal approval requirement and strict up-to-date checks. | [#12](https://github.com/Jamula/SoftwareFactory/issues/12) |
+| M09.02 | Demonstrate the pinned shadow adapter, denial of stale or dismissed approval, and rollback with production isolated. Any live operation needs its own authorization. | [#12](https://github.com/Jamula/SoftwareFactory/issues/12) |
+
+### Work that can start early
+
+During M02, collect read-only GitHub baseline data for M03.04 and verify whether included provider capacity evidence is available for M04.01. During M03, develop isolated repair fixtures for M04.03 and synthetic onboarding examples for M07.01. Report historical PR timings as proxies until readiness and verified outcome timestamps exist. Keep one owner for each change and reuse the existing reporting cadence.
+
+An issue spanning several steps has one primary milestone in GitHub. Its links in the tables identify the steps it also supports. For example, #9 supplies M02 telemetry and M06 measurements, and #15 supplies M04 repair diagnostics before its M06 optimization work. Keep the full issue criteria when assessing closure. Older milestone references in historical comments, merged PRs and issue narratives use the previous numbering.
 
 ## Human decisions and operating limits
 
