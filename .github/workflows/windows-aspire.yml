@@ -80,7 +80,16 @@ jobs:
               try { $p.Kill($true) } catch { }
               throw 'Aspire command timed out'
             }
-            if ($p.ExitCode -ne 0) { throw 'Aspire command failed' }
+            if ($p.ExitCode -ne 0) {
+              # Never print raw CLI output: it may contain local credentials.
+              $category = 'unclassified'
+              $diagnostic = (Get-Content -Raw $err -ErrorAction SilentlyContinue) + (Get-Content -Raw $out -ErrorAction SilentlyContinue)
+              if ($diagnostic -match '(?i)certificate|SSL|TLS|trust chain') { $category = 'tls-or-certificate' }
+              elseif ($diagnostic -match '(?i)unauthorized|forbidden|authentication|401|403') { $category = 'authentication' }
+              elseif ($diagnostic -match '(?i)unrecognized|unknown option|invalid argument') { $category = 'arguments' }
+              elseif ($diagnostic -match '(?i)access is denied|permission denied|sharing violation') { $category = 'file-access' }
+              throw "Aspire $($arguments[0]) failed (exit $($p.ExitCode), category $category)"
+            }
             Get-Content -Raw $out
           }
           try {
@@ -99,7 +108,8 @@ jobs:
             $null = Invoke-Aspire @('wait','synthetic-shadow','--status','down','--timeout','20','--apphost','apphost.cs') 30
             $logs = Invoke-Aspire @('logs','synthetic-shadow','--apphost','apphost.cs','--non-interactive') 20
             if (-not $logs.Contains('{"scenario":"local-synthetic-stop","state":"blocked","reason":"STOPPED","shadow":true}')) { throw 'STOPPED fixture missing' }
-            Write-Host 'Synthetic resource emitted STOPPED and exited'
+            if ($logs -notmatch '(?m)(^|\s)LOCAL_SDK_SHUTDOWN_COMPLETE[ \t\r]*$') { throw 'SDK shutdown completion missing' }
+            Write-Host 'Synthetic resource emitted STOPPED, completed SDK shutdown and exited'
             $null = Invoke-Aspire @('export','--apphost','apphost.cs','--output',$archive,'--non-interactive') 30
             python tests/engineering-factory/verify-dashboard-export.py $archive
             if ($LASTEXITCODE -ne 0) { throw 'Dashboard trace/log readback failed' }

@@ -124,7 +124,11 @@ jobs:
             echo "::error::Expected synthetic STOPPED result was not observed"
             exit 1
           fi
-          echo "Synthetic resource emitted STOPPED and exited"
+          if ! grep -Eq '(^|[[:space:]])LOCAL_SDK_SHUTDOWN_COMPLETE[[:space:]]*$' "$output"; then
+            echo "::error::SDK shutdown completion was not observed"
+            exit 1
+          fi
+          echo "Synthetic resource emitted STOPPED, completed SDK shutdown and exited"
           if ! timeout 30s aspire export --apphost apphost.cs --output "$archive" --non-interactive >"$output" 2>&1; then
             echo "::error::Dashboard export failed"
             exit 1

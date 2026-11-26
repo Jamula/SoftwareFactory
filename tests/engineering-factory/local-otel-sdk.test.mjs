@@ -28,7 +28,14 @@ test('explicit private providers and SDK lifecycle, with no global registration'
   metrics:{getMeter(){assert.fail('global meter');}},logs:{getLogger(){assert.fail('global logger');}}
  };
  const sdk=await startLocalSdk(configuration,async()=>api);
- assert.deepEqual(opts,['traces','metrics','logs'].map(s=>({url:'http://127.0.0.1:4318/v1/'+s,headers:{'x-otlp-api-key':'synthetic'},timeoutMillis:3000})));
+ assert.deepEqual(opts.map(({httpAgentOptions,...rest})=>rest),['traces','metrics','logs'].map(s=>({url:'http://127.0.0.1:4318/v1/'+s,headers:{'x-otlp-api-key':'synthetic'},timeoutMillis:3000})));
+ for(const options of opts){
+  for(const protocol of ['http:','https:']){
+   const agent=await options.httpAgentOptions(protocol);
+   try{assert.equal(agent.protocol,protocol);assert.equal(agent.options.keepAlive,false);assert.equal(agent.options.rejectUnauthorized,true);}
+   finally{agent.destroy();}
+  }
+ }
  assert.ok(configs.every(c=>c.resource['service.name']==='softwarefactory-shadow'));
  assert.equal(configs[1].readers[0].options.exportIntervalMillis,3000);
  assert.ok(configs[1].readers[0].options.exportIntervalMillis>=configs[1].readers[0].options.exportTimeoutMillis);
@@ -153,15 +160,21 @@ test('shutdown bounds a hung observation, closes providers and does not rerun ac
  } finally {release();await work;}
 });
 
-for (const mode of ['reject', 'unanswered']) {
+for (const mode of ['reject', 'unanswered', 'streaming']) {
  test('real local exporters tolerate '+mode+' responses without changing work', {timeout:15000}, async()=>{
-  const seen=new Set();
+  const seen=new Set(),closed=new Set();
   const server=createServer(async(req,res)=>{
    let bytes=0;
    for await (const chunk of req) bytes+=chunk.length;
    assert.ok(bytes>0,'export request must contain protobuf');
    if(req.headers['x-otlp-api-key']==='synthetic')seen.add(req.url);
    if(mode==='reject'){res.writeHead(400);res.end();}
+   if(mode==='streaming'){
+    res.writeHead(200,{'content-type':'application/x-protobuf'});
+    res.write(Buffer.from([0]));
+    const interval=setInterval(()=>res.write(Buffer.from([0])),50);
+    res.once('close',()=>{clearInterval(interval);closed.add(req.url);});
+   }
   });
   server.listen(0,'127.0.0.1');await once(server,'listening');
   let sdk;
@@ -178,7 +191,14 @@ for (const mode of ['reject', 'unanswered']) {
    const result=await sdk.shutdown().then(()=>null,error=>error);
    assert.ok(performance.now()-start<10000,'shutdown exceeded 10s test bound');
    if(result!==null)assert.ok(result instanceof AggregateError && result.message==='LOCAL_SDK_SHUTDOWN_FAILED');
-   assert.deepEqual([...seen].sort(),['/v1/logs','/v1/metrics','/v1/traces']);
+   const expectedPaths=['/v1/logs','/v1/metrics','/v1/traces'];
+   assert.deepEqual([...seen].sort(),expectedPaths);
+   if(mode==='streaming'){
+    // Observe the remote side closing, not merely a local promise settling.
+    const deadline=performance.now()+1000;
+    while(closed.size<3 && performance.now()<deadline)await new Promise(resolve=>setTimeout(resolve,10));
+    assert.deepEqual([...closed].sort(),expectedPaths);
+   }
    sdk=null;
   }finally{
    server.closeAllConnections();
@@ -187,3 +207,13 @@ for (const mode of ['reject', 'unanswered']) {
   }
  });
 }
+
+test('TLS verification override refuses authenticated HTTPS export before loading the SDK',async()=>{
+ const key='NODE_TLS_REJECT_UNAUTHORIZED',old=process.env[key];
+ process.env[key]='0';
+ try{
+  await assert.doesNotReject(async()=>{
+   assert.equal(await startLocalSdk({...configuration,endpoint:'https://127.0.0.1:4318'},async()=>assert.fail('must not load')),null);
+  });
+ }finally{if(old===undefined)delete process.env[key];else process.env[key]=old;}
+});
