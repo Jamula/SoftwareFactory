@@ -1,6 +1,9 @@
 name: Factory shadow reconciliation
 on:
   workflow_dispatch:
+  # Best-effort recovery inventory; primary triggers remain event-driven.
+  schedule:
+    - cron: '3,13,23,33,43,53 * * * *'
   issues:
     types: [opened, edited, labeled, unlabeled, closed, reopened]
   pull_request_target:

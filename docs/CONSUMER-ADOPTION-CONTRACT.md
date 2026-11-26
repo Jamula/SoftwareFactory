@@ -14,7 +14,7 @@ Contributes to #13, #10, #36, #11, #12. No consumer is activated.
 
 ## Independent pilot lanes
 - SoftwareFactory: first demonstrate synthetic reusable workflow execution, trusted shadow evidence, expected-head safeguards and rollback.
-- FamilyTree (M07, #36; consumer #128/#120): after M05 autonomous self-pilot acceptance, use synthetic data only, retain 95/90 and no product release. No duplicate core.
+- FamilyTree (M07, #36; consumer #128/#120): after M02.10 autonomous self-pilot acceptance, use synthetic data only, retain 95/90 and no product release. No duplicate core.
 - Spellbook (M08, #11; consumer #103): preserve 97% app line / 90% branch, WebKit/iOS gates and current two-agent cap until measured capacity approval.
 - FamilyHub (M09, #12; consumer #81): verify migrated repository identity and migration readiness separately; preserve existing explicit independent review, required validation, up-to-date and production isolation. Development resumption is not factory activation authorization.
 
