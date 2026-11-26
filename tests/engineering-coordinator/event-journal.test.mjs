@@ -209,3 +209,51 @@ test('kind-filtered claim retains unsupported hints and repository-wide exclusiv
   assert.equal(j.claim(1,'other',1,1000,'review').deliveryId,'review');
  }finally{j.close();}
 });
+
+test('durable retry deferral keeps lease fencing and pending evidence',()=>{
+ const dir=mkdtempSync(join(tmpdir(),'factory-defer-')),path=join(dir,'state.db');let j=openEventJournal(path);
+ try{
+  j.enqueue(original);j.enqueue(next);const p=j.claim(1,'w',0,1000);
+  for(const args of [[null,0,60000],[{...p,owner:'other'},0,60000],[{...p,generation:2},0,60000],[p,1000,60000],[p,-1,60000],[p,0,59999],[p,0,3600001],[p,0,NaN]])assert.equal(j.defer(...args),false);
+  for(const field of ['repositoryId','deliveryId','generation'])assert.equal(j.defer({...p,[field]:null},0,60000),false);
+  assert.equal(j.defer(p,0,60000),true);assert.equal(j.defer(p,0,60000),false);
+  assert.equal(j.claim(1,'other',999,1000),null);
+  j.close();j=openEventJournal(path);const q=j.claim(1,'other',1000,1000);assert.equal(q.deliveryId,next.deliveryId);assert.equal(j.complete(q,1001),true);
+  assert.equal(j.claim(1,'other',59999,1000),null);assert.equal(j.claim(1,'other',60000,1000).deliveryId,original.deliveryId);
+ }finally{j.close();rmSync(dir,{recursive:true,force:true});}
+});
+
+test('defer callback receives only the validated clock sample and never acknowledges evidence',async()=>{
+ const j=openEventJournal(':memory:');try{
+  j.enqueue(original);let now=600000,calls=0;const opts={journal:j,repositoryId:1,owner:'worker-a',leaseMs:1000,clock:()=>now,stop:false,read:async()=>{now=600001;return null;}};
+  assert.equal((await reconcileJournalOnce({...opts,deferUnknown:'bad'})).reason,'RUNTIME_UNKNOWN');
+  const result=await reconcileJournalOnce({...opts,deferUnknown(ticket,finished){calls++;assert.equal(finished,600001);assert.equal(ticket.leaseUntil,601000);return j.defer(ticket,finished,60000);}});
+  assert.equal(result.reason,'EVIDENCE_UNKNOWN');assert.equal(calls,1);assert.equal(j.claim(1,'other',601000,1000),null);
+  assert.equal(j.claim(1,'other',660001,1000).deliveryId,original.deliveryId);
+ }finally{j.close();}
+});
+
+test('active lease checks use a partial index across a pending backlog', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'factory-event-active-index-'));
+  const path = join(dir, 'events.sqlite');
+  const store = openEventJournal(path);
+  store.close();
+  const db = new DatabaseSync(path);
+  try {
+    const plan = db.prepare(`EXPLAIN QUERY PLAN
+      SELECT pending.id FROM coordinator_events AS pending
+      WHERE pending.repository_id = ? AND pending.completed = 0
+        AND pending.expires <= ? AND pending.generation < ?
+        AND NOT EXISTS (
+          SELECT 1 FROM coordinator_events AS active
+          WHERE active.repository_id = pending.repository_id
+            AND active.completed = 0 AND active.expires > ?
+        )
+      ORDER BY pending.id LIMIT 1`).all(1, 0, Number.MAX_SAFE_INTEGER, 0);
+    const activeLookup = plan.find(row => String(row.detail).includes('active'));
+    assert.match(activeLookup?.detail ?? '', /coordinator_events_active/);
+  } finally {
+    db.close();
+    rmSync(dir, {recursive: true, force: true});
+  }
+});

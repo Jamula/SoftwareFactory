@@ -28,8 +28,15 @@ export function openEventJournal(filename) {
         completed INTEGER NOT NULL DEFAULT 0,
         UNIQUE (repository_id, delivery_id)
       );
+      CREATE TABLE IF NOT EXISTS coordinator_event_deferrals (
+        event_id INTEGER PRIMARY KEY,
+        retry_after INTEGER NOT NULL
+      );
       CREATE INDEX IF NOT EXISTS coordinator_events_pending
         ON coordinator_events (repository_id, completed, id);
+      -- Keep the correlated active-lease guard bounded as the pending queue grows.
+      CREATE INDEX IF NOT EXISTS coordinator_events_active
+        ON coordinator_events (repository_id, expires) WHERE completed = 0;
     `);
     const enqueue = db.prepare(`
       INSERT INTO coordinator_events (repository_id, delivery_id, kind, subject, head)
@@ -48,14 +55,24 @@ export function openEventJournal(filename) {
         WHERE pending.repository_id = ? AND pending.completed = 0 AND pending.expires <= ?
           AND pending.generation < 9007199254740991
           AND (? IS NULL OR pending.kind = ?)
+          AND NOT EXISTS (SELECT 1 FROM coordinator_event_deferrals AS deferred
+            WHERE deferred.event_id = pending.id AND deferred.retry_after > ?)
           AND NOT EXISTS (
             SELECT 1 FROM coordinator_events AS active
             WHERE active.repository_id = pending.repository_id
               AND active.completed = 0 AND active.expires > ?
           )
-        ORDER BY pending.id LIMIT 1
+        ORDER BY COALESCE((SELECT retry_after FROM coordinator_event_deferrals WHERE event_id = pending.id), 0), pending.id LIMIT 1
       )
       RETURNING delivery_id AS deliveryId, kind, subject, head, generation
+    `);
+    const defer = db.prepare(`
+      INSERT INTO coordinator_event_deferrals (event_id, retry_after)
+      SELECT id, ? FROM coordinator_events
+      WHERE repository_id = ? AND delivery_id = ? AND owner = ?
+        AND generation = ? AND completed = 0 AND expires > ?
+      ON CONFLICT(event_id) DO UPDATE SET retry_after = excluded.retry_after
+      WHERE excluded.retry_after > coordinator_event_deferrals.retry_after
     `);
     const complete = db.prepare(`
       UPDATE coordinator_events SET completed = 1, expires = 0
@@ -83,9 +100,19 @@ export function openEventJournal(filename) {
             !Number.isSafeInteger(leaseMs) || leaseMs < 1000 || leaseMs > 3600000 ||
             !isTime(now + leaseMs) || (kind !== null && !eventKinds.has(kind))) return null;
         try {
-          const event = claim.get(owner, now + leaseMs, repositoryId, now, kind, kind, now);
+          const event = claim.get(owner, now + leaseMs, repositoryId, now, kind, kind, now, now);
           return event ? {...event, repositoryId, owner, leaseUntil: now + leaseMs} : null;
         } catch { return null; }
+      },
+      // A retry delay never acknowledges evidence or extends the active lease.
+      defer(ticket, now, delayMs) {
+        try {
+          const {repositoryId, deliveryId, owner, generation} = ticket;
+          if (!isRepo(repositoryId) || !isToken(deliveryId) || !isToken(owner) ||
+              !isRepo(generation) || !isTime(now) || !Number.isSafeInteger(delayMs) ||
+              delayMs < 60000 || delayMs > 3600000 || !isTime(now + delayMs)) return false;
+          return defer.run(now + delayMs, repositoryId, deliveryId, owner, generation, now).changes === 1;
+        } catch { return false; }
       },
       complete(ticket, now) {
         try {
@@ -105,11 +132,12 @@ export function openEventJournal(filename) {
 
 // One bounded, injected shadow reconciliation. No real transport or write authority.
 // The reader must normalize a fresh observation of the exact claim, not event text.
-export async function reconcileJournalOnce({journal, repositoryId, owner, leaseMs, clock, read, stop} = {}) {
+export async function reconcileJournalOnce({journal, repositoryId, owner, leaseMs, clock, read, stop, deferUnknown} = {}) {
   const result=reason=>({shadow:true,liveDispatch:false,liveMerge:false,reason});
   if(stop!==false)return result('STOPPED');
   if(!journal||typeof journal.claim!=='function'||typeof journal.complete!=='function'||
-     typeof clock!=='function'||typeof read!=='function')return result('RUNTIME_UNKNOWN');
+     typeof clock!=='function'||typeof read!=='function'||
+     (deferUnknown!==undefined&&typeof deferUnknown!=='function'))return result('RUNTIME_UNKNOWN');
   try {
     const now=clock();
     if(!isTime(now))return result('CLOCK_UNKNOWN');
@@ -120,7 +148,12 @@ export async function reconcileJournalOnce({journal, repositoryId, owner, leaseM
     const finished=clock();
     if(!isTime(finished)||finished<now||finished>=ticket.leaseUntil)return result('LEASE_OR_CLOCK_UNKNOWN');
     if(!evidence||evidence.shadow!==true||evidence.fresh!==true||evidence.repositoryId!==ticket.repositoryId||
-       evidence.kind!==ticket.kind||evidence.subject!==ticket.subject||!isHead(evidence.head))return result('EVIDENCE_UNKNOWN');
+       evidence.kind!==ticket.kind||evidence.subject!==ticket.subject||!isHead(evidence.head)){
+      // Mutate retry scheduling only after the same acquisition/expiry clock
+      // validation used for completion. No second time sample or acknowledgement.
+      if(deferUnknown!==undefined&&deferUnknown(ticket,finished)!==true)return result('RECONCILIATION_UNAVAILABLE');
+      return result('EVIDENCE_UNKNOWN');
+    }
     // A fresh moved head supersedes this hint; it does not authorize work on either head.
     if(journal.complete(ticket,finished)!==true)return result('CLAIM_LOST');
     return result(evidence.head===ticket.head?'SHADOW_RECONCILED':'SHADOW_HEAD_SUPERSEDED');

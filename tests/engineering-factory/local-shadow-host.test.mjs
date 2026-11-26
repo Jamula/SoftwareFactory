@@ -103,3 +103,97 @@ test('rejected identity advances cursor; pre-aborted host never opens storage',a
  const ctl=new AbortController();ctl.abort();let opened=0;
  assert.equal((await runLocalShadowHost({enabled:true,signal:ctl.signal,open:()=>{opened++;throw Error('unexpected');}})).reason,'STOPPED');assert.equal(opened,0);
 });
+
+test('rejected pending pull is deferred durably while later pulls and inventory progress',async()=>{
+ const dir=mkdtempSync(join(tmpdir(),'factory-retry-')),path=join(dir,'retry.db');let j=openEventJournal(path),now=600000;
+ try{
+  j.enqueue({repositoryId:repo.id,deliveryId:'rejected',kind:'pull',subject:1,head});
+  j.enqueue({repositoryId:repo.id,deliveryId:'valid',kind:'pull',subject:2,head});
+  const req=async url=>url.includes('/pulls?')?json([{number:2}]):json(url.endsWith('/1')?{}:pull(2));
+  const tick=()=>localReconcileTick({journal:j,owner:'worker',clock:()=>now,request:req});
+  assert.equal((await tick()).reason,'EVIDENCE_UNKNOWN');
+  j.close();j=openEventJournal(path);now+=600000;
+  assert.equal((await tick()).reason,'SHADOW_RECONCILED');now+=600000;
+  assert.equal((await tick()).reason,'SHADOW_RECONCILED');
+  assert.equal(j.claim(repo.id,'other',now,30000),null);
+  now=4200000;assert.equal(j.claim(repo.id,'other',now,30000).deliveryId,'rejected');
+ }finally{j.close();rmSync(dir,{recursive:true,force:true});}
+});
+test('invalid owners never open storage or poll',async()=>{
+ for(const owner of [undefined,null,'','worker_1','x'.repeat(81),1]){
+  const unexpected=()=>{throw Error('unexpected access');};
+  assert.equal((await localReconcileTick({owner,journal:{},request:unexpected})).reason,'INVALID_OWNER');
+  assert.equal((await runLocalShadowHost({enabled:true,owner,signal:new AbortController().signal,open:unexpected})).reason,'INVALID_OWNER');
+ }
+});
+test('failed deferral is not acknowledgement',async()=>{
+ const j=openEventJournal(':memory:');try{
+  j.enqueue({repositoryId:repo.id,deliveryId:'bad',kind:'pull',subject:1,head});
+  const wrapper={claim:j.claim,complete:j.complete,defer:()=>false};
+  assert.equal((await localReconcileTick({journal:wrapper,owner:'worker',clock:()=>600000,request:async()=>json({})})).reason,'RECONCILIATION_UNAVAILABLE');
+  assert.equal(j.claim(repo.id,'other',630000,30000).deliveryId,'bad');
+ }finally{j.close();}
+});
+
+test('six permanent rejections cannot starve a valid queued pull or inventory across restarts',async()=>{
+ const dir=mkdtempSync(join(tmpdir(),'factory-fair-')),path=join(dir,'state.db');let j=openEventJournal(path),now=600000,validReads=0,inventoryReads=0,inventoryIdentity=0;
+ try{
+  for(let n=1;n<=7;n++)assert.equal(j.enqueue({repositoryId:repo.id,deliveryId:'pending-'+n,kind:'pull',subject:n,head}).queued,true);
+  const req=async url=>{const u=new URL(url);if(u.searchParams.has('page')){inventoryReads++;return json([{number:8}]);}const n=Number(u.pathname.split('/').pop());if(n===7)validReads++;if(n===8)inventoryIdentity++;return json(n>=7?pull(n):{});};
+  for(let i=0;i<24;i++){
+   let calls=0;const result=await localReconcileTick({journal:j,owner:'worker',clock:()=>now,request:async(...args)=>{calls++;return req(...args);}});
+   assert.ok(calls<=3);assert.equal(result.liveMerge,false);assert.equal(result.liveDispatch,false);
+   if(i===0)assert.equal(result.inventoryReason,'QUEUED');
+   j.close();j=openEventJournal(path);now+=600000;
+  }
+  assert.equal(validReads,1);assert.equal(inventoryReads,24);assert.ok(inventoryIdentity>=25);
+ }finally{j.close();rmSync(dir,{recursive:true,force:true});}
+});
+
+test('backward, invalid or expired clock cannot persist a deferral or reach inventory',async()=>{
+ for(const finished of [599999,-1,NaN,630000]){
+  const dir=mkdtempSync(join(tmpdir(),'factory-clock-')),path=join(dir,'state.db');let j=openEventJournal(path),reads=0,deferrals=0;
+  try{
+   j.enqueue({repositoryId:repo.id,deliveryId:'invalid-clock',kind:'pull',subject:1,head});
+   const wrapper={claim:j.claim,complete:j.complete,defer(...args){deferrals++;return j.defer(...args);}};
+   const samples=[600000,finished];
+   const result=await localReconcileTick({journal:wrapper,owner:'worker',clock:()=>samples.shift(),request:async()=>{reads++;return json({});}});
+   assert.equal(result.reason,'LEASE_OR_CLOCK_UNKNOWN');assert.equal(reads,1);assert.equal(deferrals,0);
+   j.close();j=openEventJournal(path);
+   assert.equal(j.claim(repo.id,'other',630000,30000).deliveryId,'invalid-clock');
+  }finally{j.close();rmSync(dir,{recursive:true,force:true});}
+ }
+});
+
+test('inventory failures preserve recovery receipts while cancellation remains STOPPED',async()=>{
+ for(const scenario of ['reconciled','superseded','unknown']){
+  for(const failure of ['http','throw','clock','abort']){
+   const j=openEventJournal(':memory:');const ctl=new AbortController();let reads=0,clocks=0;
+   try{
+    j.enqueue({repositoryId:repo.id,deliveryId:'prior',kind:'pull',subject:1,head});
+    const req=async url=>{
+     reads++;
+     if(!url.includes('/pulls?')){
+      if(scenario==='unknown')return json({});
+      const value=pull(1);
+      if(scenario==='superseded')value.head.sha=base;
+      return json(value);
+     }
+     if(failure==='abort'){ctl.abort();return json([]);}
+     if(failure==='throw')throw Error('offline');
+     return new Response(null,{status:503});
+    };
+    const result=await localReconcileTick({journal:j,owner:'worker',signal:ctl.signal,
+     clock:()=>++clocks===3&&failure==='clock'?-1:600000,request:req});
+    const reason={reconciled:'SHADOW_RECONCILED',superseded:'SHADOW_HEAD_SUPERSEDED',unknown:'EVIDENCE_UNKNOWN'}[scenario];
+    assert.deepEqual(result,failure==='abort'
+     ?{shadow:true,liveDispatch:false,liveMerge:false,reason:'STOPPED'}
+     :{shadow:true,liveDispatch:false,liveMerge:false,reason,inventoryReason:failure==='clock'?'CLOCK_UNKNOWN':'LOCAL_POLL_UNAVAILABLE'});
+    assert.equal(reads,failure==='clock'?1:2);
+    assert.equal(j.claim(repo.id,'other',630000,30000),null);
+    const retry=j.claim(repo.id,'other',4200000,30000);
+    assert.equal(retry?.deliveryId,scenario==='unknown'?'prior':undefined);
+   }finally{j.close();}
+  }
+ }
+});

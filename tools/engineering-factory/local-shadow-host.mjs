@@ -5,6 +5,8 @@ import {readPullIdentity} from './event-envelope.mjs';
 
 const repositoryId=1471342715;
 const intervalMs=600000;
+const retryDelayMs=3600000;
+const validOwner=owner=>typeof owner==='string'&&/^[a-zA-Z0-9-]{1,80}$/.test(owner);
 const receipt=(reason,extra={})=>({shadow:true,liveDispatch:false,liveMerge:false,reason,...extra});
 const isIdentity=(p,number)=>p?.reason==='IDENTITY_ONLY'&&p.repositoryId===repositoryId&&p.number===number;
 
@@ -26,9 +28,14 @@ async function readPage(request,page){
 }
 
 // One bounded read-only recovery pass. At most three GETs (page, identity,
-// reconciliation) or one recovery GET. No mutation after cancellation.
+// reconciliation), including at most one recovery claim. Inventory gets its own
+// page/identity budget even when recovery has a pending or deferred result.
+// No mutation after cancellation.
 export async function localReconcileTick({journal,owner,clock=Date.now,request=fetch,signal=new AbortController().signal,cursor={page:1}}){
+ if(!validOwner(owner))return receipt('INVALID_OWNER');
  const stopped=()=>signal.aborted;
+ // Preserve a completed recovery receipt even if the independent inventory pass fails.
+ let finish=receipt;
  const budgeted=(url,options)=>{
   signal.throwIfAborted();
   return request(url,{...options,signal:AbortSignal.any([options.signal,signal])});
@@ -37,36 +44,46 @@ export async function localReconcileTick({journal,owner,clock=Date.now,request=f
   claim(...args){signal.throwIfAborted();return journal.claim(...args,'pull');},
   complete(...args){signal.throwIfAborted();return journal.complete(...args);}
  };
+ const deferUnknown=(ticket,finished)=>{
+  signal.throwIfAborted();
+  return journal.defer(ticket,finished,retryDelayMs);
+ };
  const read=async ticket=>{
   if(ticket.kind!=='pull')return null;
   const p=await readPullIdentity(ticket.subject,budgeted);
-  return isIdentity(p,ticket.subject)?{shadow:true,fresh:true,repositoryId,kind:'pull',subject:ticket.subject,head:p.head}:null;
+  signal.throwIfAborted();
+  if(!isIdentity(p,ticket.subject))return null;
+  return {shadow:true,fresh:true,repositoryId,kind:'pull',subject:ticket.subject,head:p.head};
  };
  try{
   signal.throwIfAborted();
-  const recovery=await reconcileJournalOnce({journal:guarded,repositoryId,owner,leaseMs:30000,clock,read,stop:false});
+  const recovery=await reconcileJournalOnce({journal:guarded,repositoryId,owner,leaseMs:30000,clock,read,stop:false,deferUnknown});
   signal.throwIfAborted();
-  if(recovery.reason!=='NO_CLAIM')return receipt(recovery.reason);
+  if(!['NO_CLAIM','SHADOW_RECONCILED','SHADOW_HEAD_SUPERSEDED','EVIDENCE_UNKNOWN'].includes(recovery.reason))return receipt(recovery.reason);
+  finish=reason=>recovery.reason==='NO_CLAIM'?receipt(reason):receipt(recovery.reason,{inventoryReason:reason});
   const now=clock();
-  if(!Number.isSafeInteger(now)||now<0)return receipt('CLOCK_UNKNOWN');
+  if(!Number.isSafeInteger(now)||now<0)return finish('CLOCK_UNKNOWN');
   const rows=await readPage(budgeted,cursor.page);
   signal.throwIfAborted();
   if(!rows.length){
    const reason=cursor.page===1?'NO_OPEN_PULLS':'SWEEP_COMPLETE';
-   cursor.page=1;return receipt(reason);
+   cursor.page=1;return finish(reason);
   }
   const number=rows[0].number;
   const p=await readPullIdentity(number,budgeted);
   signal.throwIfAborted();
   cursor.page++;
-  if(!isIdentity(p,number))return receipt('IDENTITY_UNKNOWN');
+  if(!isIdentity(p,number))return finish('IDENTITY_UNKNOWN');
   const deliveryId=createHash('sha256').update(JSON.stringify([repositoryId,number,p.head,p.base,p.state,p.draft])).digest('hex');
   const queued=journal.enqueue({repositoryId,deliveryId,kind:'pull',subject:number,head:p.head});
-  if(!queued.queued)return receipt(queued.reason);
-  const reconciled=await reconcileJournalOnce({journal:guarded,repositoryId,owner,leaseMs:30000,clock,read,stop:false});
+  if(!queued.queued)return finish(queued.reason);
+  // A recovery claim already consumed this tick's reconciliation slot. The
+  // fresh inventory hint remains queued for the next eligible recovery.
+  if(recovery.reason!=='NO_CLAIM')return finish('QUEUED');
+  const reconciled=await reconcileJournalOnce({journal:guarded,repositoryId,owner,leaseMs:30000,clock,read,stop:false,deferUnknown});
   signal.throwIfAborted();
   return receipt(reconciled.reason);
- }catch{return receipt(stopped()?'STOPPED':'LOCAL_POLL_UNAVAILABLE');}
+ }catch{return stopped()?receipt('STOPPED'):finish('LOCAL_POLL_UNAVAILABLE');}
 }
 
 // Explicit opt-in on an owner-managed host, with an owner-controlled durable
@@ -74,6 +91,7 @@ export async function localReconcileTick({journal,owner,clock=Date.now,request=f
 // authorize writes, install a service, or provision resources.
 export async function runLocalShadowHost({enabled,path,owner,signal,clock=Date.now,request=fetch,write=console.log,wait=sleep,open=openEventJournal}){
  if(enabled!==true||signal.aborted)return receipt('STOPPED');
+ if(!validOwner(owner))return receipt('INVALID_OWNER');
  let journal;
  try{
   journal=open(path);
