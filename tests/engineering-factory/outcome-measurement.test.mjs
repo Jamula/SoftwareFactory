@@ -133,6 +133,18 @@ test('preserves partial outcomes and keeps acceptance and cost unknown when evid
     {...other, cost: cost(10, 1)}]).reason, 'CONFLICTING_COST_EVIDENCE');
 });
 
+test('checks receipt uniqueness outside the window without adding outside spend', () => {
+  const inside = {...entry(9), cost: cost(9, 100)};
+  for (const acceptedAt of [cohortQuery.fromMs - 1, cohortQuery.toMs]) {
+    const outside = {...entry(10, {acceptedAt}), cost: cost(10, Number.MAX_SAFE_INTEGER)};
+    assert.equal(cohort([inside, outside]).costPerAcceptedUsdMicros, 100);
+    outside.cost.receiptId = inside.cost.receiptId;
+    for (const entries of [[inside, outside], [outside, inside]]) {
+      assert.equal(cohort(entries).reason, 'CONFLICTING_COST_EVIDENCE');
+    }
+  }
+});
+
 test('fails closed on stale data, cross-repository and mixed cohort sources, and duplicate issues', () => {
   const sample = entry(9);
   for (const changes of [{repositoryId: 0}, {cohort: 'small independent'}, {cohort: null},

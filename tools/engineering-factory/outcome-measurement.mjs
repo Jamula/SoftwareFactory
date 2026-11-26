@@ -108,6 +108,11 @@ export function measureAcceptedCohort(entries, query, authorizedRepositoryIds) {
       counts.unknown++;
       continue;
     }
+    const cost = acceptedCost(row.cost, issue, query.observedMs);
+    if (cost) {
+      if (receipts.has(cost.receiptId)) return unknown('CONFLICTING_COST_EVIDENCE');
+      receipts.add(cost.receiptId);
+    }
     if (issue.acceptedAt >= query.toMs) {
       if (issue.readyAt < query.toMs) counts.censored++;
       continue;
@@ -116,12 +121,10 @@ export function measureAcceptedCohort(entries, query, authorizedRepositoryIds) {
     counts.accepted++;
     durations.push(outcome.elapsedMs);
 
-    const cost = acceptedCost(row.cost, issue, query.observedMs);
     if (!cost) continue;
-    if (receipts.has(cost.receiptId) || !Number.isSafeInteger(spendMicros + cost.amountMicros)) {
+    if (!Number.isSafeInteger(spendMicros + cost.amountMicros)) {
       return unknown('CONFLICTING_COST_EVIDENCE');
     }
-    receipts.add(cost.receiptId);
     spendMicros += cost.amountMicros;
     counts.withVerifiedCost++;
   }

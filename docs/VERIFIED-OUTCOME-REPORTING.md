@@ -10,7 +10,7 @@ The query uses `fromMs` and `toMs` for a half-open acceptance window. Set `obser
 
 For a closed issue, the per-issue verifier checks explicit acceptance, readiness, and reopen timestamps along with the required links and main verification. For an open issue, use a verified readiness timestamp and null acceptance. A missing or contradictory item counts as unknown. An item known to be ready but unfinished at the cutoff is right censored. Results count each accepted issue once; a duplicate input issue rejects the report.
 
-Use null cost when no verified attribution exists. A measured cost entry needs `repositoryId`, `issueNumber`, an opaque `receiptId`, `verified: true`, `currency: 'USD'`, integer `amountMicros`, and `observedMs` at or after acceptance and no later than query acquisition. The trusted adapter establishes complete incremental attribution, including any documented allocation of shared spend. A credit balance or budget cap is separate evidence. Receipt reuse or arithmetic overflow rejects the report. A verified zero receipt is measured zero; an absent amount never becomes zero.
+Use null cost when no verified attribution exists. A measured cost entry needs `repositoryId`, `issueNumber`, an opaque `receiptId`, `verified: true`, `currency: 'USD'`, integer `amountMicros`, and `observedMs` at or after acceptance and no later than query acquisition. The trusted adapter establishes complete incremental attribution, including any documented allocation of shared spend. A credit balance or budget cap is separate evidence. Receipt reuse across any supplied verified outcomes or arithmetic overflow on in-window spend rejects the report. A verified zero receipt is measured zero; an absent amount never becomes zero.
 
 ## Interpret the result
 
