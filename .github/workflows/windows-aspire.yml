@@ -76,6 +76,10 @@ jobs:
           $der = Join-Path $tmp 'dev.cer'
           $addedTrust = $null
           $archive = Join-Path $tmp 'dashboard.zip'
+          $dataRoot = Join-Path $tmp 'dashboard-data'
+          New-Item -ItemType Directory -Path $dataRoot | Out-Null
+          $env:ASPIRE_DASHBOARD_DATA_DIRECTORY = $dataRoot
+          $env:ASPIRE_DASHBOARD_PERSISTENCE_MODE = 'Run'
           function Invoke-Aspire([string[]]$arguments, [int]$seconds) {
             $p = Start-Process -FilePath (Get-Command aspire -ErrorAction Stop).Source -ArgumentList $arguments -RedirectStandardOutput $out -RedirectStandardError $err -NoNewWindow -PassThru
             if (-not $p.WaitForExit($seconds * 1000)) {
@@ -129,6 +133,10 @@ jobs:
             python tests/engineering-factory/verify-dashboard-export.py $archive
             if ($LASTEXITCODE -ne 0) { throw 'Dashboard trace/log readback failed' }
             $null = Invoke-Aspire @('stop','--apphost','apphost.cs','--non-interactive') 30
+            python tests/engineering-factory/test-dashboard-metric-receipt.py
+            if ($LASTEXITCODE -ne 0) { throw 'Metric verifier regression tests failed' }
+            python tests/engineering-factory/verify-dashboard-metric-receipt.py $dataRoot
+            if ($LASTEXITCODE -ne 0) { throw 'Dashboard metric persistence verification failed' }
             Write-Host 'Isolated Windows AppHost stopped'
           } finally {
             try { $null = Invoke-Aspire @('stop','--apphost','apphost.cs','--non-interactive') 30 } catch { }
