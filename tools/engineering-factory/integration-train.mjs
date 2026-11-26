@@ -1,7 +1,25 @@
+import {types} from 'node:util';
+
 const sha=s=>typeof s==='string'&&/^[a-f0-9]{40}$/.test(s);
 const positive=n=>Number.isSafeInteger(n)&&n>0;
 const own=(v,keys)=>v!==null&&typeof v==='object'&&!Array.isArray(v)&&keys.every(k=>Object.hasOwn(v,k));
-const dense=a=>Array.isArray(a)&&Object.keys(a).length===a.length&&Array.from({length:a.length},(_,i)=>Object.hasOwn(a,i)).every(Boolean);
+const exactArray = (value, max = 500) => {
+ if (types.isProxy(value) || !Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype)
+  return false;
+ const length = value.length;
+ if (length > max) return false;
+ const keys = Reflect.ownKeys(value);
+ if (keys.length !== length + 1) return false;
+ const lengthDescriptor = Object.getOwnPropertyDescriptor(value, 'length');
+ if (!lengthDescriptor || !Object.hasOwn(lengthDescriptor, 'value') || lengthDescriptor.value !== length)
+  return false;
+ for (let i = 0; i < length; i++) {
+  const descriptor = Object.getOwnPropertyDescriptor(value, String(i));
+  if (!descriptor || !Object.hasOwn(descriptor, 'value')) return false;
+ }
+ return true;
+};
+const dense=a=>exactArray(a);
 const blocked=reason=>({shadow:true,liveMerge:false,reason});
 export function nextIntegration(state) {
  if(!own(state,['stop','main','mainHealthy','active','candidates'])||state.stop!==false) return blocked('STOPPED');
@@ -12,7 +30,6 @@ export function nextIntegration(state) {
  return {...blocked('SHADOW_NEXT'),pr:c.pr,expectedHead:c.head,expectedBase:c.base,method:'squash'};
 }
 
-import {types} from 'node:util';
 const data=(o,keys)=>o!==null&&typeof o==='object'&&!types.isProxy(o)&&!Array.isArray(o)&&keys.every(k=>Object.hasOwn(Object.getOwnPropertyDescriptor(o,k)??{},'value'));
 const queueBlocked=reason=>({shadow:true,liveMerge:false,reason});
 // An explicit GraphQL enqueue operation, never a direct merge or queue jump.
@@ -44,8 +61,7 @@ function validOutcome(outcome) {
 const experiment = reason => ({shadow: true, synthetic: true, comparable: false, reason});
 
 export function compareTrainExperiment(pairs) {
- if (types.isProxy(pairs) || !Array.isArray(pairs) || pairs.length < 2 || pairs.length > 100 ||
-     Object.keys(pairs).length !== pairs.length) return experiment('SAMPLE_UNKNOWN');
+ if (!exactArray(pairs, 100) || pairs.length < 2) return experiment('SAMPLE_UNKNOWN');
  const ids = new Set();
  const baselineMs = [];
  const candidateMs = [];
