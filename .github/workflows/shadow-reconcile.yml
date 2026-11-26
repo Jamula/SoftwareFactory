@@ -1,6 +1,12 @@
 name: Factory shadow reconciliation
 on:
   workflow_dispatch:
+    inputs:
+      issue_number:
+        description: Optional issue number for a read-only manual reconciliation
+        required: false
+        type: string
+        default: ''
   # Best-effort recovery inventory; primary triggers remain event-driven.
   schedule:
     - cron: '3,13,23,33,43,53 * * * *'
@@ -31,11 +37,21 @@ jobs:
         env:
           FACTORY_SHADOW_ENABLED: ${{ vars.FACTORY_SHADOW_ENABLED }}
           FACTORY_PULL_EVENT_SHADOW_ENABLED: ${{ vars.FACTORY_PULL_EVENT_SHADOW_ENABLED }}
+          FACTORY_ISSUE_EVENT_SHADOW_ENABLED: ${{ vars.FACTORY_ISSUE_EVENT_SHADOW_ENABLED }}
+          FACTORY_ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue_number || '' }}
         run: |
-          if [[ "$FACTORY_SHADOW_ENABLED" == true ]]; then
+          # GitHub expression comparisons are case-insensitive. Verify the actual
+          # protected ref before enabling any checkout or execution.
+          if [[ "$FACTORY_SHADOW_ENABLED" == true && "$GITHUB_REPOSITORY" == Jamula/SoftwareFactory && "$GITHUB_REF" == refs/heads/main && "$GITHUB_REF_PROTECTED" == true ]]; then
             echo "enabled=true" >> "$GITHUB_OUTPUT"
             if [[ "$GITHUB_EVENT_NAME" == pull_request_target && "$FACTORY_PULL_EVENT_SHADOW_ENABLED" == true ]]; then
               echo "pull_enabled=true" >> "$GITHUB_OUTPUT"
+            fi
+            if [[ "$GITHUB_EVENT_NAME" == issues && "$FACTORY_ISSUE_EVENT_SHADOW_ENABLED" == true ]]; then
+              echo "issue_enabled=true" >> "$GITHUB_OUTPUT"
+            fi
+            if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch && "$FACTORY_ISSUE_EVENT_SHADOW_ENABLED" == true && -n "$FACTORY_ISSUE_NUMBER" ]]; then
+              echo "issue_enabled=true" >> "$GITHUB_OUTPUT"
             fi
           else
             echo "enabled=false" >> "$GITHUB_OUTPUT"
@@ -44,7 +60,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: steps.optin.outputs.enabled == 'true'
         with:
-          ref: ${{ steps.optin.outputs.pull_enabled == 'true' && github.workflow_sha || 'refs/heads/main' }}
+          ref: ${{ (steps.optin.outputs.pull_enabled == 'true' || steps.optin.outputs.issue_enabled == 'true') && github.workflow_sha || 'refs/heads/main' }}
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         if: steps.optin.outputs.enabled == 'true'
@@ -66,3 +82,12 @@ jobs:
           FACTORY_CHECKOUT_SHA="$(git rev-parse HEAD)"
           export FACTORY_CHECKOUT_SHA
           node tools/engineering-factory/run.mjs --reconcile-pull
+      - name: Reconcile the triggering or manually selected issue against public metadata
+        if: steps.optin.outputs.issue_enabled == 'true'
+        env:
+          FACTORY_ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue_number || '' }}
+        shell: bash
+        run: |
+          FACTORY_CHECKOUT_SHA="$(git rev-parse HEAD)"
+          export FACTORY_CHECKOUT_SHA
+          node tools/engineering-factory/run.mjs --reconcile-issue
