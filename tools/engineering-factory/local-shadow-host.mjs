@@ -28,7 +28,9 @@ async function readPage(request,page){
 }
 
 // One bounded read-only recovery pass. At most three GETs (page, identity,
-// reconciliation) or one recovery GET. No mutation after cancellation.
+// reconciliation), including at most one recovery claim. Inventory gets its own
+// page/identity budget even when recovery has a pending or deferred result.
+// No mutation after cancellation.
 export async function localReconcileTick({journal,owner,clock=Date.now,request=fetch,signal=new AbortController().signal,cursor={page:1}}){
  if(!validOwner(owner))return receipt('INVALID_OWNER');
  let claimed;
@@ -55,23 +57,27 @@ export async function localReconcileTick({journal,owner,clock=Date.now,request=f
   signal.throwIfAborted();
   const recovery=await reconcileJournalOnce({journal:guarded,repositoryId,owner,leaseMs:30000,clock,read,stop:false});
   signal.throwIfAborted();
-  if(recovery.reason!=='NO_CLAIM')return receipt(recovery.reason);
+  if(!['NO_CLAIM','SHADOW_RECONCILED','SHADOW_HEAD_SUPERSEDED','EVIDENCE_UNKNOWN'].includes(recovery.reason))return receipt(recovery.reason);
+  const finish=reason=>recovery.reason==='NO_CLAIM'?receipt(reason):receipt(recovery.reason,{inventoryReason:reason});
   const now=clock();
   if(!Number.isSafeInteger(now)||now<0)return receipt('CLOCK_UNKNOWN');
   const rows=await readPage(budgeted,cursor.page);
   signal.throwIfAborted();
   if(!rows.length){
    const reason=cursor.page===1?'NO_OPEN_PULLS':'SWEEP_COMPLETE';
-   cursor.page=1;return receipt(reason);
+   cursor.page=1;return finish(reason);
   }
   const number=rows[0].number;
   const p=await readPullIdentity(number,budgeted);
   signal.throwIfAborted();
   cursor.page++;
-  if(!isIdentity(p,number))return receipt('IDENTITY_UNKNOWN');
+  if(!isIdentity(p,number))return finish('IDENTITY_UNKNOWN');
   const deliveryId=createHash('sha256').update(JSON.stringify([repositoryId,number,p.head,p.base,p.state,p.draft])).digest('hex');
   const queued=journal.enqueue({repositoryId,deliveryId,kind:'pull',subject:number,head:p.head});
-  if(!queued.queued)return receipt(queued.reason);
+  if(!queued.queued)return finish(queued.reason);
+  // A recovery claim already consumed this tick's reconciliation slot. The
+  // fresh inventory hint remains queued for the next eligible recovery.
+  if(recovery.reason!=='NO_CLAIM')return finish('QUEUED');
   const reconciled=await reconcileJournalOnce({journal:guarded,repositoryId,owner,leaseMs:30000,clock,read,stop:false});
   signal.throwIfAborted();
   return receipt(reconciled.reason);

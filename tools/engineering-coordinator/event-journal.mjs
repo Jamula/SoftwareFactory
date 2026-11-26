@@ -59,7 +59,7 @@ export function openEventJournal(filename) {
             WHERE active.repository_id = pending.repository_id
               AND active.completed = 0 AND active.expires > ?
           )
-        ORDER BY pending.id LIMIT 1
+        ORDER BY COALESCE((SELECT retry_after FROM coordinator_event_deferrals WHERE event_id = pending.id), 0), pending.id LIMIT 1
       )
       RETURNING delivery_id AS deliveryId, kind, subject, head, generation
     `);

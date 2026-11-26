@@ -22,3 +22,5 @@ accepted. This PR does not provision or start a host.
 Unsupported event kinds remain unacknowledged for their own consumers. The pull-only claim filter retains repository-wide exclusivity. Rejected PR identities advance the cursor without enqueueing. Pre-aborted hosts do not open storage.
 
 Rejected pending pulls stay unacknowledged with a durable one-hour retry deferral separate from the active lease. Other eligible pulls can proceed after lease expiry. Invalid owner IDs stop before storage opens. Deferral is not reconciliation success.
+
+Eligible claims are ordered by durable retry eligibility time, then original ID; never-deferred work is ahead of deferred retries. Every normal recovery tick (including an unacknowledged rejected identity) reserves a separate bounded inventory page and identity read. When recovery used the tick's claim, any fresh inventory hint is enqueued for later, not immediately claimed. Receipts retain the recovery result and separate inventoryReason. Stop, clock, storage, and failed-deferral states still fail closed. Regression covers six permanent failures and later valid work over four hours with reopened storage.

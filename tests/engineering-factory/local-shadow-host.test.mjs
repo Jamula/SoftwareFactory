@@ -134,3 +134,18 @@ test('failed deferral is not acknowledgement',async()=>{
   assert.equal(j.claim(repo.id,'other',630000,30000).deliveryId,'bad');
  }finally{j.close();}
 });
+
+test('six permanent rejections cannot starve a valid queued pull or inventory across restarts',async()=>{
+ const dir=mkdtempSync(join(tmpdir(),'factory-fair-')),path=join(dir,'state.db');let j=openEventJournal(path),now=600000,validReads=0,inventoryReads=0,inventoryIdentity=0;
+ try{
+  for(let n=1;n<=7;n++)assert.equal(j.enqueue({repositoryId:repo.id,deliveryId:'pending-'+n,kind:'pull',subject:n,head}).queued,true);
+  const req=async url=>{const u=new URL(url);if(u.searchParams.has('page')){inventoryReads++;return json([{number:8}]);}const n=Number(u.pathname.split('/').pop());if(n===7)validReads++;if(n===8)inventoryIdentity++;return json(n>=7?pull(n):{});};
+  for(let i=0;i<24;i++){
+   let calls=0;const result=await localReconcileTick({journal:j,owner:'worker',clock:()=>now,request:async(...args)=>{calls++;return req(...args);}});
+   assert.ok(calls<=3);assert.equal(result.liveMerge,false);assert.equal(result.liveDispatch,false);
+   if(i===0)assert.equal(result.inventoryReason,'QUEUED');
+   j.close();j=openEventJournal(path);now+=600000;
+  }
+  assert.equal(validReads,1);assert.equal(inventoryReads,24);assert.ok(inventoryIdentity>=25);
+ }finally{j.close();rmSync(dir,{recursive:true,force:true});}
+});
