@@ -59,6 +59,15 @@ test('rejects closed, draft, non-main, or wrong-number PR rereads',()=>{
   assert.equal(reconcileQueueSnapshot(intent,snapshot(p)).reason,'PULL_NOT_READY');
 });
 
+test('rejects contradictory or malformed pull repository names',()=>{
+ for(const repositoryName of ['other/repo',null,undefined])
+  assert.equal(reconcileQueueSnapshot(intent,snapshot({...pull,repository:repositoryName})).reason,
+   'PULL_NOT_READY');
+ const missingRepository={...pull};
+ delete missingRepository.repository;
+ assert.equal(reconcileQueueSnapshot(intent,snapshot(missingRepository)).reason,'QUEUE_REREAD_UNKNOWN');
+});
+
 test('invalidates snapshots when either the PR head or base moves',()=>{
  assert.equal(reconcileQueueSnapshot(intent,snapshot({...pull,head:'c'.repeat(40)})).reason,'HEAD_CHANGED');
  assert.equal(reconcileQueueSnapshot(intent,snapshot({...pull,base:'d'.repeat(40)})).reason,'BASE_CHANGED');
