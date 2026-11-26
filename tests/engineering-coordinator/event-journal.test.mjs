@@ -5,7 +5,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {DatabaseSync} from 'node:sqlite';
 import {Worker} from 'node:worker_threads';
-import {openEventJournal} from '../../tools/engineering-coordinator/event-journal.mjs';
+import {openEventJournal,reconcileJournalOnce} from '../../tools/engineering-coordinator/event-journal.mjs';
 
 const original = {repositoryId: 1, deliveryId: 'run-8', kind: 'pull', subject: 42, head: 'a'.repeat(40)};
 const next = {...original, deliveryId: 'run-2', head: 'b'.repeat(40)};
@@ -150,4 +150,51 @@ test('separate workers cannot claim two deliveries for the same repository', {ti
     store.close();
     rmSync(dir, {recursive: true, force: true});
   }
+});
+
+test('bounded journal reconciliation acknowledges only fresh shadow evidence; moved heads are superseded',async()=>{
+ const j=openEventJournal(':memory:');
+ try {
+  j.enqueue(original);j.enqueue(next);
+  let now=1;
+  const runtime={journal:j,repositoryId:1,owner:'worker-a',leaseMs:1000,clock:()=>now,stop:false};
+  const read=async hint=>({...hint,shadow:true,fresh:true});
+  assert.equal((await reconcileJournalOnce({...runtime,read})).reason,'SHADOW_RECONCILED');
+  assert.equal((await reconcileJournalOnce({...runtime,read:async hint=>({...await read(hint),head:original.head})})).reason,'SHADOW_HEAD_SUPERSEDED');
+  assert.equal((await reconcileJournalOnce({...runtime,read})).reason,'NO_CLAIM');
+ } finally{j.close();}
+});
+test('invalid evidence or lost lease leaves claim available for recovery',async()=>{
+ for(const change of [null,{shadow:false},{fresh:false},{repositoryId:2},{kind:'check'},{subject:43},{head:'bad'}]){
+  const j=openEventJournal(':memory:');
+  try{
+   j.enqueue(original);let now=0;
+   const opts={journal:j,repositoryId:1,owner:'worker-a',leaseMs:1000,clock:()=>now,stop:false,
+    read:async hint=>change===null?null:{...hint,shadow:true,fresh:true,...change}};
+   assert.equal((await reconcileJournalOnce(opts)).reason,'EVIDENCE_UNKNOWN');
+   assert.equal(j.claim(1,'worker-b',999,1000),null);
+   assert.equal(j.claim(1,'worker-b',1000,1000).generation,2);
+  }finally{j.close();}
+ }
+ const j=openEventJournal(':memory:');
+ try{
+  j.enqueue(original);let now=0;
+  const opts={journal:j,repositoryId:1,owner:'worker-a',leaseMs:1000,clock:()=>now,stop:false};
+  assert.equal((await reconcileJournalOnce({...opts,read:async hint=>{now=1000;return {...hint,shadow:true,fresh:true};}})).reason,'LEASE_OR_CLOCK_UNKNOWN');
+  assert.equal(j.claim(1,'worker-b',1000,1000).generation,2);
+ }finally{j.close();}
+});
+test('runtime, clock, exceptions and fencing fail closed',async()=>{
+ const hint={...original,owner:'w',generation:1,leaseUntil:1000};
+ const journal={claim:()=>hint,complete:()=>false};
+ const opts={journal,repositoryId:1,owner:'w',leaseMs:1000,clock:()=>0,stop:false,read:async v=>({...v,shadow:true,fresh:true})};
+ for(const x of [undefined,{...opts,stop:true}])assert.equal((await reconcileJournalOnce(x)).reason,'STOPPED');
+ for(const x of [{journal:null},{journal:{}},{journal:{claim:()=>hint}},{clock:null},{read:null}])
+  assert.equal((await reconcileJournalOnce({...opts,...x})).reason,'RUNTIME_UNKNOWN');
+ assert.equal((await reconcileJournalOnce({...opts,clock:()=>-1})).reason,'CLOCK_UNKNOWN');
+ for(const values of [[0,-1],[1,0]]){
+  const samples=[...values];assert.equal((await reconcileJournalOnce({...opts,clock:()=>samples.shift()})).reason,'LEASE_OR_CLOCK_UNKNOWN');
+ }
+ assert.equal((await reconcileJournalOnce(opts)).reason,'CLAIM_LOST');
+ assert.equal((await reconcileJournalOnce({...opts,read:async()=>{throw Error('offline')}})).reason,'RECONCILIATION_UNAVAILABLE');
 });

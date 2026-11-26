@@ -101,3 +101,27 @@ export function openEventJournal(filename) {
     throw error;
   }
 }
+
+// One bounded, injected shadow reconciliation. No real transport or write authority.
+// The reader must normalize a fresh observation of the exact claim, not event text.
+export async function reconcileJournalOnce({journal, repositoryId, owner, leaseMs, clock, read, stop} = {}) {
+  const result=reason=>({shadow:true,liveDispatch:false,liveMerge:false,reason});
+  if(stop!==false)return result('STOPPED');
+  if(!journal||typeof journal.claim!=='function'||typeof journal.complete!=='function'||
+     typeof clock!=='function'||typeof read!=='function')return result('RUNTIME_UNKNOWN');
+  try {
+    const now=clock();
+    if(!isTime(now))return result('CLOCK_UNKNOWN');
+    const ticket=journal.claim(repositoryId,owner,now,leaseMs);
+    if(!ticket)return result('NO_CLAIM');
+    const evidence=await read(Object.freeze({repositoryId:ticket.repositoryId,kind:ticket.kind,
+      subject:ticket.subject,head:ticket.head}));
+    const finished=clock();
+    if(!isTime(finished)||finished<now||finished>=ticket.leaseUntil)return result('LEASE_OR_CLOCK_UNKNOWN');
+    if(!evidence||evidence.shadow!==true||evidence.fresh!==true||evidence.repositoryId!==ticket.repositoryId||
+       evidence.kind!==ticket.kind||evidence.subject!==ticket.subject||!isHead(evidence.head))return result('EVIDENCE_UNKNOWN');
+    // A fresh moved head supersedes this hint; it does not authorize work on either head.
+    if(journal.complete(ticket,finished)!==true)return result('CLAIM_LOST');
+    return result(evidence.head===ticket.head?'SHADOW_RECONCILED':'SHADOW_HEAD_SUPERSEDED');
+  } catch {return result('RECONCILIATION_UNAVAILABLE');}
+}
