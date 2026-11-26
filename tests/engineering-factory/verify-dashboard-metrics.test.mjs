@@ -9,7 +9,7 @@ function fixture(){
   const labels=attributes({stage:'evaluate',outcome:'blocked',reason:'POLICY'});
   return {resourceMetrics:[{resource:{attributes:attributes({'service.name':'softwarefactory-shadow'})},scopeMetrics:[{scope:{name:'softwarefactory'},metrics:[
     {name:'factory.stage.count',sum:{isMonotonic:true,aggregationTemporality:2,dataPoints:[{attributes:labels,asDouble:1,startTimeUnixNano:'100',timeUnixNano:'200'}]}},
-    {name:'factory.stage.duration',unit:'ms',histogram:{aggregationTemporality:2,dataPoints:[{attributes:labels,count:'1',sum:2.5,startTimeUnixNano:'100',timeUnixNano:'200'}]}}
+    {name:'factory.stage.duration',unit:'ms',histogram:{aggregationTemporality:2,dataPoints:[{attributes:structuredClone(labels),count:'1',sum:2.5,startTimeUnixNano:'100',timeUnixNano:'200'}]}}
   ]}]}]};
 }
 const metrics=doc=>doc.resourceMetrics[0].scopeMetrics[0].metrics;
@@ -129,7 +129,7 @@ test('rejects multiple cumulative recording periods and invalid timestamps',()=>
     assert.throws(()=>verifyDashboardMetrics([mixed]),/DASHBOARD_METRICS_MISSING/);
     const repeated=fixture();instrument(repeated,index).dataPoints[0].timeUnixNano='300';
     assert.equal(verifyDashboardMetrics([fixture(),repeated]),true);
-    for(const start of [undefined,'0','-1','18446744073709551616',1.5,'300']){
+    for(const start of [undefined,'0','-1','18446744073709551616',1.5,'200','300']){
       const bad=fixture();instrument(bad,index).dataPoints[0].startTimeUnixNano=start;
       assert.throws(()=>verifyDashboardMetrics([bad]),/DASHBOARD_METRICS_MISSING/);
     }

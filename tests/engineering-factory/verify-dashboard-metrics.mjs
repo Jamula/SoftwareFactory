@@ -30,7 +30,7 @@ const timestamp=value=>{
 function period(point,prior){
   const start=timestamp(point.startTimeUnixNano);
   const end=timestamp(point.timeUnixNano);
-  if(end<start||(prior!==undefined&&prior!==start))throw Error('DASHBOARD_METRICS_MISSING');
+  if(end<=start||(prior!==undefined&&prior!==start))throw Error('DASHBOARD_METRICS_MISSING');
   return start;
 }
 function exactLabels(point){
