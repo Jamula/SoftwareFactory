@@ -7,7 +7,7 @@ const expectedLabels={stage:'evaluate',outcome:'blocked',reason:'POLICY'};
 const service='softwarefactory-shadow';
 const hasAttributes=(attributes,expected)=>Array.isArray(attributes)&&Object.entries(expected).every(([key,value])=>{
   const matches=attributes.filter(a=>a?.key===key);
-  return matches.length===1&&matches[0].value?.stringValue===value;
+  return matches.length===1&&matches[0].value!==null&&typeof matches[0].value==='object'&&!Array.isArray(matches[0].value)&&Object.keys(matches[0].value).length===1&&Object.hasOwn(matches[0].value,'stringValue')&&matches[0].value.stringValue===value;
 });
 const positiveInteger=value=>(typeof value==='string'&&/^\d+$/.test(value)||typeof value==='number'&&Number.isSafeInteger(value))&&Number.isSafeInteger(Number(value))&&Number(value)>0;
 const nonnegativeNumber=value=>typeof value==='number'&&Number.isFinite(value)&&value>=0;
@@ -19,29 +19,57 @@ function recorded(point){
   if(!Number.isInteger(flags)||flags<0||flags>0xffffffff)throw Error('DASHBOARD_METRICS_MISSING');
   return (flags&1)===0; // DATA_POINT_FLAGS_NO_RECORDED_VALUE_MASK
 }
+const timestamp=value=>{
+  if(typeof value==='number'&&Number.isSafeInteger(value)&&value>0)return BigInt(value);
+  if(typeof value==='string'&&/^[0-9]{1,20}$/.test(value)){
+    const n=BigInt(value);
+    if(n>0n&&n<=18446744073709551615n)return n;
+  }
+  throw Error('DASHBOARD_METRICS_MISSING');
+};
+function period(point,prior){
+  const start=timestamp(point.startTimeUnixNano);
+  const end=timestamp(point.timeUnixNano);
+  if(end<=start||(prior!==undefined&&prior!==start))throw Error('DASHBOARD_METRICS_MISSING');
+  return start;
+}
+function exactLabels(point){
+  if(!hasAttributes(point.attributes,expectedLabels)||point.attributes.length!==Object.keys(expectedLabels).length)
+    throw Error('DASHBOARD_METRICS_MISSING');
+}
 export function verifyDashboardMetrics(documents){
-  let counter=false,histogram=false;
+  let counter,histogram,histogramSum;
   for(const document of documents){
     for(const resource of document?.resourceMetrics??[]){
-      if(!hasAttributes(resource.resource?.attributes,{'service.name':service}))continue;
+      const attrs=resource.resource?.attributes;
+      if(!hasAttributes(attrs,{'service.name':service})){
+        if(Array.isArray(attrs)&&attrs.some(a=>a?.key==='service.name'&&a.value?.stringValue===service))
+          throw Error('DASHBOARD_METRICS_MISSING');
+        continue;
+      }
       for(const scope of resource.scopeMetrics??[]){
         if(scope.scope?.name!=='softwarefactory')continue;
         for(const metric of scope.metrics??[]){
           if(metric.name==='factory.stage.count'){
             if(metric.sum?.isMonotonic!==true||!cumulative(metric.sum.aggregationTemporality))throw Error('DASHBOARD_METRICS_MISSING');
             for(const p of metric.sum.dataPoints??[]){
-              if(!hasAttributes(p.attributes,expectedLabels)||!recorded(p))continue;
-              const value=p.asInt??p.asDouble;
-              if(!positiveInteger(value)||Number(value)!==1)throw Error('DASHBOARD_METRICS_MISSING');
-              counter=true;
+              if(!recorded(p))continue;
+              exactLabels(p);
+              const int=Object.hasOwn(p,'asInt'),double=Object.hasOwn(p,'asDouble');
+              if(int===double||(int?(!positiveInteger(p.asInt)||Number(p.asInt)!==1):p.asDouble!==1))
+                throw Error('DASHBOARD_METRICS_MISSING');
+              counter=period(p,counter);
             }
           }
           if(metric.name==='factory.stage.duration'){
             if(metric.unit!=='ms'||!cumulative(metric.histogram?.aggregationTemporality))throw Error('DASHBOARD_METRICS_MISSING');
             for(const p of metric.histogram.dataPoints??[]){
-              if(!hasAttributes(p.attributes,expectedLabels)||!recorded(p))continue;
+              if(!recorded(p))continue;
+              exactLabels(p);
               if(!positiveInteger(p.count)||Number(p.count)!==1||!nonnegativeNumber(p.sum))throw Error('DASHBOARD_METRICS_MISSING');
-              histogram=true;
+              if(histogramSum!==undefined&&p.sum!==histogramSum)throw Error('DASHBOARD_METRICS_MISSING');
+              histogramSum=p.sum;
+              histogram=period(p,histogram);
             }
           }
         }
