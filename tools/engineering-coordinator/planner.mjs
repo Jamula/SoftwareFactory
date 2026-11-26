@@ -24,10 +24,10 @@ export function planLanes(config, tasks, active = []) {
       !dense(task.paths) || task.paths.length === 0 || !task.paths.every(validPath) ||
       task.paths.some(path => !lanes.get(task.lane).owners.some(owner =>
         path === owner || path.startsWith(`${owner}/`))))) return blocked('INVALID_TASK');
-  if (new Set(tasks.map(task => task.id)).size !== tasks.length ||
-      tasks.some(task => task.dependencies.some(dependency => !tasks.some(candidate => candidate.id === dependency))))
-    return blocked('DEPENDENCY_UNKNOWN');
   const byId = new Map(tasks.map(task => [task.id, task]));
+  if (byId.size !== tasks.length ||
+      tasks.some(task => task.dependencies.some(dependency => !byId.has(dependency))))
+    return blocked('DEPENDENCY_UNKNOWN');
   const visiting = new Set();
   const visited = new Set();
   function acyclic(id) {
