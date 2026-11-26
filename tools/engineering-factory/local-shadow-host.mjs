@@ -5,6 +5,8 @@ import {readPullIdentity} from './event-envelope.mjs';
 
 const repositoryId=1471342715;
 const intervalMs=600000;
+const retryDelayMs=3600000;
+const validOwner=owner=>typeof owner==='string'&&/^[a-zA-Z0-9-]{1,80}$/.test(owner);
 const receipt=(reason,extra={})=>({shadow:true,liveDispatch:false,liveMerge:false,reason,...extra});
 const isIdentity=(p,number)=>p?.reason==='IDENTITY_ONLY'&&p.repositoryId===repositoryId&&p.number===number;
 
@@ -28,19 +30,26 @@ async function readPage(request,page){
 // One bounded read-only recovery pass. At most three GETs (page, identity,
 // reconciliation) or one recovery GET. No mutation after cancellation.
 export async function localReconcileTick({journal,owner,clock=Date.now,request=fetch,signal=new AbortController().signal,cursor={page:1}}){
+ if(!validOwner(owner))return receipt('INVALID_OWNER');
+ let claimed;
  const stopped=()=>signal.aborted;
  const budgeted=(url,options)=>{
   signal.throwIfAborted();
   return request(url,{...options,signal:AbortSignal.any([options.signal,signal])});
  };
  const guarded={
-  claim(...args){signal.throwIfAborted();return journal.claim(...args,'pull');},
+  claim(...args){signal.throwIfAborted();claimed=journal.claim(...args,'pull');return claimed;},
   complete(...args){signal.throwIfAborted();return journal.complete(...args);}
  };
  const read=async ticket=>{
   if(ticket.kind!=='pull')return null;
   const p=await readPullIdentity(ticket.subject,budgeted);
-  return isIdentity(p,ticket.subject)?{shadow:true,fresh:true,repositoryId,kind:'pull',subject:ticket.subject,head:p.head}:null;
+  signal.throwIfAborted();
+  if(!isIdentity(p,ticket.subject)){
+   if(journal.defer(claimed,clock(),retryDelayMs)!==true)throw Error('RETRY_DEFER_UNAVAILABLE');
+   return null;
+  }
+  return {shadow:true,fresh:true,repositoryId,kind:'pull',subject:ticket.subject,head:p.head};
  };
  try{
   signal.throwIfAborted();
@@ -74,6 +83,7 @@ export async function localReconcileTick({journal,owner,clock=Date.now,request=f
 // authorize writes, install a service, or provision resources.
 export async function runLocalShadowHost({enabled,path,owner,signal,clock=Date.now,request=fetch,write=console.log,wait=sleep,open=openEventJournal}){
  if(enabled!==true||signal.aborted)return receipt('STOPPED');
+ if(!validOwner(owner))return receipt('INVALID_OWNER');
  let journal;
  try{
   journal=open(path);

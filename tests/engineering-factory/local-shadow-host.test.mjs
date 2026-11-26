@@ -103,3 +103,34 @@ test('rejected identity advances cursor; pre-aborted host never opens storage',a
  const ctl=new AbortController();ctl.abort();let opened=0;
  assert.equal((await runLocalShadowHost({enabled:true,signal:ctl.signal,open:()=>{opened++;throw Error('unexpected');}})).reason,'STOPPED');assert.equal(opened,0);
 });
+
+test('rejected pending pull is deferred durably while later pulls and inventory progress',async()=>{
+ const dir=mkdtempSync(join(tmpdir(),'factory-retry-')),path=join(dir,'retry.db');let j=openEventJournal(path),now=600000;
+ try{
+  j.enqueue({repositoryId:repo.id,deliveryId:'rejected',kind:'pull',subject:1,head});
+  j.enqueue({repositoryId:repo.id,deliveryId:'valid',kind:'pull',subject:2,head});
+  const req=async url=>url.includes('/pulls?')?json([{number:2}]):json(url.endsWith('/1')?{}:pull(2));
+  const tick=()=>localReconcileTick({journal:j,owner:'worker',clock:()=>now,request:req});
+  assert.equal((await tick()).reason,'EVIDENCE_UNKNOWN');
+  j.close();j=openEventJournal(path);now+=600000;
+  assert.equal((await tick()).reason,'SHADOW_RECONCILED');now+=600000;
+  assert.equal((await tick()).reason,'SHADOW_RECONCILED');
+  assert.equal(j.claim(repo.id,'other',now,30000),null);
+  now=4200000;assert.equal(j.claim(repo.id,'other',now,30000).deliveryId,'rejected');
+ }finally{j.close();rmSync(dir,{recursive:true,force:true});}
+});
+test('invalid owners never open storage or poll',async()=>{
+ for(const owner of [undefined,null,'','worker_1','x'.repeat(81),1]){
+  const unexpected=()=>{throw Error('unexpected access');};
+  assert.equal((await localReconcileTick({owner,journal:{},request:unexpected})).reason,'INVALID_OWNER');
+  assert.equal((await runLocalShadowHost({enabled:true,owner,signal:new AbortController().signal,open:unexpected})).reason,'INVALID_OWNER');
+ }
+});
+test('failed deferral is not acknowledgement',async()=>{
+ const j=openEventJournal(':memory:');try{
+  j.enqueue({repositoryId:repo.id,deliveryId:'bad',kind:'pull',subject:1,head});
+  const wrapper={claim:j.claim,complete:j.complete,defer:()=>false};
+  assert.equal((await localReconcileTick({journal:wrapper,owner:'worker',clock:()=>600000,request:async()=>json({})})).reason,'RECONCILIATION_UNAVAILABLE');
+  assert.equal(j.claim(repo.id,'other',630000,30000).deliveryId,'bad');
+ }finally{j.close();}
+});

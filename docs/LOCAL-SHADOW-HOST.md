@@ -20,3 +20,5 @@ storage ownership, stop/restart, cost and recovery before declaring #5/#6
 accepted. This PR does not provision or start a host.
 
 Unsupported event kinds remain unacknowledged for their own consumers. The pull-only claim filter retains repository-wide exclusivity. Rejected PR identities advance the cursor without enqueueing. Pre-aborted hosts do not open storage.
+
+Rejected pending pulls stay unacknowledged with a durable one-hour retry deferral separate from the active lease. Other eligible pulls can proceed after lease expiry. Invalid owner IDs stop before storage opens. Deferral is not reconciliation success.
