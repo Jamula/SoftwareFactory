@@ -24,3 +24,5 @@ Owner direction, November 26, 2026: move execution off the laptop and into GitHu
 Do not treat Actions matrices as actual agents, or a successful synthetic response as proof of live coding, billing or quota. A public repository cannot rely on a branch-local self-attestation for trust. Protect the environment, validate every workflow update independently, keep agent credentials isolated from generated code and separate publication from inference. No consumer activation or paid fallback. Existing shadow reconciliation remains unchanged.
 
 Official documentation: https://docs.github.com/en/copilot/how-tos/copilot-cli/automate-copilot-cli/automate-with-actions and https://docs.github.com/en/copilot/concepts/agent-capabilities/agent-powered-workflows-and-operations/copilot-cli-in-github-actions and https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference .
+
+The success marker must be the complete stdout byte sequence, with only an optional single trailing LF. Additional content, NULs, whitespace or multiple newlines are rejected. The regression executes the actual shell guard without credentials or provider calls.
