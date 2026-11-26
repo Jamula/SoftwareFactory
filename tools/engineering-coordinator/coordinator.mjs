@@ -15,8 +15,11 @@ export async function runTick({config, tasks, active = [], store, tracker, agent
       plan.reason === 'DEPENDENCY_CYCLE' || plan.reason === 'INVALID_ACTIVE_LANE' ||
       plan.reason === 'ACTIVE_PATH_CONFLICT') return failed(plan.reason);
   const byId = new Map(tasks.map(task => [task.id, task]));
+  const reserved = [...new Set([...active.map(item => item.lane),
+    ...tasks.filter(task => task.state === 'active').map(task => task.lane)])];
   const outcomes = await Promise.allSettled(plan.scheduled.map(async item => {
-    const claim = store.claim(item.lane, workerId, now, config.limits.leaseMs);
+    const claim = store.claim(item.lane, workerId, now, config.limits.leaseMs,
+      config.limits.maxConcurrentLanes, reserved);
     if (!claim) return {lane: item.lane, state: 'blocked', reason: 'LEASE_HELD'};
     let lastObservedTime = now;
     const renewLease = () => {

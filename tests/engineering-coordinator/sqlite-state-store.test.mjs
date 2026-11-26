@@ -21,6 +21,24 @@ test('claims isolated lanes and denies a live duplicate claim', () => withDb(fil
   store.close();
 }));
 
+test('serializes a project capacity limit across SQLite connections and counts reserved lanes once', () => withDb(filename => {
+  const a = createSQLiteStateStore(filename);
+  const b = createSQLiteStateStore(filename);
+  try {
+    const original = a.claim('api', 'worker-a', 1000, 1000, 1);
+    assert.equal(original.generation, 1);
+    assert.equal(b.claim('web', 'worker-b', 1999, 1000, 1), null);
+    assert.equal(b.claim('web', 'worker-b', 2000, 1000, 1, ['docs']), null);
+    assert.equal(b.claim('web', 'worker-b', 2000, 1000, 2, ['web']), null);
+    const next = b.claim('web', 'worker-b', 2000, 1000, 2, ['docs', 'docs']);
+    assert.equal(next.generation, 1);
+    assert.equal(a.claim('api', 'worker-a', 2001, 1000, 2, ['web', 'docs']), null);
+    assert.equal(a.claim('api', 'worker-a', 2001, 1000, 2, ['web']).generation, 2);
+    assert.equal(b.release('web', next.generation, 'worker-b', 2002), true);
+    assert.equal(b.claim('docs', 'worker-b', 2002, 1000, 2).generation, 1);
+  } finally { a.close(); b.close(); }
+}));
+
 test('persists checkpoints across restart and rejects stale generation updates', () => withDb(filename => {
   const firstStore = createSQLiteStateStore(filename);
   const claim = firstStore.claim('api', 'worker-a', 1000, 1000);
@@ -48,6 +66,9 @@ test('validates lane, owner, time, lease and checkpoints', () => withDb(filename
   assert.equal(store.claim('api', 'worker', 1, 3600001), null);
   assert.equal(store.claim('api', 'worker', 1, Number.NaN), null);
   assert.equal(store.claim('api', 'worker', Number.MAX_SAFE_INTEGER - 500, 1000), null);
+  for (const maximum of [0, 1.5, 33]) assert.equal(store.claim('api', 'worker', 1, 1000, maximum), null);
+  for (const reserved of [null, new Array(1), new Array(33), ['bad lane']])
+    assert.equal(store.claim('api', 'worker', 1, 1000, 2, reserved), null);
   assert.equal(store.checkpoint('api', 0, 'worker', {}, 1001), false);
   assert.equal(store.checkpoint('../api', 1, 'worker', {}, 1001), false);
   assert.equal(store.checkpoint('api', 1, 'bad worker', {}, 1001), false);

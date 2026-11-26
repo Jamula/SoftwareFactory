@@ -1,6 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {mkdtempSync, rmSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
 import {runTick as executeTick} from '../../tools/engineering-coordinator/coordinator.mjs';
+import {createSQLiteStateStore} from '../../tools/engineering-coordinator/sqlite-state-store.mjs';
 
 const runTick = options => executeTick({...options,
   clock: Object.hasOwn(options, 'clock') ? options.clock : () => options.now});
@@ -97,6 +101,60 @@ test('blocks held leases, failed reads, failed reviews and stale checkpoints', a
   assert.equal(rejected.completed[0].reason, 'AGENT_REVIEW_FAILED');
   const stale = await runTick({config: config(), tasks: tasks(), store: store(() => false), tracker, agent, workerId: 'worker', now: 1});
   assert.equal(stale.completed[0].reason, 'STALE_CHECKPOINT');
+});
+
+test('passes one reservation per lane and the project capacity to the claim adapter', async () => {
+  const [active, approved] = tasks();
+  const requests = [];
+  const firstStore = store();
+  const result = await runTick({config: config(), tasks: [{...active, state: 'active'}, approved],
+    active: [{id: active.id, lane: active.lane, paths: active.paths}],
+    store: {...firstStore, claim: (...args) => {
+      requests.push(args);
+      return firstStore.claim(...args);
+    }},
+    tracker, agent, workerId: 'worker', now: 1000});
+  assert.deepEqual(requests, [['web', 'worker', 1000, 5000, 2, ['api']]]);
+  assert.equal(result.completed[0].state, 'shadow-reviewed');
+});
+
+test('overlapping ticks share the project capacity even with different candidate inventories', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'coordinator-shared-capacity-'));
+  const path = join(directory, 'state.sqlite');
+  const firstStore = createSQLiteStateStore(path);
+  const secondStore = createSQLiteStateStore(path);
+  const settings = config();
+  settings.limits.maxConcurrentLanes = 1;
+  const [api, web] = tasks();
+  const entered = Promise.withResolvers();
+  const finish = Promise.withResolvers();
+  const first = runTick({config: settings, tasks: [api], store: firstStore, tracker, workerId: 'worker-a',
+    now: 1000, agent: {inspect: async () => {
+      entered.resolve();
+      await finish.promise;
+      return {shadow: true, accepted: true};
+    }}});
+  try {
+    await Promise.race([entered.promise, first.then(() => { throw Error('first worker did not wait for release'); })]);
+    let secondInspections = 0;
+    const options = {config: settings, tasks: [web], store: secondStore, tracker, workerId: 'worker-b',
+      now: 1001, agent: {inspect: async () => {
+        secondInspections++;
+        return {shadow: true, accepted: true};
+      }}};
+    assert.equal((await runTick(options)).completed[0].reason, 'LEASE_HELD');
+    assert.equal(secondInspections, 0);
+    finish.resolve();
+    assert.equal((await first).completed[0].state, 'shadow-reviewed');
+    assert.equal((await runTick(options)).completed[0].state, 'shadow-reviewed');
+    assert.equal(secondInspections, 1);
+  } finally {
+    finish.resolve();
+    await first;
+    firstStore.close();
+    secondStore.close();
+    rmSync(directory, {recursive: true, force: true});
+  }
 });
 
 test('does not review or checkpoint a task whose authoritative state changed after planning', async () => {
