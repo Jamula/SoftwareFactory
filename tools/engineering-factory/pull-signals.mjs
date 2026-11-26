@@ -41,7 +41,8 @@ function normalizeReviews(value, hasNext, number, head) {
   const seen = new Set(), reviews = [];
   for (const row of value) {
     if (!row || !positive(row.id) || seen.has(row.id) || !row.user ||
-        !/^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$/.test(row.user.login ?? '') ||
+        !text(row.user.login,44) ||
+        !/^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*(?:\[bot\])?$/.test(row.user.login) ||
         (row.user.id !== null && row.user.id !== undefined && !positive(row.user.id)) ||
         !['APPROVED','CHANGES_REQUESTED','COMMENTED','DISMISSED','PENDING'].includes(row.state) ||
         !sha(row.commit_id) || !timestamp(row.submitted_at)) return {ok:false,reason:'REVIEW_METADATA_UNKNOWN'};
@@ -62,7 +63,8 @@ function normalizeChecks(value, hasNext, head) {
   const seen = new Set(), checks = [];
   for (const row of value.check_runs) {
     if (!row || !positive(row.id) || seen.has(row.id) || !text(row.name,100) || !sha(row.head_sha) ||
-        !row.app || !positive(row.app.id) || !/^[a-z0-9-]{1,100}$/.test(row.app.slug ?? '') ||
+        !row.app || !positive(row.app.id) || !text(row.app.slug,100) ||
+        !/^[a-z0-9-]{1,100}$/.test(row.app.slug) ||
         !['queued','in_progress','completed'].includes(row.status)) return {ok:false,reason:'CHECK_METADATA_UNKNOWN'};
     if (row.head_sha !== head) return {ok:false,reason:'CHECK_HEAD_MISMATCH'};
     if (row.status === 'completed') {
