@@ -33,3 +33,19 @@ test('partial, duplicated, unlinked, stale-main or invalid PR evidence fails clo
 test('main verification timestamp comes only from PR evidence even when readiness is later',()=>{
   assert.deepEqual(measureIssueOutcome({...issue(),readyAt:450},pulls()),{known:true,reason:'VERIFIED_OUTCOME',elapsedMs:50,mainVerifiedAt:400,requiredPullCount:2});
 });
+
+test('rejects proxy and accessor-backed evidence without invoking getters',()=>{
+  const poison=()=>{throw Error('unexpected getter');};
+  const i=issue();Object.defineProperty(i,'readyAt',{get:poison});
+  assert.equal(measureIssueOutcome(i,pulls()).known,false);
+  assert.equal(measureIssueOutcome(new Proxy(issue(),{}),pulls()).known,false);
+  assert.equal(measureIssueOutcome(issue(),new Proxy(pulls(),{})).known,false);
+  const p=pulls();Object.defineProperty(p[0],'mainVerifiedAt',{get:poison});
+  assert.equal(measureIssueOutcome(issue(),p).known,false);
+  const pp=pulls();Object.defineProperty(pp,0,{get:poison});
+  assert.equal(measureIssueOutcome(issue(),pp).known,false);
+  const links=[81,82];Object.defineProperty(links,0,{get:poison});
+  assert.equal(measureIssueOutcome({...issue(),requiredPullNumbers:links},pulls()).known,false);
+  const pl=pulls();pl[0].issueNumbers=new Proxy([9],{});
+  assert.equal(measureIssueOutcome(issue(),pl).known,false);
+});
