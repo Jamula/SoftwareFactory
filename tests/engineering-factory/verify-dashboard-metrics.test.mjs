@@ -1,0 +1,38 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {verifyDashboardMetrics} from './verify-dashboard-metrics.mjs';
+const attributes=values=>Object.entries(values).map(([key,stringValue])=>({key,value:{stringValue}}));
+function fixture(){
+  const labels=attributes({stage:'evaluate',outcome:'blocked',reason:'POLICY'});
+  return {resourceMetrics:[{resource:{attributes:attributes({'service.name':'softwarefactory-shadow'})},scopeMetrics:[{scope:{name:'softwarefactory'},metrics:[
+    {name:'factory.stage.count',sum:{isMonotonic:true,dataPoints:[{attributes:labels,asDouble:1}]}},
+    {name:'factory.stage.duration',unit:'ms',histogram:{dataPoints:[{attributes:labels,count:'1',sum:2.5}]}}
+  ]}]}]};
+}
+const metrics=doc=>doc.resourceMetrics[0].scopeMetrics[0].metrics;
+test('recognizes both instruments in the expected synthetic service and scope',()=>{
+  assert.equal(verifyDashboardMetrics([fixture()]),true);
+  const a=fixture(),b=fixture();
+  metrics(a).pop();metrics(b).shift();
+  assert.equal(verifyDashboardMetrics([a,b]),true);
+  const c=fixture();const point=metrics(c)[0].sum.dataPoints[0];
+  delete point.asDouble;point.asInt='1';
+  assert.equal(verifyDashboardMetrics([c]),true);
+});
+test('fails closed for missing signal, wrong service, scope, labels or invalid values',()=>{
+  const mutations=[
+    d=>metrics(d).pop(),
+    d=>metrics(d).shift(),
+    d=>{d.resourceMetrics[0].resource.attributes=attributes({'service.name':'other'});},
+    d=>{d.resourceMetrics[0].scopeMetrics[0].scope.name='other';},
+    d=>{metrics(d)[0].sum.dataPoints[0].attributes=attributes({stage:'evaluate',outcome:'eligible',reason:'POLICY'});},
+    d=>{metrics(d)[0].sum.dataPoints[0].asDouble=0;},
+    d=>{metrics(d)[0].sum.dataPoints[0].asDouble=2;},
+    d=>{metrics(d)[0].sum.isMonotonic=false;},
+    d=>{metrics(d)[1].histogram.dataPoints[0].count='0';},
+    d=>{metrics(d)[1].histogram.dataPoints[0].sum=-1;},
+    d=>{metrics(d)[1].unit='s';}
+  ];
+  for(const mutate of mutations){const doc=fixture();mutate(doc);assert.throws(()=>verifyDashboardMetrics([doc]),/DASHBOARD_METRICS_MISSING/);}
+  assert.throws(()=>verifyDashboardMetrics([]),/DASHBOARD_METRICS_MISSING/);
+});
