@@ -11,6 +11,14 @@ const hasAttributes=(attributes,expected)=>Array.isArray(attributes)&&Object.ent
 });
 const positiveInteger=value=>(typeof value==='string'&&/^\d+$/.test(value)||typeof value==='number'&&Number.isSafeInteger(value))&&Number.isSafeInteger(Number(value))&&Number(value)>0;
 const nonnegativeNumber=value=>typeof value==='number'&&Number.isFinite(value)&&value>=0;
+// OTLP protobuf JSON supports the enum name or its numeric wire value.
+const cumulative=value=>value===2||value==='AGGREGATION_TEMPORALITY_CUMULATIVE';
+function recorded(point){
+  const flags=point.flags===undefined?0:point.flags;
+  // A malformed flag is not evidence; uint32 is the OTLP field type.
+  if(!Number.isInteger(flags)||flags<0||flags>0xffffffff)throw Error('DASHBOARD_METRICS_MISSING');
+  return (flags&1)===0; // DATA_POINT_FLAGS_NO_RECORDED_VALUE_MASK
+}
 export function verifyDashboardMetrics(documents){
   let counter=false,histogram=false;
   for(const document of documents){
@@ -19,17 +27,19 @@ export function verifyDashboardMetrics(documents){
       for(const scope of resource.scopeMetrics??[]){
         if(scope.scope?.name!=='softwarefactory')continue;
         for(const metric of scope.metrics??[]){
-          if(metric.name==='factory.stage.count'&&metric.sum?.isMonotonic===true){
+          if(metric.name==='factory.stage.count'){
+            if(metric.sum?.isMonotonic!==true||!cumulative(metric.sum.aggregationTemporality))throw Error('DASHBOARD_METRICS_MISSING');
             for(const p of metric.sum.dataPoints??[]){
-              if((p.flags&1)!==0||!hasAttributes(p.attributes,expectedLabels))continue;
+              if(!hasAttributes(p.attributes,expectedLabels)||!recorded(p))continue;
               const value=p.asInt??p.asDouble;
               if(!positiveInteger(value)||Number(value)!==1)throw Error('DASHBOARD_METRICS_MISSING');
               counter=true;
             }
           }
-          if(metric.name==='factory.stage.duration'&&metric.unit==='ms'){
-            for(const p of metric.histogram?.dataPoints??[]){
-              if((p.flags&1)!==0||!hasAttributes(p.attributes,expectedLabels))continue;
+          if(metric.name==='factory.stage.duration'){
+            if(metric.unit!=='ms'||!cumulative(metric.histogram?.aggregationTemporality))throw Error('DASHBOARD_METRICS_MISSING');
+            for(const p of metric.histogram.dataPoints??[]){
+              if(!hasAttributes(p.attributes,expectedLabels)||!recorded(p))continue;
               if(!positiveInteger(p.count)||Number(p.count)!==1||!nonnegativeNumber(p.sum))throw Error('DASHBOARD_METRICS_MISSING');
               histogram=true;
             }
