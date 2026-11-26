@@ -63,7 +63,7 @@ Use two-digit milestones M01, M02, etc., optional MNN.NN sub-milestones, and evi
 4. Prove supported provider permissions, included quota, enforced branch protection, independent review and emergency stop before separately authorized dispatch or merge.
 5. Demonstrate three independently accepted unattended SoftwareFactory issues on GitHub (M01), including parallel candidates and review repair, then pilot FamilyTree (M03); expand independently to Spellbook (M04) and FamilyHub (M05). M02 speed work may overlap without gating autonomy or consumer readiness. Each consumer can pause, pin or roll back independently.
 
-Until these steps pass, remain shadow-only. No self-issued approvals or synthetic success signals may authorize a live action.
+Until steps 1–4 pass for the intended scope, remain shadow-only. After those minimum capabilities are independently verified and separately scoped live authorization, included capacity, $0 incremental cost controls, durable ownership and stop/recovery are established, a bounded SoftwareFactory acceptance pilot may execute step 5. Its actual independently accepted cycles supply M01 exit evidence; M01 completion is not a prerequisite to that pilot. This does not grant general dispatch, consumer activation or deployment authority. No self-issued approvals or synthetic success signals may authorize a live action.
 
 ## 25× stretch program
 

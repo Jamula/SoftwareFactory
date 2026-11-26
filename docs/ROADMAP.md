@@ -44,7 +44,7 @@ M02 is not a prerequisite for consumer activation: M03 follows M01, and M04/M05 
 | M01.07.01 | [#105](https://github.com/Jamula/SoftwareFactory/issues/105) | Verified #104/#106, protected main and authorized GitHub settings → included-only Copilot synthetic hosted run, recorded actual entitlement/hard stop/cost attribution; disable opt-in. Not a coding-worker acceptance result. |
 | M01.08 | [#10](https://github.com/Jamula/SoftwareFactory/issues/10) | #4–#9/#17/#105 minimum capabilities and scoped live authorization → three actual accepted unattended cycles and restart/stop proof. |
 
-Minimum safe bounded failure diagnosis is part of M01. M02 performance targets, optional language migration and historical dashboard polish are not M01 entry gates. Missing provider entitlement or paid-usage hard stop prevents live dispatch; the owner must enter credentials directly in the approved GitHub environment, never in chat/source/logs.
+A bounded M01 pilot is allowed only after verified minimum readiness and separate repository-scoped live authorization; its three actual accepted cycles are M01 exit evidence, not an entry gate. No general activation follows from pilot authorization. Minimum safe bounded failure diagnosis is part of M01. M02 performance targets, optional language migration and historical dashboard polish are not M01 entry gates. Missing provider entitlement or paid-usage hard stop prevents live dispatch; the owner must enter credentials directly in the approved GitHub environment, never in chat/source/logs.
 
 ## M02 — fast SoftwareFactory
 

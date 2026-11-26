@@ -2,7 +2,7 @@
 
 ![Target issue-to-merge lifecycle](images/lifecycle.svg)
 
-The target control loop is event-driven and dependency-aware, with GitHub as orchestrator. Merged shadow components are tracked in [roadmap v2](ROADMAP.md); actual GitHub-hosted unattended dispatch/integration and durable cross-run state require M01 acceptance. No laptop or open chat dependency.
+The target control loop is event-driven and dependency-aware, with GitHub as orchestrator. Merged shadow components are tracked in [roadmap v2](ROADMAP.md); actual GitHub-hosted unattended dispatch/integration and durable cross-run state are not yet accepted. A bounded M01 acceptance pilot may execute only after the minimum readiness capabilities (including durable state, protections, quota and stop/recovery) are independently verified and separately scoped live authorization is established. Successful pilot cycles supply M01 acceptance evidence, not the reverse. No laptop or open chat dependency.
 
 | Stage | Input and decision | Exit evidence |
 | --- | --- | --- |
