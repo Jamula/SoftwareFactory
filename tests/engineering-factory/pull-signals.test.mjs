@@ -64,6 +64,14 @@ test('rejects malformed, duplicate, cross-head and incomplete review inventories
  assert.equal((await result([review,review])).reason,'REVIEW_METADATA_UNKNOWN');
 });
 
+test('rejects incomplete and calendar-invalid GitHub API timestamps',async()=>{
+ const result=(reviews,checks=[check])=>readPullSignals(42,head,async url=>url.endsWith('/pulls/42')?response(pull):
+  url.includes('/reviews?')?response(reviews):response({total_count:checks.length,check_runs:checks}));
+ assert.equal((await result([{...review,submitted_at:'2026-11-26'}])).reason,'REVIEW_METADATA_UNKNOWN');
+ assert.equal((await result([{...review,submitted_at:'2026-02-30T19:00:00Z'}])).reason,'REVIEW_METADATA_UNKNOWN');
+ assert.equal((await result([],[{...check,completed_at:'2026-02-30T19:00:00Z'}])).reason,'CHECK_METADATA_UNKNOWN');
+});
+
 test('rejects malformed, wrong-head, duplicate and inconsistent check metadata',async()=>{
  const result=async value=>readPullSignals(42,head,async url=>url.endsWith('/pulls/42')?response(pull):
   url.includes('/reviews?')?response([]):response(value));
