@@ -29,9 +29,9 @@ test('newer stale approval supersedes only previous approval, not objections',()
 
 test('factory-only Copilot comments preserve prior objections and exact head',()=>{
  const bot='copilot-pull-request-reviewer[bot]',repo='Jamula/SoftwareFactory';
- const c=(sequence,state,commit=head)=>r(sequence,state,commit,bot);
+ const c=(sequence,state,commit=head)=>({...r(sequence,state,commit,bot),...(state==='COMMENTED'?{summaryDisposition:'clear'}:{})});
  const norm=(entries,repository=repo)=>normalize(head,entries,repository);
- assert.deepEqual(norm([c(1,'COMMENTED')]).reviews,[{reviewer:bot,head,state:'COMMENTED'}]);
+ assert.deepEqual(norm([c(1,'COMMENTED')]).reviews,[{reviewer:bot,head,state:'COMMENTED',summaryDisposition:'clear'}]);
  assert.equal(norm([c(1,'COMMENTED')],'other/repo').ok,false);
  assert.deepEqual(norm([r(1,'COMMENTED')]).reviews,[]);
  assert.deepEqual(norm([c(1,'COMMENTED',stale)]).reviews,[]);
@@ -42,4 +42,10 @@ test('factory-only Copilot comments preserve prior objections and exact head',()
  assert.deepEqual(norm([c(1,'COMMENTED'),c(2,'APPROVED',stale)]).reviews,[]);
  assert.equal(norm([r(1,'COMMENTED',head,'copilot-pull-request-reviewer')]).reviews[0].state,'COMMENTED');
  assert.deepEqual(normalize(head,[r(1,'COMMENTED',head,'copilot-pull-request-reviewer')]).reviews,[]);
+});
+
+test('latest current-head summary must be independently dispositioned; missing stays uncertain',()=>{
+ const repo='Jamula/SoftwareFactory',bot='copilot-pull-request-reviewer[bot]';
+ const c=(sequence,summaryDisposition)=>({...r(sequence,'COMMENTED',head,bot),summaryDisposition});
+ for(const v of [undefined,'bad','uncertain','actionable','clear'])assert.equal(normalize(head,[c(1,'clear'),c(2,v)],repo).reviews[0].summaryDisposition,['actionable','clear'].includes(v)?v:'uncertain');
 });

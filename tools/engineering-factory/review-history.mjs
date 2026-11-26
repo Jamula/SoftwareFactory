@@ -28,7 +28,10 @@ export function normalizeReviewHistory(head, history, repository) {
         byReviewer.delete(reviewer);
         continue;
       }
-      byReviewer.set(reviewer,{reviewer,head:entry.head,state:'COMMENTED'});
+      // Only an explicitly normalized favorable summary qualifies; missing or
+      // contradictory summary evidence cannot become approval.
+      const summaryDisposition = ['clear','actionable','uncertain'].includes(entry.summaryDisposition) ? entry.summaryDisposition : 'uncertain';
+      byReviewer.set(reviewer,{reviewer,head:entry.head,state:'COMMENTED',summaryDisposition});
       continue;
     }
     // A stale approval cannot supersede an outstanding objection or qualify.
