@@ -5,8 +5,11 @@ const positive = value => Number.isSafeInteger(value) && value > 0;
 const sha = value => typeof value === 'string' && /^[a-f0-9]{40}$/.test(value);
 const text = (value, max=120) => typeof value === 'string' && value.length > 0 &&
   value.length <= max && !/[\u0000-\u001f\u007f]/.test(value);
-const timestamp = value => typeof value === 'string' && value.length <= 40 &&
-  Number.isFinite(Date.parse(value));
+const timestamp = value => {
+  if (!text(value,20) || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(value)) return false;
+  const parsed = new Date(value);
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString().replace('.000Z','Z') === value;
+};
 const failed = reason => ({shadow:true,evidenceComplete:false,reason});
 
 async function readJson(url, request) {
