@@ -41,3 +41,101 @@ export function measureIssueOutcome(issue,pulls){
   return {known:true,reason:'VERIFIED_OUTCOME',elapsedMs:issue.acceptedAt-issue.readyAt,
     mainVerifiedAt:latestMain,requiredPullCount:required.length};
 }
+
+const dayMs = 86400000;
+const cohortFields = [
+  'repositoryId', 'cohort', 'source', 'complete', 'fromMs', 'toMs', 'observedMs', 'nowMs', 'maxAgeMs'
+];
+const entryFields = ['cohort', 'source', 'issue', 'pulls', 'cost'];
+const identityFields = ['repositoryId', 'number', 'state', 'readyAt', 'acceptedAt'];
+const receiptFields = ['repositoryId', 'issueNumber', 'receiptId', 'verified', 'currency', 'amountMicros', 'observedMs'];
+const label = value => typeof value === 'string' && /^[a-z0-9][a-z0-9-]{0,63}$/.test(value);
+
+function validCohort(query, authorizedRepositoryIds) {
+  return ownData(query, cohortFields) && id(query.repositoryId) &&
+    dense(authorizedRepositoryIds, 32) && authorizedRepositoryIds.every(id) &&
+    authorizedRepositoryIds.includes(query.repositoryId) && label(query.cohort) &&
+    ['verified', 'synthetic'].includes(query.source) && typeof query.complete === 'boolean' &&
+    time(query.fromMs) && time(query.toMs) && query.fromMs < query.toMs;
+}
+
+function acceptedCost(cost, issue, observedMs) {
+  if (!ownData(cost, receiptFields) || cost.repositoryId !== issue.repositoryId ||
+      cost.issueNumber !== issue.number || cost.verified !== true || cost.currency !== 'USD' ||
+      !label(cost.receiptId) || !time(cost.amountMicros) || !time(cost.observedMs) ||
+      cost.observedMs < issue.acceptedAt || cost.observedMs > observedMs) return null;
+  return cost;
+}
+
+/**
+ * Summarize one trusted comparable cohort in a half-open acceptance window.
+ * Callers establish inventory completeness and normalize receipts independently.
+ * The report is read-only, with synthetic and verified sources kept separate.
+ */
+export function measureAcceptedCohort(entries, query, authorizedRepositoryIds) {
+  if (!validCohort(query, authorizedRepositoryIds)) return unknown('COHORT_UNKNOWN');
+  if (!time(query.observedMs) || !time(query.nowMs) || !id(query.maxAgeMs) ||
+      query.observedMs < query.toMs || query.observedMs > query.nowMs) return unknown('FRESHNESS_UNKNOWN');
+  if (query.nowMs - query.observedMs > query.maxAgeMs) return unknown('STALE_EVIDENCE');
+  if (!dense(entries, 500)) return unknown('INVALID_ENTRIES');
+
+  const issues = new Set();
+  const receipts = new Set();
+  const durations = [];
+  const counts = {accepted: 0, censored: 0, unknown: 0, withVerifiedCost: 0};
+  let spendMicros = 0;
+  let pullRows = 0;
+  for (const row of entries) {
+    if (!ownData(row, entryFields) || row.cohort !== query.cohort || row.source !== query.source ||
+        !ownData(row.issue, identityFields) || row.issue.repositoryId !== query.repositoryId ||
+        !id(row.issue.number)) return unknown('ENTRY_SCOPE_UNKNOWN');
+    const issue = row.issue;
+    if (issues.has(issue.number)) return unknown('DUPLICATE_ISSUE');
+    issues.add(issue.number);
+    if (issue.state === 'open' && issue.acceptedAt === null &&
+        time(issue.readyAt) && issue.readyAt <= query.observedMs) {
+      if (issue.readyAt < query.toMs) counts.censored++;
+      continue;
+    }
+    if (!dense(row.pulls, 250)) {
+      counts.unknown++;
+      continue;
+    }
+    pullRows += row.pulls.length;
+    if (pullRows > 10000) return unknown('PULL_EVIDENCE_LIMIT');
+    const outcome = measureIssueOutcome(issue, row.pulls);
+    if (!outcome.known || issue.acceptedAt > query.observedMs) {
+      counts.unknown++;
+      continue;
+    }
+    if (issue.acceptedAt >= query.toMs) {
+      if (issue.readyAt < query.toMs) counts.censored++;
+      continue;
+    }
+    if (issue.acceptedAt < query.fromMs) continue;
+    counts.accepted++;
+    durations.push(outcome.elapsedMs);
+
+    const cost = acceptedCost(row.cost, issue, query.observedMs);
+    if (!cost) continue;
+    if (receipts.has(cost.receiptId) || !Number.isSafeInteger(spendMicros + cost.amountMicros)) {
+      return unknown('CONFLICTING_COST_EVIDENCE');
+    }
+    receipts.add(cost.receiptId);
+    spendMicros += cost.amountMicros;
+    counts.withVerifiedCost++;
+  }
+
+  durations.sort((a, b) => a - b);
+  const percentile = p => durations[Math.ceil(p * durations.length) - 1] ?? null;
+  const complete = query.complete && counts.unknown === 0;
+  const costComplete = complete && counts.accepted > 0 && counts.withVerifiedCost === counts.accepted;
+  return {
+    known: complete, reason: complete ? 'MEASURED_COHORT' : 'PARTIAL_EVIDENCE', source: query.source,
+    repositoryId: query.repositoryId, cohort: query.cohort, fromMs: query.fromMs, toMs: query.toMs,
+    observedMs: query.observedMs, sourceComplete: query.complete, counts,
+    p50: percentile(0.5), p95: percentile(0.95),
+    acceptedPerDay: complete ? counts.accepted * dayMs / (query.toMs - query.fromMs) : null,
+    costPerAcceptedUsdMicros: costComplete ? spendMicros / counts.accepted : null
+  };
+}
