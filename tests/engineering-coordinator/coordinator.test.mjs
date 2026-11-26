@@ -18,7 +18,8 @@ const config = () => ({schemaVersion: 1,
 const tasks = () => [{id: 1, lane: 'api', state: 'approved', priority: 1, dependencies: [], paths: ['src/api/one']},
   {id: 2, lane: 'web', state: 'approved', priority: 2, dependencies: [], paths: ['src/web/two']}];
 function store(checkpoint = () => true) {
-  return {claim: (lane, owner, now, leaseMs) => ({laneId: lane, owner, generation: 1, leaseUntil: now + leaseMs}),
+  return {claim: (lane, owner, now, leaseMs, _maxConcurrentLanes, workKey) =>
+      ({laneId: lane, owner, generation: 1, leaseUntil: now + leaseMs, workKey, workGeneration: 1}),
     observeReserved: () => true, renew: (lane, generation, owner, now, leaseMs) => ({leaseUntil: now + leaseMs}),
     checkpoint, release: () => true};
 }
@@ -73,13 +74,43 @@ test('checkpoints shadow-only results while isolating a failing lane', async () 
 test('passes the fresh lease check time to the checkpoint adapter', async () => {
   const clockSamples = [1001, 1300];
   const calls = [];
+  const leaseCalls = [];
+  const backingStore = store((...args) => { calls.push(args); return true; });
+  const instrumentedStore = {...backingStore,
+    claim: (...args) => { leaseCalls.push(['claim', ...args]); return backingStore.claim(...args); },
+    renew: (...args) => { leaseCalls.push(['renew', ...args]); return backingStore.renew(...args); },
+    release: (...args) => { leaseCalls.push(['release', ...args]); return backingStore.release(...args); }};
   const result = await runTick({config: config(), tasks: [tasks()[0]],
-    store: store((...args) => { calls.push(args); return true; }),
+    store: instrumentedStore,
     tracker, agent, workerId: 'worker', now: 1000, clock: () => clockSamples.shift()});
   assert.equal(result.completed[0].state, 'shadow-reviewed');
+  assert.deepEqual(leaseCalls, [
+    ['claim', 'api', 'worker', 1000, 5000, 2, 'example/alpha#1'],
+    ['renew', 'api', 1, 'worker', 1001, 5000, 'example/alpha#1', 1],
+    ['renew', 'api', 1, 'worker', 1300, 5000, 'example/alpha#1', 1],
+    ['release', 'api', 1, 'worker', 1300, 'example/alpha#1', 1]
+  ]);
   assert.deepEqual(calls, [['api', 1, 'worker', {
     taskId: 1, observedState: 'approved', findings: [], completedAt: 1300
-  }, 1300]]);
+  }, 1300, 'example/alpha#1', 1]]);
+});
+
+test('fails closed when a state adapter cannot prove its repository issue reservation', async () => {
+  for (const receipt of [
+    {laneId: 'api', owner: 'worker', generation: 1},
+    {laneId: 'api', owner: 'worker', generation: 1, workKey: 'other/repo#1', workGeneration: 1},
+    {laneId: 'api', owner: 'worker', generation: 1, workKey: 'example/alpha#1', workGeneration: 0}
+  ]) {
+    let reads = 0;
+    let inspections = 0;
+    const result = await runTick({config: config(), tasks: [tasks()[0]], store: {...store(), claim: () => receipt},
+      tracker: {readTask: async () => { reads++; return {accepted: true, task: {id: 1, state: 'approved'}}; }},
+      agent: {inspect: async () => { inspections++; return {accepted: true, shadow: true}; }},
+      workerId: 'worker', now: 1});
+    assert.equal(result.completed[0].reason, 'WORK_RESERVATION_UNKNOWN');
+    assert.equal(reads, 0);
+    assert.equal(inspections, 0);
+  }
 });
 
 test('blocks checkpointing if the clock moves backwards during inspection', async () => {
@@ -117,7 +148,7 @@ test('passes one reservation per lane and the project capacity to the claim adap
     }},
     tracker, agent, workerId: 'worker', now: 1000});
   assert.deepEqual(reports, [[['api'], 1000, 5000]]);
-  assert.deepEqual(requests, [['web', 'worker', 1000, 5000, 2]]);
+  assert.deepEqual(requests, [['web', 'worker', 1000, 5000, 2, 'example/alpha#2']]);
   assert.equal(result.completed[0].state, 'shadow-reviewed');
 });
 
@@ -169,6 +200,127 @@ test('overlapping ticks share capacity when only one inventory reports the activ
     secondStore.close();
     rmSync(directory, {recursive: true, force: true});
   }
+});
+
+test('prevents overlapping stale inventories from assigning one repository issue to different lanes', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'coordinator-shared-work-'));
+  const path = join(directory, 'state.sqlite');
+  const firstStore = createSQLiteStateStore(path);
+  const secondStore = createSQLiteStateStore(path);
+  const settings = config();
+  const task = {...tasks()[0], id: 9};
+  const alternate = {...tasks()[1], id: 9};
+  const entered = Promise.withResolvers();
+  const finish = Promise.withResolvers();
+  const first = runTick({config: settings, tasks: [task], store: firstStore, tracker, workerId: 'worker-a', now: 1000,
+    agent: {inspect: async () => {
+      entered.resolve();
+      await finish.promise;
+      return {shadow: true, accepted: true};
+    }}});
+  try {
+    await Promise.race([entered.promise, first.then(() => { throw Error('first worker did not enter inspection'); })]);
+    let secondInspections = 0;
+    const secondOptions = {config: settings, tasks: [alternate], store: secondStore, tracker,
+      workerId: 'worker-b', now: 1001,
+      agent: {inspect: async () => { secondInspections++; return {shadow: true, accepted: true}; }}};
+    assert.equal((await runTick(secondOptions)).completed[0].reason, 'LEASE_HELD');
+    assert.equal(secondInspections, 0);
+    finish.resolve();
+    assert.equal((await first).completed[0].state, 'shadow-reviewed');
+    assert.equal((await runTick(secondOptions)).completed[0].state, 'shadow-reviewed');
+    assert.equal(secondInspections, 1);
+  } finally {
+    finish.resolve();
+    await first;
+    firstStore.close();
+    secondStore.close();
+    rmSync(directory, {recursive: true, force: true});
+  }
+});
+
+test('renews both fences during a pending inspection beyond the original expiry', async t => {
+  t.mock.timers.enable({apis: ['setInterval']});
+  const state = createSQLiteStateStore(':memory:');
+  const settings = config();
+  settings.limits.leaseMs = 1000;
+  const entered = Promise.withResolvers();
+  const finish = Promise.withResolvers();
+  let time = 1000;
+  const first = runTick({config: settings, tasks: [{...tasks()[0], id: 9}], store: state, tracker,
+    workerId: 'worker-a', now: time, clock: () => time, agent: {inspect: async () => {
+      entered.resolve();
+      await finish.promise;
+      return {shadow: true, accepted: true};
+    }}});
+  try {
+    await entered.promise;
+    time = 1800;
+    t.mock.timers.tick(333);
+    time = 2600;
+    t.mock.timers.tick(333);
+    let inspections = 0;
+    const second = await runTick({config: settings, tasks: [{...tasks()[1], id: 9}], store: state, tracker,
+      workerId: 'worker-b', now: time, agent: {inspect: async () => { inspections++; }}});
+    assert.equal(second.completed[0].reason, 'LEASE_HELD');
+    assert.equal(inspections, 0);
+    finish.resolve();
+    assert.equal((await first).completed[0].state, 'shadow-reviewed');
+  } finally {
+    finish.resolve();
+    await first;
+    state.close();
+  }
+});
+
+test('aborts pending inspection and blocks checkpoint when a heartbeat loses its lease', async t => {
+  t.mock.timers.enable({apis: ['setInterval']});
+  const state = createSQLiteStateStore(':memory:');
+  const settings = config();
+  settings.limits.leaseMs = 1000;
+  const entered = Promise.withResolvers();
+  let time = 1000;
+  let signal;
+  const first = runTick({config: settings, tasks: [{...tasks()[0], id: 9}], store: state, tracker,
+    workerId: 'worker-a', now: time, clock: () => time, agent: {inspect: (_task, context) => {
+      signal = context.signal;
+      entered.resolve();
+      return new Promise(resolve => signal.addEventListener('abort',
+        () => resolve({shadow: true, accepted: true})));
+    }}});
+  try {
+    await entered.promise;
+    time = 2000;
+    const next = state.claim('web', 'worker-b', time, 1000, 2, 'example/alpha#9');
+    assert.ok(next);
+    t.mock.timers.tick(333);
+    assert.equal(signal.aborted, true);
+    assert.equal((await first).completed[0].reason, 'LEASE_LOST');
+    assert.deepEqual(state.get('api').payload, {});
+    assert.equal(state.claim('docs', 'worker-c', time, 1000, 2, 'example/alpha#9'), null);
+  } finally { state.close(); }
+});
+
+test('does not release an uncertain claim after a failed heartbeat', async t => {
+  t.mock.timers.enable({apis: ['setInterval']});
+  let renewals = 0;
+  let releases = 0;
+  const entered = Promise.withResolvers();
+  let signal;
+  const backingStore = store();
+  const result = runTick({config: config(), tasks: [tasks()[0]], tracker, workerId: 'worker', now: 1,
+    store: {...backingStore, renew: (...args) => ++renewals === 1 ? backingStore.renew(...args) : null,
+      release: () => { releases++; }},
+    agent: {inspect: (_task, context) => {
+      signal = context.signal;
+      entered.resolve();
+      return new Promise(() => {});
+    }}});
+  await entered.promise;
+  t.mock.timers.tick(Math.floor(config().limits.leaseMs / 3));
+  assert.equal((await result).completed[0].reason, 'LEASE_LOST');
+  assert.equal(signal.aborted, true);
+  assert.equal(releases, 0);
 });
 
 test('persists validated reservations even if a tick has no approved candidates', async () => {
@@ -236,7 +388,8 @@ test('fails closed for unusable clocks and invalid lease renewal receipts', asyn
     {clock: () => 0, reason: 'CLOCK_UNAVAILABLE'},
     {clock: () => 1, store: {...store(), renew: () => { throw Error('store'); }}, reason: 'LEASE_UNAVAILABLE'},
     {clock: () => 1, store: {...store(), renew: () => ({leaseUntil: Number.NaN})}, reason: 'LEASE_LOST'},
-    {clock: () => 1, store: {...store(), renew: (_lane, _generation, _owner, now) => ({leaseUntil: now})}, reason: 'LEASE_LOST'}
+    {clock: () => 1, store: {...store(), renew: (_lane, _generation, _owner, now) => ({leaseUntil: now})}, reason: 'LEASE_LOST'},
+    {clock: () => 1, store: {...store(), renew: (_lane, _generation, _owner, now) => ({leaseUntil: now + 1})}, reason: 'LEASE_LOST'}
   ];
   for (const scenario of cases) {
     const result = await runTick({config: config(), tasks: [tasks()[0]], store: scenario.store ?? store(), tracker, agent,

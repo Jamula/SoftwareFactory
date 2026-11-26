@@ -25,18 +25,26 @@ export async function runTick({config, tasks, active = [], store, tracker, agent
     } catch { return failed('ACTIVE_RESERVATIONS_UNAVAILABLE'); }
   }
   const outcomes = await Promise.allSettled(plan.scheduled.map(async item => {
+    const workKey = `${config.project.repository.toLowerCase()}#${item.id}`;
     const claim = store.claim(item.lane, workerId, now, config.limits.leaseMs,
-      config.limits.maxConcurrentLanes);
+      config.limits.maxConcurrentLanes, workKey);
     if (!claim) return {lane: item.lane, state: 'blocked', reason: 'LEASE_HELD'};
+    if (claim.laneId !== item.lane || claim.owner !== workerId ||
+        !Number.isSafeInteger(claim.generation) || claim.generation < 1 || claim.workKey !== workKey ||
+        !Number.isSafeInteger(claim.workGeneration) || claim.workGeneration < 1)
+      return {lane: item.lane, taskId: item.id, state: 'blocked', reason: 'WORK_RESERVATION_UNKNOWN'};
     let lastObservedTime = now;
+    let releaseClaim = true;
     const renewLease = () => {
       let currentTime;
       try { currentTime = clock(); } catch { return {reason: 'CLOCK_UNAVAILABLE'}; }
       if (!Number.isSafeInteger(currentTime) || currentTime < lastObservedTime) return {reason: 'CLOCK_UNAVAILABLE'};
       lastObservedTime = currentTime;
       try {
-        const renewed = store.renew(item.lane, claim.generation, workerId, currentTime, config.limits.leaseMs);
-        return renewed && Number.isSafeInteger(renewed.leaseUntil) && renewed.leaseUntil > currentTime ?
+        const renewed = store.renew(item.lane, claim.generation, workerId, currentTime, config.limits.leaseMs,
+          workKey, claim.workGeneration);
+        return renewed && Number.isSafeInteger(currentTime + config.limits.leaseMs) &&
+          Number.isSafeInteger(renewed.leaseUntil) && renewed.leaseUntil >= currentTime + config.limits.leaseMs ?
           {time: currentTime} : {reason: 'LEASE_LOST'};
       } catch { return {reason: 'LEASE_UNAVAILABLE'}; }
     };
@@ -49,7 +57,33 @@ export async function runTick({config, tasks, active = [], store, tracker, agent
       const beforeInspection = renewLease();
       if (beforeInspection.reason)
         return {lane: item.lane, taskId: item.id, state: 'blocked', reason: beforeInspection.reason};
-      const review = await agent.inspect(byId.get(item.id), {mode: 'shadow', projectKey: config.project.key});
+      const cancellation = new AbortController();
+      let heartbeat;
+      const leaseFailure = new Promise(resolve => {
+        heartbeat = setInterval(() => {
+          const renewed = renewLease();
+          if (renewed.reason) {
+            clearInterval(heartbeat);
+            releaseClaim = false;
+            resolve(renewed);
+            cancellation.abort();
+          }
+        }, Math.floor(config.limits.leaseMs / 3));
+      });
+      let inspection;
+      try {
+        inspection = await Promise.race([
+          Promise.resolve().then(() => agent.inspect(byId.get(item.id),
+            {mode: 'shadow', projectKey: config.project.key, signal: cancellation.signal}))
+            .then(review => ({review})),
+          leaseFailure
+        ]);
+      } finally {
+        clearInterval(heartbeat);
+      }
+      if (inspection.reason)
+        return {lane: item.lane, taskId: item.id, state: 'blocked', reason: inspection.reason};
+      const review = inspection.review;
       if (!review?.accepted || review.shadow !== true)
         return {lane: item.lane, state: 'blocked', reason: 'AGENT_REVIEW_FAILED'};
       const finalEvidence = await tracker.readTask(item.id);
@@ -62,13 +96,15 @@ export async function runTick({config, tasks, active = [], store, tracker, agent
         return {lane: item.lane, taskId: item.id, state: 'blocked', reason: beforeCheckpoint.reason};
       const completedAt = beforeCheckpoint.time;
       const checkpointed = store.checkpoint(item.lane, claim.generation, workerId,
-        {taskId: item.id, observedState: finalEvidence.task.state, findings: review.findings ?? [], completedAt}, completedAt);
+        {taskId: item.id, observedState: finalEvidence.task.state, findings: review.findings ?? [], completedAt},
+        completedAt, workKey, claim.workGeneration);
       return checkpointed ? {lane: item.lane, taskId: item.id, state: 'shadow-reviewed'} :
         {lane: item.lane, taskId: item.id, state: 'blocked', reason: 'STALE_CHECKPOINT'};
     } catch {
       return {lane: item.lane, taskId: item.id, state: 'blocked', reason: 'LANE_FAILED'};
     } finally {
-      store.release(item.lane, claim.generation, workerId, lastObservedTime);
+      if (releaseClaim)
+        store.release(item.lane, claim.generation, workerId, lastObservedTime, workKey, claim.workGeneration);
     }
   }));
   const completed = outcomes.map((outcome, index) => outcome.status === 'fulfilled' ? outcome.value :

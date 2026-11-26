@@ -21,6 +21,99 @@ test('claims isolated lanes and denies a live duplicate claim', () => withDb(fil
   store.close();
 }));
 
+test('serializes one repository issue reservation across lanes and repositories', () => withDb(filename => {
+  const a = createSQLiteStateStore(filename);
+  const b = createSQLiteStateStore(filename);
+  try {
+    const first = a.claim('api', 'worker-a', 1000, 5000, 4, 'example/alpha#9');
+    assert.equal(first.workGeneration, 1);
+    assert.equal(first.workKey, 'example/alpha#9');
+    assert.equal(b.claim('web', 'worker-b', 1001, 5000, 4, 'example/alpha#9'), null);
+    const otherRepository = b.claim('web', 'worker-b', 1001, 5000, 4, 'example/beta#9');
+    assert.equal(otherRepository.workGeneration, 1);
+    assert.equal(b.release('web', otherRepository.generation, 'worker-b', 1002,
+      otherRepository.workKey, otherRepository.workGeneration), true);
+    assert.equal(a.release('api', first.generation, 'worker-a', 1002,
+      first.workKey, first.workGeneration), true);
+    const reclaimed = b.claim('docs', 'worker-b', 1003, 5000, 4, 'example/alpha#9');
+    assert.equal(reclaimed.workGeneration, 2);
+  } finally { a.close(); b.close(); }
+}));
+
+test('recovers work reservations after restart and fences stale owners', () => withDb(filename => {
+  const firstStore = createSQLiteStateStore(filename);
+  const first = firstStore.claim('api', 'worker-a', 1000, 1000, 4, 'example/alpha#9');
+  firstStore.close();
+  const restarted = createSQLiteStateStore(filename);
+  assert.equal(restarted.claim('web', 'worker-b', 1999, 1000, 4, 'example/alpha#9'), null);
+  const next = restarted.claim('web', 'worker-b', 2000, 1000, 4, 'example/alpha#9');
+  assert.equal(next.workGeneration, 2);
+  assert.equal(restarted.renew('api', first.generation, first.owner, 2001, 1000,
+    first.workKey, first.workGeneration), null);
+  assert.equal(restarted.checkpoint('api', first.generation, first.owner, {phase: 'stale'}, 2001,
+    first.workKey, first.workGeneration), false);
+  assert.equal(restarted.release('api', first.generation, first.owner, 2001,
+    first.workKey, first.workGeneration), false);
+  assert.equal(restarted.get('api').leaseUntil, 2000, 'stale release must roll back the lane update');
+  assert.equal(restarted.claim('api', 'worker-c', 2001, 1000, 4, 'example/alpha#9'), null,
+    'the recovered work key remains reserved');
+  assert.equal(restarted.release('web', next.generation, next.owner, 2001,
+    next.workKey, next.workGeneration), true);
+  restarted.close();
+}));
+
+test('requires the exact work association for all operations on a work-backed lane', () => withDb(filename => {
+  const store = createSQLiteStateStore(filename);
+  try {
+    const first = store.claim('api', 'worker', 1000, 1000, 4, 'example/alpha#9');
+    const other = store.claim('web', 'worker', 1000, 1000, 4, 'example/alpha#10');
+    assert.equal(store.renew('api', first.generation, first.owner, 1500, 1000), null);
+    assert.equal(store.checkpoint('api', first.generation, first.owner, {}, 1500), false);
+    assert.equal(store.release('api', first.generation, first.owner, 1500), false);
+    assert.equal(store.renew('api', first.generation, first.owner, 1500, 1000, other.workKey, other.workGeneration), null);
+    assert.equal(store.checkpoint('api', first.generation, first.owner, {}, 1500, other.workKey, other.workGeneration), false);
+    assert.equal(store.release('api', first.generation, first.owner, 1500, other.workKey, other.workGeneration), false);
+    assert.equal(store.checkpoint('api', first.generation + 1, first.owner, {phase: 'stale'}, 1500,
+      first.workKey, first.workGeneration), false);
+    assert.deepEqual(store.get('api').payload, {});
+    assert.equal(store.get('api').leaseUntil, 2000);
+    const next = store.claim('docs', 'worker-b', 2000, 1000, 4, first.workKey);
+    assert.equal(next.workGeneration, 2);
+    assert.equal(store.checkpoint('api', first.generation, first.owner, {}, 2001), false);
+    assert.equal(store.renew('api', first.generation, first.owner, 2001, 1000, first.workKey, first.workGeneration), null);
+  } finally { store.close(); }
+}));
+
+test('rolls back a failed association upgrade and permits recovery', () => withDb(filename => {
+  const db = new DatabaseSync(filename);
+  db.exec('CREATE TABLE coordinator_lanes (lane_id TEXT PRIMARY KEY)');
+  assert.throws(() => createSQLiteStateStore(filename));
+  assert.equal(db.prepare("SELECT name FROM sqlite_master WHERE name='coordinator_lane_work'").get(), undefined);
+  db.exec('DROP TABLE coordinator_lanes');
+  db.close();
+  const recovered = createSQLiteStateStore(filename);
+  assert.equal(recovered.claim('api', 'worker', 1000, 1000).generation, 1);
+  recovered.close();
+}));
+
+test('upgrading old state fences unknown in-flight associations until expiry', () => withDb(filename => {
+  const db = new DatabaseSync(filename);
+  db.exec("CREATE TABLE coordinator_lanes (lane_id TEXT PRIMARY KEY, generation INTEGER NOT NULL, owner TEXT NOT NULL, lease_until INTEGER NOT NULL, payload TEXT NOT NULL); INSERT INTO coordinator_lanes VALUES ('api', 1, 'worker', 2000, '{}')");
+  db.close();
+  const store = createSQLiteStateStore(filename);
+  try {
+    assert.equal(store.renew('api', 1, 'worker', 1500, 1000), null);
+    assert.equal(store.checkpoint('api', 1, 'worker', {}, 1500), false);
+    assert.equal(store.release('api', 1, 'worker', 1500), false);
+    assert.equal(store.claim('api', 'worker', 1999, 1000), null);
+    const next = store.claim('api', 'worker', 2000, 1000);
+    assert.equal(next.generation, 2);
+    assert.deepEqual(store.renew('api', 2, 'worker', 2001, 1000), {leaseUntil: 3001});
+    assert.equal(store.checkpoint('api', 2, 'worker', {phase: 'ok'}, 2001), true);
+    assert.equal(store.release('api', 2, 'worker', 2001), true);
+  } finally { store.close(); }
+}));
+
 test('serializes a project capacity limit across SQLite connections and counts reserved lanes once', () => withDb(filename => {
   const a = createSQLiteStateStore(filename);
   const b = createSQLiteStateStore(filename);
@@ -87,6 +180,59 @@ test('validates lane, owner, time, lease and checkpoints', () => withDb(filename
   assert.equal(store.release('api', 1, 'worker', -1), false);
   assert.equal(store.get('../api'), null);
   assert.equal(store.get('unknown'), null);
+  store.close();
+}));
+
+test('validates work keys and paired work fencing inputs', () => withDb(filename => {
+  const store = createSQLiteStateStore(filename);
+  for (const invalid of ['', 'example#9', 'example/alpha#0', `example/${'x'.repeat(210)}#9`])
+    assert.equal(store.claim('api', 'worker', 1000, 1000, 4, invalid), null);
+  const maximumLength = store.claim('api', 'worker', 1000, 1000, 4,
+    `${'a'.repeat(100)}/${'b'.repeat(99)}#${'9'.repeat(16)}`);
+  assert.equal(maximumLength.workGeneration, 1);
+  assert.equal(store.claim('web', 'worker', 1000, 1000, 4, null).workKey, undefined);
+  assert.equal(store.checkpoint('api', 1, 'worker', {}, 1000, 'example/alpha#9'), false);
+  assert.equal(store.checkpoint('api', 1, 'worker', {}, 1000, 'bad', 1), false);
+  assert.equal(store.checkpoint('api', 1, 'worker', {}, 1000, 'example/alpha#9', 0), false);
+  assert.equal(store.renew('api', 1, 'worker', 1000, 1000, 'example/alpha#9'), null);
+  assert.equal(store.renew('api', 1, 'worker', 1000, 1000, 'bad', 1), null);
+  assert.equal(store.renew('api', 1, 'worker', 1000, 1000, 'example/alpha#9', 0), null);
+  assert.equal(store.release('api', 1, 'worker', 1000, 'example/alpha#9'), false);
+  assert.equal(store.release('api', 1, 'worker', 1000, 'bad', 1), false);
+  assert.equal(store.release('api', 1, 'worker', 1000, 'example/alpha#9', 0), false);
+  store.close();
+}));
+
+test('rolls back partial paired-lease operations and rejects expired lane checkpoints', () => withDb(filename => {
+  const store = createSQLiteStateStore(filename);
+  const stale = store.claim('stale', 'worker-a', 1000, 5000, 4, 'example/alpha#10');
+  assert.equal(store.release('stale', stale.generation, stale.owner, 1001,
+    stale.workKey, stale.workGeneration), true);
+  assert.equal(store.checkpoint('stale', stale.generation, stale.owner, {phase: 'stale'}, 1001,
+    stale.workKey, stale.workGeneration), false);
+
+  const checkpoint = store.claim('checkpoint', 'worker-a', 1000, 5000, 4, 'example/alpha#11');
+  const db = new DatabaseSync(filename);
+  db.exec("CREATE TRIGGER reject_checkpoint BEFORE UPDATE ON coordinator_lanes WHEN NEW.lane_id='checkpoint' BEGIN SELECT RAISE(FAIL, 'injected'); END;");
+  assert.equal(store.checkpoint('checkpoint', checkpoint.generation, checkpoint.owner, {phase: 'rejected'}, 1001,
+    checkpoint.workKey, checkpoint.workGeneration), false);
+  assert.deepEqual(store.get('checkpoint').payload, {});
+  db.exec('DROP TRIGGER reject_checkpoint');
+
+  const renewal = store.claim('renewal', 'worker-a', 1000, 5000, 4, 'example/alpha#12');
+  db.exec("CREATE TRIGGER reject_renewal BEFORE UPDATE ON coordinator_work_claims WHEN NEW.work_key='example/alpha#12' BEGIN SELECT RAISE(FAIL, 'injected'); END;");
+  assert.equal(store.renew('renewal', renewal.generation, renewal.owner, 1001, 5000,
+    renewal.workKey, renewal.workGeneration), null);
+  assert.equal(store.get('renewal').leaseUntil, 6000);
+  db.exec('DROP TRIGGER reject_renewal');
+
+  const release = store.claim('release', 'worker-a', 1000, 5000, 4, 'example/alpha#13');
+  db.exec("CREATE TRIGGER reject_release BEFORE UPDATE ON coordinator_work_claims WHEN NEW.work_key='example/alpha#13' BEGIN SELECT RAISE(FAIL, 'injected'); END;");
+  assert.equal(store.release('release', release.generation, release.owner, 1001,
+    release.workKey, release.workGeneration), false);
+  assert.equal(store.get('release').leaseUntil, 6000);
+  assert.equal(store.claim('other', 'worker-b', 1002, 1000, 4, 'example/alpha#13'), null);
+  db.close();
   store.close();
 }));
 

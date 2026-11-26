@@ -29,7 +29,8 @@ export function createEngineeringAgentAdapter(agent) {
         return denied('INVALID_INSPECTION_REQUEST');
       try {
         const result = await agent.inspect(Object.freeze({id: task.id, title: String(task.title ?? '').slice(0, 240)}),
-          Object.freeze({mode: 'shadow', projectKey: context.projectKey}));
+          Object.freeze({mode: 'shadow', projectKey: context.projectKey,
+            ...(context.signal === undefined ? {} : {signal: context.signal})}));
         if (!record(result) || typeof result.summary !== 'string' || result.summary.length > 1000 ||
             !dense(result.findings) || result.findings.length > 50 ||
             !result.findings.every(item => typeof item === 'string' && item.length <= 240))
