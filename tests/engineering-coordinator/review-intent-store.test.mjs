@@ -34,3 +34,30 @@ test('incompatible schema fails construction',()=>{
  try {db.exec('CREATE TABLE coordinator_review_intents (unrelated INTEGER)');assert.throws(()=>openReviewIntentStore(path));}
  finally {db.close();rmSync(dir,{recursive:true,force:true});}
 });
+
+test('rejects a legacy intent table lacking a unique key constraint',()=>{
+ const dir=mkdtempSync(join(tmpdir(),'review-intent-nonunique-'));
+ const path=join(dir,'intent.sqlite');
+ const db=new DatabaseSync(path);
+ try {
+  db.exec('CREATE TABLE coordinator_review_intents (intent_key TEXT NOT NULL)');
+  db.prepare('INSERT INTO coordinator_review_intents(intent_key) VALUES (?)').run(key);
+  assert.throws(()=>openReviewIntentStore(path), /ON CONFLICT clause does not match any PRIMARY KEY or UNIQUE constraint/i);
+  assert.equal(db.prepare('SELECT count(*) AS count FROM coordinator_review_intents').get().count,1);
+ } finally {db.close();rmSync(dir,{recursive:true,force:true});}
+});
+
+test('accepts an existing unique constraint and never repeats an existing claim',()=>{
+ const dir=mkdtempSync(join(tmpdir(),'review-intent-unique-'));
+ const path=join(dir,'intent.sqlite');
+ const db=new DatabaseSync(path);
+ let store;
+ try {
+  db.exec('CREATE TABLE coordinator_review_intents (intent_key TEXT NOT NULL UNIQUE)');
+  db.prepare('INSERT INTO coordinator_review_intents(intent_key) VALUES (?)').run(key);
+  store=openReviewIntentStore(path);
+  assert.equal(store.claim(key),false);
+  assert.equal(store.claim(key.replace(':1:',':2:')),true);
+  assert.equal(db.prepare('SELECT count(*) AS count FROM coordinator_review_intents').get().count,2);
+ } finally {store?.close();db.close();rmSync(dir,{recursive:true,force:true});}
+});

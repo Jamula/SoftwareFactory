@@ -6,7 +6,8 @@ export function openReviewIntentStore(filename) {
   const db = new DatabaseSync(filename, {timeout: 250});
   try {
     db.exec('CREATE TABLE IF NOT EXISTS coordinator_review_intents (intent_key TEXT PRIMARY KEY NOT NULL)');
-    const insert = db.prepare('INSERT OR IGNORE INTO coordinator_review_intents(intent_key) SELECT ? WHERE (SELECT count(*) FROM coordinator_review_intents) < 10000');
+    // An explicit conflict target fails preparation if an existing schema lacks key uniqueness.
+    const insert = db.prepare('INSERT INTO coordinator_review_intents(intent_key) SELECT ? WHERE (SELECT count(*) FROM coordinator_review_intents) < 10000 ON CONFLICT(intent_key) DO NOTHING');
     return Object.freeze({
       claim(key) {
         if (typeof key !== 'string' || key.length > 300 ||
