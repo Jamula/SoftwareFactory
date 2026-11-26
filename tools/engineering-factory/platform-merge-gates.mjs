@@ -26,6 +26,16 @@ export function platformMergeGates(head,policy,e){
  }
  if(seen.size!==expected.size)return deny('CHECKS_INCOMPLETE');
  if([e.coverageVerified,e.securityClear,e.threadsResolved,e.baseHealthy,e.independentFavorable].some(v=>v!==true))return deny('GATES_UNKNOWN');
- if(planReviewBatch(head,e.review).state!=='no-repair')return deny('REVIEW_INCOMPLETE');
+ const review=e.review;
+ if(!data(review,['head','complete','independent','summaryDisposition','findings'])||!dense(review.findings,256))return deny('REVIEW_INCOMPLETE');
+ for(const finding of review.findings){
+  if(!data(finding,['id','state','source']))return deny('REVIEW_INCOMPLETE');
+ }
+ // Pass plain snapshots: no nested accessors or array methods from evidence.
+ const snapshot={head:review.head,complete:review.complete,independent:review.independent,
+  summaryDisposition:review.summaryDisposition,findings:Array.from({length:review.findings.length},(_,i)=>{
+   const f=review.findings[i];return {id:f.id,state:f.state,source:f.source};
+  })};
+ if(planReviewBatch(head,snapshot).state!=='no-repair')return deny('REVIEW_INCOMPLETE');
  return {shadow:true,eligible:true,liveMerge:false,reason:'SHADOW_PLATFORM_GATES_ONLY'};
 }

@@ -19,3 +19,13 @@ test('all exact platform and material review gates must be satisfied; no live me
  for(const summaryDisposition of ['uncertain','actionable'])assert.equal(platformMergeGates(head,policy(),{...evidence(),review:{...evidence().review,summaryDisposition}}).reason,'REVIEW_INCOMPLETE');
  assert.equal(platformMergeGates(head,policy(),{...evidence(),review:{...evidence().review,findings:[{id:'x',state:'actionable',source:'summary'}]}}).reason,'REVIEW_INCOMPLETE');
 });
+
+test('nested review accessors and proxies cannot execute or modify validated gates',()=>{
+ const poison=()=>{throw Error('unexpected getter');};
+ const a=evidence();let reads=0;
+ Object.defineProperty(a.review,'head',{get(){reads++;a.baseHealthy=false;return head;}});
+ assert.equal(platformMergeGates(head,policy(),a).reason,'REVIEW_INCOMPLETE');assert.equal(reads,0);assert.equal(a.baseHealthy,true);
+ const b=evidence();b.review=new Proxy(b.review,{get:poison});assert.equal(platformMergeGates(head,policy(),b).reason,'REVIEW_INCOMPLETE');
+ const c=evidence();c.review.findings=[{id:'x',state:'resolved',source:'summary'}];Object.defineProperty(c.review.findings[0],'state',{get:poison});assert.equal(platformMergeGates(head,policy(),c).reason,'REVIEW_INCOMPLETE');
+ const d=evidence();d.review.findings=[{id:'x',state:'resolved',source:'summary'}];Object.defineProperty(d.review.findings,0,{get:poison});assert.equal(platformMergeGates(head,policy(),d).reason,'REVIEW_INCOMPLETE');
+});
