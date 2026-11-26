@@ -8,8 +8,8 @@ test('explicit resource runs only after authenticated configuration and flushes 
  await runAspireTelemetry(env,async config=>{
   assert.deepEqual(config,{endpoint:env.OTEL_EXPORTER_OTLP_ENDPOINT,protocol:env.OTEL_EXPORTER_OTLP_PROTOCOL,headers:env.OTEL_EXPORTER_OTLP_HEADERS});
   return {observe:async(stage,fn)=>{assert.equal(stage,'evaluate');const result=await fn();assert.deepEqual(result,{outcome:'blocked',reason:'POLICY'});events.push('observed');},shutdown:async()=>events.push('shutdown')};
- },async()=>events.push('work'));
- assert.deepEqual(events,['work','observed','shutdown']);
+ },async()=>events.push('work'),marker=>events.push(marker));
+ assert.deepEqual(events,['work','observed','shutdown','LOCAL_SDK_SHUTDOWN_COMPLETE']);
  await assert.rejects(()=>runAspireTelemetry({},async()=>null,async()=>assert.fail('unexpected work')),/LOCAL_OTLP_CONFIGURATION_REQUIRED/);
  const original=Error('fixture failure');
  await assert.rejects(()=>runAspireTelemetry(env,async()=>({observe:async(stage,fn)=>fn(),shutdown:async()=>events.push('cleanup')}),async()=>{throw original;}),e=>e===original);
@@ -35,8 +35,11 @@ test('direct entrypoint refuses missing OTLP configuration',()=>{
 test('preserves original workload failure even when shutdown fails; reports cleanup failure after successful work',async()=>{
  const workError=Error('original work error'),shutdownError=Error('cleanup failure');
  let cleanups=0;
+ const markers=[];
+ const report=marker=>markers.push(marker);
  const start=async()=>({observe:async(stage,fn)=>fn(),shutdown:async()=>{cleanups++;throw shutdownError;}});
- await assert.rejects(()=>runAspireTelemetry(env,start,async()=>{throw workError;}),error=>error===workError);
- await assert.rejects(()=>runAspireTelemetry(env,start,async()=>{}),error=>error===shutdownError);
+ await assert.rejects(()=>runAspireTelemetry(env,start,async()=>{throw workError;},report),error=>error===workError);
+ await assert.rejects(()=>runAspireTelemetry(env,start,async()=>{},report),error=>error===shutdownError);
  assert.equal(cleanups,2);
+ assert.deepEqual(markers,[]);
 });
