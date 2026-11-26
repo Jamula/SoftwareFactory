@@ -47,6 +47,7 @@ export function openEventJournal(filename) {
         SELECT pending.id FROM coordinator_events AS pending
         WHERE pending.repository_id = ? AND pending.completed = 0 AND pending.expires <= ?
           AND pending.generation < 9007199254740991
+          AND (? IS NULL OR pending.kind = ?)
           AND NOT EXISTS (
             SELECT 1 FROM coordinator_events AS active
             WHERE active.repository_id = pending.repository_id
@@ -77,12 +78,12 @@ export function openEventJournal(filename) {
             'DUPLICATE_DELIVERY' : 'DELIVERY_CONFLICT');
         } catch { return rejected('JOURNAL_UNAVAILABLE'); }
       },
-      claim(repositoryId, owner, now, leaseMs) {
+      claim(repositoryId, owner, now, leaseMs, kind = null) {
         if (!isRepo(repositoryId) || !isToken(owner) || !isTime(now) ||
             !Number.isSafeInteger(leaseMs) || leaseMs < 1000 || leaseMs > 3600000 ||
-            !isTime(now + leaseMs)) return null;
+            !isTime(now + leaseMs) || (kind !== null && !eventKinds.has(kind))) return null;
         try {
-          const event = claim.get(owner, now + leaseMs, repositoryId, now, now);
+          const event = claim.get(owner, now + leaseMs, repositoryId, now, kind, kind, now);
           return event ? {...event, repositoryId, owner, leaseUntil: now + leaseMs} : null;
         } catch { return null; }
       },

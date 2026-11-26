@@ -198,3 +198,14 @@ test('runtime, clock, exceptions and fencing fail closed',async()=>{
  assert.equal((await reconcileJournalOnce(opts)).reason,'CLAIM_LOST');
  assert.equal((await reconcileJournalOnce({...opts,read:async()=>{throw Error('offline')}})).reason,'RECONCILIATION_UNAVAILABLE');
 });
+
+test('kind-filtered claim retains unsupported hints and repository-wide exclusivity',()=>{
+ const j=openEventJournal(':memory:');try{
+  j.enqueue({...original,deliveryId:'review',kind:'review'});j.enqueue(original);
+  assert.equal(j.claim(1,'w',0,1000,'invalid'),null);
+  const p=j.claim(1,'w',0,1000,'pull');assert.equal(p.kind,'pull');
+  assert.equal(j.claim(1,'other',1,1000,'review'),null);
+  assert.equal(j.complete(p,1),true);
+  assert.equal(j.claim(1,'other',1,1000,'review').deliveryId,'review');
+ }finally{j.close();}
+});
