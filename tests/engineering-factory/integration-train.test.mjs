@@ -17,7 +17,7 @@ test('stop, unhealthy main, active train and malformed candidates',()=>{
 });
 test('candidate arrays reject custom prototypes and extra own keys before array methods',()=>{
  const hiddenMethod=[c];
- Object.defineProperty(hiddenMethod,'some',{value(){throw Error('must not run');}});
+ Object.defineProperty(hiddenMethod,'some',{get(){throw Error('must not run');}});
  const symbolCandidate=[c];
  Object.defineProperty(symbolCandidate,Symbol.iterator,{get(){throw Error('must not run');}});
  const customPrototype=Object.setPrototypeOf([c],{});
@@ -91,7 +91,7 @@ test('refuses missing, ambiguous and invalid experiment evidence without invokin
  const symbolPair = [sample, second];
  Object.defineProperty(symbolPair, Symbol.iterator, {get() {throw Error('must not run');}});
  const hiddenPair = [sample, second];
- Object.defineProperty(hiddenPair, 'map', {value() {throw Error('must not run');}});
+ Object.defineProperty(hiddenPair, 'map', {get() {throw Error('must not run');}});
  const customPrototype = Object.setPrototypeOf([sample, second], {});
  for (const pairs of [symbolPair, hiddenPair, customPrototype])
   assert.deepEqual(compare(pairs), refused('SAMPLE_UNKNOWN'));
