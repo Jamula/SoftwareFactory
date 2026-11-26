@@ -33,9 +33,14 @@ export async function startLocalSdk(config,load=loadPinnedSdk) {
     metricReaders:[new api.PeriodicExportingMetricReader({exporter:new api.OTLPMetricExporter(options('metrics')),exportIntervalMillis:3000,exportTimeoutMillis:3000})],
     logRecordProcessors:[new api.SimpleLogRecordProcessor(new api.OTLPLogExporter(options('logs')))]
   });
-  sdk.start();
-  return {
-    observe:createSignals({tracer:api.trace.getTracer('softwarefactory'),meter:api.metrics.getMeter('softwarefactory'),logger:api.logs.getLogger('softwarefactory')}),
-    shutdown:()=>sdk.shutdown()
-  };
+  try {
+    sdk.start();
+    return {
+      observe:createSignals({tracer:api.trace.getTracer('softwarefactory'),meter:api.metrics.getMeter('softwarefactory'),logger:api.logs.getLogger('softwarefactory')}),
+      shutdown:()=>sdk.shutdown()
+    };
+  } catch(error) {
+    try {await sdk.shutdown();} catch {}
+    throw error;
+  }
 }

@@ -85,3 +85,20 @@ test('pinned actual SDK delivers trace, metric and correlated log protobuf to au
   server.closeAllConnections();await new Promise(resolve=>server.close(resolve));
  }
 });
+
+test('startup or signal initialization failure attempts cleanup and preserves the original error',async()=>{
+ const original=Error('startup failure');
+ for(const phase of ['start','signals'])for(const cleanupFails of [false,true]){
+  let cleaned=0;
+  class Dummy{constructor(options){this.options=options;}}
+  class SDK{
+   start(){if(phase==='start')throw original;}
+   async shutdown(){cleaned++;if(cleanupFails)throw Error('cleanup failed');}
+  }
+  const api={NodeSDK:SDK,resourceFromAttributes:a=>a,SimpleSpanProcessor:Dummy,SimpleLogRecordProcessor:Dummy,
+   PeriodicExportingMetricReader:Dummy,OTLPTraceExporter:Dummy,OTLPMetricExporter:Dummy,OTLPLogExporter:Dummy,
+   trace:{getTracer(){throw original;}}};
+  await assert.rejects(()=>startLocalSdk(configuration,async()=>api),e=>e===original);
+  assert.equal(cleaned,1);
+ }
+});
