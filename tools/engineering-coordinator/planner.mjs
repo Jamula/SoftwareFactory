@@ -11,8 +11,29 @@ const validPath = value => typeof value === 'string' && value.length > 0 &&
   !value.split('/').some(part => !part || part === '.' || part === '..');
 const overlaps = (left, right) => left === right || left.startsWith(`${right}/`) || right.startsWith(`${left}/`);
 const blocked = reason => ({shadow: true, scheduled: [], reason});
+const riskLevels = new Map([['low', 0], ['medium', 1], ['high', 2]]);
+const nonnegative = value => Number.isSafeInteger(value) && value >= 0;
 
-export function planLanes(config, tasks, active = []) {
+function schedulingEvidence(policy, byId) {
+  if (!exact(policy, ['now', 'agingMs', 'riskCeiling', 'ready']) ||
+      !nonnegative(policy.now) || !positive(policy.agingMs) || !riskLevels.has(policy.riskCeiling) ||
+      !dense(policy.ready) || policy.ready.length > byId.size) return null;
+  const evidence = new Map();
+  for (const entry of policy.ready) {
+    if (!exact(entry, ['id', 'readySince', 'risk']) || byId.get(entry.id)?.state !== 'approved' ||
+        evidence.has(entry.id) || !riskLevels.has(entry.risk) || !nonnegative(entry.readySince) ||
+        entry.readySince > policy.now) return null;
+    evidence.set(entry.id, {
+      readySince: entry.readySince,
+      risk: riskLevels.get(entry.risk),
+      priority: Math.max(0, byId.get(entry.id).priority - Math.floor((policy.now - entry.readySince) / policy.agingMs))
+    });
+  }
+  if ([...byId.values()].some(task => task.state === 'approved' && !evidence.has(task.id))) return null;
+  return evidence;
+}
+
+export function planLanes(config, tasks, active = [], policy) {
   if (!validateProjectConfig(config)) return blocked('INVALID_PROJECT_CONFIG');
   if (!dense(tasks) || tasks.length > 250 || !dense(active) || active.length > 32) return blocked('INVALID_INVENTORY');
   const lanes = new Map(config.lanes.map(lane => [lane.id, lane]));
@@ -28,6 +49,11 @@ export function planLanes(config, tasks, active = []) {
   if (byId.size !== tasks.length ||
       tasks.some(task => task.dependencies.some(dependency => !byId.has(dependency))))
     return blocked('DEPENDENCY_UNKNOWN');
+  let policyEvidence;
+  if (policy !== undefined) {
+    policyEvidence = schedulingEvidence(policy, byId);
+    if (!policyEvidence) return blocked('SCHEDULING_POLICY_UNKNOWN');
+  }
   const visiting = new Set();
   const visited = new Set();
   function acyclic(id) {
@@ -84,18 +110,48 @@ export function planLanes(config, tasks, active = []) {
     if (!depths.has(id)) depths.set(id, downstream.get(id).reduce((best, child) => Math.max(best, 1 + depth(child)), 0));
     return depths.get(id);
   }
-  const candidates = tasks.filter(task => task.state === 'approved' &&
-    task.dependencies.every(dependency => accepted.has(dependency)))
-    .sort((left, right) => left.priority - right.priority || depth(right.id) - depth(left.id) || left.id - right.id);
+  const blockedTasks = [];
+  const denyTask = (task, reason) => { if (policyEvidence) blockedTasks.push({id: task.id, reason}); };
+  const candidates = tasks.filter(task => {
+    if (task.state !== 'approved') {
+      if (task.state === 'blocked') denyTask(task, 'TASK_BLOCKED');
+      return false;
+    }
+    if (policyEvidence && policyEvidence.get(task.id).risk > riskLevels.get(policy.riskCeiling)) {
+      denyTask(task, 'RISK_ABOVE_CEILING');
+      return false;
+    }
+    if (!task.dependencies.every(dependency => accepted.has(dependency))) {
+      denyTask(task, 'DEPENDENCY_UNACCEPTED');
+      return false;
+    }
+    return true;
+  }).sort((left, right) => {
+    if (policyEvidence) {
+      const a = policyEvidence.get(left.id);
+      const b = policyEvidence.get(right.id);
+      return a.priority - b.priority || a.readySince - b.readySince ||
+        depth(right.id) - depth(left.id) || left.id - right.id;
+    }
+    return left.priority - right.priority || depth(right.id) - depth(left.id) || left.id - right.id;
+  });
   const counts = new Map(laneCounts);
   const scheduled = [];
   for (const task of candidates) {
     if ((counts.get(task.lane) ?? 0) >= 1 ||
-        task.paths.some(path => ownedPaths.some(owned => overlaps(path, owned)))) continue;
-    if (scheduled.length + reservations.length >= config.limits.maxConcurrentLanes) break;
+        task.paths.some(path => ownedPaths.some(owned => overlaps(path, owned)))) {
+      denyTask(task, 'LANE_OR_PATH_RESERVED');
+      continue;
+    }
+    if (scheduled.length + reservations.length >= config.limits.maxConcurrentLanes) {
+      if (!policyEvidence) break;
+      denyTask(task, 'CAPACITY_FULL');
+      continue;
+    }
     scheduled.push({id: task.id, lane: task.lane, paths: [...task.paths]});
     counts.set(task.lane, (counts.get(task.lane) ?? 0) + 1);
     ownedPaths.push(...task.paths);
   }
-  return {shadow: true, scheduled, reason: scheduled.length ? 'SHADOW_PLAN' : 'NO_READY_WORK'};
+  const result = {shadow: true, scheduled, reason: scheduled.length ? 'SHADOW_PLAN' : 'NO_READY_WORK'};
+  return policyEvidence ? {...result, blockedTasks: blockedTasks.sort((a, b) => a.id - b.id)} : result;
 }

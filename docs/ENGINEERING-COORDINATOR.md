@@ -15,6 +15,10 @@ The example project config is disabled (`enabled: false`, `stop: true`), uses mo
 
 ## Local use
 
+`planLanes(config, tasks, active, policy)` optionally accepts trusted, complete scheduling evidence. Supply `now` and `agingMs` in milliseconds, a `riskCeiling` of `low`, `medium`, or `high`, and one `ready` record (`{id, readySince, risk}`) per approved task. Use the same trusted clock for the current time and readiness timestamps. Missing, unknown, or contradictory evidence blocks the plan. The planner excludes tasks above the risk ceiling regardless of age. Eligible tasks gain one priority point per aging interval until they reach priority zero. Ties favor earlier readiness, then a longer unfinished dependency chain, then a smaller task ID. The result lists task IDs blocked by risk, dependencies, ownership, capacity, or task state. Calls without policy evidence retain existing ordering and output.
+
+This optional planner policy has no automatic evidence reader. It does not change the runtime or authorize work.
+
 Validate a loaded JSON configuration with `validateProjectConfig`, pass synthetic tasks to `planLanes`, and inject mock tracker/agent adapters, a fresh clock function, and a SQLite state store into `runTick`. Use one access-controlled local database per project, shared by workers running the same project configuration and clock basis. Close the store when the process exits. Use `node --test tests/engineering-coordinator/*.test.mjs` for the isolated component suite and `npm run test:coverage` for the repository aggregate.
 
 Current state is shadow-only. The hourly coordinator remains the existing external supervisor; this component does not create a schedule, activate a second worker, or claim that Work mode supplies persistent execution.
