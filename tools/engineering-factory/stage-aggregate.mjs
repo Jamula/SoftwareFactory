@@ -21,3 +21,14 @@ export function aggregateStage(rows,q) {
  const percentile=p=>durations[Math.ceil(p*durations.length)-1];
  return {state:'synthetic',reason:'MEASURED_FIXTURE',sampleCount:durations.length,p50:percentile(.5),p95:percentile(.95)};
 }
+
+// Advisory retrospective: comparable, complete synthetic samples only.
+export function compareStageWindows(beforeRows,before,afterRows,after) {
+ const unavailable=reason=>({state:'unknown',reason,before:null,after:null,deltaP50:null,deltaP95:null});
+ const a=aggregateStage(beforeRows,before),b=aggregateStage(afterRows,after);
+ if(a.state!=='synthetic'||b.state!=='synthetic')return unavailable('EVIDENCE_UNKNOWN');
+ if(before.repositoryId!==after.repositoryId||before.stage!==after.stage||
+    before.to>after.from||before.to-before.from!==after.to-after.from)return unavailable('WINDOWS_NOT_COMPARABLE');
+ if(a.sampleCount<5||b.sampleCount<5)return unavailable('INSUFFICIENT_SAMPLES');
+ return {state:'synthetic',reason:'COMPARABLE_FIXTURES',before:a,after:b,deltaP50:b.p50-a.p50,deltaP95:b.p95-a.p95};
+}
