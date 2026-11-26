@@ -21,7 +21,7 @@ test('explicit private providers and SDK lifecycle, with no global registration'
  class MeterProvider extends Provider{getMeter(){return {createCounter:()=>({add(){}}),createHistogram:()=>({record(){}})};}}
  class LoggerProvider extends Provider{getLogger(){return {emit:r=>events.push(r)};}}
  const root={root:true};
- const api={BasicTracerProvider:TracerProvider,MeterProvider,LoggerProvider,ROOT_CONTEXT:root,
+ const api={TracerProvider:TracerProvider,MeterProvider,LoggerProvider,ROOT_CONTEXT:root,
   resourceFromAttributes:a=>a,SimpleSpanProcessor:Processor,SimpleLogRecordProcessor:Processor,PeriodicExportingMetricReader:Reader,
   OTLPTraceExporter:Exporter,OTLPMetricExporter:Exporter,OTLPLogExporter:Exporter,
   trace:{setSpan:(parent,span)=>({parent,span}),getTracer(){assert.fail('global tracer');}},
@@ -111,7 +111,7 @@ test('partial provider startup failure attempts all acquired cleanup and preserv
   class Provider{async shutdown(){cleaned++;if(cleanupFails)throw Error('cleanup failed');}}
   class TracerProvider extends Provider{getTracer(){throw original;}}
   class MeterProvider extends Provider{constructor(){super();if(phase==='construct')throw original;}}
-  const api={BasicTracerProvider:TracerProvider,MeterProvider,LoggerProvider:Provider,resourceFromAttributes:a=>a,
+  const api={TracerProvider:TracerProvider,MeterProvider,LoggerProvider:Provider,resourceFromAttributes:a=>a,
    SimpleSpanProcessor:Dummy,SimpleLogRecordProcessor:Dummy,PeriodicExportingMetricReader:Dummy,
    OTLPTraceExporter:Dummy,OTLPMetricExporter:Dummy,OTLPLogExporter:Dummy};
   await assert.rejects(()=>startLocalSdk(configuration,async()=>api),e=>e===original);
