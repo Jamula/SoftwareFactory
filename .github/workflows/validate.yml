@@ -56,6 +56,9 @@ jobs:
           if-no-files-found: error
 
   linux-aspire-runtime:
+    # Fork PRs cannot satisfy the full trusted platform gate; protected merge
+    # groups and main MUST execute runtime validation, not merely build it.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -97,7 +100,6 @@ jobs:
           dotnet restore apphost.cs --source https://api.nuget.org/v3/index.json
           dotnet build apphost.cs --configuration Release --no-restore
       - name: Exercise the isolated Aspire AppHost
-        if: github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
         env:
           DOTNET_CLI_TELEMETRY_OPTOUT: '1'
           ASPIRE_CLI_TELEMETRY_OPTOUT: 'true'

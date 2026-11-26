@@ -75,3 +75,15 @@ test('rejects null, arrays, sparse lanes, malformed paths and duplicate owners',
   assert.equal(validateProjectConfig({...config(), lanes: [{id: 'api', owners: ['src\\api'], prompt: 'agent.md'}]}), false);
   assert.equal(validateProjectConfig({...config(), lanes: [{id: 'api', owners: ['C:/private'], prompt: 'agent.md'}]}), false);
 });
+
+test('allows twelve logical shadow lanes only for SoftwareFactory, not more or consumer cap changes', () => {
+  const c=config();
+  c.project.repository='Jamula/SoftwareFactory';
+  c.limits.maxConcurrentLanes=12;
+  assert.equal(validateProjectConfig(c),true);
+  c.limits.maxConcurrentLanes=13;
+  assert.equal(validateProjectConfig(c),false);
+  c.project.repository='example/alpha';
+  c.limits.maxConcurrentLanes=9;
+  assert.equal(validateProjectConfig(c),false);
+});

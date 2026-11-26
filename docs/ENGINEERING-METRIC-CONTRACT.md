@@ -18,3 +18,15 @@ Record source kind (synthetic, verified live), schema version, authorized reposi
 Every aggregate carries window, last observation, sample count, source completeness, stale/unknown status, and baseline cohort. Missing evidence is never zero. Every ratio with a zero or unknown denominator is unknown (not zero or infinity), including cost per accepted unit, utilization, coverage and throughput; distinguish a genuinely measured zero numerator with a positive denominator. Do not infer DORA production metrics from local simulations. The 25× target is a hypothesis; report 2×/5×/10×/15×/20×/25× only as measured comparable ratios with quality and cost guardrails.
 
 Acceptance fixtures: duplicate events, out-of-order events, missing timestamps, partial source coverage, zero denominator, stale observation, synthetic/live isolation, unauthorized scope, cohort changes and retention expiration. Storage/retention choice follows verified free/local capacity and restart tests.
+
+
+## PR publication and completion SLO
+
+| Stage | Start → end | Initial / stretch |
+| --- | --- | --- |
+| Draft to publish | PR creation → first ready-for-review event (or explicit ready-at-creation evidence) | 3 min / 1 min |
+| Publish to merge | First publication → successful protected merge | 7 min / 3 min |
+| Created to merge | PR creation → successful protected merge | 10 min / 4 min |
+| Merge to verified main | Actual merge → exact merged commit independently verified healthy | 2 min / 1 min |
+
+Use authoritative PR creation, ready-for-review timeline events, merge and main-verification evidence. Do not substitute updated_at for publication. A PR explicitly created ready has zero draft time; an unknown initial state or incomplete publication history is unknown. Clock starts at creation and first publication and never resets on re-draft, re-publication, head changes or retry. Report open elapsed ages separately as right-censored, not completed durations. Report p50/p95, sample size, window, missing/censored counts and SLO misses for comparable work, including overdue open PRs. Distinguish historical created-to-merge proxies from verified main and issue acceptance. Break delays down into runner queue, runtime (Linux/Windows), security, independent review, rework, ready-to-publish idle, eligible-to-enqueue idle, merge queue/revalidation and verification; do not sum overlapping stages. Use existing OTel/reporting boundaries. SLO is diagnostic, never grounds for skipping security, review, tests, coverage or protection, or adding spend.
