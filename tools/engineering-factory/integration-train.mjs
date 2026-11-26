@@ -30,3 +30,54 @@ export async function queueAdapter(intent,fresh,transport){
   return {...queueBlocked('QUEUE_RECEIPT_MOCK'),queueEntry:entry.id};
  }catch{return queueBlocked('QUEUE_RECEIPT_UNKNOWN');}
 }
+
+const nonnegative = (value, limit) => Number.isSafeInteger(value) && value >= 0 && value <= limit;
+const outcomeFields = ['workload', 'gateSet', 'gatesPassed', 'accepted', 'durationMs', 'rework', 'costMicros'];
+
+function validOutcome(outcome) {
+ return data(outcome, outcomeFields) && sha(outcome.workload) && sha(outcome.gateSet) &&
+  outcome.gatesPassed === true && positive(outcome.accepted) && nonnegative(outcome.accepted, 100000) &&
+  positive(outcome.durationMs) && nonnegative(outcome.durationMs, 86400000) &&
+  nonnegative(outcome.rework, 100000) && nonnegative(outcome.costMicros, 1000000000);
+}
+
+const experiment = reason => ({shadow: true, synthetic: true, comparable: false, reason});
+
+export function compareTrainExperiment(pairs) {
+ if (types.isProxy(pairs) || !Array.isArray(pairs) || pairs.length < 2 || pairs.length > 100 ||
+     Object.keys(pairs).length !== pairs.length) return experiment('SAMPLE_UNKNOWN');
+ const ids = new Set();
+ const baselineMs = [];
+ const candidateMs = [];
+ let acceptedPerArm = 0;
+ for (let i = 0; i < pairs.length; i++) {
+  const item = Object.getOwnPropertyDescriptor(pairs, String(i));
+  if (!item || !Object.hasOwn(item, 'value')) return experiment('SAMPLE_UNKNOWN');
+  const pair = item.value;
+  if (!data(pair, ['id', 'baseline', 'candidate']) || !positive(pair.id) || ids.has(pair.id) ||
+      !validOutcome(pair.baseline) || !validOutcome(pair.candidate))
+   return experiment('SAMPLE_UNKNOWN');
+  ids.add(pair.id);
+  const {baseline, candidate} = pair;
+  if (baseline.workload !== candidate.workload || baseline.gateSet !== candidate.gateSet ||
+      baseline.accepted !== candidate.accepted) return experiment('UNMATCHED_WORK');
+  if (candidate.rework > baseline.rework || candidate.costMicros > baseline.costMicros)
+   return experiment('REWORK_OR_COST_REGRESSION');
+  acceptedPerArm += baseline.accepted;
+  baselineMs.push(baseline.durationMs);
+  candidateMs.push(candidate.durationMs);
+ }
+ function summarize(samples) {
+  const sorted = [...samples].sort((a, b) => a - b);
+  return {
+   totalMs: sorted.reduce((sum, elapsed) => sum + elapsed, 0),
+   p50Ms: sorted[Math.ceil(sorted.length * 0.5) - 1],
+   p95Ms: sorted[Math.ceil(sorted.length * 0.95) - 1]
+  };
+ }
+ const baseline = summarize(baselineMs);
+ const candidate = summarize(candidateMs);
+ return {shadow: true, synthetic: true, comparable: true, reason: 'MATCHED_SYNTHETIC_TRIALS',
+  pairs: pairs.length, acceptedPerArm, baseline, candidate, throughputRatio: baseline.totalMs / candidate.totalMs};
+}
+
