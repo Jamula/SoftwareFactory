@@ -131,18 +131,25 @@ jobs:
             Invoke-BoundedNative 'dotnet' @('dev-certs','https','--export-path',$cert,'--format','PEM') 30 'certificate-export'
             # The noninteractive CLI does not trust development certificates on
             # Windows. Trust only this runner-generated public certificate, in
-            # CurrentUser (never LocalMachine), and remove only our addition.
+            # CurrentUser (never LocalMachine), using the noninteractive store API.
             if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted') { throw 'Expected disposable hosted runner' }
             Invoke-BoundedNative 'certutil.exe' @('-f','-decode',$cert,$der) 15 'certificate-conversion'
             $publicCert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($der)
             $trustPath = 'Cert:\CurrentUser\Root\' + $publicCert.Thumbprint
-            if (-not (Test-Path -LiteralPath $trustPath)) {
-              $addedTrust = $trustPath
-              Write-Host 'Windows runtime stage: CurrentUser certificate import started'
-              # Use the documented force option only for the disposable runner's own dev cert.
-              Invoke-BoundedNative 'certutil.exe' @('-f','-user','-addstore','Root',$der) 30 'certificate-import'
+            $store = [System.Security.Cryptography.X509Certificates.X509Store]::new('Root','CurrentUser')
+            try {
+              $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
+              if ($store.Certificates.Find([System.Security.Cryptography.X509Certificates.X509FindType]::FindByThumbprint,$publicCert.Thumbprint,$false).Count -eq 0) {
+                Write-Host 'Windows runtime stage: certificate-import started'
+                $store.Add($publicCert)
+                $addedTrust = $trustPath
+                Write-Host 'Windows runtime stage: certificate-import completed'
+              }
+              if ($store.Certificates.Find([System.Security.Cryptography.X509Certificates.X509FindType]::FindByThumbprint,$publicCert.Thumbprint,$false).Count -eq 0) { throw 'Local certificate trust missing' }
+            } finally {
+              $store.Close()
+              $store.Dispose()
             }
-            if (-not (Test-Path -LiteralPath $trustPath)) { throw 'Local certificate trust missing' }
             Write-Host 'Windows runtime stage: certificate trust verified'
             $env:NODE_EXTRA_CA_CERTS = $cert
             $env:ASPIRE_DASHBOARD_OTLP_HTTP_ENDPOINT_URL = 'https://127.0.0.1:18890'
@@ -175,7 +182,14 @@ jobs:
             }
             try {
               if ($addedTrust -and (Test-Path -LiteralPath $addedTrust)) {
-                Invoke-BoundedNative 'certutil.exe' @('-f','-user','-delstore','Root',$publicCert.Thumbprint) 30 'certificate-removal'
+                $store = [System.Security.Cryptography.X509Certificates.X509Store]::new('Root','CurrentUser')
+                try {
+                  $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
+                  $store.Remove($publicCert)
+                } finally {
+                  $store.Close()
+                  $store.Dispose()
+                }
                 if (Test-Path -LiteralPath $addedTrust) { throw 'Local certificate trust cleanup failed' }
               }
             } finally {
