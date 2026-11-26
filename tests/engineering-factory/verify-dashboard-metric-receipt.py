@@ -11,6 +11,7 @@ import sqlite3
 import sys
 
 NAMES = ("factory.stage.count", "factory.stage.duration")
+TYPE_CODES = {NAMES[0]: 2, NAMES[1]: 3}  # Aspire 17 hosted Linux job 139753805888
 LABELS = {"stage": "evaluate", "outcome": "blocked", "reason": "POLICY"}
 
 def bounded(conn, sql, args=(), limit=128):
@@ -22,7 +23,7 @@ def bounded(conn, sql, args=(), limit=128):
 def verify(conn):
     instruments = bounded(conn, """
         SELECT i.instrument_id, i.instrument_name, i.unit, i.aggregation_temporality,
-               i.is_monotonic, r.resource_name, s.scope_name
+               i.is_monotonic, r.resource_name, s.scope_name, i.instrument_type
         FROM telemetry_metric_instruments i
         LEFT JOIN telemetry_resources r ON r.resource_id=i.resource_id
         LEFT JOIN telemetry_scopes s ON s.scope_id=i.scope_id
@@ -30,9 +31,11 @@ def verify(conn):
         """, NAMES)
     if len(instruments) != 2 or {row[1] for row in instruments} != set(NAMES):
         raise ValueError("instrument identity")
-    for instrument_id, name, unit, temporality, monotonic, resource, scope in instruments:
+    for instrument_id, name, unit, temporality, monotonic, resource, scope, instrument_type in instruments:
         if resource != "softwarefactory-shadow" or scope != "softwarefactory" or temporality != 2:
             raise ValueError("instrument provenance or temporality")
+        if type(instrument_type) is not int or instrument_type != TYPE_CODES[name]:
+            raise ValueError("instrument type")
         counter = name == NAMES[0]
         if (counter and monotonic != 1) or (not counter and unit != "ms"):
             raise ValueError("instrument kind")
@@ -51,15 +54,17 @@ def verify(conn):
                 """, (dimension_id,))
             points = bounded(conn, """
                 SELECT start_time_unix_nano, end_time_unix_nano, integer_value, double_value,
-                       histogram_sum, histogram_count, flags, histogram_aggregation_start_unix_nano
+                       histogram_sum, histogram_count, flags, histogram_aggregation_start_unix_nano, point_type
                 FROM telemetry_metric_points WHERE dimension_id=?
                 """, (dimension_id,), limit=1024)
-            for start, end, integer, double, total, count, flags, histogram_start in points:
+            for start, end, integer, double, total, count, flags, histogram_start, point_type in points:
                 # Missing flags have the default zero value in OTLP.
                 if flags is not None and (type(flags) is not int or not 0 <= flags <= 0xffffffff):
                     raise ValueError("invalid flags")
                 if flags is not None and flags & 1:
                     continue
+                if type(point_type) is not int or point_type != TYPE_CODES[name]:
+                    raise ValueError("point type")
                 if len(attrs) != len(LABELS) or dict(attrs) != LABELS:
                     raise ValueError("unexpected recorded labels")
                 if recorded_dimension is not None and recorded_dimension != dimension_id:
@@ -75,7 +80,7 @@ def verify(conn):
                         raise ValueError("counter value fields")
                     if (integer is not None and (type(integer) is not int or integer != 1)) or (double is not None and (type(double) not in (float, int) or double != 1)):
                         raise ValueError("counter value")
-                    if total is not None or count is not None:
+                    if total is not None or count is not None or histogram_start is not None:
                         raise ValueError("conflicting histogram fields")
                 else:
                     if integer is not None or double is not None or type(count) is not int or count != 1:
@@ -108,24 +113,7 @@ def verify_run(root):
     with closing(sqlite3.connect(db.as_uri() + "?mode=ro", uri=True, timeout=2)) as conn:
         conn.execute("PRAGMA query_only=ON")
         conn.execute("PRAGMA trusted_schema=OFF")
-        result = verify(conn)
-        # Temporary schema-encoding evidence, restricted to fixed synthetic
-        # instruments. Only small integer discriminators are emitted.
-        types = bounded(conn, """
-            SELECT DISTINCT i.instrument_name, i.instrument_type, p.point_type
-            FROM telemetry_metric_instruments i
-            JOIN telemetry_metric_dimensions d ON d.instrument_id=i.instrument_id
-            JOIN telemetry_metric_points p ON p.dimension_id=d.dimension_id
-            WHERE i.instrument_name IN (?, ?) AND (COALESCE(p.flags,0) & 1)=0
-            ORDER BY i.instrument_name, i.instrument_type, p.point_type
-            """, NAMES, limit=8)
-        if not types or any(name not in NAMES or type(kind) is not int or
-                            type(point) is not int or not 0 <= kind <= 255 or
-                            not 0 <= point <= 255 for name, kind, point in types):
-            raise ValueError("unknown discriminator encoding")
-        for name, kind, point in types:
-            print(f"Metric type encoding: {name} instrument={kind} point={point}")
-        return result
+        return verify(conn)
 
 if __name__ == "__main__":
     try:
