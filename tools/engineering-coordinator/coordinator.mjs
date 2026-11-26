@@ -6,7 +6,8 @@ export async function runTick({config, tasks, active = [], store, tracker, agent
   if (!config || config.execution?.enabled !== true || config.execution.stop !== false ||
       config.execution.mode !== 'shadow') return failed('STOPPED');
   if (!store || typeof store.claim !== 'function' || typeof store.checkpoint !== 'function' ||
-      typeof store.renew !== 'function' || typeof store.release !== 'function' || !tracker || typeof tracker.readTask !== 'function' ||
+      typeof store.renew !== 'function' || typeof store.release !== 'function' ||
+      typeof store.observeReserved !== 'function' || !tracker || typeof tracker.readTask !== 'function' ||
       !agent || typeof agent.inspect !== 'function' || typeof workerId !== 'string' ||
       !Number.isSafeInteger(now) || now < 0 || typeof clock !== 'function') return failed('INVALID_RUNTIME');
   const plan = planLanes(config, tasks, active);
@@ -15,8 +16,17 @@ export async function runTick({config, tasks, active = [], store, tracker, agent
       plan.reason === 'DEPENDENCY_CYCLE' || plan.reason === 'INVALID_ACTIVE_LANE' ||
       plan.reason === 'ACTIVE_PATH_CONFLICT') return failed(plan.reason);
   const byId = new Map(tasks.map(task => [task.id, task]));
+  const reserved = [...new Set([...active.map(item => item.lane),
+    ...tasks.filter(task => task.state === 'active').map(task => task.lane)])];
+  if (reserved.length) {
+    try {
+      if (store.observeReserved(reserved, now, config.limits.leaseMs) !== true)
+        return failed('ACTIVE_RESERVATIONS_UNAVAILABLE');
+    } catch { return failed('ACTIVE_RESERVATIONS_UNAVAILABLE'); }
+  }
   const outcomes = await Promise.allSettled(plan.scheduled.map(async item => {
-    const claim = store.claim(item.lane, workerId, now, config.limits.leaseMs);
+    const claim = store.claim(item.lane, workerId, now, config.limits.leaseMs,
+      config.limits.maxConcurrentLanes);
     if (!claim) return {lane: item.lane, state: 'blocked', reason: 'LEASE_HELD'};
     let lastObservedTime = now;
     const renewLease = () => {
