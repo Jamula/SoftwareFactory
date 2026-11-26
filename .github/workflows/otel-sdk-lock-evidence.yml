@@ -1,0 +1,54 @@
+name: OpenTelemetry SDK dependency evidence
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/otel-sdk-lock-evidence.yml'
+permissions:
+  contents: read
+concurrency:
+  group: otel-sdk-lock-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  otel-lock-evidence:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '26.13.1'
+          package-manager-cache: false
+      - name: Generate and validate exact dependency lock in isolated directory
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          work="$RUNNER_TEMP/otel-lock-evidence"
+          mkdir -p "$work"
+          cp package.json package-lock.json "$work/"
+          cd "$work"
+          npm install --package-lock-only --save-exact --ignore-scripts --no-audit --no-fund --registry=https://registry.npmjs.org/ \
+            @opentelemetry/api@1.10.0 @opentelemetry/sdk-node@0.300.0 \
+            @opentelemetry/sdk-trace@3.0.0 @opentelemetry/sdk-metrics@3.0.0 @opentelemetry/sdk-logs@3.0.0 \
+            @opentelemetry/resources@3.0.0 \
+            @opentelemetry/exporter-trace-otlp-proto@0.300.0 \
+            @opentelemetry/exporter-metrics-otlp-proto@0.300.0 \
+            @opentelemetry/exporter-logs-otlp-proto@0.300.0
+          npm ci --ignore-scripts --no-audit --no-fund --registry=https://registry.npmjs.org/
+          node --input-type=module -e 'import {trace,metrics,logs} from "@opentelemetry/api"; import {NodeSDK} from "@opentelemetry/sdk-node"; import {SimpleSpanProcessor} from "@opentelemetry/sdk-trace"; import {PeriodicExportingMetricReader} from "@opentelemetry/sdk-metrics"; import {SimpleLogRecordProcessor} from "@opentelemetry/sdk-logs"; import {resourceFromAttributes} from "@opentelemetry/resources"; import {OTLPTraceExporter} from "@opentelemetry/exporter-trace-otlp-proto"; import {OTLPMetricExporter} from "@opentelemetry/exporter-metrics-otlp-proto"; import {OTLPLogExporter} from "@opentelemetry/exporter-logs-otlp-proto"; if(![trace,metrics,logs,NodeSDK,SimpleSpanProcessor,PeriodicExportingMetricReader,SimpleLogRecordProcessor,resourceFromAttributes,OTLPTraceExporter,OTLPMetricExporter,OTLPLogExporter].every(Boolean)) process.exit(1); console.log("Pinned SDK imports verified")'
+          node --input-type=module -e 'import fs from "node:fs";const p=JSON.parse(fs.readFileSync("package-lock.json")); for(const [name,v] of Object.entries(p.packages)){if(name && (!v.integrity || !v.resolved?.startsWith("https://registry.npmjs.org/"))) throw Error("Unverified dependency "+name)}'
+          sha256sum package.json package-lock.json
+      - name: Upload proposed dependency manifest and lock
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: otel-lock-evidence
+          path: |
+            ${{ runner.temp }}/otel-lock-evidence/package.json
+            ${{ runner.temp }}/otel-lock-evidence/package-lock.json
+          if-no-files-found: error
+          retention-days: 1
