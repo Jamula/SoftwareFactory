@@ -133,4 +133,12 @@ The initial timing sample measured **20 s p50 for one successful build job** (10
 
 ## Outside the factory critical path
 
-Dedicated workstation compatibility [#66](https://github.com/Jamula/SoftwareFactory/issues/66) is optional after the core factory is operational. The Family Hub calling feature [#76](https://github.com/Jamula/SoftwareFactory/issues/76) is consumer product work and does not gate factory readiness. The full portfolio dashboard follows durable measurement. The baseline report starts now.
+### M10 · Optional developer workstation compatibility
+
+**Value at completion.** A developer can reproduce the documented Aspire startup, authenticated dashboard and clean shutdown on an existing supported workstation. The owner can request this after the factory is operational. M02 and the consumer pilots use their existing acceptance environments.
+
+| Step | Work and evidence | Tracking |
+| --- | --- | --- |
+| M10.01 | On the requested workstation, record successful startup, dashboard access, shutdown and any compatibility findings. Reuse the hosted Windows and Linux evidence. | [#66](https://github.com/Jamula/SoftwareFactory/issues/66) · [M10](https://github.com/Jamula/SoftwareFactory/milestone/10) |
+
+The Family Hub calling feature [#76](https://github.com/Jamula/SoftwareFactory/issues/76) is consumer product work and does not gate factory readiness. The full portfolio dashboard follows durable measurement. The baseline report starts now.
