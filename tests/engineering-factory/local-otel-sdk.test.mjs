@@ -187,3 +187,13 @@ for (const mode of ['reject', 'unanswered']) {
   }
  });
 }
+
+test('TLS verification override refuses authenticated HTTPS export before loading the SDK',async()=>{
+ const key='NODE_TLS_REJECT_UNAUTHORIZED',old=process.env[key];
+ process.env[key]='0';
+ try{
+  await assert.doesNotReject(async()=>{
+   assert.equal(await startLocalSdk({...configuration,endpoint:'https://127.0.0.1:4318'},async()=>assert.fail('must not load')),null);
+  });
+ }finally{if(old===undefined)delete process.env[key];else process.env[key]=old;}
+});

@@ -17,10 +17,11 @@ export async function startLocalSdk(config,load=loadPinnedSdk) {
   const local=localOtlpConfiguration(config.endpoint,config.protocol,config.headers);
   if(!local||local.protocol!=='http/protobuf') return null;
   // Reject alternate exporter endpoints, credentials, proxies or untrusted
-  // instrumentation overrides rather than let SDK environment defaults leak.
+  // instrumentation or TLS-verification overrides rather than let SDK
+  // environment defaults leak. Trusted development CAs remain supported.
   if(process.env.OTEL_EXPORTER_OTLP_HEADERS!==undefined&&process.env.OTEL_EXPORTER_OTLP_HEADERS!==config.headers) return null;
   for(const [key,value] of Object.entries(process.env)) {
-    if(value&&(/^(?:OTEL_EXPORTER_OTLP_.+|OTEL_(?:TRACES|METRICS|LOGS)_EXPORTER|HTTP_PROXY|HTTPS_PROXY|ALL_PROXY|NODE_USE_ENV_PROXY)$/i.test(key))&&
+    if(value&&(/^(?:OTEL_EXPORTER_OTLP_.+|OTEL_(?:TRACES|METRICS|LOGS)_EXPORTER|HTTP_PROXY|HTTPS_PROXY|ALL_PROXY|NODE_USE_ENV_PROXY|NODE_TLS_REJECT_UNAUTHORIZED)$/i.test(key))&&
       !['OTEL_EXPORTER_OTLP_ENDPOINT','OTEL_EXPORTER_OTLP_PROTOCOL','OTEL_EXPORTER_OTLP_HEADERS'].includes(key))
       return null;
   }

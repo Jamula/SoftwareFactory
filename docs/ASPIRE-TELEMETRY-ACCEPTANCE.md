@@ -7,3 +7,5 @@ The SDK consumes AppHost-provided OTEL_EXPORTER_OTLP_ENDPOINT, OTEL_EXPORTER_OTL
 References: https://aspire.dev/app-host/configuration/ and https://aspire.dev/dashboard/apis/ .
 
 Shutdown regression tests use the real pinned HTTP/protobuf exporters against authenticated synthetic loopback receivers returning HTTP 400 or leaving requests unanswered. Each signal must attempt export; the work result must remain unchanged and provider shutdown must settle within the 10-second regression bound (3-second configured exporter timeout, with scheduling margin). Exporter failure may be reported through SDK diagnostics or an explicit aggregate cleanup error; neither is proof of dashboard receipt. The separate in-flight observation drain has a 3-second limit.
+
+The SDK rejects a nonempty NODE_TLS_REJECT_UNAUTHORIZED override before loading any exporters, including for loopback HTTPS. Use a trusted development CA through NODE_EXTRA_CA_CERTS, not a TLS verification bypass. The negative test verifies the disabled-verification configuration cannot construct exporters or send an API key.
