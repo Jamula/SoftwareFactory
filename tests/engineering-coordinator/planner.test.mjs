@@ -95,3 +95,22 @@ test('factory shadow planner fills twelve isolated logical lanes', () => {
   const active={...tasks[0],state:'active'};
   assert.deepEqual(planLanes(c,[active,...tasks.slice(1)]).scheduled.map(x=>x.id),Array.from({length:11},(_,i)=>i+2));
 });
+
+test('validates a dense reordered dependency graph before scheduling', () => {
+  const c = config();
+  c.project.repository = 'Jamula/SoftwareFactory';
+  c.limits.maxConcurrentLanes = 12;
+  c.lanes = Array.from({length: 12}, (_, i) => ({id: 'lane-' + i, owners: ['src/lane-' + i], prompt: 'agent.md'}));
+  const acceptedIds = Array.from({length: 238}, (_, i) => i + 1);
+  const accepted = acceptedIds.map((id, i) => ({
+    ...task(id, 'lane-0', 'accepted', ['src/lane-0/' + id], acceptedIds.slice(0, i)), priority: 0
+  }));
+  const ready = c.lanes.map(({id}, i) => ({
+    ...task(239 + i, id, 'approved', ['src/' + id + '/ready'], acceptedIds), priority: 1
+  }));
+  const inventory = [...ready, ...accepted].reverse();
+  assert.deepEqual(planLanes(c, inventory).scheduled.map(item => item.id), ready.map(item => item.id));
+  assert.equal(planLanes(c, [...accepted, ...ready.slice(0, -1), {
+    ...ready.at(-1), dependencies: [...acceptedIds, 251]
+  }]).reason, 'DEPENDENCY_UNKNOWN');
+});
