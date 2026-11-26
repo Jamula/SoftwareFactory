@@ -5,7 +5,7 @@ import {readPullSignals} from '../../tools/engineering-factory/pull-signals.mjs'
 const repo={id:1471342715,full_name:'Jamula/SoftwareFactory'};
 const head='a'.repeat(40), base='b'.repeat(40);
 const pull={number:42,base:{repo,ref:'main',sha:base},head:{repo,sha:head},state:'open',draft:false};
-const review={id:100,user:{login:'copilot-pull-request-reviewer',id:946600},state:'COMMENTED',
+const review={id:100,user:{login:'copilot-pull-request-reviewer[bot]',id:946600},state:'COMMENTED',
  commit_id:head,submitted_at:'2026-11-26T19:00:00Z',body:'untrusted text must not escape'};
 const check={id:200,name:'build-test',head_sha:head,status:'completed',conclusion:'success',
  completed_at:'2026-11-26T19:00:00Z',app:{id:15368,slug:'github-actions'},output:{title:'ignored'}};
@@ -23,7 +23,7 @@ test('reads same-repository current-head review and check metadata without comme
  const result=await readPullSignals(42,head,read);
  assert.deepEqual(result,{shadow:true,evidenceComplete:false,reason:'PULL_SIGNALS_METADATA_ONLY',
   repositoryId:1471342715,number:42,head,base,state:'open',draft:false,
-  reviewSnapshotComplete:true,reviews:[{id:100,reviewer:'copilot-pull-request-reviewer',reviewerId:946600,
+  reviewSnapshotComplete:true,reviews:[{id:100,reviewer:'copilot-pull-request-reviewer[bot]',reviewerId:946600,
    state:'COMMENTED',head,submittedAt:'2026-11-26T19:00:00Z'}],
   checkSnapshotComplete:true,checks:[{id:200,name:'build-test',appId:15368,app:'github-actions',head,
    status:'completed',conclusion:'success',completedAt:'2026-11-26T19:00:00Z'}],
@@ -59,7 +59,7 @@ test('rejects malformed, duplicate, cross-head and incomplete review inventories
  const result=async reviews=>readPullSignals(42,head,async url=>url.endsWith('/pulls/42')?response(pull):
   url.includes('/reviews?')?response(reviews):response({total_count:1,check_runs:[check]}));
  for(const row of [{...review,state:'UNKNOWN'},{...review,commit_id:'c'.repeat(40)},
-  {...review,user:null},{...review,id:0},{...review,submitted_at:'bad'},{...review,user:{login:'bad login'}},{...review,user:{login:'valid',id:0}}])
+  {...review,user:null},{...review,id:0},{...review,submitted_at:'bad'},{...review,user:{login:'bad login'}},{...review,user:{login:123}},{...review,user:{login:['valid']}},{...review,user:{login:'valid',id:0}}])
   assert.notEqual((await result([row])).reason,'PULL_SIGNALS_METADATA_ONLY');
  assert.equal((await result([review,review])).reason,'REVIEW_METADATA_UNKNOWN');
 });
@@ -72,6 +72,7 @@ test('rejects malformed, wrong-head, duplicate and inconsistent check metadata',
   {total_count:1,check_runs:[{...check,conclusion:'unknown'}]},
   {total_count:1,check_runs:[{...check,status:'in_progress',conclusion:'success'}]},
   {total_count:1,check_runs:[{...check,app:null}]},
+  {total_count:1,check_runs:[{...check,app:{...check.app,slug:['github-actions']}}]},
   {total_count:1,check_runs:[{...check,id:0}]}
  ]) assert.notEqual((await result(value)).reason,'PULL_SIGNALS_METADATA_ONLY');
  assert.equal((await result({total_count:101,check_runs:[]})).reason,'PAGE_LIMIT');
