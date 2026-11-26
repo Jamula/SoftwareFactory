@@ -43,6 +43,12 @@ jobs:
           node --input-type=module -e 'import {trace,metrics,logs} from "@opentelemetry/api"; import {NodeSDK} from "@opentelemetry/sdk-node"; import {SimpleSpanProcessor} from "@opentelemetry/sdk-trace"; import {PeriodicExportingMetricReader} from "@opentelemetry/sdk-metrics"; import {SimpleLogRecordProcessor} from "@opentelemetry/sdk-logs"; import {resourceFromAttributes} from "@opentelemetry/resources"; import {OTLPTraceExporter} from "@opentelemetry/exporter-trace-otlp-proto"; import {OTLPMetricExporter} from "@opentelemetry/exporter-metrics-otlp-proto"; import {OTLPLogExporter} from "@opentelemetry/exporter-logs-otlp-proto"; if(![trace,metrics,logs,NodeSDK,SimpleSpanProcessor,PeriodicExportingMetricReader,SimpleLogRecordProcessor,resourceFromAttributes,OTLPTraceExporter,OTLPMetricExporter,OTLPLogExporter].every(Boolean)) process.exit(1); console.log("Pinned SDK imports verified")'
           node --input-type=module -e 'import fs from "node:fs";const p=JSON.parse(fs.readFileSync("package-lock.json")); for(const [name,v] of Object.entries(p.packages)){if(name && (!v.integrity || !v.resolved?.startsWith("https://registry.npmjs.org/"))) throw Error("Unverified dependency "+name)}'
           sha256sum package.json package-lock.json
+          # Public npm metadata only. Connector-readable transfer of the exact
+          # generated files; no environment or credential contents are printed.
+          for file in package.json package-lock.json; do
+            printf '%s  %s\n' "$(sha256sum "$file" | cut -d' ' -f1)" "$file"
+            base64 -w 120 "$file" | sed "s/^/LOCK-EVIDENCE $file /"
+          done
       - name: Upload proposed dependency manifest and lock
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
