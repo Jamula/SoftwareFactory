@@ -92,17 +92,17 @@ test('rejects array prototypes and all extra own keys before invoking array beha
  const throwingIterator = [...core.tests];
  Object.defineProperty(throwingIterator, Symbol.iterator, {get() {throw Error('must not run');}});
  const hiddenMethod = [...core.tests];
- Object.defineProperty(hiddenMethod, 'map', {value() {throw Error('must not run');}});
+ Object.defineProperty(hiddenMethod, 'map', {get() {throw Error('must not run');}});
  const customPrototype = Object.setPrototypeOf([...core.tests], {});
  for (const tests of [throwingIterator, hiddenMethod, customPrototype]) {
   assert.equal(plan({...catalog, components: [{...core, tests}]}, expected, change).reason, 'MAP_INVALID');
  }
  const hiddenDependencyMethod = [...ui.dependsOn];
- Object.defineProperty(hiddenDependencyMethod, 'every', {value() {throw Error('must not run');}});
+ Object.defineProperty(hiddenDependencyMethod, 'every', {get() {throw Error('must not run');}});
  assert.equal(plan({...catalog, components: [core, {...ui, dependsOn: hiddenDependencyMethod}]}, expected, change).reason,
   'MAP_INVALID');
  const decoratedComponents = [core];
- Object.defineProperty(decoratedComponents, 'map', {value() {throw Error('must not run');}});
+ Object.defineProperty(decoratedComponents, 'map', {get() {throw Error('must not run');}});
  assert.equal(plan({...catalog, components: decoratedComponents}, expected, change).reason, 'MAP_INVALID');
  const symbolPath = [change[0]];
  Object.defineProperty(symbolPath, Symbol('extra'), {value: true});
