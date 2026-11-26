@@ -14,7 +14,7 @@ test('disabled or invalid local SDK never imports dependencies',async()=>{
 test('explicit local exporters and SDK lifecycle, with no implicit discovery',async()=>{
  const opts=[],events=[];
  class Exporter{constructor(options){opts.push(options);}}
- class Processor{constructor(exporter){this.exporter=exporter;}}
+ class Processor{constructor({exporter}){assert.ok(exporter instanceof Exporter);this.exporter=exporter;}}
  class Reader{constructor(options){this.options=options;}}
  class SDK{constructor(options){this.options=options;events.push(options);}start(){events.push('start');}async shutdown(){events.push('shutdown');}}
  const api={
@@ -81,8 +81,8 @@ test('pinned actual SDK delivers trace, metric and correlated log protobuf to au
   assert.ok(logPacket.includes(Buffer.from('factory.stage.completed')));
   assert.ok(metricPacket.includes(Buffer.from('factory.stage.count')));
  }finally{
-  if(sdk)await sdk.shutdown();
-  server.closeAllConnections();await new Promise(resolve=>server.close(resolve));
+  try {if(sdk)await sdk.shutdown();}
+  finally {server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
  }
 });
 
@@ -100,5 +100,13 @@ test('startup or signal initialization failure attempts cleanup and preserves th
    trace:{getTracer(){throw original;}}};
   await assert.rejects(()=>startLocalSdk(configuration,async()=>api),e=>e===original);
   assert.equal(cleaned,1);
+ }
+});
+
+test('disabled SDK and inherited unrelated headers never construct exporters',async()=>{
+ for(const [key,value] of [['OTEL_SDK_DISABLED','TRUE'],['OTEL_EXPORTER_OTLP_HEADERS','x-otlp-api-key=synthetic,authorization=unrelated'],['OTEL_EXPORTER_OTLP_HEADERS','']]){
+  const old=process.env[key];process.env[key]=value;
+  try{assert.equal(await startLocalSdk(configuration,async()=>assert.fail('must not load')),null);}
+  finally{if(old===undefined)delete process.env[key];else process.env[key]=old;}
  }
 });

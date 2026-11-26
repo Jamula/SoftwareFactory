@@ -50,6 +50,8 @@ jobs:
           if ((dotnet --version).Trim() -ne '10.0.404') { throw 'SDK version mismatch' }
           node tools/engineering-factory/aspire-smoke.mjs
           if ($LASTEXITCODE -ne 0) { throw 'Synthetic smoke failed' }
+      - name: Restore locked Node dependencies
+        run: npm ci --ignore-scripts
       - name: Restore pinned Aspire
         run: |
           $ErrorActionPreference = 'Stop'
@@ -81,12 +83,14 @@ jobs:
             Get-Content -Raw $out
           }
           try {
+            $null = & dotnet dev-certs https --export-path $cert --format PEM 2>&1
+            if ($LASTEXITCODE -ne 0) { throw 'Certificate export failed' }
+            $env:NODE_EXTRA_CA_CERTS = $cert
+            $env:ASPIRE_DASHBOARD_OTLP_HTTP_ENDPOINT_URL = 'https://127.0.0.1:18890'
             $startup = Invoke-Aspire @('start','--apphost','apphost.cs','--isolated','--non-interactive','--nologo') 120
             $login = [regex]::Match($startup,'https://(?:localhost|127\.0\.0\.1|\[::1\]):[0-9]+/login\?t=[^\s]+')
             if (-not $login.Success) { throw 'No authenticated loopback HTTPS dashboard' }
             $origin = ([uri]$login.Value).GetLeftPart([System.UriPartial]::Authority)
-            $null = & dotnet dev-certs https --export-path $cert --format PEM 2>&1
-            if ($LASTEXITCODE -ne 0) { throw 'Certificate export failed' }
             $challenge = & curl.exe --silent --noproxy '*' --max-time 10 --cacert $cert --output NUL --write-out '%{http_code} %{redirect_url}' "$origin/resources" 2>$err
             if ($LASTEXITCODE -ne 0 -or ($challenge -ne "302 $origin/login" -and -not $challenge.StartsWith("302 $origin/login?"))) { throw 'Dashboard did not require login over trusted TLS' }
             Write-Host 'Dashboard required login over loopback HTTPS'
