@@ -61,3 +61,14 @@ test('returns no ready work when every candidate is blocked or accepted', () => 
   const result = planLanes(config(), [task(1, 'api', 'blocked'), task(2, 'web', 'accepted')]);
   assert.deepEqual(result, {shadow: true, scheduled: [], reason: 'NO_READY_WORK'});
 });
+
+test('within explicit priority, longest unfinished dependency chain wins; stable ties', () => {
+  const c=config(); c.limits.maxConcurrentLanes=1;
+  const tasks=[{...task(1),priority:0},{...task(2,'web'),priority:0},
+    task(3,'web','approved',['src/web/3'],[2]),
+    task(4,'api','approved',['src/api/4'],[3])];
+  assert.deepEqual(planLanes(c,tasks).scheduled.map(t=>t.id),[2]);
+  assert.deepEqual(planLanes(c,[{...task(1),priority:0},{...task(2,'web'),priority:0}]).scheduled.map(t=>t.id),[1]);
+  assert.deepEqual(planLanes(c,[{...task(1),priority:0},{...task(2,'web'),priority:1},...tasks.slice(2)]).scheduled.map(t=>t.id),[1]);
+  assert.deepEqual(planLanes(c,[...tasks.slice(0,2),{...tasks[2],state:'accepted'},{...tasks[3],state:'accepted'}]).scheduled.map(t=>t.id),[1]);
+});
