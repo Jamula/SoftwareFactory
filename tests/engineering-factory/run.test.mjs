@@ -71,6 +71,23 @@ test('identity-only reconciliation stays unknown and unrecognized reasons stay b
  assert.equal(JSON.stringify({measurements,attributes}).includes('issue metadata'),false);
 });
 
+test('explicit planner denials are blocked while no-ready-work stays unknown',async()=>{
+ const measurements=[];
+ const observe=createSignals({
+  meter:{createCounter:()=>({add:(...args)=>measurements.push(args)}),
+   createHistogram:()=>({record:(...args)=>measurements.push(args)})},
+  tracer:{startSpan:()=>({setAttributes(){},end(){}})}
+ });
+ const reasons=['STOPPED','CAPACITY_UNKNOWN','INVALID_TASKS','UNKNOWN_DEPENDENCY',
+  'DEPENDENCY_CYCLE','ACTIVE_OWNERSHIP_CONFLICT','NO_READY_WORK'];
+ for(const reason of reasons)
+  assert.equal(await run(['--smoke'],{observe,replay:()=>({shadow:true,ready:[],reason}),write:()=>{}}),1);
+ const attributes=measurements.filter((_,i)=>i%2===0).map(([,attrs])=>attrs);
+ assert.deepEqual(attributes.map(({outcome})=>outcome),[
+  'blocked','blocked','blocked','blocked','blocked','blocked','unknown'
+ ]);
+});
+
 test('runner rejects unsupported commands without invoking telemetry',async()=>{
  const writes=[],failures=[];
  assert.equal(await run(['--unknown'],{observe:()=>assert.fail('telemetry must not run'),

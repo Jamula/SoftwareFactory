@@ -16,6 +16,10 @@ const reasonLabels=new Map([
   ['DEPENDENCIES_BLOCKED','DEPENDENCY'],['READ_FAILED','OTHER'],
   ['RATE_OR_PERMISSION_UNKNOWN','OTHER']
 ]);
+const plannerDenials=new Set([
+  'STOPPED','CAPACITY_UNKNOWN','INVALID_TASKS','UNKNOWN_DEPENDENCY',
+  'DEPENDENCY_CYCLE','ACTIVE_OWNERSHIP_CONFLICT'
+]);
 
 function telemetrySummary(result) {
   const code=typeof result?.reason==='string'?result.reason:'';
@@ -24,6 +28,7 @@ function telemetrySummary(result) {
   if(code==='READ_FAILED') outcome='failed';
   else if(result?.reconciled===true) outcome='unknown';
   else if(result?.reconciled===false) outcome='blocked';
+  else if(plannerDenials.has(code)) outcome='blocked';
   else if(code==='SHADOW_PLAN'&&Array.isArray(result?.ready)&&result.ready.length>0) outcome='eligible';
   return {outcome,reason};
 }
