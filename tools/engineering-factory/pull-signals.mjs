@@ -48,15 +48,17 @@ function normalizeReviews(value, hasNext, number, head) {
         !/^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*(?:\[bot\])?$/.test(row.user.login) ||
         (row.user.id !== null && row.user.id !== undefined && !positive(row.user.id)) ||
         !['APPROVED','CHANGES_REQUESTED','COMMENTED','DISMISSED','PENDING'].includes(row.state) ||
-        !sha(row.commit_id) || !timestamp(row.submitted_at)) return {ok:false,reason:'REVIEW_METADATA_UNKNOWN'};
+        !sha(row.commit_id) || (row.state === 'PENDING' ? row.submitted_at != null : !timestamp(row.submitted_at)))
+      return {ok:false,reason:'REVIEW_METADATA_UNKNOWN'};
     if (row.commit_id !== head) return {ok:false,reason:'REVIEW_HEAD_MISMATCH'};
     seen.add(row.id);
     reviews.push({id:row.id,reviewer:row.user.login,reviewerId:positive(row.user.id)?row.user.id:null,
-      state:row.state,head:row.commit_id,submittedAt:row.submitted_at});
+      state:row.state,head:row.commit_id,submittedAt:row.state === 'PENDING' ? null : row.submitted_at});
   }
   return {ok:true,reviews};
 }
 
+const checkStatuses = new Set(['queued','in_progress','completed','waiting','requested','pending']);
 const conclusions = new Set(['success','failure','neutral','cancelled','skipped','timed_out',
   'action_required','stale','startup_failure']);
 function normalizeChecks(value, hasNext, head) {
@@ -68,17 +70,17 @@ function normalizeChecks(value, hasNext, head) {
     if (!row || !positive(row.id) || seen.has(row.id) || !text(row.name,100) || !sha(row.head_sha) ||
         !row.app || !positive(row.app.id) || !text(row.app.slug,100) ||
         !/^[a-z0-9-]{1,100}$/.test(row.app.slug) ||
-        !['queued','in_progress','completed'].includes(row.status)) return {ok:false,reason:'CHECK_METADATA_UNKNOWN'};
+        !checkStatuses.has(row.status)) return {ok:false,reason:'CHECK_METADATA_UNKNOWN'};
     if (row.head_sha !== head) return {ok:false,reason:'CHECK_HEAD_MISMATCH'};
     if (row.status === 'completed') {
       if (!conclusions.has(row.conclusion) || !timestamp(row.completed_at))
         return {ok:false,reason:'CHECK_METADATA_UNKNOWN'};
-    } else if (row.conclusion !== null || row.completed_at !== null) {
+    } else if ((row.conclusion ?? null) !== null || (row.completed_at ?? null) !== null) {
       return {ok:false,reason:'CHECK_METADATA_UNKNOWN'};
     }
     seen.add(row.id);
     checks.push({id:row.id,name:row.name,appId:row.app.id,app:row.app.slug,head:row.head_sha,
-      status:row.status,conclusion:row.conclusion,completedAt:row.completed_at});
+      status:row.status,conclusion:row.conclusion ?? null,completedAt:row.completed_at ?? null});
   }
   return {ok:true,checks};
 }
@@ -105,6 +107,14 @@ export async function readPullSignals(number, expectedHead, request=fetch) {
   if (!reviews.ok) return failed(reviews.reason);
   const checks = normalizeChecks(checkResult.value,checkResult.hasNext,expectedHead);
   if (!checks.ok) return failed(checks.reason);
+  const finalPull = await readPullIdentity(number, request);
+  if (finalPull.reason !== 'IDENTITY_ONLY' || finalPull.repositoryId !== pull.repositoryId ||
+      finalPull.number !== number)
+    return failed(finalPull.reason === 'RATE_OR_PERMISSION_UNKNOWN' ? finalPull.reason :
+      finalPull.reason === 'READ_FAILED' ? finalPull.reason : 'PULL_IDENTITY_UNKNOWN');
+  if (finalPull.head !== pull.head) return failed('HEAD_CHANGED');
+  if (finalPull.base !== pull.base || finalPull.state !== pull.state || finalPull.draft !== pull.draft)
+    return failed('PULL_STATE_CHANGED');
   return {shadow:true,evidenceComplete:false,reason:'PULL_SIGNALS_METADATA_ONLY',repositoryId:pull.repositoryId,
     number,head:pull.head,base:pull.base,state:pull.state,draft:pull.draft,
     reviewSnapshotComplete:true,reviews:reviews.reviews,checkSnapshotComplete:true,checks:checks.checks,
