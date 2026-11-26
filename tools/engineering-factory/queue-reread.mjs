@@ -31,7 +31,7 @@ export function reconcileQueueSnapshot(intent,reread) {
   return blocked('QUEUE_SCOPE_MISMATCH');
  const {pull,entry}=reread;
  if(!record(pull,pullFields)||!record(entry,entryFields))return blocked('QUEUE_REREAD_UNKNOWN');
- if(pull.repositoryId!==repositoryId||pull.number!==intent.number||pull.baseBranch!=='main'||
+ if(pull.repositoryId!==repositoryId||pull.repository!==repository||pull.number!==intent.number||pull.baseBranch!=='main'||
     pull.state!=='OPEN'||pull.draft!==false)return blocked('PULL_NOT_READY');
  if(pull.head!==intent.expectedHead)return blocked('HEAD_CHANGED');
  if(pull.base!==intent.expectedBase)return blocked('BASE_CHANGED');
