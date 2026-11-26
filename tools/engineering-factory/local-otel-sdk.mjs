@@ -35,7 +35,7 @@ export async function startLocalSdk(config,load=loadPinnedSdk) {
   const shutdown=()=>stopped??=Promise.allSettled(providers.map(p=>Promise.resolve().then(()=>p.shutdown())))
     .then(results=>{storage.disable();const failures=results.filter(r=>r.status==='rejected');if(failures.length)throw new AggregateError(failures.map(r=>r.reason),'LOCAL_SDK_SHUTDOWN_FAILED');});
   try {
-    const tracerProvider=new api.BasicTracerProvider({resource,spanProcessors:[new api.SimpleSpanProcessor({exporter:new api.OTLPTraceExporter(options('traces'))})]});
+    const tracerProvider=new api.TracerProvider({resource,spanProcessors:[new api.SimpleSpanProcessor({exporter:new api.OTLPTraceExporter(options('traces'))})]});
     providers.push(tracerProvider);
     const meterProvider=new api.MeterProvider({resource,readers:[new api.PeriodicExportingMetricReader({exporter:new api.OTLPMetricExporter(options('metrics')),exportIntervalMillis:3000,exportTimeoutMillis:3000})]});
     providers.push(meterProvider);
