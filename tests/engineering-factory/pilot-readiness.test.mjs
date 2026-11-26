@@ -22,7 +22,7 @@ test('repeatability rejects stale or wrong identity, duplicate work and unknown 
  const withFirst=change=>[cycle(1,change),cycle(2),cycle(3)];
  for(const change of [{repositoryId:2},{issue:0},{pr:0},{head:'bad'},{reviewedHead:'b'.repeat(40)}])assert.equal(cycles(withFirst(change)).reason,'IDENTITY_OR_REVIEW_UNKNOWN');
  assert.equal(cycles([null,cycle(2),cycle(3)]).reason,'IDENTITY_OR_REVIEW_UNKNOWN');
- for(const change of [{issue:2},{pr:102},{head:'2'.repeat(40),reviewedHead:'2'.repeat(40)}])assert.equal(cycles(withFirst(change)).reason,'DUPLICATE_CYCLE');
+ for(const change of [{issue:2},{pr:102},{head:'2'.repeat(40),reviewedHead:'2'.repeat(40),coverageReports:reports('2'.repeat(40))}])assert.equal(cycles(withFirst(change)).reason,'DUPLICATE_CYCLE');
  for(const change of [{reviewIndependent:false},{checksPassed:false},{securityClear:false},{threadsResolved:false},{mainVerified:false},{costVerified:false},{extraCost:null},{extraCost:1},{humanInterventions:1},{unauthorizedWrites:1},{duplicateDispatches:1}])assert.equal(cycles(withFirst(change)).reason,'SAFETY_OR_COST_UNKNOWN');
  const rows=reports('1'.repeat(40));
  for(const coverageReports of [null,[],[rows[0]],[rows[0],rows[0]],[{...rows[0],lines:97},rows[1]],[{...rows[0],branches:18},rows[1]],[{...rows[0],head:'b'.repeat(40)},rows[1]]])assert.equal(cycles(withFirst({coverageReports})).reason,'COVERAGE');
