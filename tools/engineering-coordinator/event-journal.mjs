@@ -129,11 +129,12 @@ export function openEventJournal(filename) {
 
 // One bounded, injected shadow reconciliation. No real transport or write authority.
 // The reader must normalize a fresh observation of the exact claim, not event text.
-export async function reconcileJournalOnce({journal, repositoryId, owner, leaseMs, clock, read, stop} = {}) {
+export async function reconcileJournalOnce({journal, repositoryId, owner, leaseMs, clock, read, stop, deferUnknown} = {}) {
   const result=reason=>({shadow:true,liveDispatch:false,liveMerge:false,reason});
   if(stop!==false)return result('STOPPED');
   if(!journal||typeof journal.claim!=='function'||typeof journal.complete!=='function'||
-     typeof clock!=='function'||typeof read!=='function')return result('RUNTIME_UNKNOWN');
+     typeof clock!=='function'||typeof read!=='function'||
+     (deferUnknown!==undefined&&typeof deferUnknown!=='function'))return result('RUNTIME_UNKNOWN');
   try {
     const now=clock();
     if(!isTime(now))return result('CLOCK_UNKNOWN');
@@ -144,7 +145,12 @@ export async function reconcileJournalOnce({journal, repositoryId, owner, leaseM
     const finished=clock();
     if(!isTime(finished)||finished<now||finished>=ticket.leaseUntil)return result('LEASE_OR_CLOCK_UNKNOWN');
     if(!evidence||evidence.shadow!==true||evidence.fresh!==true||evidence.repositoryId!==ticket.repositoryId||
-       evidence.kind!==ticket.kind||evidence.subject!==ticket.subject||!isHead(evidence.head))return result('EVIDENCE_UNKNOWN');
+       evidence.kind!==ticket.kind||evidence.subject!==ticket.subject||!isHead(evidence.head)){
+      // Mutate retry scheduling only after the same acquisition/expiry clock
+      // validation used for completion. No second time sample or acknowledgement.
+      if(deferUnknown!==undefined&&deferUnknown(ticket,finished)!==true)return result('RECONCILIATION_UNAVAILABLE');
+      return result('EVIDENCE_UNKNOWN');
+    }
     // A fresh moved head supersedes this hint; it does not authorize work on either head.
     if(journal.complete(ticket,finished)!==true)return result('CLAIM_LOST');
     return result(evidence.head===ticket.head?'SHADOW_RECONCILED':'SHADOW_HEAD_SUPERSEDED');

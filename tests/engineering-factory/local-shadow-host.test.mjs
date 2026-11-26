@@ -149,3 +149,18 @@ test('six permanent rejections cannot starve a valid queued pull or inventory ac
   assert.equal(validReads,1);assert.equal(inventoryReads,24);assert.ok(inventoryIdentity>=25);
  }finally{j.close();rmSync(dir,{recursive:true,force:true});}
 });
+
+test('backward, invalid or expired clock cannot persist a deferral or reach inventory',async()=>{
+ for(const finished of [599999,-1,NaN,630000]){
+  const dir=mkdtempSync(join(tmpdir(),'factory-clock-')),path=join(dir,'state.db');let j=openEventJournal(path),reads=0,deferrals=0;
+  try{
+   j.enqueue({repositoryId:repo.id,deliveryId:'invalid-clock',kind:'pull',subject:1,head});
+   const wrapper={claim:j.claim,complete:j.complete,defer(...args){deferrals++;return j.defer(...args);}};
+   const samples=[600000,finished];
+   const result=await localReconcileTick({journal:wrapper,owner:'worker',clock:()=>samples.shift(),request:async()=>{reads++;return json({});}});
+   assert.equal(result.reason,'LEASE_OR_CLOCK_UNKNOWN');assert.equal(reads,1);assert.equal(deferrals,0);
+   j.close();j=openEventJournal(path);
+   assert.equal(j.claim(repo.id,'other',630000,30000).deliveryId,'invalid-clock');
+  }finally{j.close();rmSync(dir,{recursive:true,force:true});}
+ }
+});

@@ -1,10 +1,11 @@
 import {pathToFileURL} from 'node:url';
 import {smoke,readInventory} from './shadow-runtime.mjs';
 import {reconcilePullTrigger} from './event-envelope.mjs';
+import {reconcileIssueTrigger} from './issue-event.mjs';
 
 // The injected I/O and inventory functions permit deterministic offline CLI tests.
 export async function run(args,{write=console.log,fail=console.error,inventory=readInventory,replay=smoke,
-  reconcile=reconcilePullTrigger,env=process.env}={}) {
+  reconcile=reconcilePullTrigger,reconcileIssue=reconcileIssueTrigger,env=process.env}={}) {
   try {
     if(args.length===0 || (args.length===1 && args[0]==='--smoke')) {
       const result=replay();
@@ -19,7 +20,11 @@ export async function run(args,{write=console.log,fail=console.error,inventory=r
       write(JSON.stringify(await reconcile(env)));
       return 0;
     }
-    fail('Usage: node tools/engineering-factory/run.mjs [--smoke|--inventory|--reconcile-pull]');
+    if(args.length===1 && args[0]==='--reconcile-issue') {
+      write(JSON.stringify(await reconcileIssue(env)));
+      return 0;
+    }
+    fail('Usage: node tools/engineering-factory/run.mjs [--smoke|--inventory|--reconcile-pull|--reconcile-issue]');
     return 2;
   } catch {
     fail('FACTORY_RUN_FAILED');

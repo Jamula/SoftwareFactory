@@ -222,3 +222,13 @@ test('durable retry deferral keeps lease fencing and pending evidence',()=>{
   assert.equal(j.claim(1,'other',59999,1000),null);assert.equal(j.claim(1,'other',60000,1000).deliveryId,original.deliveryId);
  }finally{j.close();rmSync(dir,{recursive:true,force:true});}
 });
+
+test('defer callback receives only the validated clock sample and never acknowledges evidence',async()=>{
+ const j=openEventJournal(':memory:');try{
+  j.enqueue(original);let now=600000,calls=0;const opts={journal:j,repositoryId:1,owner:'worker-a',leaseMs:1000,clock:()=>now,stop:false,read:async()=>{now=600001;return null;}};
+  assert.equal((await reconcileJournalOnce({...opts,deferUnknown:'bad'})).reason,'RUNTIME_UNKNOWN');
+  const result=await reconcileJournalOnce({...opts,deferUnknown(ticket,finished){calls++;assert.equal(finished,600001);assert.equal(ticket.leaseUntil,601000);return j.defer(ticket,finished,60000);}});
+  assert.equal(result.reason,'EVIDENCE_UNKNOWN');assert.equal(calls,1);assert.equal(j.claim(1,'other',601000,1000),null);
+  assert.equal(j.claim(1,'other',660001,1000).deliveryId,original.deliveryId);
+ }finally{j.close();}
+});
