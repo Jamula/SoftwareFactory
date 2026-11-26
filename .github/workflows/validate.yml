@@ -78,6 +78,8 @@ jobs:
           test "$(node --version)" = v26.13.1
           test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
           echo "Candidate $EXPECTED_HEAD"
+      - name: Test dashboard verifier fail-closed behavior
+        run: python tests/engineering-factory/test-dashboard-api.py
       - name: Install locked dependencies for runtime
         run: npm ci --ignore-scripts
       - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
