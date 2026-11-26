@@ -65,8 +65,11 @@ jobs:
             echo '::error::Copilot pilot failed (authentication, policy, model, quota, CLI compatibility, or timeout); inspect provider settings before a new run.'
             exit 1
           fi
-          grep -qx 'FACTORY_COPILOT_PILOT_5' "$root/result"
-          test "$(wc -l < "$root/result")" -le 1
+          # Exact bytes only: one optional LF, no prefix, suffix, NUL or extra line.
+          if ! cmp -s "$root/result" <(printf '%s' 'FACTORY_COPILOT_PILOT_5') && ! cmp -s "$root/result" <(printf '%s\n' 'FACTORY_COPILOT_PILOT_5'); then
+            echo '::error::Unexpected synthetic response'
+            exit 1
+          fi
           printf '%s\n' 'COPILOT_HOSTED_SYNTHETIC_RESPONSE_VERIFIED' >> "$GITHUB_STEP_SUMMARY"
           printf '%s\n' 'One CLI invocation completed. Personal billing attribution, actual credits consumed and paid-usage enforcement require separate billing evidence.' >> "$GITHUB_STEP_SUMMARY"
       - name: Delete private pilot files
