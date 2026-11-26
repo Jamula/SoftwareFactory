@@ -12,7 +12,7 @@
 | [Policy guide](POLICY.md) | Security reviewer | Evidence, risk, ownership and fail-closed decisions |
 | [Operations](OPERATIONS.md) | Operator | Troubleshooting, stop, rollback and metrics |
 | [Threat model](THREAT-MODEL.md) | Security reviewer | Trust boundaries and tests |
-| [Roadmap](ROADMAP.md) | Project owner | Milestones and remaining work |
+| [Roadmap](ROADMAP.md) | Project owner | Roadmap v2 M01–M05, GitHub-hosted orchestration, entry/exit gates and historical mapping |
 
 [Repository README](../README.md) · [Contributing](../CONTRIBUTING.md) · [Security policy](../SECURITY.md)
 

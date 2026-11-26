@@ -4,7 +4,7 @@
 
 SoftwareFactory is an Apache-2.0, policy-driven foundation for an event-driven autonomous software delivery system. The goal is to reduce idle time between approved issues, implementation, validation, review and integration without weakening project-specific security, quality or release gates.
 
-> **Current maturity: read-only synthetic shadow evaluator (0.1.0 development).** The current code does not dispatch agents, approve PRs, merge changes, read live repository metadata or deploy products. An eligible shadow result is not authorization. The 25× program (including its intermediate 10× target) is a hypothesis, not a benchmark result.
+> **Current maturity: 0.1.0 development, shadow orchestration and read-only adapters.** GitHub is the required orchestrator; supported hosted execution and durable cross-run state must work with the owner's laptop offline. Actual autonomous dispatch, protected unattended integration and accepted throughput still require M01 evidence. An eligible shadow result is not authorization. The 25× program is a stretch hypothesis, not a benchmark result.
 
 ![Target architecture: one shared versioned core with independently pinned consumer adapters, project policy and CI](docs/images/architecture.svg)
 
@@ -30,13 +30,17 @@ SoftwareFactory is an Apache-2.0, policy-driven foundation for an event-driven a
 | --- | --- |
 | Source line / branch coverage | >=98% / >=95% for SoftwareFactory per component and overall; consumer-specific gates remain independent |
 | Eligible work dispatch / merge | p95 <=2 minutes each |
-| Standard fast CI | p50 <=90 seconds |
-| Small PR turnaround | p50 <=30 minutes |
+| Full required automated CI | p50 <75 seconds from candidate event to last required check |
+| Small PR turnaround | p50 <=10 minutes from creation to merge; verified main separately |
 | Security bypass / duplicate dispatch / unapproved spending | Zero |
 
 These are documented standards and targets, not verified automation capabilities. See [Engineering standards](docs/ENGINEERING-STANDARDS.md) for precise measurement and mandatory gates.
 
-## Local development
+## Delivery milestones
+
+M01 autonomous SoftwareFactory; M02 fast SoftwareFactory; M03 FamilyTree; M04 Spellbook; M05 FamilyHub. See [roadmap v2](docs/ROADMAP.md) for entry/exit criteria and historical mapping. Speed is not an autonomy prerequisite, and Rust is an optional benchmark, not a rewrite mandate.
+
+## Optional local development
 
 Use Node.js 26.13.1, the pinned development and CI LTS baseline. No npm dependencies are required by the current evaluator.
 
@@ -60,4 +64,4 @@ Apache License 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE). The initial eva
 
 ## Platform standards
 
-Aspire AppHost is the required local orchestration standard; OpenTelemetry/OTLP is the required observability standard. Current shadow replay remains independently runnable; the Aspire and telemetry implementation is tracked in [#17](https://github.com/Jamula/SoftwareFactory/issues/17) and [#9](https://github.com/Jamula/SoftwareFactory/issues/9), not yet available. See [local development](docs/LOCAL-DEVELOPMENT.md).
+Aspire AppHost is the local development and hosted synthetic runtime standard; OpenTelemetry/OTLP is the observability standard. GitHub-hosted Linux and Windows runtime evidence exists for earlier revisions; final acceptance remains tracked in [#17](https://github.com/Jamula/SoftwareFactory/issues/17) and [#9](https://github.com/Jamula/SoftwareFactory/issues/9). No laptop or always-on local host is required. See [local development](docs/LOCAL-DEVELOPMENT.md).

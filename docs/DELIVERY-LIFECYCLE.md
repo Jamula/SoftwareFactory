@@ -2,7 +2,7 @@
 
 ![Target issue-to-merge lifecycle](images/lifecycle.svg)
 
-The target control loop is event-driven and dependency-aware. Current implementation is limited to evaluating supplied snapshots; event ingestion, persistent state, scheduling and mutations are not implemented.
+The target control loop is event-driven and dependency-aware, with GitHub as orchestrator. Merged shadow components are tracked in [roadmap v2](ROADMAP.md); actual GitHub-hosted unattended dispatch/integration and durable cross-run state require M01 acceptance. No laptop or open chat dependency.
 
 | Stage | Input and decision | Exit evidence |
 | --- | --- | --- |

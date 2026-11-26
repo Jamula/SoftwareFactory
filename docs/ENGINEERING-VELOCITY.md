@@ -1,6 +1,6 @@
 # Engineering velocity improvement program
 
-Owner direction (2026-11-25 PT): remove bottlenecks and increase accepted engineering throughput, preserving all safety, quality, review, spending and release restrictions. M02 remains the critical path; use spare verified capacity for independent M03 slices. This is an experiment plan, not a claim that live parallel agents or event dispatch are operational.
+Owner direction (2026-11-25 PT): remove bottlenecks and increase accepted engineering throughput, preserving all safety, quality, review, spending and release restrictions. Roadmap v2: M01 autonomy remains the critical path; M02 speed experiments may use independent verified capacity. GitHub-hosted orchestration and benchmark execution are required; the owner's laptop is optional. This is an experiment plan, not a claim that live parallel agents or event dispatch are operational.
 
 ## Observed baseline and limitations
 
@@ -38,3 +38,7 @@ Source: GitHub PR timestamps, review histories and hosted job logs. These are in
 ## Measurement and staged experiments
 
 Use existing #9 measurement contract and reporting cadence. Compare at least five comparable accepted units per cohort as an initial exploratory minimum; disclose sample size, window, open/censored work and uncertainty. Aim for one to two validation rounds and the owner-directed 10-minute creation-to-merge objective (3 minutes draft-to-publish, 7 minutes publish-to-merge) plus 2 minutes merge-to-verified-main; target 2x then 5x accepted throughput after measured baseline, retaining 10x/25x stretch. No guaranteed speed multiplier. Stop any experiment that introduces missed findings, coverage regression, failed main, duplicate work, unauthorized mutations or unknown/increased cost. Later milestone features remain dependency-gated; no live provider dispatch, production deployment, credential changes, new paid services or review/protection relaxation.
+
+## Language and hosting experiment boundary
+
+Profile current Node execution before any rewrite. Optional #16 M02.04 Rust execution-engine prototype compares matched hosted workloads at 12/50/100 simulated workers, including CPU, memory, cancellation, contention, CI overhead and end-to-end accepted throughput. Keep existing contracts and review/coverage/security gates; migrate only after material measured improvement and reviewed rollback. A language change is not an M01 gate. Full CI p50 <75 s is candidate event to last required check; also record first-job-start latency, queue and p95. Do not infer whole-pipeline speed from one job.
