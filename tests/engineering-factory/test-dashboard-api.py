@@ -149,6 +149,15 @@ class DashboardVerifierTests(unittest.TestCase):
                 API.verify()
         self.assertTrue(connection.closed)
 
+    def test_authenticated_unexpected_status_fails_closed_and_closes_connection(self):
+        connection = FakeConnection([FakeResponse(401), FakeResponse(401), FakeResponse(500)])
+        with patch.dict(os.environ, ENV, clear=False), \
+             patch.object(API.ssl, "create_default_context", return_value=object()), \
+             patch.object(API.http.client, "HTTPSConnection", return_value=connection):
+            with self.assertRaisesRegex(ValueError, "unexpected API authentication or response"):
+                API.verify()
+        self.assertTrue(connection.closed)
+
     def test_oversized_authenticated_body_fails_closed_and_closes_connection(self):
         connection = FakeConnection([
             FakeResponse(401), FakeResponse(401), FakeResponse(200, b"x" * 4_000_001),
