@@ -88,3 +88,25 @@ test('map and diff validation reject inputs outside the bounded metadata schema'
  }
 });
 
+test('rejects array prototypes and all extra own keys before invoking array behavior', () => {
+ const throwingIterator = [...core.tests];
+ Object.defineProperty(throwingIterator, Symbol.iterator, {get() {throw Error('must not run');}});
+ const hiddenMethod = [...core.tests];
+ Object.defineProperty(hiddenMethod, 'map', {value() {throw Error('must not run');}});
+ const customPrototype = Object.setPrototypeOf([...core.tests], {});
+ for (const tests of [throwingIterator, hiddenMethod, customPrototype]) {
+  assert.equal(plan({...catalog, components: [{...core, tests}]}, expected, change).reason, 'MAP_INVALID');
+ }
+ const decoratedComponents = [core];
+ Object.defineProperty(decoratedComponents, 'map', {value() {throw Error('must not run');}});
+ assert.equal(plan({...catalog, components: decoratedComponents}, expected, change).reason, 'MAP_INVALID');
+ const symbolPath = [change[0]];
+ Object.defineProperty(symbolPath, Symbol('extra'), {value: true});
+ assert.equal(plan(catalog, expected, symbolPath).reason, 'CHANGES_UNKNOWN');
+ const hiddenPath = [change[0]];
+ Object.defineProperty(hiddenPath, 'extra', {value: true});
+ assert.equal(plan(catalog, expected, hiddenPath).reason, 'CHANGES_UNKNOWN');
+ const customPaths = Object.setPrototypeOf([change[0]], {});
+ assert.equal(plan(catalog, expected, customPaths).reason, 'CHANGES_UNKNOWN');
+});
+
