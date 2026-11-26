@@ -21,7 +21,7 @@ export function verifyDashboardMetrics(documents){
         for(const metric of scope.metrics??[]){
           if(metric.name==='factory.stage.count'&&metric.sum?.isMonotonic===true){
             for(const p of metric.sum.dataPoints??[]){
-              if(!hasAttributes(p.attributes,expectedLabels))continue;
+              if((p.flags&1)!==0||!hasAttributes(p.attributes,expectedLabels))continue;
               const value=p.asInt??p.asDouble;
               if(!positiveInteger(value)||Number(value)!==1)throw Error('DASHBOARD_METRICS_MISSING');
               counter=true;
@@ -29,7 +29,7 @@ export function verifyDashboardMetrics(documents){
           }
           if(metric.name==='factory.stage.duration'&&metric.unit==='ms'){
             for(const p of metric.histogram?.dataPoints??[]){
-              if(!hasAttributes(p.attributes,expectedLabels))continue;
+              if((p.flags&1)!==0||!hasAttributes(p.attributes,expectedLabels))continue;
               if(!positiveInteger(p.count)||Number(p.count)!==1||!nonnegativeNumber(p.sum))throw Error('DASHBOARD_METRICS_MISSING');
               histogram=true;
             }
