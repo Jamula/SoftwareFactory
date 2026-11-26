@@ -88,9 +88,10 @@ export function evaluate(policy, s) {
   const acceptableReview = r => r.state === 'APPROVED' ||
     (identity(policy.repository) === 'jamula/softwarefactory' && r.state === 'COMMENTED' &&
       ['copilot-pull-request-reviewer','copilot-pull-request-reviewer[bot]'].includes(identity(r.reviewer)) &&
-      policy.reviewers.map(identity).includes(identity(r.reviewer)) && r.head === s.head);
+      policy.reviewers.map(identity).includes(identity(r.reviewer)) && r.head === s.head &&
+      r.summaryDisposition === 'clear');
   // A later comment or dismissal does not establish that an earlier request was cleared.
-  if (s.reviews.some(r => !exact(r, ['reviewer', 'head', 'state']) || !text(r.reviewer) ||
+  if (s.reviews.some(r => !exact(r, r?.state === 'COMMENTED' && Object.hasOwn(r, 'summaryDisposition') ? ['reviewer', 'head', 'state', 'summaryDisposition'] : ['reviewer', 'head', 'state']) || !text(r.reviewer) ||
         !sha(r.head) || !['APPROVED', 'CHANGES_REQUESTED', 'COMMENTED', 'DISMISSED'].includes(r.state)) ||
       !unique(s.reviews.map(r => identity(r.reviewer))) ||
       s.reviews.some(r => !acceptableReview(r)) ||

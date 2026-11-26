@@ -18,3 +18,5 @@ the same database. Do not run from consumer PRs or privileged workflows.
 Use Aspire for the eventual managed host and verify actual host availability,
 storage ownership, stop/restart, cost and recovery before declaring #5/#6
 accepted. This PR does not provision or start a host.
+
+Unsupported event kinds remain unacknowledged for their own consumers. The pull-only claim filter retains repository-wide exclusivity. Rejected PR identities advance the cursor without enqueueing. Pre-aborted hosts do not open storage.

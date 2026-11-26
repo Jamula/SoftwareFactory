@@ -34,7 +34,7 @@ export async function localReconcileTick({journal,owner,clock=Date.now,request=f
   return request(url,{...options,signal:AbortSignal.any([options.signal,signal])});
  };
  const guarded={
-  claim(...args){signal.throwIfAborted();return journal.claim(...args);},
+  claim(...args){signal.throwIfAborted();return journal.claim(...args,'pull');},
   complete(...args){signal.throwIfAborted();return journal.complete(...args);}
  };
  const read=async ticket=>{
@@ -58,10 +58,10 @@ export async function localReconcileTick({journal,owner,clock=Date.now,request=f
   const number=rows[0].number;
   const p=await readPullIdentity(number,budgeted);
   signal.throwIfAborted();
+  cursor.page++;
   if(!isIdentity(p,number))return receipt('IDENTITY_UNKNOWN');
   const deliveryId=createHash('sha256').update(JSON.stringify([repositoryId,number,p.head,p.base,p.state,p.draft])).digest('hex');
   const queued=journal.enqueue({repositoryId,deliveryId,kind:'pull',subject:number,head:p.head});
-  cursor.page++;
   if(!queued.queued)return receipt(queued.reason);
   const reconciled=await reconcileJournalOnce({journal:guarded,repositoryId,owner,leaseMs:30000,clock,read,stop:false});
   signal.throwIfAborted();
@@ -73,7 +73,7 @@ export async function localReconcileTick({journal,owner,clock=Date.now,request=f
 // database path. The loop does not launch workers, set repository variables,
 // authorize writes, install a service, or provision resources.
 export async function runLocalShadowHost({enabled,path,owner,signal,clock=Date.now,request=fetch,write=console.log,wait=sleep,open=openEventJournal}){
- if(enabled!==true)return receipt('STOPPED');
+ if(enabled!==true||signal.aborted)return receipt('STOPPED');
  let journal;
  try{
   journal=open(path);

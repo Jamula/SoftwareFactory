@@ -44,7 +44,8 @@ test('recover a durable pending pull claim before polling more work',async()=>{
   journal.enqueue({repositoryId:repo.id,deliveryId:'prior',kind:'pull',subject:1,head});
   assert.equal((await localReconcileTick({journal,owner:'local-owner',clock:()=>600000,request})).reason,'SHADOW_RECONCILED');
   journal.enqueue({repositoryId:repo.id,deliveryId:'wrong-kind',kind:'manual',subject:0,head});
-  assert.equal((await localReconcileTick({journal,owner:'local-owner',clock:()=>600000,request})).reason,'EVIDENCE_UNKNOWN');
+  assert.equal((await localReconcileTick({journal,owner:'local-owner',clock:()=>600000,request})).reason,'SHADOW_RECONCILED');
+  assert.equal(journal.claim(repo.id,'other',600000,30000).kind,'manual');
  }finally{journal.close();}
 });
 test('host is default-off; opt-in runs serialized ticks with ten-minute delay and stops',async()=>{
@@ -80,4 +81,25 @@ test('abort during inventory or identity prevents subsequent GETs and journal wr
   }finally{journal.close();}
  }
  const ctl=new AbortController();ctl.abort();assert.equal((await localReconcileTick({journal:{},owner:'local-owner',signal:ctl.signal,request:()=>{throw Error('unexpected');}})).reason,'STOPPED');
+});
+
+test('unsupported pending events remain unacknowledged without blocking supported recovery',async()=>{
+ const j=openEventJournal(':memory:');try{
+  j.enqueue({repositoryId:repo.id,deliveryId:'unsupported',kind:'review',subject:1,head});
+  j.enqueue({repositoryId:repo.id,deliveryId:'valid',kind:'pull',subject:1,head});
+  const opts={journal:j,owner:'worker',clock:()=>600000,request};
+  assert.equal((await localReconcileTick(opts)).reason,'SHADOW_RECONCILED');
+  assert.equal((await localReconcileTick(opts)).reason,'SHADOW_RECONCILED');
+  assert.equal(j.claim(repo.id,'other',600000,30000).deliveryId,'unsupported');
+ }finally{j.close();}
+});
+test('rejected identity advances cursor; pre-aborted host never opens storage',async()=>{
+ const j=openEventJournal(':memory:'),cursor={page:1};try{
+  const req=async(url)=>{const u=new URL(url);if(u.searchParams.has('page'))return json([{number:Number(u.searchParams.get('page'))}]);return json(u.pathname.endsWith('/1')?{}:pull(2));};
+  const opts={journal:j,owner:'worker',clock:()=>600000,request:req,cursor};
+  assert.equal((await localReconcileTick(opts)).reason,'IDENTITY_UNKNOWN');assert.equal(cursor.page,2);
+  assert.equal((await localReconcileTick(opts)).reason,'SHADOW_RECONCILED');
+ }finally{j.close();}
+ const ctl=new AbortController();ctl.abort();let opened=0;
+ assert.equal((await runLocalShadowHost({enabled:true,signal:ctl.signal,open:()=>{opened++;throw Error('unexpected');}})).reason,'STOPPED');assert.equal(opened,0);
 });
