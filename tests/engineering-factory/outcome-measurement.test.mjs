@@ -16,7 +16,7 @@ test('unknown or contradictory issue evidence is never converted to zero duratio
     [{...issue(),state:'open'},'ACCEPTANCE_UNVERIFIED'],[{...issue(),acceptanceVerified:false},'ACCEPTANCE_UNVERIFIED'],
     [{...issue(),readyAt:null},'TIMESTAMPS_UNKNOWN'],[{...issue(),acceptedAt:null},'TIMESTAMPS_UNKNOWN'],[{...issue(),acceptedAt:99},'TIMESTAMPS_UNKNOWN'],
     [{...issue(),lastReopenedAt:undefined},'REOPENED_OR_UNKNOWN'],[{...issue(),lastReopenedAt:500},'REOPENED_OR_UNKNOWN'],
-    ...[null,[],[0],[81,81]].map(requiredPullNumbers=>[{...issue(),requiredPullNumbers},'LINKS_UNKNOWN'])
+    ...[null,[],[0],[81,81],Array(1),[81,,82],Array(251).fill(81)].map(requiredPullNumbers=>[{...issue(),requiredPullNumbers},'LINKS_UNKNOWN'])
   ])assert.deepEqual(measureIssueOutcome(value,pulls()),{known:false,reason});
   assert.equal(measureIssueOutcome(issue(),null).reason,'INVALID_INPUT');
 });

@@ -14,7 +14,7 @@ export function measureIssueOutcome(issue,pulls){
   if(issue.lastReopenedAt!==null&&(!time(issue.lastReopenedAt)||issue.lastReopenedAt>=issue.acceptedAt))
     return unknown('REOPENED_OR_UNKNOWN');
   const required=issue.requiredPullNumbers;
-  if(!Array.isArray(required)||required.length===0||required.some(n=>!id(n))||new Set(required).size!==required.length)
+  if(!Array.isArray(required)||required.length===0||required.length>250||Array.from({length:required.length},(_,i)=>Object.hasOwn(required,i)).some(x=>!x)||required.some(n=>!id(n))||new Set(required).size!==required.length)
     return unknown('LINKS_UNKNOWN');
   let latestMain=0;
   for(const number of required){
