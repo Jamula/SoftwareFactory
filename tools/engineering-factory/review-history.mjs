@@ -23,7 +23,8 @@ export function normalizeReviewHistory(head, history, repository) {
     if (entry.state === 'COMMENTED') {
       if (!factory || !copilot(reviewer)) continue;
       const previous = byReviewer.get(reviewer);
-      if (previous && previous.state !== 'COMMENTED') continue;
+      if (previous && ['CHANGES_REQUESTED','DISMISSED'].includes(previous.state)) continue;
+      if (previous?.state === 'APPROVED' && (entry.head !== head || entry.summaryDisposition === 'clear')) continue;
       if (entry.head !== head) {
         byReviewer.delete(reviewer);
         continue;
