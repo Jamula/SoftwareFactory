@@ -157,7 +157,9 @@ for (const mode of ['reject', 'unanswered']) {
  test('real local exporters tolerate '+mode+' responses without changing work', {timeout:15000}, async()=>{
   const seen=new Set();
   const server=createServer(async(req,res)=>{
-   for await (const chunk of req) { /* drain synthetic protobuf */ }
+   let bytes=0;
+   for await (const chunk of req) bytes+=chunk.length;
+   assert.ok(bytes>0,'export request must contain protobuf');
    if(req.headers['x-otlp-api-key']==='synthetic')seen.add(req.url);
    if(mode==='reject'){res.writeHead(400);res.end();}
   });
