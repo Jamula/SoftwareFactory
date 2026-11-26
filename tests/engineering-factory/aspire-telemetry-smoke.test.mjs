@@ -31,3 +31,12 @@ test('direct entrypoint refuses missing OTLP configuration',()=>{
  const child=spawnSync(process.execPath,['tools/engineering-factory/aspire-telemetry-smoke.mjs'],{env:clean,encoding:'utf8',timeout:5000});
  assert.equal(child.status,1);assert.match(child.stderr,/LOCAL_OTLP_CONFIGURATION_REQUIRED/);
 });
+
+test('preserves original workload failure even when shutdown fails; reports cleanup failure after successful work',async()=>{
+ const workError=Error('original work error'),shutdownError=Error('cleanup failure');
+ let cleanups=0;
+ const start=async()=>({observe:async(stage,fn)=>fn(),shutdown:async()=>{cleanups++;throw shutdownError;}});
+ await assert.rejects(()=>runAspireTelemetry(env,start,async()=>{throw workError;}),error=>error===workError);
+ await assert.rejects(()=>runAspireTelemetry(env,start,async()=>{}),error=>error===shutdownError);
+ assert.equal(cleanups,2);
+});

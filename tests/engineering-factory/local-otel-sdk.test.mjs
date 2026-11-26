@@ -123,7 +123,7 @@ test('partial provider startup failure attempts all acquired cleanup and preserv
    SimpleSpanProcessor:Dummy,SimpleLogRecordProcessor:Dummy,PeriodicExportingMetricReader:Dummy,
    OTLPTraceExporter:Dummy,OTLPMetricExporter:Dummy,OTLPLogExporter:Dummy};
   await assert.rejects(()=>startLocalSdk(configuration,async()=>api),e=>e===original);
-  assert.equal(cleaned,phase==='construct'?1:3);
+  assert.equal(cleaned, phase === 'construct' ? 1 : 3);
  }
 });
 test('disabled SDK and inherited unrelated headers never construct exporters',async()=>{
@@ -148,7 +148,40 @@ test('shutdown bounds a hung observation, closes providers and does not rerun ac
  const gate=new Promise(resolve=>{release=resolve;});
  const work=sdk.observe('evaluate',async()=>{called++;await gate;return {outcome:'blocked',reason:'POLICY'};});
  try{
-  await assert.rejects(sdk.shutdown(),error=>error instanceof AggregateError&&error.errors.some(e=>e.message==='LOCAL_SDK_DRAIN_TIMEOUT'));
+  await assert.rejects(sdk.shutdown(),error => (error instanceof AggregateError) && error.errors.some(e => e.message === 'LOCAL_SDK_DRAIN_TIMEOUT'));
   assert.equal(closed,3);assert.equal(called,1);
  } finally {release();await work;}
 });
+
+for (const mode of ['reject', 'unanswered']) {
+ test('real local exporters tolerate '+mode+' responses without changing work', {timeout:15000}, async()=>{
+  const seen=new Set();
+  const server=createServer(async(req,res)=>{
+   for await (const chunk of req) { /* drain synthetic protobuf */ }
+   if(req.headers['x-otlp-api-key']==='synthetic')seen.add(req.url);
+   if(mode==='reject'){res.writeHead(400);res.end();}
+  });
+  server.listen(0,'127.0.0.1');await once(server,'listening');
+  let sdk;
+  try{
+   sdk=await startLocalSdk({...configuration,endpoint:'http://127.0.0.1:'+server.address().port});
+   assert.ok(sdk);
+   const expected={outcome:'blocked',reason:'POLICY'};
+   let calls=0;
+   assert.deepEqual(await sdk.observe('evaluate',async()=>{calls++;return expected;}),expected);
+   assert.equal(calls,1);
+   const start=performance.now();
+   // Pinned exporters may report failed exports through diagnostics or
+   // reject provider shutdown. Either way cleanup must settle, not hang.
+   const result=await sdk.shutdown().then(()=>null,error=>error);
+   assert.ok(performance.now()-start<10000,'shutdown exceeded 10s test bound');
+   if(result!==null)assert.ok(result instanceof AggregateError && result.message==='LOCAL_SDK_SHUTDOWN_FAILED');
+   assert.deepEqual([...seen].sort(),['/v1/logs','/v1/metrics','/v1/traces']);
+   sdk=null;
+  }finally{
+   server.closeAllConnections();
+   await new Promise(resolve=>server.close(resolve));
+   if(sdk)await sdk.shutdown().catch(()=>{});
+  }
+ });
+}
