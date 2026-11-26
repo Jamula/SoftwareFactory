@@ -19,8 +19,26 @@ function recorded(point){
   if(!Number.isInteger(flags)||flags<0||flags>0xffffffff)throw Error('DASHBOARD_METRICS_MISSING');
   return (flags&1)===0; // DATA_POINT_FLAGS_NO_RECORDED_VALUE_MASK
 }
+const timestamp=value=>{
+  if(typeof value==='number'&&Number.isSafeInteger(value)&&value>0)return BigInt(value);
+  if(typeof value==='string'&&/^[0-9]{1,20}$/.test(value)){
+    const n=BigInt(value);
+    if(n>0n&&n<=18446744073709551615n)return n;
+  }
+  throw Error('DASHBOARD_METRICS_MISSING');
+};
+function period(point,prior){
+  const start=timestamp(point.startTimeUnixNano);
+  const end=timestamp(point.timeUnixNano);
+  if(end<start||(prior!==undefined&&prior!==start))throw Error('DASHBOARD_METRICS_MISSING');
+  return start;
+}
+function exactLabels(point){
+  if(!hasAttributes(point.attributes,expectedLabels)||point.attributes.length!==Object.keys(expectedLabels).length)
+    throw Error('DASHBOARD_METRICS_MISSING');
+}
 export function verifyDashboardMetrics(documents){
-  let counter=false,histogram=false;
+  let counter,histogram;
   for(const document of documents){
     for(const resource of document?.resourceMetrics??[]){
       if(!hasAttributes(resource.resource?.attributes,{'service.name':service}))continue;
@@ -30,18 +48,21 @@ export function verifyDashboardMetrics(documents){
           if(metric.name==='factory.stage.count'){
             if(metric.sum?.isMonotonic!==true||!cumulative(metric.sum.aggregationTemporality))throw Error('DASHBOARD_METRICS_MISSING');
             for(const p of metric.sum.dataPoints??[]){
-              if(!hasAttributes(p.attributes,expectedLabels)||!recorded(p))continue;
-              const value=p.asInt??p.asDouble;
-              if(!positiveInteger(value)||Number(value)!==1)throw Error('DASHBOARD_METRICS_MISSING');
-              counter=true;
+              if(!recorded(p))continue;
+              exactLabels(p);
+              const int=Object.hasOwn(p,'asInt'),double=Object.hasOwn(p,'asDouble');
+              if(int===double||(int?(!positiveInteger(p.asInt)||Number(p.asInt)!==1):p.asDouble!==1))
+                throw Error('DASHBOARD_METRICS_MISSING');
+              counter=period(p,counter);
             }
           }
           if(metric.name==='factory.stage.duration'){
             if(metric.unit!=='ms'||!cumulative(metric.histogram?.aggregationTemporality))throw Error('DASHBOARD_METRICS_MISSING');
             for(const p of metric.histogram.dataPoints??[]){
-              if(!hasAttributes(p.attributes,expectedLabels)||!recorded(p))continue;
+              if(!recorded(p))continue;
+              exactLabels(p);
               if(!positiveInteger(p.count)||Number(p.count)!==1||!nonnegativeNumber(p.sum))throw Error('DASHBOARD_METRICS_MISSING');
-              histogram=true;
+              histogram=period(p,histogram);
             }
           }
         }
