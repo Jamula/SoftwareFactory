@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {pathToFileURL} from 'node:url';
 import {run,runCliIfDirect} from '../../tools/engineering-factory/run.mjs';
 import {createSignals} from '../../tools/engineering-factory/telemetry.mjs';
+import {plan} from '../../tools/engineering-factory/shadow-runtime.mjs';
 
 test('runner exposes sanitized optional telemetry for available command stages',async()=>{
  const measurements=[],spans=[];
@@ -115,4 +116,25 @@ test('standalone synthetic smoke remains runnable without telemetry configuratio
  let calls=0;
  assert.equal(await runCliIfDirect(script,pathToFileURL('C:/other/run.mjs').href,['--smoke'],()=>{calls++;}),false);
  assert.equal(calls,0);
+});
+
+test('native planner capacity denials report blocked quota without changing CLI results',async()=>{
+ const measured=[],output=[];
+ const observe=createSignals({
+  meter:{createCounter:()=>({add:(_value,attrs)=>measured.push(attrs)}),
+   createHistogram:()=>({record(){}})},
+  tracer:{startSpan:()=>({setAttributes(){},end(){}})}
+ });
+ const base={enabled:true,stop:false,capacity:2,quotaVerified:true,
+  tasks:[{id:1,priority:0,state:'approved',dependencies:[],paths:['src/api']}]};
+ for(const overrides of [{quotaVerified:false},{quotaVerified:undefined},{capacity:0},{capacity:51},{capacity:undefined}]){
+  const actual=plan({...base,...overrides});
+  assert.equal(actual.reason,'CAPACITY_UNKNOWN');
+  assert.equal(await run(['--smoke'],{replay:()=>plan({...base,...overrides}),observe,
+   write:value=>output.push(JSON.parse(value)),fail:assert.fail}),1);
+  assert.deepEqual(output.at(-1),{mode:'synthetic',...actual,liveDispatch:false,liveMerge:false});
+  assert.deepEqual(measured.at(-1),{stage:'evaluate',outcome:'blocked',reason:'QUOTA'});
+ }
+ assert.equal(measured.length,5);
+ assert.equal(JSON.stringify(measured).includes('CAPACITY_UNKNOWN'),false);
 });
