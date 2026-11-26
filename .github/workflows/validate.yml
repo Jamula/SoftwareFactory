@@ -69,7 +69,15 @@ jobs:
       - name: Install locked coverage reporter
         run: npm ci --ignore-scripts
       - name: Overall source coverage and Cobertura report
-        run: npm run test:coverage
+        env:
+          FACTORY_EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          rm -f coverage-evidence.json cobertura-coverage.xml
+          npm run test:coverage
+          test -s coverage-evidence.json
+          test -s cobertura-coverage.xml
+          cat coverage-evidence.json
       - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
           dotnet-version: '10.0.404'
@@ -158,6 +166,7 @@ jobs:
         with:
           name: coverage-report-javascript
           path: cobertura-coverage.xml
+          if-no-files-found: error
 
   upload-coverage-javascript:
     needs: build-test
