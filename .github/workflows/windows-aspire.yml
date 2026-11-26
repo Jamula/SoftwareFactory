@@ -73,6 +73,8 @@ jobs:
           $out = Join-Path $tmp 'out.txt'
           $err = Join-Path $tmp 'err.txt'
           $cert = Join-Path $tmp 'dev.pem'
+          $der = Join-Path $tmp 'dev.cer'
+          $addedTrust = $null
           $archive = Join-Path $tmp 'dashboard.zip'
           function Invoke-Aspire([string[]]$arguments, [int]$seconds) {
             $p = Start-Process -FilePath (Get-Command aspire -ErrorAction Stop).Source -ArgumentList $arguments -RedirectStandardOutput $out -RedirectStandardError $err -NoNewWindow -PassThru
@@ -95,6 +97,19 @@ jobs:
           try {
             $null = & dotnet dev-certs https --export-path $cert --format PEM 2>&1
             if ($LASTEXITCODE -ne 0) { throw 'Certificate export failed' }
+            # The noninteractive CLI does not trust development certificates on
+            # Windows. Trust only this runner-generated public certificate, in
+            # CurrentUser (never LocalMachine), and remove only our addition.
+            if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted') { throw 'Expected disposable hosted runner' }
+            $null = & certutil.exe -f -decode $cert $der 2>&1
+            if ($LASTEXITCODE -ne 0) { throw 'Certificate conversion failed' }
+            $publicCert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($der)
+            $trustPath = 'Cert:\CurrentUser\Root\' + $publicCert.Thumbprint
+            if (-not (Test-Path -LiteralPath $trustPath)) {
+              $addedTrust = $trustPath
+              $null = Import-Certificate -FilePath $der -CertStoreLocation 'Cert:\CurrentUser\Root' -ErrorAction Stop
+            }
+            if (-not (Test-Path -LiteralPath $trustPath)) { throw 'Local certificate trust missing' }
             $env:NODE_EXTRA_CA_CERTS = $cert
             $env:ASPIRE_DASHBOARD_OTLP_HTTP_ENDPOINT_URL = 'https://127.0.0.1:18890'
             $startup = Invoke-Aspire @('start','--apphost','apphost.cs','--isolated','--non-interactive','--nologo') 120
@@ -117,5 +132,11 @@ jobs:
             Write-Host 'Isolated Windows AppHost stopped'
           } finally {
             try { $null = Invoke-Aspire @('stop','--apphost','apphost.cs','--non-interactive') 30 } catch { }
-            Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
+            try {
+              if ($addedTrust -and (Test-Path -LiteralPath $addedTrust)) {
+                Remove-Item -LiteralPath $addedTrust -Force -ErrorAction Stop
+              }
+            } finally {
+              Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
+            }
           }
