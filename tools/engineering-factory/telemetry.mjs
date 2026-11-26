@@ -32,7 +32,7 @@ export function createSignals({tracer,meter,logger,clock=()=>performance.now()})
     if(!stages.has(stage)) throw new Error('UNKNOWN_STAGE');
     const start=now();
     let pending;
-    const execute=async span=>{
+    const execute=async (span,active)=>{
       let outcome='failed',reason='OTHER';
       try {
         const result=await work();
@@ -48,16 +48,16 @@ export function createSignals({tracer,meter,logger,clock=()=>performance.now()})
         try {if(outcome==='failed') span?.setStatus({code:2});} catch {}
         // Emit while the active SDK span is still in context; the SDK log
         // processor supplies trace/span correlation. Never emit work payloads.
-        try {logger?.emit({body:'factory.stage.completed',attributes});} catch {}
+        try {if(active) logger?.emit({body:'factory.stage.completed',attributes});} catch {}
         try {span?.end();} catch {}
       }
     };
     // The SDK invokes its callback synchronously in the active context.
     // Retain the original work promise even if the provider throws afterwards.
-    const once=span=>pending??=execute(span);
+    const once=(span,active=false)=>pending??=execute(span,active);
     try {
       if(typeof tracer.startActiveSpan==='function') {
-        await tracer.startActiveSpan('factory.'+stage,once);
+        await tracer.startActiveSpan('factory.'+stage,span=>once(span,true));
       } else {
         once(tracer.startSpan('factory.'+stage));
       }

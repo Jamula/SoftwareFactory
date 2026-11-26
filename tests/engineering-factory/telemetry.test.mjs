@@ -104,3 +104,15 @@ test('structured diagnostic log is emitted within active span without private da
  const original=Error('private work failure');
  await assert.rejects(()=>broken('queue',async()=>{throw original;}),e=>e===original);
 });
+
+
+test('unactivated or unavailable stage spans never emit falsely correlated logs',async()=>{
+ const records=[];let ended=0;
+ const meter={createCounter:()=>({add(){}}),createHistogram:()=>({record(){}})};
+ const logger={emit(entry){records.push(entry);}};
+ const fallback=createSignals({meter,logger,tracer:{startSpan(){return {end(){ended++;}};}}});
+ assert.equal(await fallback('queue',async()=>42),42);assert.equal(ended,1);
+ const unavailable=createSignals({meter,logger,tracer:{startActiveSpan(){throw Error('unavailable');}}});
+ assert.equal(await unavailable('review',async()=>7),7);
+ assert.deepEqual(records,[]);
+});
