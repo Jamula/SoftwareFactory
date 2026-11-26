@@ -1,15 +1,16 @@
 // Explicit, local-only SDK bootstrap; keep the evaluator and normal headless
 // test runner independent of optional telemetry dependencies.
+import {AsyncLocalStorage} from 'node:async_hooks';
 import {localOtlpConfiguration,createSignals} from './telemetry.mjs';
 
 // Only reached after explicit endpoint/protocol/header validation.
 async function loadPinnedSdk() {
-  const [api,node,trace,metrics,logs,resources,traceExporter,metricExporter,logExporter]=await Promise.all([
-    import('@opentelemetry/api'),import('@opentelemetry/sdk-node'),import('@opentelemetry/sdk-trace'),
+  const [api,trace,metrics,logs,resources,traceExporter,metricExporter,logExporter]=await Promise.all([
+    import('@opentelemetry/api'),import('@opentelemetry/sdk-trace'),
     import('@opentelemetry/sdk-metrics'),import('@opentelemetry/sdk-logs'),import('@opentelemetry/resources'),
     import('@opentelemetry/exporter-trace-otlp-proto'),import('@opentelemetry/exporter-metrics-otlp-proto'),import('@opentelemetry/exporter-logs-otlp-proto')
   ]);
-  return {...api,...node,...trace,...metrics,...logs,...resources,...traceExporter,...metricExporter,...logExporter};
+  return {...api,...trace,...metrics,...logs,...resources,...traceExporter,...metricExporter,...logExporter};
 }
 export async function startLocalSdk(config,load=loadPinnedSdk) {
   if(process.env.OTEL_SDK_DISABLED?.toLowerCase()==='true') return null;
@@ -25,24 +26,36 @@ export async function startLocalSdk(config,load=loadPinnedSdk) {
   }
   const api=await load();
   const options=signal=>({url:local.endpoint+'/v1/'+signal,headers:local.headers,timeoutMillis:3000});
-  // No automatic instrumentation, environment resource detector, or external
-  // default exporter. A single explicitly constructed local exporter per signal.
-  const sdk=new api.NodeSDK({
-    autoDetectResources:false,
-    resource:api.resourceFromAttributes({'service.name':'softwarefactory-shadow'}),
-    instrumentations:[],
-    spanProcessors:[new api.SimpleSpanProcessor({exporter:new api.OTLPTraceExporter(options('traces'))})],
-    metricReaders:[new api.PeriodicExportingMetricReader({exporter:new api.OTLPMetricExporter(options('metrics')),exportIntervalMillis:3000,exportTimeoutMillis:3000})],
-    logRecordProcessors:[new api.SimpleLogRecordProcessor({exporter:new api.OTLPLogExporter(options('logs'))})]
-  });
+  // Own the providers and their lifetime; never register or look up a global
+  // provider or context manager. Existing process instrumentation is untouched.
+  const resource=api.resourceFromAttributes({'service.name':'softwarefactory-shadow'});
+  const providers=[];
+  const storage=new AsyncLocalStorage();
+  let stopped;
+  const shutdown=()=>stopped??=Promise.allSettled(providers.map(p=>Promise.resolve().then(()=>p.shutdown())))
+    .then(results=>{storage.disable();const failures=results.filter(r=>r.status==='rejected');if(failures.length)throw new AggregateError(failures.map(r=>r.reason),'LOCAL_SDK_SHUTDOWN_FAILED');});
   try {
-    sdk.start();
-    return {
-      observe:createSignals({tracer:api.trace.getTracer('softwarefactory'),meter:api.metrics.getMeter('softwarefactory'),logger:api.logs.getLogger('softwarefactory')}),
-      shutdown:()=>sdk.shutdown()
-    };
+    const tracerProvider=new api.BasicTracerProvider({resource,spanProcessors:[new api.SimpleSpanProcessor({exporter:new api.OTLPTraceExporter(options('traces'))})]});
+    providers.push(tracerProvider);
+    const meterProvider=new api.MeterProvider({resource,readers:[new api.PeriodicExportingMetricReader({exporter:new api.OTLPMetricExporter(options('metrics')),exportIntervalMillis:3000,exportTimeoutMillis:3000})]});
+    providers.push(meterProvider);
+    const loggerProvider=new api.LoggerProvider({resource,processors:[new api.SimpleLogRecordProcessor({exporter:new api.OTLPLogExporter(options('logs'))})]});
+    providers.push(loggerProvider);
+    const tracer=tracerProvider.getTracer('softwarefactory');
+    const meter=meterProvider.getMeter('softwarefactory');
+    const logger=loggerProvider.getLogger('softwarefactory');
+    const observe=createSignals({
+      tracer:{startActiveSpan(name,fn){
+        const parent=storage.getStore()??api.ROOT_CONTEXT;
+        const span=tracer.startSpan(name,{},parent);
+        return storage.run(api.trace.setSpan(parent,span),()=>fn(span));
+      }},
+      meter,
+      logger:{emit(record){logger.emit({...record,context:storage.getStore()??api.ROOT_CONTEXT});}}
+    });
+    return {observe(stage,work){if(stopped)throw Error('LOCAL_SDK_STOPPED');return observe(stage,work);},shutdown};
   } catch(error) {
-    try {await sdk.shutdown();} catch {}
+    try {await shutdown();} catch {}
     throw error;
   }
 }
