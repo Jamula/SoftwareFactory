@@ -97,6 +97,10 @@ test('rejects array prototypes and all extra own keys before invoking array beha
  for (const tests of [throwingIterator, hiddenMethod, customPrototype]) {
   assert.equal(plan({...catalog, components: [{...core, tests}]}, expected, change).reason, 'MAP_INVALID');
  }
+ const hiddenDependencyMethod = [...ui.dependsOn];
+ Object.defineProperty(hiddenDependencyMethod, 'every', {value() {throw Error('must not run');}});
+ assert.equal(plan({...catalog, components: [core, {...ui, dependsOn: hiddenDependencyMethod}]}, expected, change).reason,
+  'MAP_INVALID');
  const decoratedComponents = [core];
  Object.defineProperty(decoratedComponents, 'map', {value() {throw Error('must not run');}});
  assert.equal(plan({...catalog, components: decoratedComponents}, expected, change).reason, 'MAP_INVALID');
