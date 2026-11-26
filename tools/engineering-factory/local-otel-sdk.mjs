@@ -12,10 +12,12 @@ async function loadPinnedSdk() {
   return {...api,...node,...trace,...metrics,...logs,...resources,...traceExporter,...metricExporter,...logExporter};
 }
 export async function startLocalSdk(config,load=loadPinnedSdk) {
+  if(process.env.OTEL_SDK_DISABLED?.toLowerCase()==='true') return null;
   const local=localOtlpConfiguration(config.endpoint,config.protocol,config.headers);
   if(!local||local.protocol!=='http/protobuf') return null;
   // Reject alternate exporter endpoints, credentials, proxies or untrusted
   // instrumentation overrides rather than let SDK environment defaults leak.
+  if(process.env.OTEL_EXPORTER_OTLP_HEADERS!==undefined&&process.env.OTEL_EXPORTER_OTLP_HEADERS!==config.headers) return null;
   for(const [key,value] of Object.entries(process.env)) {
     if(value&&(/^(?:OTEL_EXPORTER_OTLP_.+|OTEL_(?:TRACES|METRICS|LOGS)_EXPORTER|HTTP_PROXY|HTTPS_PROXY|ALL_PROXY|NODE_USE_ENV_PROXY)$/i.test(key))&&
       !['OTEL_EXPORTER_OTLP_ENDPOINT','OTEL_EXPORTER_OTLP_PROTOCOL','OTEL_EXPORTER_OTLP_HEADERS'].includes(key))
@@ -29,9 +31,9 @@ export async function startLocalSdk(config,load=loadPinnedSdk) {
     autoDetectResources:false,
     resource:api.resourceFromAttributes({'service.name':'softwarefactory-shadow'}),
     instrumentations:[],
-    spanProcessors:[new api.SimpleSpanProcessor(new api.OTLPTraceExporter(options('traces')))],
+    spanProcessors:[new api.SimpleSpanProcessor({exporter:new api.OTLPTraceExporter(options('traces'))})],
     metricReaders:[new api.PeriodicExportingMetricReader({exporter:new api.OTLPMetricExporter(options('metrics')),exportIntervalMillis:3000,exportTimeoutMillis:3000})],
-    logRecordProcessors:[new api.SimpleLogRecordProcessor(new api.OTLPLogExporter(options('logs')))]
+    logRecordProcessors:[new api.SimpleLogRecordProcessor({exporter:new api.OTLPLogExporter(options('logs'))})]
   });
   try {
     sdk.start();
