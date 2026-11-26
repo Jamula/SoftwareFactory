@@ -59,6 +59,7 @@ jobs:
           node --test --experimental-test-coverage --test-coverage-include='tools/engineering-coordinator/provider-adapters.mjs' --test-coverage-lines=98 --test-coverage-branches=95 tests/engineering-coordinator/provider-adapters.test.mjs
           node --test --experimental-test-coverage --test-coverage-include='tools/engineering-coordinator/sqlite-state-store.mjs' --test-coverage-lines=98 --test-coverage-branches=95 tests/engineering-coordinator/sqlite-state-store.test.mjs
           node --test --experimental-test-coverage --test-coverage-include='tools/engineering-coordinator/coordinator.mjs' --test-coverage-lines=98 --test-coverage-branches=95 tests/engineering-coordinator/coordinator.test.mjs
+          node --test --experimental-test-coverage --test-coverage-include='tools/engineering-coordinator/event-journal.mjs' --test-coverage-lines=98 --test-coverage-branches=95 tests/engineering-coordinator/event-journal.test.mjs
       - name: Aspire headless synthetic runner
         run: node --test --experimental-test-coverage --test-coverage-include='tools/engineering-factory/aspire-smoke.mjs' --test-coverage-lines=98 --test-coverage-branches=95 tools/engineering-factory/aspire-smoke.mjs
       - name: Runnable synthetic factory
