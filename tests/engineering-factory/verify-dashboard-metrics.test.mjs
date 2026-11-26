@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {verifyDashboardMetrics} from './verify-dashboard-metrics.mjs';
+import {verifyDashboardMetrics,readMetricDocument} from './verify-dashboard-metrics.mjs';
+import {mkdtempSync,writeFileSync,rmSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
 const attributes=values=>Object.entries(values).map(([key,stringValue])=>({key,value:{stringValue}}));
 function fixture(){
   const labels=attributes({stage:'evaluate',outcome:'blocked',reason:'POLICY'});
@@ -35,4 +38,18 @@ test('fails closed for missing signal, wrong service, scope, labels or invalid v
   ];
   for(const mutate of mutations){const doc=fixture();mutate(doc);assert.throws(()=>verifyDashboardMetrics([doc]),/DASHBOARD_METRICS_MISSING/);}
   assert.throws(()=>verifyDashboardMetrics([]),/DASHBOARD_METRICS_MISSING/);
+});
+
+test('reads a bounded regular file through one open handle; rejects invalid and oversized input',()=>{
+  const dir=mkdtempSync(join(tmpdir(),'factory-metrics-'));
+  try{
+    const path=join(dir,'metrics.json');
+    writeFileSync(path,JSON.stringify(fixture()));
+    assert.equal(verifyDashboardMetrics([readMetricDocument(path)]),true);
+    writeFileSync(path,'{');
+    assert.throws(()=>readMetricDocument(path),SyntaxError);
+    writeFileSync(path,Buffer.alloc(4_000_001));
+    assert.throws(()=>readMetricDocument(path),/INVALID_INPUT/);
+    assert.throws(()=>readMetricDocument(dir));
+  }finally{rmSync(dir,{recursive:true,force:true});}
 });
