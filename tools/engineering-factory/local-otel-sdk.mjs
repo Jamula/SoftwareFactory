@@ -26,7 +26,20 @@ export async function startLocalSdk(config,load=loadPinnedSdk) {
       return null;
   }
   const api=await load();
-  const options=signal=>({url:local.endpoint+'/v1/'+signal,headers:local.headers,timeoutMillis:3000});
+  // The pinned exporter's request timeout measures inactivity, not elapsed
+  // time. Its supported custom-agent factory lets us enforce an absolute
+  // deadline even for a collector that continuously streams a response.
+  const deadlineAgent=async protocol=>{
+    const {Agent}=protocol==='http:'?await import('node:http'):await import('node:https');
+    return new class extends Agent {
+      addRequest(request,options){
+        const timer=setTimeout(()=>request.destroy(Error('LOCAL_OTLP_REQUEST_DEADLINE')),3000);
+        request.once('close',()=>clearTimeout(timer));
+        super.addRequest(request,options);
+      }
+    }({keepAlive:false,rejectUnauthorized:true});
+  };
+  const options=signal=>({url:local.endpoint+'/v1/'+signal,headers:local.headers,timeoutMillis:3000,httpAgentOptions:deadlineAgent});
   // Own the providers and their lifetime; never register or look up a global
   // provider or context manager. Existing process instrumentation is untouched.
   const resource=api.resourceFromAttributes({'service.name':'softwarefactory-shadow'});
