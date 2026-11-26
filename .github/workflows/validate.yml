@@ -87,6 +87,9 @@ jobs:
             rm -f -- "$output" "$certificate"
           }
           trap cleanup EXIT
+          dotnet dev-certs https --export-path "$certificate" --format PEM >"$output" 2>&1
+          export NODE_EXTRA_CA_CERTS="$certificate"
+          export ASPIRE_DASHBOARD_OTLP_HTTP_ENDPOINT_URL="https://127.0.0.1:18890"
           if ! timeout 120s aspire start --apphost apphost.cs --isolated --non-interactive --nologo >"$output" 2>&1; then
             echo "::error::Isolated Aspire startup failed"
             exit 1
@@ -98,8 +101,7 @@ jobs:
           echo "Aspire reported a loopback HTTPS dashboard login"
           dashboard="$(grep -Eom1 'https://(localhost|127\.0\.0\.1|\[::1\]):[0-9]+/login\?t=' "$output")"
           origin="$(printf '%s\n' "$dashboard" | cut -d/ -f1-3)"
-          if ! dotnet dev-certs https --export-path "$certificate" --format PEM >"$output" 2>&1 ||
-             ! challenge="$(curl --silent --show-error --noproxy '*' --max-time 10 --cacert "$certificate" \
+          if ! challenge="$(curl --silent --show-error --noproxy '*' --max-time 10 --cacert "$certificate" \
                   --output /dev/null --write-out '%{http_code} %{redirect_url}' "$origin/resources" 2>"$output")"; then
             echo "::error::Could not verify the dashboard over trusted loopback TLS"
             exit 1
@@ -121,7 +123,11 @@ jobs:
             echo "::error::Expected synthetic STOPPED result was not observed"
             exit 1
           fi
-          echo "Synthetic resource emitted STOPPED and exited"
+          if ! grep -Eq '(^|[[:space:]])LOCAL_SDK_SHUTDOWN_COMPLETE[[:space:]]*$' "$output"; then
+            echo "::error::SDK shutdown completion was not observed"
+            exit 1
+          fi
+          echo "Synthetic resource emitted STOPPED, completed SDK shutdown and exited"
           if ! timeout 30s aspire stop --apphost apphost.cs --non-interactive >"$output" 2>&1; then
             echo "::error::Aspire shutdown failed"
             exit 1
