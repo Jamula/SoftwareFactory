@@ -164,3 +164,36 @@ test('backward, invalid or expired clock cannot persist a deferral or reach inve
   }finally{j.close();rmSync(dir,{recursive:true,force:true});}
  }
 });
+
+test('inventory failures preserve recovery receipts while cancellation remains STOPPED',async()=>{
+ for(const scenario of ['reconciled','superseded','unknown']){
+  for(const failure of ['http','throw','clock','abort']){
+   const j=openEventJournal(':memory:');const ctl=new AbortController();let reads=0,clocks=0;
+   try{
+    j.enqueue({repositoryId:repo.id,deliveryId:'prior',kind:'pull',subject:1,head});
+    const req=async url=>{
+     reads++;
+     if(!url.includes('/pulls?')){
+      if(scenario==='unknown')return json({});
+      const value=pull(1);
+      if(scenario==='superseded')value.head.sha=base;
+      return json(value);
+     }
+     if(failure==='abort'){ctl.abort();return json([]);}
+     if(failure==='throw')throw Error('offline');
+     return new Response(null,{status:503});
+    };
+    const result=await localReconcileTick({journal:j,owner:'worker',signal:ctl.signal,
+     clock:()=>++clocks===3&&failure==='clock'?-1:600000,request:req});
+    const reason={reconciled:'SHADOW_RECONCILED',superseded:'SHADOW_HEAD_SUPERSEDED',unknown:'EVIDENCE_UNKNOWN'}[scenario];
+    assert.deepEqual(result,failure==='abort'
+     ?{shadow:true,liveDispatch:false,liveMerge:false,reason:'STOPPED'}
+     :{shadow:true,liveDispatch:false,liveMerge:false,reason,inventoryReason:failure==='clock'?'CLOCK_UNKNOWN':'LOCAL_POLL_UNAVAILABLE'});
+    assert.equal(reads,failure==='clock'?1:2);
+    assert.equal(j.claim(repo.id,'other',630000,30000),null);
+    const retry=j.claim(repo.id,'other',4200000,30000);
+    assert.equal(retry?.deliveryId,scenario==='unknown'?'prior':undefined);
+   }finally{j.close();}
+  }
+ }
+});

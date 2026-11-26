@@ -34,6 +34,8 @@ async function readPage(request,page){
 export async function localReconcileTick({journal,owner,clock=Date.now,request=fetch,signal=new AbortController().signal,cursor={page:1}}){
  if(!validOwner(owner))return receipt('INVALID_OWNER');
  const stopped=()=>signal.aborted;
+ // Preserve a completed recovery receipt even if the independent inventory pass fails.
+ let finish=receipt;
  const budgeted=(url,options)=>{
   signal.throwIfAborted();
   return request(url,{...options,signal:AbortSignal.any([options.signal,signal])});
@@ -58,9 +60,9 @@ export async function localReconcileTick({journal,owner,clock=Date.now,request=f
   const recovery=await reconcileJournalOnce({journal:guarded,repositoryId,owner,leaseMs:30000,clock,read,stop:false,deferUnknown});
   signal.throwIfAborted();
   if(!['NO_CLAIM','SHADOW_RECONCILED','SHADOW_HEAD_SUPERSEDED','EVIDENCE_UNKNOWN'].includes(recovery.reason))return receipt(recovery.reason);
-  const finish=reason=>recovery.reason==='NO_CLAIM'?receipt(reason):receipt(recovery.reason,{inventoryReason:reason});
+  finish=reason=>recovery.reason==='NO_CLAIM'?receipt(reason):receipt(recovery.reason,{inventoryReason:reason});
   const now=clock();
-  if(!Number.isSafeInteger(now)||now<0)return receipt('CLOCK_UNKNOWN');
+  if(!Number.isSafeInteger(now)||now<0)return finish('CLOCK_UNKNOWN');
   const rows=await readPage(budgeted,cursor.page);
   signal.throwIfAborted();
   if(!rows.length){
@@ -81,7 +83,7 @@ export async function localReconcileTick({journal,owner,clock=Date.now,request=f
   const reconciled=await reconcileJournalOnce({journal:guarded,repositoryId,owner,leaseMs:30000,clock,read,stop:false,deferUnknown});
   signal.throwIfAborted();
   return receipt(reconciled.reason);
- }catch{return receipt(stopped()?'STOPPED':'LOCAL_POLL_UNAVAILABLE');}
+ }catch{return stopped()?receipt('STOPPED'):finish('LOCAL_POLL_UNAVAILABLE');}
 }
 
 // Explicit opt-in on an owner-managed host, with an owner-controlled durable
