@@ -2,6 +2,6 @@
 #:package Aspire.Hosting.JavaScript@17.0.0
 
 var builder = DistributedApplication.CreateBuilder(args);
-builder.AddNodeApp("synthetic-shadow", "./tools/engineering-factory", "aspire-smoke.mjs")
+builder.AddNodeApp("synthetic-shadow", "./tools/engineering-factory", "aspire-telemetry-smoke.mjs")
     .WithExplicitStart();
 builder.Build().Run();
