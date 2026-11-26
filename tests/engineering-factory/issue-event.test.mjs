@@ -1,5 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {readFileSync,mkdtempSync,rmSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {execFileSync} from 'node:child_process';
 import {readIssueIdentity, reconcileIssueTrigger} from '../../tools/engineering-factory/issue-event.mjs';
 
 const workflowSha = 'a'.repeat(40);
@@ -111,4 +115,21 @@ test('supports a protected-main manual reconcile with an explicit issue number',
  assert.equal(result.reconciled,true);
  assert.equal(result.reason,'ISSUE_IDENTITY_MATCHED');
  assert.equal(result.number,42);
+});
+
+test('Linux workflow Bash guard rejects case variants and unprotected refs before checkout', {skip:process.platform==='win32'},()=>{
+ const workflow=readFileSync(new URL('../../.github/workflows/shadow-reconcile.yml',import.meta.url),'utf8');
+ const start=workflow.indexOf('        run: |',workflow.indexOf('id: optin'));
+ const end=workflow.indexOf('      # Never check out',start);
+ assert.ok(start>=0&&end>start);
+ const guard=workflow.slice(start,end).split('\n').slice(1).map(line=>line.replace(/^          /,'')).join('\n');
+ const dir=mkdtempSync(join(tmpdir(),'issue-optin-'));const output=join(dir,'outputs');
+ try{
+  const env={...process.env,GITHUB_REPOSITORY:'Jamula/SoftwareFactory',GITHUB_REF:'refs/heads/main',GITHUB_REF_PROTECTED:'true',GITHUB_EVENT_NAME:'workflow_dispatch',FACTORY_SHADOW_ENABLED:'true',FACTORY_ISSUE_EVENT_SHADOW_ENABLED:'true',FACTORY_PULL_EVENT_SHADOW_ENABLED:'true',FACTORY_ISSUE_NUMBER:'42',GITHUB_OUTPUT:output};
+  for(const overrides of [{GITHUB_REF:'refs/heads/Main'},{GITHUB_REF:'refs/heads/other'},{GITHUB_REF_PROTECTED:'false'},{GITHUB_REF_PROTECTED:''},{GITHUB_REPOSITORY:'jamula/SoftwareFactory'},{FACTORY_SHADOW_ENABLED:'TRUE'},{}]){
+   rmSync(output,{force:true});execFileSync('bash',['--noprofile','--norc','-c',guard],{env:{...env,...overrides}});
+   const result=readFileSync(output,'utf8');
+   if(Object.keys(overrides).length){assert.equal(result,'enabled=false\n');}else{assert.equal(result,'enabled=true\nissue_enabled=true\n');}
+  }
+ }finally{rmSync(dir,{recursive:true,force:true});}
 });

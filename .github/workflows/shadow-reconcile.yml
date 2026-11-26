@@ -40,7 +40,9 @@ jobs:
           FACTORY_ISSUE_EVENT_SHADOW_ENABLED: ${{ vars.FACTORY_ISSUE_EVENT_SHADOW_ENABLED }}
           FACTORY_ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue_number || '' }}
         run: |
-          if [[ "$FACTORY_SHADOW_ENABLED" == true ]]; then
+          # GitHub expression comparisons are case-insensitive. Verify the actual
+          # protected ref before enabling any checkout or execution.
+          if [[ "$FACTORY_SHADOW_ENABLED" == true && "$GITHUB_REPOSITORY" == Jamula/SoftwareFactory && "$GITHUB_REF" == refs/heads/main && "$GITHUB_REF_PROTECTED" == true ]]; then
             echo "enabled=true" >> "$GITHUB_OUTPUT"
             if [[ "$GITHUB_EVENT_NAME" == pull_request_target && "$FACTORY_PULL_EVENT_SHADOW_ENABLED" == true ]]; then
               echo "pull_enabled=true" >> "$GITHUB_OUTPUT"
