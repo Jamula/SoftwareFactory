@@ -11,7 +11,7 @@ concurrency:
   group: factory-validate-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
-  build-test:
+  test-coverage:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -47,6 +47,39 @@ jobs:
           test -s coverage-evidence.json
           test -s cobertura-coverage.xml
           cat coverage-evidence.json
+      - name: Upload coverage artifact
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage-report-javascript
+          path: cobertura-coverage.xml
+          if-no-files-found: error
+
+  linux-aspire-runtime:
+    # Fork PRs cannot satisfy the full trusted platform gate; protected merge
+    # groups and main MUST execute runtime validation, not merely build it.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '26.13.1'
+          package-manager-cache: false
+      - name: Verify pinned candidate before testing
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(node --version)" = v26.13.1
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          echo "Candidate $EXPECTED_HEAD"
+      - name: Install locked dependencies for runtime
+        run: npm ci --ignore-scripts
       - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
           dotnet-version: '10.0.404'
@@ -67,7 +100,6 @@ jobs:
           dotnet restore apphost.cs --source https://api.nuget.org/v3/index.json
           dotnet build apphost.cs --configuration Release --no-restore
       - name: Exercise the isolated Aspire AppHost
-        if: github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
         env:
           DOTNET_CLI_TELEMETRY_OPTOUT: '1'
           ASPIRE_CLI_TELEMETRY_OPTOUT: 'true'
@@ -149,17 +181,27 @@ jobs:
           rm -f -- "$output" "$certificate" "$archive"
           rm -rf -- "$data_root"
           echo "Isolated AppHost stopped"
-      - name: Upload coverage artifact
-        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: coverage-report-javascript
-          path: cobertura-coverage.xml
-          if-no-files-found: error
+
+  # Preserve the existing required check context. Neither a failed nor skipped
+  # dependency may be reported as successful aggregate validation.
+  build-test:
+    needs: [test-coverage, linux-aspire-runtime]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Require both independent validation jobs
+        env:
+          TEST_RESULT: ${{ needs.test-coverage.result }}
+          RUNTIME_RESULT: ${{ needs.linux-aspire-runtime.result }}
+        run: |
+          set -euo pipefail
+          test "$TEST_RESULT" = success
+          test "$RUNTIME_RESULT" = success
 
   upload-coverage-javascript:
-    needs: build-test
-    if: ${{ !cancelled() && needs.build-test.result == 'success' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    needs: test-coverage
+    if: ${{ !cancelled() && needs.test-coverage.result == 'success' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
