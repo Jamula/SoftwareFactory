@@ -25,9 +25,14 @@ export async function runTick({config, tasks, active = [], store, tracker, agent
     } catch { return failed('ACTIVE_RESERVATIONS_UNAVAILABLE'); }
   }
   const outcomes = await Promise.allSettled(plan.scheduled.map(async item => {
+    const workKey = `${config.project.repository.toLowerCase()}#${item.id}`;
     const claim = store.claim(item.lane, workerId, now, config.limits.leaseMs,
-      config.limits.maxConcurrentLanes);
+      config.limits.maxConcurrentLanes, workKey);
     if (!claim) return {lane: item.lane, state: 'blocked', reason: 'LEASE_HELD'};
+    if (claim.laneId !== item.lane || claim.owner !== workerId ||
+        !Number.isSafeInteger(claim.generation) || claim.generation < 1 || claim.workKey !== workKey ||
+        !Number.isSafeInteger(claim.workGeneration) || claim.workGeneration < 1)
+      return {lane: item.lane, taskId: item.id, state: 'blocked', reason: 'WORK_RESERVATION_UNKNOWN'};
     let lastObservedTime = now;
     const renewLease = () => {
       let currentTime;
@@ -35,7 +40,8 @@ export async function runTick({config, tasks, active = [], store, tracker, agent
       if (!Number.isSafeInteger(currentTime) || currentTime < lastObservedTime) return {reason: 'CLOCK_UNAVAILABLE'};
       lastObservedTime = currentTime;
       try {
-        const renewed = store.renew(item.lane, claim.generation, workerId, currentTime, config.limits.leaseMs);
+        const renewed = store.renew(item.lane, claim.generation, workerId, currentTime, config.limits.leaseMs,
+          workKey, claim.workGeneration);
         return renewed && Number.isSafeInteger(renewed.leaseUntil) && renewed.leaseUntil > currentTime ?
           {time: currentTime} : {reason: 'LEASE_LOST'};
       } catch { return {reason: 'LEASE_UNAVAILABLE'}; }
@@ -62,13 +68,14 @@ export async function runTick({config, tasks, active = [], store, tracker, agent
         return {lane: item.lane, taskId: item.id, state: 'blocked', reason: beforeCheckpoint.reason};
       const completedAt = beforeCheckpoint.time;
       const checkpointed = store.checkpoint(item.lane, claim.generation, workerId,
-        {taskId: item.id, observedState: finalEvidence.task.state, findings: review.findings ?? [], completedAt}, completedAt);
+        {taskId: item.id, observedState: finalEvidence.task.state, findings: review.findings ?? [], completedAt},
+        completedAt, workKey, claim.workGeneration);
       return checkpointed ? {lane: item.lane, taskId: item.id, state: 'shadow-reviewed'} :
         {lane: item.lane, taskId: item.id, state: 'blocked', reason: 'STALE_CHECKPOINT'};
     } catch {
       return {lane: item.lane, taskId: item.id, state: 'blocked', reason: 'LANE_FAILED'};
     } finally {
-      store.release(item.lane, claim.generation, workerId, lastObservedTime);
+      store.release(item.lane, claim.generation, workerId, lastObservedTime, workKey, claim.workGeneration);
     }
   }));
   const completed = outcomes.map((outcome, index) => outcome.status === 'fulfilled' ? outcome.value :
@@ -76,3 +83,4 @@ export async function runTick({config, tasks, active = [], store, tracker, agent
   return {shadow: true, liveDispatch: false, liveMerge: false, completed,
     reason: completed.length ? 'SHADOW_TICK_COMPLETE' : plan.reason};
 }
+
