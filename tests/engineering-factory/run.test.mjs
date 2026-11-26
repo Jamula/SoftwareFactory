@@ -86,6 +86,9 @@ test('explicit planner denials are blocked while no-ready-work stays unknown',as
  assert.deepEqual(attributes.map(({outcome})=>outcome),[
   'blocked','blocked','blocked','blocked','blocked','blocked','unknown'
  ]);
+ assert.deepEqual(attributes.map(({reason})=>reason),[
+  'POLICY','QUOTA','INVALID_EVIDENCE','DEPENDENCY','DEPENDENCY','POLICY','OTHER'
+ ]);
 });
 
 test('runner rejects unsupported commands without invoking telemetry',async()=>{
