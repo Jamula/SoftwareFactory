@@ -88,6 +88,12 @@ test('CLI injected inventory, smoke and error paths are deterministic',async()=>
  assert.equal(await run(['--smoke'],io),0);
  assert.equal(await run(['--inventory'],{...io,inventory:async()=>({issues:[1],pulls:[],liveDispatch:false,liveMerge:false})}),0);
  assert.deepEqual(JSON.parse(output.at(-1)).issues,[1]);
+ assert.equal(await run(['--reconcile-pull'],{...io,env:{},reconcile:async env => {
+  assert.deepEqual(env,{});
+  return {shadow:true,reconciled:false,reason:'TRUST_UNKNOWN'};
+ }}),0);
+ assert.equal(JSON.parse(output.at(-1)).reason,'TRUST_UNKNOWN');
+ assert.equal(await run(['--reconcile-pull'],{...io,env:{}}),0);
  assert.equal(await run(['--inventory'],{...io,inventory:async()=>{throw Error('offline');}}),1);
  assert.equal(errors.at(-1),'FACTORY_RUN_FAILED');
  assert.equal(await run(['--smoke'],{...io,replay:()=>({reason:'FAILED',ready:[]})}),1);
