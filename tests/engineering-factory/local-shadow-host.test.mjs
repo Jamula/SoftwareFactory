@@ -34,7 +34,7 @@ test('read failures, missing identity, empty inventory and bad clock are not suc
   assert.equal((await run(async(url,opts)=>url.includes('/pulls/')?json({}):request(url,opts))).reason,'IDENTITY_UNKNOWN');
   // First clock read is for recovery; second is for the poll.
   let clocks=0;assert.equal((await run(request,()=>++clocks===1?600000:-1)).reason,'CLOCK_UNKNOWN');
-  const many=async(url)=>json(Array.from({length:100},(_,i)=>({number:(Number(new URL(url).searchParams.get('page'))-1)*100+i+1})));
+  const many=async()=>json([{number:1},{number:2}]);
   assert.equal((await run(many)).reason,'LOCAL_POLL_UNAVAILABLE');
  }finally{journal.close();}
 });
@@ -58,4 +58,26 @@ test('host is default-off; opt-in runs serialized ticks with ten-minute delay an
  assert.equal((await runLocalShadowHost({...options,signal:new AbortController().signal,open:()=>{throw Error('open');}})).reason,'LOCAL_HOST_UNAVAILABLE');
  const ctl3=new AbortController();const j3=openEventJournal(':memory:');
  assert.equal((await runLocalShadowHost({...options,signal:ctl3.signal,open:()=>j3,wait:async()=>{ctl3.abort();throw Error('abort');}})).reason,'STOPPED');
+});
+
+test('PR-only cursor advances across pages and reserves identity requests',async()=>{
+ const journal=openEventJournal(':memory:'),cursor={page:1};let reads=0;
+ const req=async(url)=>{reads++;assert.ok(!url.includes('/issues'));const u=new URL(url);if(u.searchParams.has('page')){assert.equal(u.searchParams.get('per_page'),'1');const n=Number(u.searchParams.get('page'));return json(n<=3?[{number:n}]:[]);}return json(pull(Number(u.pathname.split('/').pop())));};
+ try{
+  for(let i=1;i<=3;i++){reads=0;assert.equal((await localReconcileTick({journal,owner:'local-owner',clock:()=>600000,request:req,cursor})).reason,'SHADOW_RECONCILED');assert.equal(reads,3);assert.equal(cursor.page,i+1);}
+  assert.equal((await localReconcileTick({journal,owner:'local-owner',clock:()=>600000,request:req,cursor})).reason,'SWEEP_COMPLETE');assert.equal(cursor.page,1);
+  for(const payload of [{},[{number:0}],[{number:'1'}]])assert.equal((await localReconcileTick({journal,owner:'local-owner',clock:()=>600000,request:async()=>json(payload)})).reason,'LOCAL_POLL_UNAVAILABLE');
+  for(const response of [new Response(null,{status:503}),new Response(null),new Response(' '.repeat(524289))])assert.equal((await localReconcileTick({journal,owner:'local-owner',clock:()=>600000,request:async()=>response})).reason,'LOCAL_POLL_UNAVAILABLE');
+ }finally{journal.close();}
+});
+test('abort during inventory or identity prevents subsequent GETs and journal writes',async()=>{
+ for(const at of [1,2,3]){
+  const ctl=new AbortController(),journal=openEventJournal(':memory:');let reads=0,writes=0,completes=0;
+  const wrapped={claim:journal.claim,enqueue(e){writes++;return journal.enqueue(e);},complete(...args){completes++;return journal.complete(...args);}};
+  try{
+   const result=await localReconcileTick({journal:wrapped,owner:'local-owner',clock:()=>600000,signal:ctl.signal,request:async(url,opts)=>{reads++;if(reads===at){ctl.abort();assert.equal(opts.signal.aborted,true);}return request(url,opts);}});
+   assert.equal(result.reason,'STOPPED');assert.equal(reads,at);assert.equal(writes,at===3?1:0);assert.equal(completes,0);
+  }finally{journal.close();}
+ }
+ const ctl=new AbortController();ctl.abort();assert.equal((await localReconcileTick({journal:{},owner:'local-owner',signal:ctl.signal,request:()=>{throw Error('unexpected');}})).reason,'STOPPED');
 });
