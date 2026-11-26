@@ -40,6 +40,35 @@ test('rejects invalid numbers and changed heads before reading review/check endp
  assert.equal(calls,1);
 });
 
+test('rejects snapshots when the pull head changes during metadata reads',async()=>{
+ let pullReads=0;
+ const changed={...pull,head:{...pull.head,sha:'c'.repeat(40)}};
+ const mock=async(url,options)=>{
+  if(url.endsWith('/pulls/42'))return response(++pullReads===1?pull:changed);
+  return read(url,options);
+ };
+ assert.equal((await readPullSignals(42,head,mock)).reason,'HEAD_CHANGED');
+ assert.equal(pullReads,2);
+});
+
+test('requires a complete final pull reread and rejects changed pull state',async()=>{
+ const withFinal=final=>{
+  let reads=0;
+  return async(url,options)=>url.endsWith('/pulls/42')?
+   (++reads===1?response(pull):final):read(url,options);
+ };
+ for(const [final,reason] of [
+  [new Response(null,{status:403}),'RATE_OR_PERMISSION_UNKNOWN'],
+  [new Response(null,{status:503}),'READ_FAILED'],
+  [response({}),'PULL_IDENTITY_UNKNOWN']
+ ]) assert.equal((await readPullSignals(42,head,withFinal(final))).reason,reason);
+ for(const changed of [
+  {...pull,base:{...pull.base,sha:'d'.repeat(40)}},
+  {...pull,state:'closed'},
+  {...pull,draft:true}
+ ]) assert.equal((await readPullSignals(42,head,withFinal(response(changed)))).reason,'PULL_STATE_CHANGED');
+});
+
 test('fails closed for read failures, permission limits, oversized and paginated responses',async()=>{
  for(const status of [401,403,429])
   assert.equal((await readPullSignals(42,head,async url=>url.endsWith('/pulls/42')?
@@ -99,11 +128,26 @@ test('accepts complete empty inventories and in-progress metadata with unknown u
  assert.deepEqual(noRecords.reviews,[]);
  assert.deepEqual(noRecords.checks,[]);
  const pendingReview={...review,state:'PENDING',user:{login:'review-bot',id:null}};
+ delete pendingReview.submitted_at;
  const pendingCheck={...check,status:'in_progress',conclusion:null,completed_at:null};
  const pending=await readPullSignals(42,head,async url=>url.endsWith('/pulls/42')?response(pull):
   url.includes('/reviews?')?response([pendingReview]):response({total_count:1,check_runs:[pendingCheck]}));
  assert.equal(pending.reviews[0].reviewerId,null);
+ assert.equal(pending.reviews[0].submittedAt,null);
  assert.equal(pending.checks[0].conclusion,null);
+ for(const status of ['queued','in_progress','waiting','requested','pending']){
+  const checkRow={...check,id:300,status,conclusion:null,completed_at:null};
+  const snapshot=await readPullSignals(42,head,async url=>url.endsWith('/pulls/42')?response(pull):
+   url.includes('/reviews?')?response([]):response({total_count:1,check_runs:[checkRow]}));
+  assert.equal(snapshot.checks[0].status,status);
+ }
+ const omittedFields={...check,id:301,status:'queued'};
+ delete omittedFields.conclusion;
+ delete omittedFields.completed_at;
+ const queued=await readPullSignals(42,head,async url=>url.endsWith('/pulls/42')?response(pull):
+  url.includes('/reviews?')?response([]):response({total_count:1,check_runs:[omittedFields]}));
+ assert.equal(queued.checks[0].conclusion,null);
+ assert.equal(queued.checks[0].completedAt,null);
 });
 
 test('fails closed when the bounded review or check read throws',async()=>{
