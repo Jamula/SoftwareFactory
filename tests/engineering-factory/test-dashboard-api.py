@@ -91,17 +91,22 @@ def valid_responses(log_span=SPAN):
 class DashboardVerifierTests(unittest.TestCase):
     def configured_verify(self, responses):
         connection = FakeConnection(responses)
+        context = API.ssl.SSLContext(API.ssl.PROTOCOL_TLS_CLIENT)
+        context.load_default_certs()
         with patch.dict(os.environ, ENV, clear=False), \
-             patch.object(API.ssl, "create_default_context", return_value=object()), \
+             patch.object(API.ssl, "create_default_context", return_value=context) as create_context, \
              patch.object(API.http.client, "HTTPSConnection", return_value=connection) as create:
             API.verify()
-        return connection, create
+        return connection, create, create_context, context
 
     def test_success_uses_only_loopback_and_closes_connection(self):
-        connection, create = self.configured_verify(valid_responses())
-        create.assert_called_once()
-        self.assertEqual(create.call_args.args, ("127.0.0.1", 18888))
-        self.assertEqual(create.call_args.kwargs["timeout"], 5)
+        connection, create, create_context, context = self.configured_verify(valid_responses())
+        create_context.assert_called_once_with(cafile="synthetic-ca.pem")
+        create.assert_called_once_with(
+            "127.0.0.1", 18888, context=context, timeout=5
+        )
+        self.assertTrue(context.check_hostname)
+        self.assertEqual(context.verify_mode, API.ssl.CERT_REQUIRED)
         self.assertTrue(connection.closed)
         self.assertEqual([path for _, path, _ in connection.requests], [
             "/api/telemetry/spans",
