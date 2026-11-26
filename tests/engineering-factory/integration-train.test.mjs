@@ -17,18 +17,19 @@ test('stop, unhealthy main, active train and malformed candidates',()=>{
 });
 
 import {queueAdapter} from '../../tools/engineering-factory/integration-train.mjs';
-test('protected queue adapter exact-head, no bypass, no merge claim',async()=>{
- const intent=next(s),e={pr:1,id:'PR_demo',repository:'Jamula/SoftwareFactory',head,base:main,branch:'main',queueRequired:true,authority:true,checks:true,review:true,threads:true,security:true,coverage:true,mainHealthy:true,stop:false,queued:false};
- let calls=0;const send=async q=>{calls++;assert.deepEqual(q.variables,{id:e.id,head});assert.match(q.query,/expectedHeadOid: \$head, jump: false/);assert.match(q.query,/enqueuePullRequest/);return {data:{enqueuePullRequest:{mergeQueueEntry:{id:'entry-1'}}}};};
- assert.deepEqual(await queueAdapter(intent,e,send),{shadow:true,liveMerge:false,reason:'QUEUE_RECEIPT_MOCK',queueEntry:'entry-1'});
- for(const x of [null,{...intent,pr:0},{...intent,expectedHead:'bad'},{...intent,expectedBase:'bad'}])assert.equal((await queueAdapter(x,e,send)).reason,'INTENT_UNKNOWN');
- assert.equal((await queueAdapter(intent,null,send)).reason,'EVIDENCE_UNKNOWN');
- for(const patch of [{stop:true},{repository:'other/repo'},{branch:'dev'},{pr:2},{head:main},{base:head}])assert.equal((await queueAdapter(intent,{...e,...patch},send)).reason,'SCOPE_OR_HEAD_CHANGED');
- assert.equal((await queueAdapter(intent,{...e,queued:true},send)).reason,'ALREADY_QUEUED');
- for(const patch of [{queued:null},{queueRequired:false},{authority:false},{checks:false},{review:false},{threads:false},{security:false},{coverage:false},{mainHealthy:false},{id:null},{id:'bad'}])assert.equal((await queueAdapter(intent,{...e,...patch},send)).reason,'GATES_UNKNOWN');
- assert.equal((await queueAdapter(intent,e,null)).reason,'GATES_UNKNOWN');
- assert.equal(calls,1);
- for(const result of [null,{}, {data:{}},{data:{enqueuePullRequest:{}}},{data:{enqueuePullRequest:{mergeQueueEntry:{id:''}}}},{errors:[{}]}])assert.equal((await queueAdapter(intent,e,async()=>result)).reason,'QUEUE_RECEIPT_UNKNOWN');
- assert.equal((await queueAdapter(intent,e,async()=>{throw Error('network');})).reason,'QUEUE_RECEIPT_UNKNOWN');
- let traps=0;const fail=()=>{traps++;throw Error('trap');};assert.equal((await queueAdapter(new Proxy(intent,{get:fail}),e,send)).reason,'INTENT_UNKNOWN');assert.equal((await queueAdapter(intent,[],send)).reason,'EVIDENCE_UNKNOWN');assert.equal(traps,0);
+test('protected queue adapter emits only a mock intent for the exact head; never submits a request',()=>{
+ const intent=next(s),e={pr:1,id:'PR_demo',repository:'Jamula/SoftwareFactory',head,base:main,branch:'main',open:true,draft:false,queueRequired:true,authority:true,checks:true,review:true,threads:true,security:true,coverage:true,mainHealthy:true,stop:false,queued:false};
+ const result=queueAdapter(intent,e);
+ assert.deepEqual(result,{shadow:true,liveMerge:false,reason:'SHADOW_QUEUE_INTENT',request:{
+  query:'mutation Enqueue($id: ID!, $head: GitObjectID!) { enqueuePullRequest(input: {pullRequestId: $id, expectedHeadOid: $head, jump: false}) { mergeQueueEntry { id } } }',
+  variables:{id:e.id,head}
+ }});
+ for(const x of [null,{...intent,pr:0},{...intent,expectedHead:'bad'},{...intent,expectedBase:'bad'}])assert.equal(queueAdapter(x,e).reason,'INTENT_UNKNOWN');
+ assert.equal(queueAdapter(intent,null).reason,'EVIDENCE_UNKNOWN');
+ for(const patch of [{stop:true},{repository:'other/repo'},{branch:'dev'},{pr:2},{head:main},{base:head}])assert.equal(queueAdapter(intent,{...e,...patch}).reason,'SCOPE_OR_HEAD_CHANGED');
+ for(const patch of [{open:false},{draft:true}])assert.equal(queueAdapter(intent,{...e,...patch}).reason,'CANDIDATE_NOT_READY');
+ assert.equal(queueAdapter(intent,{...e,queued:true}).reason,'ALREADY_QUEUED');
+ for(const patch of [{queued:null},{queueRequired:false},{authority:false},{checks:false},{review:false},{threads:false},{security:false},{coverage:false},{mainHealthy:false},{id:null},{id:'bad'}])assert.equal(queueAdapter(intent,{...e,...patch}).reason,'GATES_UNKNOWN');
+ const {open,...missingOpen}=e;
+ assert.equal(queueAdapter(intent,missingOpen).reason,'EVIDENCE_UNKNOWN');
 });
