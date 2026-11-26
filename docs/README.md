@@ -12,8 +12,15 @@
 | [Policy guide](POLICY.md) | Security reviewer | Evidence, risk, ownership and fail-closed decisions |
 | [Operations](OPERATIONS.md) | Operator | Troubleshooting, stop, rollback and metrics |
 | [Threat model](THREAT-MODEL.md) | Security reviewer | Trust boundaries and tests |
-| [Roadmap](ROADMAP.md) | Project owner | Milestones and remaining work |
+| [Roadmap](ROADMAP.md) | Project owner | Roadmap v2 M01–M05, GitHub-hosted orchestration, entry/exit gates and historical mapping |
 
 [Repository README](../README.md) · [Contributing](../CONTRIBUTING.md) · [Security policy](../SECURITY.md)
 
 Diagrams are maintained as static, accessible SVG source under `images/`. They show the **target** design, not current live deployment.
+
+## Roadmap v2 diagrams
+
+- [GitHub-hosted orchestration architecture](images/github-orchestration-v2.svg)
+- [Milestone dependencies](images/milestone-dependencies-v2.svg)
+
+Both diagrams are embedded in the [roadmap](ROADMAP.md).

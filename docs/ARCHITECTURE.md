@@ -55,3 +55,13 @@ existing auto-merge settings, and a shadow result grant no permissions.
 ## Required local runtime design (planned)
 
 Aspire AppHost will orchestrate the synthetic shadow runner and local authenticated dashboard. Instrument runner/adapter boundaries with OpenTelemetry and use local OTLP; keep evaluator pure. No public endpoint, external telemetry or live provider access. See [local development](LOCAL-DEVELOPMENT.md) and issues #17/#9. Existing architecture remains read-only synthetic until verified.
+
+## Roadmap v2 operational target
+
+The original current-boundary inventory above describes the initial evaluator, not a claim that subsequent merged shadow adapters are absent. The [roadmap](ROADMAP.md) and linked issue evidence govern current acceptance. GitHub issue/PR events and GitHub Actions or supported native execution orchestrate work. The durable coordinator state must survive ephemeral runners and enforce atomic cross-run lease/ownership fencing; verify supported storage, quotas and consistency before live activation. No laptop-hosted worker or continuous chat dependency. Aspire remains a local/hosted synthetic diagnostic topology; it is not the production orchestrator. Retain Node control plane; any Rust execution-engine experiment is M02 only and evidence-gated.
+
+### GitHub-hosted execution topology
+
+![GitHub orchestration, durable coordinator state, conditional workers, protected integration and independently authorized repositories](images/github-orchestration-v2.svg)
+
+Actual included capacity and durable cross-run state remain acceptance blockers. The personal laptop is outside the required operational path.

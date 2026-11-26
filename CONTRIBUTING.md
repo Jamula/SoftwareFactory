@@ -4,7 +4,7 @@ Thank you for helping build a reusable, secure engineering factory. Read [AGENTS
 
 ## Workflow
 
-1. Find or propose a GitHub issue with measurable acceptance criteria, dependencies, risk and owned paths. Reuse existing issues; do not create duplicate work.
+1. Find or propose a GitHub issue with explicit entry/exit criteria, dependencies, risk, owned paths, evidence and ETA/confidence; use [roadmap v2](docs/ROADMAP.md) logical M01–M05 IDs. Reuse existing issues; do not create duplicate work.
 2. Work on a topic branch and open a draft PR. Keep changes small and independently reviewable. Avoid concurrent edits to paths owned by other active PRs.
 3. Use synthetic metadata, test fixtures and least privilege. Never copy private consumer data, real credentials, tokens or project-specific product code.
 4. Run the full local replay suite and targeted regression tests. Test both valid behavior and failure paths.
@@ -21,7 +21,7 @@ node --test tests/engineering-factory/*.test.mjs
 
 For an overall Cobertura coverage report, use the CI-pinned Node.js 26.13.1 and run `npm ci --ignore-scripts && npm run test:coverage`. This installs the locked `cobertura` development dependency and writes the gitignored `cobertura-coverage.xml`. Node.js 20 does not support the coverage flags. CI retains the independent per-component gates and runtime smoke tests; the report does not replace them.
 
-Target at least 95% source line and 90% source branch coverage per executable component and overall, with measured, reproducible results. Do not claim that thresholds are enforced until actual CI demonstrates this. No blanket exclusions or synthetic success statuses. New code must fail closed on malformed or absent evidence and remain deterministic where possible.
+Require at least 98% source line and 95% source branch coverage per executable component and overall for SoftwareFactory, with measured, reproducible results. Do not claim that thresholds are enforced until actual CI demonstrates this. No blanket exclusions or synthetic success statuses. New code must fail closed on malformed or absent evidence and remain deterministic where possible.
 
 | Area | Required regression examples |
 | --- | --- |
@@ -44,3 +44,5 @@ Follow the canonical [engineering standards](docs/ENGINEERING-STANDARDS.md) for 
 ## Local runtime standard
 
 Follow [local development and observability](docs/LOCAL-DEVELOPMENT.md): Aspire AppHost and OpenTelemetry/OTLP for runnable components; headless synthetic tests remain mandatory. Do not claim local startup or dashboard evidence until actually verified.
+
+GitHub is the orchestrator. Standard hosted Linux/Windows runners are required; local development is optional and no personal laptop or open chat may be a runtime dependency. Preserve durable cross-run evidence and ownership. M01 autonomy and M02 speed have independent acceptance criteria; no mandatory Rust rewrite.

@@ -17,3 +17,7 @@ Follow [engineering standards](docs/ENGINEERING-STANDARDS.md). Reuse issues and 
 ## Platform standard
 
 Use Aspire AppHost for local orchestration and OpenTelemetry traces, metrics and correlated structured logs via local OTLP. Preserve pure evaluator behavior and headless tests. No real provider calls, private data, external telemetry, secrets or paid hosting. Follow [local development](docs/LOCAL-DEVELOPMENT.md). Prioritize SoftwareFactory with verified available included capacity; do not dispatch when budget is unknown.
+
+## Roadmap v2 and hosting
+
+Follow [roadmap v2](docs/ROADMAP.md): M01 autonomy, M02 speed, M03 FamilyTree, M04 Spellbook, M05 FamilyHub. GitHub is the orchestrator and supported GitHub-hosted execution is required. Do not depend on a personal laptop, open chat, or always-on local process. Prove durable cross-run state and recovery; ephemeral runner storage is not an authoritative lease store. Keep autonomy independent of speed/Rust experiments. Respect all separate live authorization and zero-spend gates.
