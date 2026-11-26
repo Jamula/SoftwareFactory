@@ -49,3 +49,16 @@ test('rejects proxy and accessor-backed evidence without invoking getters',()=>{
   const pl=pulls();pl[0].issueNumbers=new Proxy([9],{});
   assert.equal(measureIssueOutcome(issue(),pl).known,false);
 });
+
+test('rejects custom array methods and iterators without executing evidence',()=>{
+ let reads=0;const poison=()=>{reads++;throw Error('unexpected evidence method');};
+ for(const key of ['some',Symbol.iterator]){
+  const links=[81,82];Object.defineProperty(links,key,{get:poison});
+  assert.equal(measureIssueOutcome({...issue(),requiredPullNumbers:links},pulls()).reason,'LINKS_UNKNOWN');
+ }
+ const ps=pulls();Object.defineProperty(ps,Symbol.iterator,{get:poison});
+ assert.equal(measureIssueOutcome(issue(),ps).reason,'INVALID_INPUT');
+ const ls=pulls();Object.defineProperty(ls[0].issueNumbers,'filter',{get:poison});
+ assert.equal(measureIssueOutcome(issue(),ls).reason,'LINK_UNVERIFIED');
+ assert.equal(reads,0);
+});
