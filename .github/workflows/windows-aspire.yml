@@ -139,7 +139,8 @@ jobs:
             if (-not (Test-Path -LiteralPath $trustPath)) {
               $addedTrust = $trustPath
               Write-Host 'Windows runtime stage: CurrentUser certificate import started'
-              Invoke-BoundedNative 'certutil.exe' @('-user','-addstore','Root',$der) 30 'certificate-import'
+              # Use the documented force option only for the disposable runner's own dev cert.
+              Invoke-BoundedNative 'certutil.exe' @('-f','-user','-addstore','Root',$der) 30 'certificate-import'
             }
             if (-not (Test-Path -LiteralPath $trustPath)) { throw 'Local certificate trust missing' }
             Write-Host 'Windows runtime stage: certificate trust verified'
@@ -174,7 +175,8 @@ jobs:
             }
             try {
               if ($addedTrust -and (Test-Path -LiteralPath $addedTrust)) {
-                Remove-Item -LiteralPath $addedTrust -Force -ErrorAction Stop
+                Invoke-BoundedNative 'certutil.exe' @('-f','-user','-delstore','Root',$publicCert.Thumbprint) 30 'certificate-removal'
+                if (Test-Path -LiteralPath $addedTrust) { throw 'Local certificate trust cleanup failed' }
               }
             } finally {
               Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
