@@ -31,9 +31,27 @@ export async function startLocalSdk(config,load=loadPinnedSdk) {
   const resource=api.resourceFromAttributes({'service.name':'softwarefactory-shadow'});
   const providers=[];
   const storage=new AsyncLocalStorage();
+  const active=new Set();
   let stopped;
-  const shutdown=()=>stopped??=Promise.allSettled(providers.map(p=>Promise.resolve().then(()=>p.shutdown())))
-    .then(results=>{storage.disable();const failures=results.filter(r=>r.status==='rejected');if(failures.length)throw new AggregateError(failures.map(r=>r.reason),'LOCAL_SDK_SHUTDOWN_FAILED');});
+  const shutdown=()=>stopped??=(async()=>{
+    // Reject new stages immediately; give already accepted work a bounded
+    // opportunity to emit completion signals before closing our providers.
+    let drained=true;
+    if(active.size){
+      let timer;
+      try {
+        drained=await Promise.race([
+          Promise.allSettled([...active]).then(()=>true),
+          new Promise(resolve=>{timer=setTimeout(()=>resolve(false),3000);})
+        ]);
+      } finally {clearTimeout(timer);}
+    }
+    const results=await Promise.allSettled(providers.map(p=>Promise.resolve().then(()=>p.shutdown())));
+    storage.disable();
+    const failures=results.filter(r=>r.status==='rejected').map(r=>r.reason);
+    if(!drained)failures.push(Error('LOCAL_SDK_DRAIN_TIMEOUT'));
+    if(failures.length)throw new AggregateError(failures,'LOCAL_SDK_SHUTDOWN_FAILED');
+  })();
   try {
     const tracerProvider=new api.TracerProvider({resource,spanProcessors:[new api.SimpleSpanProcessor({exporter:new api.OTLPTraceExporter(options('traces'))})]});
     providers.push(tracerProvider);
@@ -53,7 +71,13 @@ export async function startLocalSdk(config,load=loadPinnedSdk) {
       meter,
       logger:{emit(record){logger.emit({...record,context:storage.getStore()??api.ROOT_CONTEXT});}}
     });
-    return {observe(stage,work){if(stopped)throw Error('LOCAL_SDK_STOPPED');return observe(stage,work);},shutdown};
+    return {observe(stage,work){
+      if(stopped)throw Error('LOCAL_SDK_STOPPED');
+      const pending=Promise.resolve().then(()=>observe(stage,work));
+      active.add(pending);
+      pending.then(()=>active.delete(pending),()=>active.delete(pending));
+      return pending;
+    },shutdown};
   } catch(error) {
     try {await shutdown();} catch {}
     throw error;

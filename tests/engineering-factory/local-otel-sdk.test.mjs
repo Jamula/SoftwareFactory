@@ -35,7 +35,15 @@ test('explicit private providers and SDK lifecycle, with no global registration'
  assert.deepEqual(await sdk.observe('evaluate',async()=>({outcome:'blocked',reason:'POLICY'})),{outcome:'blocked',reason:'POLICY'});
  assert.equal(events[0].body,'factory.stage.completed');
  assert.equal(events[0].context.span.name,'factory.evaluate');
- const done=sdk.shutdown();assert.equal(sdk.shutdown(),done);await done;
+ let release;
+ const gate=new Promise(resolve=>{release=resolve;});
+ const accepted=sdk.observe('evaluate',async()=>{await gate;return {outcome:'blocked',reason:'POLICY'};});
+ const rejected=sdk.observe('evaluate',async()=>{throw Error('work failure');});
+ const rejection=assert.rejects(rejected,/work failure/);
+ const done=sdk.shutdown();assert.equal(sdk.shutdown(),done);
+ assert.throws(()=>sdk.observe('evaluate',()=>assert.fail('stopped')),/LOCAL_SDK_STOPPED/);
+ await rejection;assert.equal(events.includes('shutdown'),false);
+ release();await accepted;await done;
  assert.equal(events.filter(x=>x==='shutdown').length,3);
  assert.throws(()=>sdk.observe('evaluate',()=>assert.fail('stopped')),/LOCAL_SDK_STOPPED/);
 });
@@ -124,4 +132,23 @@ test('disabled SDK and inherited unrelated headers never construct exporters',as
   try{assert.equal(await startLocalSdk(configuration,async()=>assert.fail('must not load')),null);}
   finally{if(old===undefined)delete process.env[key];else process.env[key]=old;}
  }
+});
+
+test('shutdown bounds a hung observation, closes providers and does not rerun accepted work',{timeout:8000},async()=>{
+ let closed=0,called=0,release;
+ class Dummy{constructor(options){this.options=options;}}
+ class Provider{async shutdown(){closed++;}}
+ class TracerProvider extends Provider{getTracer(){return {startSpan:()=>({end(){}})};}}
+ class MeterProvider extends Provider{getMeter(){return {createCounter:()=>({add(){}}),createHistogram:()=>({record(){}})};}}
+ class LoggerProvider extends Provider{getLogger(){return {emit(){}};}}
+ const api={TracerProvider,MeterProvider,LoggerProvider,ROOT_CONTEXT:{},trace:{setSpan:()=>({})},resourceFromAttributes:a=>a,
+   SimpleSpanProcessor:Dummy,SimpleLogRecordProcessor:Dummy,PeriodicExportingMetricReader:Dummy,
+   OTLPTraceExporter:Dummy,OTLPMetricExporter:Dummy,OTLPLogExporter:Dummy};
+ const sdk=await startLocalSdk(configuration,async()=>api);
+ const gate=new Promise(resolve=>{release=resolve;});
+ const work=sdk.observe('evaluate',async()=>{called++;await gate;return {outcome:'blocked',reason:'POLICY'};});
+ try{
+  await assert.rejects(sdk.shutdown(),error=>error instanceof AggregateError&&error.errors.some(e=>e.message==='LOCAL_SDK_DRAIN_TIMEOUT'));
+  assert.equal(closed,3);assert.equal(called,1);
+ } finally {release();await work;}
 });
