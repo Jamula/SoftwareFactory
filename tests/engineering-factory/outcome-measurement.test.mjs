@@ -29,3 +29,7 @@ test('partial, duplicated, unlinked, stale-main or invalid PR evidence fails clo
   ];
   for(const [p,reason] of cases)assert.deepEqual(measureIssueOutcome(issue(),p),{known:false,reason});
 });
+
+test('main verification timestamp comes only from PR evidence even when readiness is later',()=>{
+  assert.deepEqual(measureIssueOutcome({...issue(),readyAt:450},pulls()),{known:true,reason:'VERIFIED_OUTCOME',elapsedMs:50,mainVerifiedAt:400,requiredPullCount:2});
+});

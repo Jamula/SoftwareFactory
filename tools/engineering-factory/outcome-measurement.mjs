@@ -16,7 +16,7 @@ export function measureIssueOutcome(issue,pulls){
   const required=issue.requiredPullNumbers;
   if(!Array.isArray(required)||required.length===0||required.some(n=>!id(n))||new Set(required).size!==required.length)
     return unknown('LINKS_UNKNOWN');
-  let latestMain=issue.readyAt;
+  let latestMain=0;
   for(const number of required){
     const matches=pulls.filter(p=>p?.repositoryId===issue.repositoryId&&p.number===number);
     if(matches.length!==1)return unknown('PULL_UNKNOWN_OR_DUPLICATE');
