@@ -32,7 +32,7 @@ Use low-cardinality allowlists for metric labels. Do not use raw repository/issu
 ## Verification checklist
 
 - Headless unit/replay and coverage tests independently pass, 98% lines/95% branches per executable component and overall, preserving stricter existing gates.
-- Actual AppHost launch and shutdown on authorized Windows developer machine; document SDK versions, command, resource health and smoke evidence. CI build alone is not runtime verification.
+- Actual AppHost launch and shutdown on standard GitHub-hosted Windows and Linux runners; document SDK versions, command, resource health and smoke evidence. Dedicated workstation compatibility is deferred to #66. CI build alone is not runtime verification.
 - Synthetic trace visible in local dashboard, corresponding metric sample and correlated structured log; prove no external export, no GitHub writes and no sensitive payloads.
 - Negative tests: malformed endpoints/config, unavailable exporter, stop, oversized or unsafe telemetry attributes, unsupported runtime, missing credentials/metadata. Independent exact-head security review.
 - Consumer-specific adoption only via reviewed immutable pins and local policies, no forced framework rewrite or automatic activation. Family Hub requires independent migration readiness verification and activation approval.

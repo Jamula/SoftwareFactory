@@ -90,3 +90,6 @@ Use critical-path scheduling, contract-first decomposition, independent speciali
 
 ## CI consolidation (owner-directed, Nov 25, 2026)
 Target eight meaningful checks where equivalent verification is proven. Preserve exact-head source inventory and 98/95 coverage, trusted native checks, all security/secret checks, independent review, merge-group validation and Linux/Windows runtime tests. Treat p50 <75 seconds as a service-level objective, not a timeout, test-selection waiver or reason to cancel a slow valid job. Report check counts, cold/warm p50/p95, queue/review latency and actual spend separately. Reduce repeated test process launches only after #67's exact-source inventory evidence is verified; do not disable GitHub Code Quality until coverage integration and equivalent quality verification are established. Retain trusted metadata event reconciliation. See #15.
+
+
+See [Engineering velocity improvement program](ENGINEERING-VELOCITY.md) for the measured bottleneck register, prioritized experiments and review-batching protocol. Summary-only material review findings require disposition even when inline threads are all resolved; a zero-thread count never establishes final independent approval.
