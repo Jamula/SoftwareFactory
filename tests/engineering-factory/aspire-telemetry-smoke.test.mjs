@@ -1,0 +1,19 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {runAspireTelemetry} from '../../tools/engineering-factory/aspire-telemetry-smoke.mjs';
+const env={OTEL_EXPORTER_OTLP_ENDPOINT:'https://127.0.0.1:18890',OTEL_EXPORTER_OTLP_PROTOCOL:'http/protobuf',OTEL_EXPORTER_OTLP_HEADERS:'x-otlp-api-key=synthetic'};
+test('explicit resource runs only after authenticated configuration and flushes the SDK',async()=>{
+ const events=[];
+ await runAspireTelemetry(env,async config=>{
+  assert.deepEqual(config,{endpoint:env.OTEL_EXPORTER_OTLP_ENDPOINT,protocol:env.OTEL_EXPORTER_OTLP_PROTOCOL,headers:env.OTEL_EXPORTER_OTLP_HEADERS});
+  return {observe:async(stage,fn)=>{assert.equal(stage,'evaluate');const result=await fn();assert.deepEqual(result,{outcome:'blocked',reason:'POLICY'});events.push('observed');},shutdown:async()=>events.push('shutdown')};
+ },async()=>events.push('work'));
+ assert.deepEqual(events,['work','observed','shutdown']);
+ await assert.rejects(()=>runAspireTelemetry({},async()=>null,async()=>assert.fail('unexpected work')),/LOCAL_OTLP_CONFIGURATION_REQUIRED/);
+ const original=Error('fixture failure');
+ await assert.rejects(()=>runAspireTelemetry(env,async()=>({observe:async(stage,fn)=>fn(),shutdown:async()=>events.push('cleanup')}),async()=>{throw original;}),e=>e===original);
+ assert.equal(events.at(-1),'cleanup');
+});
+test('default disabled configuration fails without imports',async()=>{
+ await assert.rejects(()=>runAspireTelemetry({}),/LOCAL_OTLP_CONFIGURATION_REQUIRED/);
+});

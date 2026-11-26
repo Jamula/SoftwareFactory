@@ -1,0 +1,7 @@
+# Local telemetry acceptance (M02.03)
+
+This is a synthetic, explicitly started process resource only. Install the exact lock with `npm ci --ignore-scripts`. Start with `aspire run --apphost apphost.cs` using the pinned CLI and trusted local developer TLS certificate. Verify the frontend requires login and the HTTP OTLP listener is loopback-only. Start the synthetic-shadow resource, inspect the STOPPED fixture, and check the dashboard for service softwarefactory-shadow, span factory.evaluate, factory.stage.count and factory.stage.duration metrics, and factory.stage.completed structured log correlated with its trace/span ID. Stop the AppHost with Ctrl+C or `aspire stop --apphost apphost.cs`. Never bypass TLS or publish raw exports, resource env or tokens. 
+
+The SDK consumes AppHost-provided OTEL_EXPORTER_OTLP_ENDPOINT, OTEL_EXPORTER_OTLP_PROTOCOL and OTEL_EXPORTER_OTLP_HEADERS. Missing or unsupported configuration fails closed. HTTP/protobuf only; no remote destination, no live provider, no default collector. If the AppHost supplies gRPC or a nonnumeric hostname, correct the local endpoint configuration rather than allow remote export. The SDK tests exercise real OTLP receipt at a synthetic loopback receiver; dashboard acceptance is separate. Capture exact candidate runtime evidence on Linux and Windows, including dashboard-side trace, metrics and correlated logs. Do not close #17 solely because the process or synthetic receiver succeeds.
+
+References: https://aspire.dev/app-host/configuration/ and https://aspire.dev/dashboard/apis/ .
