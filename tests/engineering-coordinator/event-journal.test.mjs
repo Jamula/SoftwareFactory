@@ -232,3 +232,28 @@ test('defer callback receives only the validated clock sample and never acknowle
   assert.equal(j.claim(1,'other',660001,1000).deliveryId,original.deliveryId);
  }finally{j.close();}
 });
+
+test('active lease checks use a partial index across a pending backlog', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'factory-event-active-index-'));
+  const path = join(dir, 'events.sqlite');
+  const store = openEventJournal(path);
+  store.close();
+  const db = new DatabaseSync(path);
+  try {
+    const plan = db.prepare(`EXPLAIN QUERY PLAN
+      SELECT pending.id FROM coordinator_events AS pending
+      WHERE pending.repository_id = ? AND pending.completed = 0
+        AND pending.expires <= ? AND pending.generation < ?
+        AND NOT EXISTS (
+          SELECT 1 FROM coordinator_events AS active
+          WHERE active.repository_id = pending.repository_id
+            AND active.completed = 0 AND active.expires > ?
+        )
+      ORDER BY pending.id LIMIT 1`).all(1, 0, Number.MAX_SAFE_INTEGER, 0);
+    const activeLookup = plan.find(row => String(row.detail).includes('active'));
+    assert.match(activeLookup?.detail ?? '', /coordinator_events_active/);
+  } finally {
+    db.close();
+    rmSync(dir, {recursive: true, force: true});
+  }
+});
