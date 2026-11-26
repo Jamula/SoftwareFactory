@@ -100,6 +100,8 @@ class DashboardVerifierTests(unittest.TestCase):
     def test_success_uses_only_loopback_and_closes_connection(self):
         connection, create = self.configured_verify(valid_responses())
         create.assert_called_once()
+        self.assertEqual(create.call_args.args, ("127.0.0.1", 18888))
+        self.assertEqual(create.call_args.kwargs["timeout"], 5)
         self.assertTrue(connection.closed)
         self.assertEqual([path for _, path, _ in connection.requests], [
             "/api/telemetry/spans",
@@ -148,6 +150,24 @@ class DashboardVerifierTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "unexpected API authentication or response"):
                 API.verify()
         self.assertTrue(connection.closed)
+
+    def test_unauthenticated_success_and_redirect_responses_are_rejected(self):
+        for responses in (
+            [FakeResponse(200)],
+            [FakeResponse(401), FakeResponse(200)],
+            [FakeResponse(302)],
+            [FakeResponse(401), FakeResponse(302)],
+        ):
+            with self.subTest(statuses=[response.status for response in responses]):
+                connection = FakeConnection(responses)
+                with patch.dict(os.environ, ENV, clear=False), \
+                     patch.object(API.ssl, "create_default_context", return_value=object()), \
+                     patch.object(API.http.client, "HTTPSConnection", return_value=connection):
+                    with self.assertRaisesRegex(
+                        ValueError, "unexpected API authentication or response"
+                    ):
+                        API.verify()
+                self.assertTrue(connection.closed)
 
     def test_authenticated_unexpected_status_fails_closed_and_closes_connection(self):
         connection = FakeConnection([FakeResponse(401), FakeResponse(401), FakeResponse(500)])
