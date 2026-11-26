@@ -54,10 +54,11 @@ def verify(conn):
                 """, (dimension_id,))
             points = bounded(conn, """
                 SELECT start_time_unix_nano, end_time_unix_nano, integer_value, double_value,
-                       histogram_sum, histogram_count, flags, histogram_aggregation_start_unix_nano, point_type
+                       histogram_sum, histogram_count, flags, histogram_aggregation_start_unix_nano, point_type,
+                       histogram_aggregation_id, bucket_counts, explicit_bounds
                 FROM telemetry_metric_points WHERE dimension_id=?
                 """, (dimension_id,), limit=1024)
-            for start, end, integer, double, total, count, flags, histogram_start, point_type in points:
+            for start, end, integer, double, total, count, flags, histogram_start, point_type, histogram_id, buckets, bounds in points:
                 # Missing flags have the default zero value in OTLP.
                 if flags is not None and (type(flags) is not int or not 0 <= flags <= 0xffffffff):
                     raise ValueError("invalid flags")
@@ -70,7 +71,7 @@ def verify(conn):
                 if recorded_dimension is not None and recorded_dimension != dimension_id:
                     raise ValueError("multiple recorded dimensions")
                 recorded_dimension = dimension_id
-                if type(start) is not int or type(end) is not int or not 0 < start <= end:
+                if type(start) is not int or type(end) is not int or not 0 < start < end:
                     raise ValueError("invalid timestamps")
                 if period is not None and period != start:
                     raise ValueError("multiple cumulative periods")
@@ -80,7 +81,8 @@ def verify(conn):
                         raise ValueError("counter value fields")
                     if (integer is not None and (type(integer) is not int or integer != 1)) or (double is not None and (type(double) not in (float, int) or double != 1)):
                         raise ValueError("counter value")
-                    if total is not None or count is not None or histogram_start is not None:
+                    if (total is not None or count is not None or histogram_start is not None
+                            or histogram_id is not None or buckets is not None or bounds is not None):
                         raise ValueError("conflicting histogram fields")
                 else:
                     if integer is not None or double is not None or type(count) is not int or count != 1:

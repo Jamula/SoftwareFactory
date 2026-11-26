@@ -22,6 +22,7 @@ def fixture(conn):
         INSERT INTO telemetry_metric_dimensions VALUES(1,1),(2,2);
         INSERT INTO telemetry_metric_points VALUES(1,100,200,1,NULL,NULL,NULL,0,NULL,2),(2,100,200,NULL,NULL,2.5,1,0,100,3);
     """)
+    conn.executescript("ALTER TABLE telemetry_metric_points ADD COLUMN histogram_aggregation_id INTEGER; ALTER TABLE telemetry_metric_points ADD COLUMN bucket_counts BLOB; ALTER TABLE telemetry_metric_points ADD COLUMN explicit_bounds BLOB;")
     for dim in (1,2):
         conn.executemany("INSERT INTO telemetry_metric_dimension_attributes VALUES(?,?,?,?)",
             [(dim,i,k,v) for i,(k,v) in enumerate(module.LABELS.items())])
@@ -31,7 +32,7 @@ class Receipt(unittest.TestCase):
         with closing(sqlite3.connect(":memory:")) as conn:
             fixture(conn)
             self.assertTrue(module.verify(conn))
-            conn.execute("INSERT INTO telemetry_metric_points VALUES(1,100,300,1,NULL,NULL,NULL,0,NULL,2)")
+            conn.execute("INSERT INTO telemetry_metric_points(dimension_id,start_time_unix_nano,end_time_unix_nano,integer_value,double_value,histogram_sum,histogram_count,flags,histogram_aggregation_start_unix_nano,point_type) VALUES(1,100,300,1,NULL,NULL,NULL,0,NULL,2)")
             self.assertTrue(module.verify(conn))
     def test_rejects_missing_wrong_or_contradictory_evidence(self):
         for sql in [
@@ -41,16 +42,21 @@ class Receipt(unittest.TestCase):
             "UPDATE telemetry_metric_points SET point_type=2 WHERE dimension_id=2",
             "UPDATE telemetry_metric_points SET point_type=99 WHERE dimension_id=1",
             "UPDATE telemetry_metric_points SET histogram_aggregation_start_unix_nano=100 WHERE dimension_id=1",
+            "UPDATE telemetry_metric_points SET histogram_aggregation_id=1 WHERE dimension_id=1",
+            "UPDATE telemetry_metric_points SET bucket_counts=X'01' WHERE dimension_id=1",
+            "UPDATE telemetry_metric_points SET explicit_bounds=X'01' WHERE dimension_id=1",
+            "UPDATE telemetry_metric_points SET end_time_unix_nano=start_time_unix_nano WHERE dimension_id=1",
+            "UPDATE telemetry_metric_points SET end_time_unix_nano=start_time_unix_nano WHERE dimension_id=2",
             "UPDATE telemetry_metric_points SET flags=1 WHERE dimension_id=1",
             "UPDATE telemetry_metric_instruments SET aggregation_temporality=1 WHERE instrument_id=2",
             "UPDATE telemetry_metric_points SET integer_value=2 WHERE dimension_id=1",
             "UPDATE telemetry_metric_points SET double_value=2 WHERE dimension_id=1",
             "UPDATE telemetry_metric_points SET histogram_count=2 WHERE dimension_id=2",
-            "INSERT INTO telemetry_metric_points VALUES(2,100,300,NULL,NULL,8.5,1,0,100,3)",
+            "INSERT INTO telemetry_metric_points(dimension_id,start_time_unix_nano,end_time_unix_nano,integer_value,double_value,histogram_sum,histogram_count,flags,histogram_aggregation_start_unix_nano,point_type) VALUES(2,100,300,NULL,NULL,8.5,1,0,100,3)",
             "UPDATE telemetry_metric_dimension_attributes SET attribute_value='eligible' WHERE attribute_key='outcome'",
             "UPDATE telemetry_resources SET resource_name='wrong'",
-            "INSERT INTO telemetry_metric_points VALUES(1,201,300,1,NULL,NULL,NULL,0,NULL,2)",
-            "INSERT INTO telemetry_metric_points VALUES(2,201,300,NULL,NULL,2.5,1,0,201,3)",
+            "INSERT INTO telemetry_metric_points(dimension_id,start_time_unix_nano,end_time_unix_nano,integer_value,double_value,histogram_sum,histogram_count,flags,histogram_aggregation_start_unix_nano,point_type) VALUES(1,201,300,1,NULL,NULL,NULL,0,NULL,2)",
+            "INSERT INTO telemetry_metric_points(dimension_id,start_time_unix_nano,end_time_unix_nano,integer_value,double_value,histogram_sum,histogram_count,flags,histogram_aggregation_start_unix_nano,point_type) VALUES(2,201,300,NULL,NULL,2.5,1,0,201,3)",
         ]:
             with self.subTest(sql=sql), closing(sqlite3.connect(":memory:")) as conn:
                 fixture(conn)
