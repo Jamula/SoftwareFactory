@@ -65,6 +65,14 @@ export function planLanes(config, tasks, active = []) {
       return blocked('ACTIVE_PATH_CONFLICT');
     ownedPaths.push(...item.paths);
   }
+  // Reject a reservation inconsistent with the authoritative lane inventory.
+  for (const item of reservations) {
+    if (!item.paths.every(path => lanes.get(item.lane).owners.some(owner =>
+      path === owner || path.startsWith(`${owner}/`)))) return blocked('INVALID_ACTIVE_LANE');
+    const task = byId.get(item.id);
+    if (task && (task.state !== 'active' || task.lane !== item.lane))
+      return blocked('INVALID_ACTIVE_LANE');
+  }
   const accepted = new Set(tasks.filter(task => task.state === 'accepted').map(task => task.id));
   // Longest unfinished downstream chain, computed only after DAG validation.
   const downstream = new Map(tasks.map(task => [task.id, []]));

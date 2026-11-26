@@ -72,3 +72,26 @@ test('within explicit priority, longest unfinished dependency chain wins; stable
   assert.deepEqual(planLanes(c,[{...task(1),priority:0},{...task(2,'web'),priority:1},...tasks.slice(2)]).scheduled.map(t=>t.id),[1]);
   assert.deepEqual(planLanes(c,[...tasks.slice(0,2),{...tasks[2],state:'accepted'},{...tasks[3],state:'accepted'}]).scheduled.map(t=>t.id),[1]);
 });
+
+test('rejects out-of-scope reservations and stale task state before allocating workers', () => {
+  for (const state of ['approved','accepted','blocked']) {
+    assert.equal(planLanes(config(), [task(1,'web',state), task(2)],
+      [{id:1,lane:'api',paths:['src/api/1']}]).reason,'INVALID_ACTIVE_LANE');
+  }
+  assert.equal(planLanes(config(), [task(1)], 
+    [{id:9,lane:'web',paths:['src/api/unrelated']}]).reason,'INVALID_ACTIVE_LANE');
+  assert.equal(planLanes(config(), [task(1)], 
+    [{id:1,lane:'api',paths:['src/api/1']}]).reason,'INVALID_ACTIVE_LANE');
+});
+test('factory shadow planner fills twelve isolated logical lanes', () => {
+  const c=config();
+  c.project.repository='Jamula/SoftwareFactory';
+  c.limits.maxConcurrentLanes=12;
+  c.lanes=Array.from({length:13},(_,i)=>({id:'lane-'+i,owners:['src/lane-'+i],prompt:'agent.md'}));
+  const tasks=c.lanes.map((lane,i)=>task(i+1,lane.id,'approved',lane.owners));
+  const result=planLanes(c,tasks);
+  assert.equal(result.shadow,true);
+  assert.deepEqual(result.scheduled.map(x=>x.id),Array.from({length:12},(_,i)=>i+1));
+  const active={...tasks[0],state:'active'};
+  assert.deepEqual(planLanes(c,[active,...tasks.slice(1)]).scheduled.map(x=>x.id),Array.from({length:11},(_,i)=>i+2));
+});
