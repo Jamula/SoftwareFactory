@@ -143,7 +143,8 @@ jobs:
             echo "::error::Aspire shutdown failed"
             exit 1
           fi
-          python tests/engineering-factory/inspect-dashboard-metric-schema.py "$data_root"
+          python tests/engineering-factory/test-dashboard-metric-receipt.py
+          python tests/engineering-factory/verify-dashboard-metric-receipt.py "$data_root"
           trap - EXIT
           rm -f -- "$output" "$certificate" "$archive"
           rm -rf -- "$data_root"
