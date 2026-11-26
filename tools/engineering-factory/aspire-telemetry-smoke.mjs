@@ -9,8 +9,10 @@ export async function runAspireTelemetry(env,start=startLocalSdk,work=()=>import
       await work();
       return {outcome:'blocked',reason:'POLICY'};
     });
-  } finally {
-    await sdk.shutdown();
+  } catch(error) {
+    try {await sdk.shutdown();} catch {}
+    throw error;
   }
+  await sdk.shutdown();
 }
 if(import.meta.main)await runAspireTelemetry(process.env);
