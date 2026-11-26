@@ -1,4 +1,4 @@
-import test from 'node:test';import assert from 'node:assert/strict';import {coverageEvidence as check} from '../../tools/engineering-factory/coverage-evidence.mjs';
+import test from 'node:test';import assert from 'node:assert/strict';import {coverageEvidence as check,coverageFromNodeSummary as fromNode} from '../../tools/engineering-factory/coverage-evidence.mjs';
 const h='a'.repeat(40),r={component:'core',head:h,lines:98,lineTotal:100,branches:19,branchTotal:20};
 test('threshold and weighted counts',()=>{assert.equal(check(h,['core'],[r]).valid,true);assert.equal(check(h,['core'],[{...r,lines:97}]).reason,'COMPONENT_BELOW_TARGET');assert.equal(check(h,['core'],[{...r,branches:18}]).reason,'COMPONENT_BELOW_TARGET');assert.deepEqual(check(h,['core','other'],[r,{...r,component:'other',lines:200,lineTotal:200}]),{shadow:true,valid:true,reason:'COUNTS_ONLY',lines:298,lineTotal:300,branches:38,branchTotal:40});});
 test('deny incomplete or invalid reports',()=>{for(const [head,names,rows] of [['bad',['core'],[r]],[h,null,[r]],[h,[],[]],[h,['bad name'],[r]],[h,['core','core'],[r,r]],[h,['core'],null],[h,['core'],[]],[h,new Array(1),[r]],[h,Array(251).fill('core'),[]],[h,['core','other'],[r,r]]])assert.equal(check(head,names,rows).valid,false);for(const x of [null,Object.create(r),{...r,component:'other'},{...r,head:'b'.repeat(40)},{...r,lines:-1},{...r,lines:101},{...r,lineTotal:0},{...r,lines:1.5},{...r,lineTotal:100000001},{...r,branches:10.5},{...r,branchTotal:0},{...r,lines:97},{...r,branches:18}])assert.equal(check(h,['core'],[x]).valid,false);});
@@ -6,3 +6,19 @@ test('deny incomplete or invalid reports',()=>{for(const [head,names,rows] of [[
 test('reject getters and custom array behavior without invoking them',()=>{let calls=0;const bad=()=>{calls++;throw Error('unexpected read');};const names=['core'],rows=[r];Object.defineProperty(names,0,{get:bad});Object.defineProperty(rows,0,{get:bad});assert.equal(check(h,names,[r]).reason,'INVENTORY_UNKNOWN');assert.equal(check(h,['core'],rows).reason,'INVENTORY_UNKNOWN');const stale=[{...r,head:'b'.repeat(40)}];Object.defineProperty(stale,Symbol.iterator,{value:function*(){calls++;yield r;}});assert.equal(check(h,['core'],stale).reason,'INVENTORY_UNKNOWN');const overridden=['core'];Object.defineProperty(overridden,'every',{value:bad});assert.equal(check(h,overridden,[r]).reason,'INVENTORY_UNKNOWN');const inherited=Object.setPrototypeOf([r],Object.create(Array.prototype));assert.equal(check(h,['core'],inherited).reason,'INVENTORY_UNKNOWN');assert.equal(calls,0);});
 
 test('reject proxy evidence before executing any traps',()=>{let calls=0;const trap=()=>{calls++;throw Error('unexpected proxy trap');};const handler={get:trap,getOwnPropertyDescriptor:trap,ownKeys:trap,getPrototypeOf:trap};assert.equal(check(h,new Proxy(['core'],handler),[r]).reason,'INVENTORY_UNKNOWN');assert.equal(check(h,['core'],new Proxy([r],handler)).reason,'INVENTORY_UNKNOWN');assert.equal(check(h,['core'],[new Proxy(r,handler)]).reason,'INVALID_REPORT');const revoked=Proxy.revocable([r],{});revoked.revoke();assert.equal(check(h,['core'],revoked.proxy).reason,'INVENTORY_UNKNOWN');assert.equal(calls,0);});
+
+
+test('actual node summary counts bind to independent inventory and exact head',()=>{
+ const f={component:'core',coveredLineCount:98,totalLineCount:100,coveredBranchCount:19,totalBranchCount:20};
+ const second={...f,component:'runner',coveredLineCount:100};
+ const v=fromNode(h,['core','runner'],[f,second]);
+ assert.equal(v.valid,true);assert.equal(v.head,h);assert.equal(v.lines,198);assert.equal(v.lineTotal,200);
+ assert.equal(v.components[0].head,h);assert.equal(v.branches,38);
+ for(const x of [null,[],new Array(1)])assert.equal(fromNode(h,['core'],x).reason,'INVENTORY_UNKNOWN');
+ for(const x of [null,{component:'core'},Object.create(f)])assert.equal(fromNode(h,['core'],[x]).reason,'INVALID_REPORT');
+ assert.equal(fromNode(h,['core','runner'],[f]).valid,false);
+ assert.equal(fromNode(h,['core'],[f,second]).valid,false);
+ assert.equal(fromNode(h,['core','runner'],[f,f]).valid,false);
+ assert.equal(fromNode(h,['core'],[{...f,coveredBranchCount:18}]).reason,'COMPONENT_BELOW_TARGET');
+ assert.equal(fromNode(h,['core'],[{...f,totalBranchCount:0,coveredBranchCount:0}]).reason,'INVALID_REPORT');
+});

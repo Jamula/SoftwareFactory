@@ -17,3 +17,19 @@ export function coverageEvidence(head,expected,reports){
  }
  return {shadow:true,valid:true,reason:'COUNTS_ONLY',lines,lineTotal,branches,branchTotal};
 }
+
+
+// Convert actual Node test:coverage file rows to component counts. The inventory
+// is independently enumerated from the checked-out source tree by the CI reporter.
+export function coverageFromNodeSummary(head,expected,files){
+ if(!dense(files)||!files.length)return deny('INVENTORY_UNKNOWN');
+ const rows=[];
+ for(const f of files){
+  if(!own(f,['component','coveredLineCount','totalLineCount','coveredBranchCount','totalBranchCount']))
+   return deny('INVALID_REPORT');
+  rows.push({component:f.component,head,lines:f.coveredLineCount,lineTotal:f.totalLineCount,
+    branches:f.coveredBranchCount,branchTotal:f.totalBranchCount});
+ }
+ const evidence=coverageEvidence(head,expected,rows);
+ return evidence.valid?{...evidence,head,components:rows}:evidence;
+}
