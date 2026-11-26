@@ -73,8 +73,6 @@ jobs:
           $out = Join-Path $tmp 'out.txt'
           $err = Join-Path $tmp 'err.txt'
           $cert = Join-Path $tmp 'dev.pem'
-          $der = Join-Path $tmp 'dev.cer'
-          $addedTrust = $null
           $archive = Join-Path $tmp 'dashboard.zip'
           $dataRoot = Join-Path $tmp 'dashboard-data'
           New-Item -ItemType Directory -Path $dataRoot | Out-Null
@@ -129,28 +127,14 @@ jobs:
           $appHostStopped = $false
           try {
             Invoke-BoundedNative 'dotnet' @('dev-certs','https','--export-path',$cert,'--format','PEM') 30 'certificate-export'
-            # The noninteractive CLI does not trust development certificates on
-            # Windows. Trust only this runner-generated public certificate, in
-            # CurrentUser (never LocalMachine), using the noninteractive store API.
+            # Aspire documents that noninteractive Windows runners cannot show
+            # the user trust dialog. Do not change any Windows root store.
+            # DCP uses its own supported ephemeral certificate; the dashboard
+            # and telemetry clients explicitly verify the exported dev cert.
             if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted') { throw 'Expected disposable hosted runner' }
-            Invoke-BoundedNative 'certutil.exe' @('-f','-decode',$cert,$der) 15 'certificate-conversion'
-            $publicCert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($der)
-            $trustPath = 'Cert:\CurrentUser\Root\' + $publicCert.Thumbprint
-            $store = [System.Security.Cryptography.X509Certificates.X509Store]::new('Root','CurrentUser')
-            try {
-              $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
-              if ($store.Certificates.Find([System.Security.Cryptography.X509Certificates.X509FindType]::FindByThumbprint,$publicCert.Thumbprint,$false).Count -eq 0) {
-                Write-Host 'Windows runtime stage: certificate-import started'
-                $store.Add($publicCert)
-                $addedTrust = $trustPath
-                Write-Host 'Windows runtime stage: certificate-import completed'
-              }
-              if ($store.Certificates.Find([System.Security.Cryptography.X509Certificates.X509FindType]::FindByThumbprint,$publicCert.Thumbprint,$false).Count -eq 0) { throw 'Local certificate trust missing' }
-            } finally {
-              $store.Close()
-              $store.Dispose()
-            }
-            Write-Host 'Windows runtime stage: certificate trust verified'
+            if (-not (Test-Path -LiteralPath $cert)) { throw 'Certificate export missing' }
+            $env:ASPIRE_DCP_USE_DEVELOPER_CERTIFICATE = 'false'
+            Write-Host 'Windows runtime stage: scoped certificate ready'
             $env:NODE_EXTRA_CA_CERTS = $cert
             $env:ASPIRE_DASHBOARD_OTLP_HTTP_ENDPOINT_URL = 'https://127.0.0.1:18890'
             $startup = Invoke-Aspire @('start','--apphost','apphost.cs','--isolated','--non-interactive','--nologo') 120
@@ -180,19 +164,5 @@ jobs:
             if (-not $appHostStopped) {
               try { $null = Invoke-Aspire @('stop','--apphost','apphost.cs','--non-interactive') 30 } catch { }
             }
-            try {
-              if ($addedTrust -and (Test-Path -LiteralPath $addedTrust)) {
-                $store = [System.Security.Cryptography.X509Certificates.X509Store]::new('Root','CurrentUser')
-                try {
-                  $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
-                  $store.Remove($publicCert)
-                } finally {
-                  $store.Close()
-                  $store.Dispose()
-                }
-                if (Test-Path -LiteralPath $addedTrust) { throw 'Local certificate trust cleanup failed' }
-              }
-            } finally {
-              Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
-            }
+            Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
           }
