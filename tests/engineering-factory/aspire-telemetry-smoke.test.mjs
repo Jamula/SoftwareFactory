@@ -17,3 +17,9 @@ test('explicit resource runs only after authenticated configuration and flushes 
 test('default disabled configuration fails without imports',async()=>{
  await assert.rejects(()=>runAspireTelemetry({}),/LOCAL_OTLP_CONFIGURATION_REQUIRED/);
 });
+
+test('default synthetic work runs through the observer and shuts down',async()=>{
+ let observed=false,closed=false;
+ await runAspireTelemetry(env,async()=>({observe:async(stage,work)=>{assert.equal(stage,'evaluate');assert.deepEqual(await work(),{outcome:'blocked',reason:'POLICY'});observed=true;},shutdown:async()=>{closed=true;}}));
+ assert.equal(observed,true);assert.equal(closed,true);
+});

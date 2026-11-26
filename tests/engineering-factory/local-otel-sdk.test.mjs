@@ -11,30 +11,33 @@ test('disabled or invalid local SDK never imports dependencies',async()=>{
   assert.equal(await startLocalSdk(config,load),null);
  assert.equal(calls,0);
 });
-test('explicit local exporters and SDK lifecycle, with no implicit discovery',async()=>{
- const opts=[],events=[];
+test('explicit private providers and SDK lifecycle, with no global registration',async()=>{
+ const opts=[],events=[],configs=[];
  class Exporter{constructor(options){opts.push(options);}}
  class Processor{constructor({exporter}){assert.ok(exporter instanceof Exporter);this.exporter=exporter;}}
  class Reader{constructor(options){this.options=options;}}
- class SDK{constructor(options){this.options=options;events.push(options);}start(){events.push('start');}async shutdown(){events.push('shutdown');}}
- const api={
-  NodeSDK:SDK,resourceFromAttributes:a=>a,SimpleSpanProcessor:Processor,SimpleLogRecordProcessor:Processor,PeriodicExportingMetricReader:Reader,
+ class Provider{constructor(options){configs.push(options);}async shutdown(){events.push('shutdown');}}
+ class TracerProvider extends Provider{getTracer(){return {startSpan:(name,options,parent)=>({end(){},name,parent})};}}
+ class MeterProvider extends Provider{getMeter(){return {createCounter:()=>({add(){}}),createHistogram:()=>({record(){}})};}}
+ class LoggerProvider extends Provider{getLogger(){return {emit:r=>events.push(r)};}}
+ const root={root:true};
+ const api={BasicTracerProvider:TracerProvider,MeterProvider,LoggerProvider,ROOT_CONTEXT:root,
+  resourceFromAttributes:a=>a,SimpleSpanProcessor:Processor,SimpleLogRecordProcessor:Processor,PeriodicExportingMetricReader:Reader,
   OTLPTraceExporter:Exporter,OTLPMetricExporter:Exporter,OTLPLogExporter:Exporter,
-  trace:{getTracer:()=>({startActiveSpan:(n,fn)=>fn({end(){}})})},
-  metrics:{getMeter:()=>({createCounter:()=>({add(){}}),createHistogram:()=>({record(){}})})},
-  logs:{getLogger:()=>({emit:r=>events.push(r)})}
+  trace:{setSpan:(parent,span)=>({parent,span}),getTracer(){assert.fail('global tracer');}},
+  metrics:{getMeter(){assert.fail('global meter');}},logs:{getLogger(){assert.fail('global logger');}}
  };
  const sdk=await startLocalSdk(configuration,async()=>api);
  assert.deepEqual(opts,['traces','metrics','logs'].map(s=>({url:'http://127.0.0.1:4318/v1/'+s,headers:{'x-otlp-api-key':'synthetic'},timeoutMillis:3000})));
- assert.equal(events[0].autoDetectResources,false);
- assert.deepEqual(events[0].instrumentations,[]);
- assert.deepEqual(events[0].resource,{'service.name':'softwarefactory-shadow'});
- assert.equal(events[0].metricReaders[0].options.exportIntervalMillis,3000);
- assert.ok(events[0].metricReaders[0].options.exportIntervalMillis>=events[0].metricReaders[0].options.exportTimeoutMillis);
- assert.equal(events[1],'start');
+ assert.ok(configs.every(c=>c.resource['service.name']==='softwarefactory-shadow'));
+ assert.equal(configs[1].readers[0].options.exportIntervalMillis,3000);
+ assert.ok(configs[1].readers[0].options.exportIntervalMillis>=configs[1].readers[0].options.exportTimeoutMillis);
  assert.deepEqual(await sdk.observe('evaluate',async()=>({outcome:'blocked',reason:'POLICY'})),{outcome:'blocked',reason:'POLICY'});
- assert.equal(events[2].body,'factory.stage.completed');
- await sdk.shutdown();assert.equal(events.at(-1),'shutdown');
+ assert.equal(events[0].body,'factory.stage.completed');
+ assert.equal(events[0].context.span.name,'factory.evaluate');
+ const done=sdk.shutdown();assert.equal(sdk.shutdown(),done);await done;
+ assert.equal(events.filter(x=>x==='shutdown').length,3);
+ assert.throws(()=>sdk.observe('evaluate',()=>assert.fail('stopped')),/LOCAL_SDK_STOPPED/);
 });
 test('startup and dependency failure cannot manufacture SDK readiness',async()=>{
  const error=Error('unavailable');
@@ -57,13 +60,14 @@ test('pinned actual SDK delivers trace, metric and correlated log protobuf to au
   res.writeHead(200,{'content-type':'application/x-protobuf'});res.end();
  });
  server.listen(0,'127.0.0.1');await once(server,'listening');
- let sdk,traceId,spanId;
+ let sdk;
+ const globals=[api.trace.getTracerProvider(),api.metrics.getMeterProvider()];
  try {
   sdk=await startLocalSdk({...configuration,endpoint:'http://127.0.0.1:'+server.address().port});
   assert.ok(sdk);
   await sdk.observe('evaluate',async()=>{
-   const ctx=api.trace.getSpan(api.context.active()).spanContext();
-   traceId=ctx.traceId;spanId=ctx.spanId;
+   assert.equal(api.trace.getTracerProvider(),globals[0]);
+   assert.equal(api.metrics.getMeterProvider(),globals[1]);
    return {outcome:'blocked',reason:'POLICY'};
   });
   await sdk.shutdown();sdk=null;
@@ -75,9 +79,22 @@ test('pinned actual SDK delivers trace, metric and correlated log protobuf to au
   const tracePacket=packets.find(p=>p.url==='/v1/traces').data;
   const logPacket=packets.find(p=>p.url==='/v1/logs').data;
   const metricPacket=packets.find(p=>p.url==='/v1/metrics').data;
-  assert.ok(tracePacket.includes(Buffer.from(traceId,'hex')));
-  assert.ok(logPacket.includes(Buffer.from(traceId,'hex')));
-  assert.ok(logPacket.includes(Buffer.from(spanId,'hex')));
+  // Minimal protobuf field reader: compare exact span and log IDs, rather
+  // than relying on process-global context or accepting any matching string.
+  const field=(buf,wanted)=>{
+   let i=0;
+   const varint=()=>{let n=0,m=1;for(;;){assert.ok(i<buf.length);const b=buf[i++];n+=(b&127)*m;if(!(b&128))return n;m*=128;}};
+   while(i<buf.length){const tag=varint(),wire=tag&7,number=tag>>>3;
+    if(wire===2){const size=varint(),v=buf.subarray(i,i+size);i+=size;if(number===wanted)return v;}
+    else if(wire===0)varint();else if(wire===1)i+=8;else if(wire===5)i+=4;else assert.fail('unsupported wire type');
+   }
+   assert.fail('missing protobuf field '+wanted);
+  };
+  const span=field(field(field(tracePacket,1),2),2),log=field(field(field(logPacket,1),2),2);
+  const traceId=field(span,1),spanId=field(span,2);
+  assert.equal(traceId.length,16);assert.equal(spanId.length,8);
+  assert.deepEqual(field(log,9),traceId);assert.deepEqual(field(log,10),spanId);
+  assert.equal(api.trace.getTracerProvider(),globals[0]);assert.equal(api.metrics.getMeterProvider(),globals[1]);
   assert.ok(logPacket.includes(Buffer.from('factory.stage.completed')));
   assert.ok(metricPacket.includes(Buffer.from('factory.stage.count')));
  }finally{
@@ -86,23 +103,21 @@ test('pinned actual SDK delivers trace, metric and correlated log protobuf to au
  }
 });
 
-test('startup or signal initialization failure attempts cleanup and preserves the original error',async()=>{
+test('partial provider startup failure attempts all acquired cleanup and preserves original error',async()=>{
  const original=Error('startup failure');
- for(const phase of ['start','signals'])for(const cleanupFails of [false,true]){
+ for(const phase of ['construct','signals'])for(const cleanupFails of [false,true]){
   let cleaned=0;
   class Dummy{constructor(options){this.options=options;}}
-  class SDK{
-   start(){if(phase==='start')throw original;}
-   async shutdown(){cleaned++;if(cleanupFails)throw Error('cleanup failed');}
-  }
-  const api={NodeSDK:SDK,resourceFromAttributes:a=>a,SimpleSpanProcessor:Dummy,SimpleLogRecordProcessor:Dummy,
-   PeriodicExportingMetricReader:Dummy,OTLPTraceExporter:Dummy,OTLPMetricExporter:Dummy,OTLPLogExporter:Dummy,
-   trace:{getTracer(){throw original;}}};
+  class Provider{async shutdown(){cleaned++;if(cleanupFails)throw Error('cleanup failed');}}
+  class TracerProvider extends Provider{getTracer(){throw original;}}
+  class MeterProvider extends Provider{constructor(){super();if(phase==='construct')throw original;}}
+  const api={BasicTracerProvider:TracerProvider,MeterProvider,LoggerProvider:Provider,resourceFromAttributes:a=>a,
+   SimpleSpanProcessor:Dummy,SimpleLogRecordProcessor:Dummy,PeriodicExportingMetricReader:Dummy,
+   OTLPTraceExporter:Dummy,OTLPMetricExporter:Dummy,OTLPLogExporter:Dummy};
   await assert.rejects(()=>startLocalSdk(configuration,async()=>api),e=>e===original);
-  assert.equal(cleaned,1);
+  assert.equal(cleaned,phase==='construct'?1:3);
  }
 });
-
 test('disabled SDK and inherited unrelated headers never construct exporters',async()=>{
  for(const [key,value] of [['OTEL_SDK_DISABLED','TRUE'],['OTEL_EXPORTER_OTLP_HEADERS','x-otlp-api-key=synthetic,authorization=unrelated'],['OTEL_EXPORTER_OTLP_HEADERS','']]){
   const old=process.env[key];process.env[key]=value;
