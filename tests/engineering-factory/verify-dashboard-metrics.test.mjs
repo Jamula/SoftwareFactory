@@ -150,3 +150,13 @@ test('rejects unexpected recorded labels and conflicting or nonnumeric counter f
     assert.throws(()=>verifyDashboardMetrics([bad]),/DASHBOARD_METRICS_MISSING/);
   }
 });
+
+test('rejects conflicting OTLP attribute value fields in resource or metric labels',()=>{
+  for(const index of [0,1]){
+    const bad=fixture();instrument(bad,index).dataPoints[0].attributes[0].value.intValue='42';
+    assert.throws(()=>verifyDashboardMetrics([bad]),/DASHBOARD_METRICS_MISSING/);
+    assert.throws(()=>verifyDashboardMetrics([fixture(),bad]),/DASHBOARD_METRICS_MISSING/);
+  }
+  const bad=fixture();bad.resourceMetrics[0].resource.attributes[0].value.intValue='42';
+  assert.throws(()=>verifyDashboardMetrics([bad]),/DASHBOARD_METRICS_MISSING/);
+});

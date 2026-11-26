@@ -7,7 +7,7 @@ const expectedLabels={stage:'evaluate',outcome:'blocked',reason:'POLICY'};
 const service='softwarefactory-shadow';
 const hasAttributes=(attributes,expected)=>Array.isArray(attributes)&&Object.entries(expected).every(([key,value])=>{
   const matches=attributes.filter(a=>a?.key===key);
-  return matches.length===1&&matches[0].value?.stringValue===value;
+  return matches.length===1&&matches[0].value!==null&&typeof matches[0].value==='object'&&!Array.isArray(matches[0].value)&&Object.keys(matches[0].value).length===1&&Object.hasOwn(matches[0].value,'stringValue')&&matches[0].value.stringValue===value;
 });
 const positiveInteger=value=>(typeof value==='string'&&/^\d+$/.test(value)||typeof value==='number'&&Number.isSafeInteger(value))&&Number.isSafeInteger(Number(value))&&Number(value)>0;
 const nonnegativeNumber=value=>typeof value==='number'&&Number.isFinite(value)&&value>=0;
