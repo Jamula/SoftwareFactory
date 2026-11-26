@@ -6,7 +6,7 @@ SoftwareFactory is an Apache-2.0, policy-driven foundation for an event-driven a
 
 > **Current maturity: 0.1.0 development, shadow orchestration and read-only adapters.** GitHub is the required orchestrator; supported hosted execution and durable cross-run state must work with the owner's laptop offline. Actual autonomous dispatch, protected unattended integration and accepted throughput still require M01 evidence. An eligible shadow result is not authorization. The 25× program is a stretch hypothesis, not a benchmark result.
 
-![Target architecture: one shared versioned core with independently pinned consumer adapters, project policy and CI](docs/images/architecture.svg)
+![Target architecture: one shared versioned core with independently pinned consumer adapters, project policy and CI](docs/images/github-orchestration-v2.svg)
 
 ## Start here
 

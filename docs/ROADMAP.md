@@ -10,6 +10,14 @@ Owner direction, November 26, 2026 PT. **GitHub is the orchestrator.** The first
 - SoftwareFactory >=98% production source lines and >=95% branches per executable component and overall; consumers >=95/90 or their stronger local gates. Require actual exact-head independent review including summary-only findings, full trusted checks and security, protected expected-head integration, verified healthy main, scope acceptance and rollback. Unknown quota, cost, permission, identity or evidence blocks action. No synthetic approval, gate bypass or self-review. $0 incremental authorized spend.
 - Keep one owner per independent issue/path; run compatible lanes in parallel without duplicated work. Scale actual workers only with verified included capacity and authorization. Distinguish implemented, tested, reviewed, merged, deployed and independently accepted.
 
+## Architecture and dependency diagrams
+
+![Target GitHub-hosted orchestration, isolated workers, protected integration, independent repositories and optional laptop](images/github-orchestration-v2.svg)
+
+![M01–M05 milestone dependencies; speed experiments may overlap autonomy](images/milestone-dependencies-v2.svg)
+
+These diagrams describe planned capabilities and conditional dependencies, not verified active workers or granted permissions.
+
 ## Active milestones
 
 | ID | Outcome | Entry | Exit | ETA/confidence |

@@ -17,3 +17,10 @@
 [Repository README](../README.md) · [Contributing](../CONTRIBUTING.md) · [Security policy](../SECURITY.md)
 
 Diagrams are maintained as static, accessible SVG source under `images/`. They show the **target** design, not current live deployment.
+
+## Roadmap v2 diagrams
+
+- [GitHub-hosted orchestration architecture](images/github-orchestration-v2.svg)
+- [Milestone dependencies](images/milestone-dependencies-v2.svg)
+
+Both diagrams are embedded in the [roadmap](ROADMAP.md).
