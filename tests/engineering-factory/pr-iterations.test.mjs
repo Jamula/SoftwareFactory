@@ -32,3 +32,8 @@ test('same-head infrastructure retry does not lower candidate first-pass yield',
 test('candidate cause must be a string without coercion',()=>{
  for(const cause of [['reviewRepair'],{toString(){throw Error('coercion');}}]){const e=base();e.attempts.push(a('2',j,2,'candidate',cause,true));assert.equal(measure(e).reason,'CANDIDATE_UNKNOWN');}
 });
+
+test('merged evidence requires successful latest final-head queue validation',()=>{
+ const e=base();e.attempts.push(a('2',h,2,'queue','queueRevalidation',false));assert.equal(measure(e).reason,'FINAL_EVIDENCE_UNKNOWN');
+ e.attempts.push(a('3',h,3,'queue','queueRevalidation',true));const result=measure(e);assert.equal(result.known,true);assert.equal(result.firstPass,true);assert.equal(result.queueRevalidations,2);
+});
