@@ -9,7 +9,20 @@ export function localEndpoint(value) {
       u.port!=='' && !u.username && !u.password && !u.search && !u.hash && u.pathname==='/' ? u.origin : null;
   } catch { return null; }
 }
-export function createSignals({tracer,meter,clock=()=>performance.now()}) {
+// Only explicit local configuration reaches SDK construction. No default
+// collector, environment-derived per-signal URL, or arbitrary headers.
+export function localOtlpConfiguration(endpoint,protocol,header) {
+  const origin=localEndpoint(endpoint);
+  if(!origin||!['grpc','http/protobuf'].includes(protocol)||typeof header!=='string'||header.length>2048)
+    return null;
+  const match=/^x-otlp-api-key=([^,]+)$/.exec(header);
+  if(!match)return null;
+  let key;
+  try {key=decodeURIComponent(match[1]);} catch {return null;}
+  if(!/^[A-Za-z0-9._~+/=-]{1,1024}$/.test(key))return null;
+  return {endpoint:origin,protocol,headers:{'x-otlp-api-key':key}};
+}
+export function createSignals({tracer,meter,logger,clock=()=>performance.now()}) {
   let count={add:()=>{}};
   let duration={record:()=>{}};
   try {count=meter.createCounter('factory.stage.count');} catch {}
@@ -19,7 +32,7 @@ export function createSignals({tracer,meter,clock=()=>performance.now()}) {
     if(!stages.has(stage)) throw new Error('UNKNOWN_STAGE');
     const start=now();
     let pending;
-    const execute=async span=>{
+    const execute=async (span,active)=>{
       let outcome='failed',reason='OTHER';
       try {
         const result=await work();
@@ -33,15 +46,18 @@ export function createSignals({tracer,meter,clock=()=>performance.now()}) {
         try {if(Number.isFinite(elapsed)&&elapsed>=0) duration.record(elapsed,attributes);} catch {}
         try {span?.setAttributes(attributes);} catch {}
         try {if(outcome==='failed') span?.setStatus({code:2});} catch {}
+        // Emit while the active SDK span is still in context; the SDK log
+        // processor supplies trace/span correlation. Never emit work payloads.
+        try {if(active) logger?.emit({body:'factory.stage.completed',attributes});} catch {}
         try {span?.end();} catch {}
       }
     };
     // The SDK invokes its callback synchronously in the active context.
     // Retain the original work promise even if the provider throws afterwards.
-    const once=span=>pending??=execute(span);
+    const once=(span,active=false)=>pending??=execute(span,active);
     try {
       if(typeof tracer.startActiveSpan==='function') {
-        await tracer.startActiveSpan('factory.'+stage,once);
+        await tracer.startActiveSpan('factory.'+stage,span=>once(span,true));
       } else {
         once(tracer.startSpan('factory.'+stage));
       }

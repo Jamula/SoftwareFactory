@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {localEndpoint,createSignals} from '../../tools/engineering-factory/telemetry.mjs';
+import {localEndpoint,localOtlpConfiguration,createSignals} from '../../tools/engineering-factory/telemetry.mjs';
 test('local endpoint allowlist',()=>{
  assert.equal(localEndpoint('http://127.0.0.1:4318'),'http://127.0.0.1:4318');
  assert.equal(localEndpoint('https://[::1]:4318'),'https://[::1]:4318');
@@ -72,4 +72,47 @@ test('clock failure cannot mask work result or prevent span cleanup',async()=>{
   await assert.rejects(()=>run('review',async()=>{throw error;}),e=>e===error);
  }
  assert.equal(ends,2);assert.equal(counts,2);assert.equal(records,0);
+});
+
+
+test('explicit authenticated local OTLP configuration only',()=>{
+ const origin='https://127.0.0.1:4317',header='x-otlp-api-key=synthetic%2Bkey%3D';
+ assert.deepEqual(localOtlpConfiguration(origin,'grpc',header),{endpoint:origin,protocol:'grpc',headers:{'x-otlp-api-key':'synthetic+key='}});
+ assert.equal(localOtlpConfiguration('http://[::1]:4318','http/protobuf',header).protocol,'http/protobuf');
+ for(const [url,protocol,value] of [
+  ['https://external.example:4317','grpc',header],[origin,'http/json',header],[origin,'grpc',null],
+  [origin,'grpc','x'.repeat(2049)],[origin,'grpc','authorization=abc'],[origin,'grpc','x-otlp-api-key='],
+  [origin,'grpc','x-otlp-api-key=abc,authorization=def'],[origin,'grpc','x-otlp-api-key=%ZZ'],
+  [origin,'grpc','x-otlp-api-key=abc%0Adef'],[origin,'grpc','x-otlp-api-key=abc def'],
+  [origin,'grpc','x-otlp-api-key='+ 'x'.repeat(1025)]
+ ])assert.equal(localOtlpConfiguration(url,protocol,value),null);
+});
+test('structured diagnostic log is emitted within active span without private data',async()=>{
+ let active=false;const records=[];
+ const meter={createCounter:()=>({add(){}}),createHistogram:()=>({record(){}})};
+ const tracer={async startActiveSpan(name,fn){
+  active=true;
+  try{return await fn({end(){records.push('ended');}});}finally{active=false;}
+ }};
+ const logger={emit(entry){assert.equal(active,true);records.push(entry);}};
+ const observe=createSignals({meter,tracer,logger});
+ const value={outcome:'blocked',reason:'POLICY',private:'do not export'};
+ assert.equal(await observe('evaluate',async()=>value),value);
+ assert.deepEqual(records,[{body:'factory.stage.completed',attributes:{stage:'evaluate',outcome:'blocked',reason:'POLICY'}},'ended']);
+ const broken=createSignals({meter,tracer,logger:{emit(){throw Error('logger failure');}}});
+ assert.equal(await broken('queue',async()=>42),42);
+ const original=Error('private work failure');
+ await assert.rejects(()=>broken('queue',async()=>{throw original;}),e=>e===original);
+});
+
+
+test('unactivated or unavailable stage spans never emit falsely correlated logs',async()=>{
+ const records=[];let ended=0;
+ const meter={createCounter:()=>({add(){}}),createHistogram:()=>({record(){}})};
+ const logger={emit(entry){records.push(entry);}};
+ const fallback=createSignals({meter,logger,tracer:{startSpan(){return {end(){ended++;}};}}});
+ assert.equal(await fallback('queue',async()=>42),42);assert.equal(ended,1);
+ const unavailable=createSignals({meter,logger,tracer:{startActiveSpan(){throw Error('unavailable');}}});
+ assert.equal(await unavailable('review',async()=>7),7);
+ assert.deepEqual(records,[]);
 });
