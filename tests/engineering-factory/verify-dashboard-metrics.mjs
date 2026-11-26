@@ -38,10 +38,15 @@ function exactLabels(point){
     throw Error('DASHBOARD_METRICS_MISSING');
 }
 export function verifyDashboardMetrics(documents){
-  let counter,histogram;
+  let counter,histogram,histogramSum;
   for(const document of documents){
     for(const resource of document?.resourceMetrics??[]){
-      if(!hasAttributes(resource.resource?.attributes,{'service.name':service}))continue;
+      const attrs=resource.resource?.attributes;
+      if(!hasAttributes(attrs,{'service.name':service})){
+        if(Array.isArray(attrs)&&attrs.some(a=>a?.key==='service.name'&&a.value?.stringValue===service))
+          throw Error('DASHBOARD_METRICS_MISSING');
+        continue;
+      }
       for(const scope of resource.scopeMetrics??[]){
         if(scope.scope?.name!=='softwarefactory')continue;
         for(const metric of scope.metrics??[]){
@@ -62,6 +67,8 @@ export function verifyDashboardMetrics(documents){
               if(!recorded(p))continue;
               exactLabels(p);
               if(!positiveInteger(p.count)||Number(p.count)!==1||!nonnegativeNumber(p.sum))throw Error('DASHBOARD_METRICS_MISSING');
+              if(histogramSum!==undefined&&p.sum!==histogramSum)throw Error('DASHBOARD_METRICS_MISSING');
+              histogramSum=p.sum;
               histogram=period(p,histogram);
             }
           }

@@ -160,3 +160,13 @@ test('rejects conflicting OTLP attribute value fields in resource or metric labe
   const bad=fixture();bad.resourceMetrics[0].resource.attributes[0].value.intValue='42';
   assert.throws(()=>verifyDashboardMetrics([bad]),/DASHBOARD_METRICS_MISSING/);
 });
+
+test('malformed claimed service cannot conceal a reset in either document order',()=>{
+  const bad=fixture();bad.resourceMetrics[0].resource.attributes[0].value.intValue='42';
+  instrument(bad,0).dataPoints[0].startTimeUnixNano='201';instrument(bad,0).dataPoints[0].timeUnixNano='300';
+  for(const docs of [[fixture(),bad],[bad,fixture()]])assert.throws(()=>verifyDashboardMetrics(docs),/DASHBOARD_METRICS_MISSING/);
+  const duplicate=fixture();duplicate.resourceMetrics[0].resource.attributes.push({key:'service.name',value:{stringValue:'other'}});
+  assert.throws(()=>verifyDashboardMetrics([fixture(),duplicate]),/DASHBOARD_METRICS_MISSING/);
+  const changed=fixture();instrument(changed,1).dataPoints[0].sum=8.5;
+  assert.throws(()=>verifyDashboardMetrics([fixture(),changed]),/DASHBOARD_METRICS_MISSING/);
+});
