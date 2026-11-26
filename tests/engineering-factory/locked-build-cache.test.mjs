@@ -8,3 +8,10 @@ test('exact locked inputs are deterministic and every identity change invalidate
  for(const v of [null,new Proxy(e(),{}),{...e(),repositoryId:1},{...e(),trustedSource:false},{...e(),complete:false}])assert.equal(lockedBuildCache(v).reason,'INPUT_UNKNOWN');
  for(const change of [{os:'other'},{arch:'other'},{node:'latest'},{lockDigest:'bad'}])assert.equal(lockedBuildCache({...e(),...change}).reason,'INVALID_IDENTITY');
 });
+
+test('bounds all version metadata before hashing',()=>{
+ for(const field of ['node','dotnet','aspire']){
+  const invalid=lockedBuildCache({...e(),[field]:'1'.repeat(1000000)+'.0.0'});
+  assert.equal(invalid.reason,'INVALID_IDENTITY');assert.equal(Object.hasOwn(invalid,'key'),false);
+ }
+});

@@ -1,7 +1,7 @@
 import {createHash} from 'node:crypto';
 import {types} from 'node:util';
 const digest=v=>typeof v==='string'&&/^[a-f0-9]{64}$/.test(v);
-const version=v=>typeof v==='string'&&/^[0-9]+\.[0-9]+\.[0-9]+$/.test(v);
+const version=v=>typeof v==='string'&&v.length<=32&&/^[0-9]+\.[0-9]+\.[0-9]+$/.test(v);
 const own=(v,ks)=>v!==null&&typeof v==='object'&&!types.isProxy(v)&&!Array.isArray(v)&&ks.every(k=>Object.hasOwn(Object.getOwnPropertyDescriptor(v,k)??{},'value'));
 const deny=reason=>({shadow:true,reuse:false,skipRequiredChecks:false,reason});
 export function lockedBuildCache(e){
