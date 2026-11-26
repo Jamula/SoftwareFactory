@@ -59,3 +59,11 @@ test('current-head non-clear Copilot summary supersedes earlier approval but nev
   for(const state of ['CHANGES_REQUESTED','DISMISSED'])assert.equal(normalize(head,[r(1,state,head,bot),comment],repo).reviews[0].state,state);
  }
 });
+
+test('stale reviews never remove a current-head non-clear summary when another reviewer approved',()=>{
+ const repo='Jamula/SoftwareFactory',bot='copilot-pull-request-reviewer[bot]';
+ for(const summaryDisposition of [undefined,'uncertain','actionable'])for(const state of ['COMMENTED','APPROVED']){
+  const result=normalize(head,[{...r(1,'COMMENTED',head,bot),summaryDisposition},r(2,'APPROVED',head,'Other'),r(3,state,stale,bot)],repo);
+  assert.equal(result.reviews.length,2);assert.equal(result.reviews.find(v=>v.reviewer===bot).state,'COMMENTED');assert.notEqual(result.reviews.find(v=>v.reviewer===bot).summaryDisposition,'clear');
+ }
+});
