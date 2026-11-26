@@ -127,14 +127,18 @@ test('accepts complete empty inventories and in-progress metadata with unknown u
  assert.equal(noRecords.reviewSnapshotComplete,true);
  assert.deepEqual(noRecords.reviews,[]);
  assert.deepEqual(noRecords.checks,[]);
- const pendingReview={...review,state:'PENDING',user:{login:'review-bot',id:null}};
- delete pendingReview.submitted_at;
+ const pendingReview={...review,state:'PENDING',submitted_at:null,user:{login:'review-bot',id:null}};
  const pendingCheck={...check,status:'in_progress',conclusion:null,completed_at:null};
  const pending=await readPullSignals(42,head,async url=>url.endsWith('/pulls/42')?response(pull):
   url.includes('/reviews?')?response([pendingReview]):response({total_count:1,check_runs:[pendingCheck]}));
  assert.equal(pending.reviews[0].reviewerId,null);
  assert.equal(pending.reviews[0].submittedAt,null);
  assert.equal(pending.checks[0].conclusion,null);
+ const withoutSubmittedAt={...pendingReview};
+ delete withoutSubmittedAt.submitted_at;
+ const absentTimestamp=await readPullSignals(42,head,async url=>url.endsWith('/pulls/42')?response(pull):
+  url.includes('/reviews?')?response([withoutSubmittedAt]):response({total_count:0,check_runs:[]}));
+ assert.equal(absentTimestamp.reviews[0].submittedAt,null);
  for(const status of ['queued','in_progress','waiting','requested','pending']){
   const checkRow={...check,id:300,status,conclusion:null,completed_at:null};
   const snapshot=await readPullSignals(42,head,async url=>url.endsWith('/pulls/42')?response(pull):
