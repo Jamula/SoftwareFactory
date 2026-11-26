@@ -66,9 +66,19 @@ export function planLanes(config, tasks, active = []) {
     ownedPaths.push(...item.paths);
   }
   const accepted = new Set(tasks.filter(task => task.state === 'accepted').map(task => task.id));
+  // Longest unfinished downstream chain, computed only after DAG validation.
+  const downstream = new Map(tasks.map(task => [task.id, []]));
+  for (const task of tasks) {
+    if (task.state !== 'accepted') for (const dependency of task.dependencies) downstream.get(dependency).push(task.id);
+  }
+  const depths = new Map();
+  function depth(id) {
+    if (!depths.has(id)) depths.set(id, downstream.get(id).reduce((best, child) => Math.max(best, 1 + depth(child)), 0));
+    return depths.get(id);
+  }
   const candidates = tasks.filter(task => task.state === 'approved' &&
     task.dependencies.every(dependency => accepted.has(dependency)))
-    .sort((left, right) => left.priority - right.priority || left.id - right.id);
+    .sort((left, right) => left.priority - right.priority || depth(right.id) - depth(left.id) || left.id - right.id);
   const counts = new Map(laneCounts);
   const scheduled = [];
   for (const task of candidates) {
