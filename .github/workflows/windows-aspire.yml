@@ -80,7 +80,34 @@ jobs:
           New-Item -ItemType Directory -Path $dataRoot | Out-Null
           $env:ASPIRE_DASHBOARD_DATA_DIRECTORY = $dataRoot
           $env:ASPIRE_DASHBOARD_PERSISTENCE_MODE = 'Run'
+          function Invoke-BoundedNative([string]$command, [string[]]$arguments, [int]$seconds, [string]$stage) {
+            Write-Host "Windows runtime stage: $stage started"
+            $timer = [System.Diagnostics.Stopwatch]::StartNew()
+            # ArgumentList avoids shell parsing and preserves paths containing spaces.
+            $info = [System.Diagnostics.ProcessStartInfo]::new()
+            $info.FileName = (Get-Command $command -ErrorAction Stop).Source
+            $info.UseShellExecute = $false
+            $info.RedirectStandardOutput = $true
+            $info.RedirectStandardError = $true
+            foreach ($argument in $arguments) { $info.ArgumentList.Add($argument) }
+            $process = [System.Diagnostics.Process]::Start($info)
+            try {
+              # Drain both pipes concurrently; do not log certificate or CLI output.
+              $stdout = $process.StandardOutput.ReadToEndAsync()
+              $stderr = $process.StandardError.ReadToEndAsync()
+              if (-not $process.WaitForExit($seconds * 1000)) {
+                try { $process.Kill($true) } catch { }
+                throw "Windows runtime stage timed out: $stage"
+              }
+              if ($process.ExitCode -ne 0) { throw "Windows runtime stage failed: $stage (exit $($process.ExitCode))" }
+              # A descendant may retain pipe handles. Never block indefinitely on them.
+              if (-not $stdout.Wait(2000) -or -not $stderr.Wait(2000)) { throw "Windows runtime output drain timed out: $stage" }
+              Write-Host "Windows runtime stage: $stage completed in $($timer.ElapsedMilliseconds) ms"
+            } finally { $process.Dispose() }
+          }
           function Invoke-Aspire([string[]]$arguments, [int]$seconds) {
+            Write-Host "Windows runtime stage: Aspire $($arguments[0]) started"
+            $timer = [System.Diagnostics.Stopwatch]::StartNew()
             $p = Start-Process -FilePath (Get-Command aspire -ErrorAction Stop).Source -ArgumentList $arguments -RedirectStandardOutput $out -RedirectStandardError $err -NoNewWindow -PassThru
             if (-not $p.WaitForExit($seconds * 1000)) {
               try { $p.Kill($true) } catch { }
@@ -96,24 +123,34 @@ jobs:
               elseif ($diagnostic -match '(?i)access is denied|permission denied|sharing violation') { $category = 'file-access' }
               throw "Aspire $($arguments[0]) failed (exit $($p.ExitCode), category $category)"
             }
+            Write-Host "Windows runtime stage: Aspire $($arguments[0]) completed in $($timer.ElapsedMilliseconds) ms"
             Get-Content -Raw $out
           }
+          $appHostStopped = $false
           try {
-            $null = & dotnet dev-certs https --export-path $cert --format PEM 2>&1
-            if ($LASTEXITCODE -ne 0) { throw 'Certificate export failed' }
+            Invoke-BoundedNative 'dotnet' @('dev-certs','https','--export-path',$cert,'--format','PEM') 30 'certificate-export'
             # The noninteractive CLI does not trust development certificates on
             # Windows. Trust only this runner-generated public certificate, in
-            # CurrentUser (never LocalMachine), and remove only our addition.
+            # CurrentUser (never LocalMachine), using the noninteractive store API.
             if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted') { throw 'Expected disposable hosted runner' }
-            $null = & certutil.exe -f -decode $cert $der 2>&1
-            if ($LASTEXITCODE -ne 0) { throw 'Certificate conversion failed' }
+            Invoke-BoundedNative 'certutil.exe' @('-f','-decode',$cert,$der) 15 'certificate-conversion'
             $publicCert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($der)
             $trustPath = 'Cert:\CurrentUser\Root\' + $publicCert.Thumbprint
-            if (-not (Test-Path -LiteralPath $trustPath)) {
-              $addedTrust = $trustPath
-              $null = Import-Certificate -FilePath $der -CertStoreLocation 'Cert:\CurrentUser\Root' -ErrorAction Stop
+            $store = [System.Security.Cryptography.X509Certificates.X509Store]::new('Root','CurrentUser')
+            try {
+              $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
+              if ($store.Certificates.Find([System.Security.Cryptography.X509Certificates.X509FindType]::FindByThumbprint,$publicCert.Thumbprint,$false).Count -eq 0) {
+                Write-Host 'Windows runtime stage: certificate-import started'
+                $store.Add($publicCert)
+                $addedTrust = $trustPath
+                Write-Host 'Windows runtime stage: certificate-import completed'
+              }
+              if ($store.Certificates.Find([System.Security.Cryptography.X509Certificates.X509FindType]::FindByThumbprint,$publicCert.Thumbprint,$false).Count -eq 0) { throw 'Local certificate trust missing' }
+            } finally {
+              $store.Close()
+              $store.Dispose()
             }
-            if (-not (Test-Path -LiteralPath $trustPath)) { throw 'Local certificate trust missing' }
+            Write-Host 'Windows runtime stage: certificate trust verified'
             $env:NODE_EXTRA_CA_CERTS = $cert
             $env:ASPIRE_DASHBOARD_OTLP_HTTP_ENDPOINT_URL = 'https://127.0.0.1:18890'
             $startup = Invoke-Aspire @('start','--apphost','apphost.cs','--isolated','--non-interactive','--nologo') 120
@@ -133,16 +170,27 @@ jobs:
             python tests/engineering-factory/verify-dashboard-export.py $archive
             if ($LASTEXITCODE -ne 0) { throw 'Dashboard trace/log readback failed' }
             $null = Invoke-Aspire @('stop','--apphost','apphost.cs','--non-interactive') 30
+            $appHostStopped = $true
             python tests/engineering-factory/test-dashboard-metric-receipt.py
             if ($LASTEXITCODE -ne 0) { throw 'Metric verifier regression tests failed' }
             python tests/engineering-factory/verify-dashboard-metric-receipt.py $dataRoot
             if ($LASTEXITCODE -ne 0) { throw 'Dashboard metric persistence verification failed' }
             Write-Host 'Isolated Windows AppHost stopped'
           } finally {
-            try { $null = Invoke-Aspire @('stop','--apphost','apphost.cs','--non-interactive') 30 } catch { }
+            if (-not $appHostStopped) {
+              try { $null = Invoke-Aspire @('stop','--apphost','apphost.cs','--non-interactive') 30 } catch { }
+            }
             try {
               if ($addedTrust -and (Test-Path -LiteralPath $addedTrust)) {
-                Remove-Item -LiteralPath $addedTrust -Force -ErrorAction Stop
+                $store = [System.Security.Cryptography.X509Certificates.X509Store]::new('Root','CurrentUser')
+                try {
+                  $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
+                  $store.Remove($publicCert)
+                } finally {
+                  $store.Close()
+                  $store.Dispose()
+                }
+                if (Test-Path -LiteralPath $addedTrust) { throw 'Local certificate trust cleanup failed' }
               }
             } finally {
               Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
