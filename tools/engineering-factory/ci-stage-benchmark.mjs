@@ -17,6 +17,23 @@ export const MANDATORY_CI_CHECK_CONTEXTS = Object.freeze([
   'CodeQL'
 ]);
 
+export const BASELINE_CONSOLIDATION_CHECK_COUNT = 12;
+export const TARGET_CONSOLIDATION_CHECK_COUNT = 8;
+
+export const CHECK_CONSOLIDATION_KINDS = Object.freeze([
+  'required-execution',
+  'reporting',
+  'disabled-shadow-inventory'
+]);
+
+export const MANDATORY_CONSOLIDATED_CHECK_GATES = Object.freeze([
+  'build-test',
+  'upload-coverage-javascript',
+  'windows-aspire-runtime',
+  '.NET MAF specialist agents',
+  'CodeQL'
+]);
+
 export const ASPIRE_STAGE_KEYS = Object.freeze([
   'setupMs',
   'restoreBuildMs',
@@ -1011,5 +1028,518 @@ export function buildMafBoundedRepairHandoff(input) {
     maxAttempts: budgetCap,
     remainingAttempts,
     escalateToHuman: !repairEligible
+  };
+}
+
+const SF_REPOSITORY_ID = 1471342715;
+const SF_REPOSITORY_SLUG = 'Jamula/SoftwareFactory';
+const DOTNET_MAF_SPECIALIST_WORKFLOW = '.NET MAF specialist agents';
+const KNOWN_EXECUTION_SUBJOBS = new Set(['test-coverage', 'linux-aspire-runtime']);
+const CHECK_KINDS_SET = new Set(CHECK_CONSOLIDATION_KINDS);
+const CHECK_TRIGGERS_SET = new Set([
+  'pull_request',
+  'merge_group',
+  'push_main',
+  'schedule',
+  'workflow_dispatch',
+  'issues',
+  'pull_request_target',
+  'workflow_run'
+]);
+const CHECK_PLATFORMS_SET = new Set(['linux', 'windows']);
+const CONSOLIDATION_INPUT_REQUIRED_KEYS = [
+  'repositoryId',
+  'repository',
+  'baselineChecks',
+  'proposedChecks',
+  'gates'
+];
+const CONSOLIDATION_GATES_REQUIRED_KEYS = [
+  'secretScanning',
+  'mergeGroupCoverage',
+  'independentExactHeadReview',
+  'lineCoverageMinPct',
+  'branchCoverageMinPct',
+  'nativeCoverageIntegrated',
+  'equivalentVerificationProven',
+  'shadowEventIngestionPreserved'
+];
+const CONSOLIDATION_CHECK_REQUIRED_KEYS = ['context', 'kind', 'triggers'];
+const CONSOLIDATION_CHECK_OPTIONAL_KEYS = ['workflow', 'platforms', 'trustedProducer', 'consolidatedInto'];
+
+const isTrimmedLabel = value => isContextName(value) && value.trim() === value;
+
+function defaultPreservedGates() {
+  return {
+    buildTest: false,
+    uploadCoverageJavascript: false,
+    windowsAspireRuntime: false,
+    dotnetMafSpecialistAgents: false,
+    codeql: false,
+    secretScanning: false,
+    mergeGroupCoverage: false,
+    independentExactHeadReview: false,
+    coverageThresholds98And95: false,
+    shadowInventoryPreserved: false
+  };
+}
+
+function consolidationBlocked(
+  reason,
+  classification = null,
+  missingMandatoryGates = [],
+  preservedGates = defaultPreservedGates()
+) {
+  return {
+    valid: false,
+    state: 'blocked',
+    shadow: true,
+    consolidationAllowed: false,
+    parityVerified: false,
+    reason,
+    targets: {
+      baselineMeaningfulChecks: BASELINE_CONSOLIDATION_CHECK_COUNT,
+      targetMeaningfulChecks: TARGET_CONSOLIDATION_CHECK_COUNT
+    },
+    classification,
+    exactTwelveToEight: false,
+    meaningfulChecksReducedBy: null,
+    consolidatedChecks: [],
+    missingMandatoryGates,
+    preservedGates,
+    fullVerificationRequired: true,
+    skipRequiredChecks: false
+  };
+}
+
+function isValidConsolidationCheck(item) {
+  if (!isPlainDataObject(item, CONSOLIDATION_CHECK_REQUIRED_KEYS, CONSOLIDATION_CHECK_OPTIONAL_KEYS) ||
+      !isTrimmedLabel(item.context) || !CHECK_KINDS_SET.has(item.kind) ||
+      !isExactArray(item.triggers, 16) || item.triggers.length === 0 ||
+      !item.triggers.every(trigger => CHECK_TRIGGERS_SET.has(trigger)) ||
+      new Set(item.triggers).size !== item.triggers.length) {
+    return false;
+  }
+  if (Object.hasOwn(item, 'workflow') && !isTrimmedLabel(item.workflow)) return false;
+  if (Object.hasOwn(item, 'platforms') && (
+    !isExactArray(item.platforms, 4) || item.platforms.length === 0 ||
+    !item.platforms.every(platform => CHECK_PLATFORMS_SET.has(platform)) ||
+    new Set(item.platforms).size !== item.platforms.length
+  )) {
+    return false;
+  }
+  if (Object.hasOwn(item, 'trustedProducer') && typeof item.trustedProducer !== 'boolean') {
+    return false;
+  }
+  if (Object.hasOwn(item, 'consolidatedInto') && !isTrimmedLabel(item.consolidatedInto)) {
+    return false;
+  }
+  return true;
+}
+
+function classifyConsolidationChecks(checks) {
+  const requiredExecution = [];
+  const reporting = [];
+  const disabledShadowInventory = [];
+  for (const check of checks) {
+    if (check.kind === 'required-execution') requiredExecution.push(check.context);
+    else if (check.kind === 'reporting') reporting.push(check.context);
+    else disabledShadowInventory.push(check.context);
+  }
+  return {
+    totalCount: checks.length,
+    meaningfulCount: requiredExecution.length + reporting.length,
+    requiredExecution,
+    reporting,
+    disabledShadowInventory
+  };
+}
+
+export function defaultSoftwareFactoryConsolidationProposal() {
+  const standardTriggers = ['pull_request', 'merge_group', 'push_main'];
+  const retainedEight = [
+    {
+      context: 'build-test',
+      workflow: 'Factory validation',
+      kind: 'required-execution',
+      platforms: ['linux'],
+      triggers: [...standardTriggers],
+      trustedProducer: true
+    },
+    {
+      context: 'upload-coverage-javascript',
+      workflow: 'Factory validation',
+      kind: 'reporting',
+      platforms: ['linux'],
+      triggers: [...standardTriggers],
+      trustedProducer: true
+    },
+    {
+      context: 'windows-aspire-runtime',
+      workflow: 'Windows Aspire runtime',
+      kind: 'required-execution',
+      platforms: ['windows'],
+      triggers: [...standardTriggers],
+      trustedProducer: true
+    },
+    {
+      context: 'linux-dotnet-agents',
+      workflow: DOTNET_MAF_SPECIALIST_WORKFLOW,
+      kind: 'required-execution',
+      platforms: ['linux'],
+      triggers: [...standardTriggers],
+      trustedProducer: true
+    },
+    {
+      context: 'windows-dotnet-agents',
+      workflow: DOTNET_MAF_SPECIALIST_WORKFLOW,
+      kind: 'required-execution',
+      platforms: ['windows'],
+      triggers: [...standardTriggers],
+      trustedProducer: true
+    },
+    {
+      context: 'CodeQL',
+      workflow: 'CodeQL',
+      kind: 'required-execution',
+      platforms: ['linux'],
+      triggers: [...standardTriggers],
+      trustedProducer: true
+    },
+    {
+      context: 'CodeQL / Analyze (actions)',
+      workflow: 'CodeQL',
+      kind: 'required-execution',
+      platforms: ['linux'],
+      triggers: ['pull_request', 'push_main'],
+      trustedProducer: true
+    },
+    {
+      context: 'pinned-synthetic-replay',
+      workflow: 'Reusable replay smoke',
+      kind: 'required-execution',
+      platforms: ['linux'],
+      triggers: [...standardTriggers],
+      trustedProducer: true
+    }
+  ];
+  const shadowInventory = {
+    context: 'inventory',
+    workflow: 'Factory shadow reconciliation',
+    kind: 'disabled-shadow-inventory',
+    platforms: ['linux'],
+    triggers: ['schedule', 'workflow_dispatch', 'issues', 'pull_request_target', 'push_main', 'workflow_run'],
+    trustedProducer: true
+  };
+  return {
+    repositoryId: SF_REPOSITORY_ID,
+    repository: SF_REPOSITORY_SLUG,
+    baselineChecks: [
+      ...retainedEight.map(item => ({...item, platforms: [...item.platforms], triggers: [...item.triggers]})),
+      {
+        context: 'test-coverage',
+        workflow: 'Factory validation',
+        kind: 'required-execution',
+        platforms: ['linux'],
+        triggers: [...standardTriggers],
+        trustedProducer: true,
+        consolidatedInto: 'build-test'
+      },
+      {
+        context: 'linux-aspire-runtime',
+        workflow: 'Factory validation',
+        kind: 'required-execution',
+        platforms: ['linux'],
+        triggers: [...standardTriggers],
+        trustedProducer: true,
+        consolidatedInto: 'build-test'
+      },
+      {
+        context: 'CodeQL - Code Quality / Analyze (javascript-typescript)',
+        workflow: 'CodeQL - Code Quality',
+        kind: 'reporting',
+        platforms: ['linux'],
+        triggers: ['pull_request'],
+        trustedProducer: true,
+        consolidatedInto: 'CodeQL'
+      },
+      {
+        context: 'CodeQL - Code Quality / Analyze (csharp)',
+        workflow: 'CodeQL - Code Quality',
+        kind: 'reporting',
+        platforms: ['linux'],
+        triggers: ['pull_request'],
+        trustedProducer: true,
+        consolidatedInto: 'CodeQL'
+      },
+      {...shadowInventory, platforms: [...shadowInventory.platforms], triggers: [...shadowInventory.triggers]}
+    ],
+    proposedChecks: [
+      ...retainedEight.map(item => ({...item, platforms: [...item.platforms], triggers: [...item.triggers]})),
+      {...shadowInventory, platforms: [...shadowInventory.platforms], triggers: [...shadowInventory.triggers]}
+    ],
+    gates: {
+      secretScanning: true,
+      mergeGroupCoverage: true,
+      independentExactHeadReview: true,
+      lineCoverageMinPct: 98,
+      branchCoverageMinPct: 95,
+      nativeCoverageIntegrated: true,
+      equivalentVerificationProven: true,
+      shadowEventIngestionPreserved: true
+    }
+  };
+}
+
+export function evaluateCheckConsolidationParity(input) {
+  if (!isPlainDataObject(input, CONSOLIDATION_INPUT_REQUIRED_KEYS) ||
+      !Number.isSafeInteger(input.repositoryId) || input.repositoryId <= 0 ||
+      !isTrimmedLabel(input.repository) ||
+      !isPlainDataObject(input.gates, CONSOLIDATION_GATES_REQUIRED_KEYS) ||
+      typeof input.gates.secretScanning !== 'boolean' ||
+      typeof input.gates.mergeGroupCoverage !== 'boolean' ||
+      typeof input.gates.independentExactHeadReview !== 'boolean' ||
+      typeof input.gates.lineCoverageMinPct !== 'number' || !Number.isFinite(input.gates.lineCoverageMinPct) ||
+      input.gates.lineCoverageMinPct < 0 || input.gates.lineCoverageMinPct > 100 ||
+      typeof input.gates.branchCoverageMinPct !== 'number' || !Number.isFinite(input.gates.branchCoverageMinPct) ||
+      input.gates.branchCoverageMinPct < 0 || input.gates.branchCoverageMinPct > 100 ||
+      typeof input.gates.nativeCoverageIntegrated !== 'boolean' ||
+      typeof input.gates.equivalentVerificationProven !== 'boolean' ||
+      typeof input.gates.shadowEventIngestionPreserved !== 'boolean' ||
+      !isExactArray(input.baselineChecks, 64) || input.baselineChecks.length === 0 ||
+      !input.baselineChecks.every(isValidConsolidationCheck) ||
+      !isExactArray(input.proposedChecks, 64) || input.proposedChecks.length === 0 ||
+      !input.proposedChecks.every(isValidConsolidationCheck)) {
+    return consolidationBlocked('CONSOLIDATION_INPUT_INVALID');
+  }
+
+  if (input.repository !== SF_REPOSITORY_SLUG || input.repositoryId !== SF_REPOSITORY_ID) {
+    return consolidationBlocked('UNTRUSTED_REPOSITORY');
+  }
+
+  const baselineByContext = new Map();
+  for (const check of input.baselineChecks) {
+    if (baselineByContext.has(check.context)) return consolidationBlocked('DUPLICATE_CHECK_CONTEXT');
+    baselineByContext.set(check.context, check);
+  }
+  const proposedByContext = new Map();
+  for (const check of input.proposedChecks) {
+    if (proposedByContext.has(check.context)) return consolidationBlocked('DUPLICATE_CHECK_CONTEXT');
+    proposedByContext.set(check.context, check);
+  }
+
+  const classification = {
+    baseline: classifyConsolidationChecks(input.baselineChecks),
+    proposed: classifyConsolidationChecks(input.proposedChecks)
+  };
+
+  const buildTestCheck = proposedByContext.get('build-test');
+  const uploadCoverageCheck = proposedByContext.get('upload-coverage-javascript');
+  const windowsAspireCheck = proposedByContext.get('windows-aspire-runtime');
+  const dotnetMafChecks = input.proposedChecks.filter(
+    check => check.context === DOTNET_MAF_SPECIALIST_WORKFLOW || check.workflow === DOTNET_MAF_SPECIALIST_WORKFLOW
+  );
+  const codeqlCheck = proposedByContext.get('CodeQL');
+
+  const missingMandatoryGates = [];
+  if (buildTestCheck === undefined) missingMandatoryGates.push('build-test');
+  if (uploadCoverageCheck === undefined) missingMandatoryGates.push('upload-coverage-javascript');
+  if (windowsAspireCheck === undefined) missingMandatoryGates.push('windows-aspire-runtime');
+  if (dotnetMafChecks.length === 0) missingMandatoryGates.push(DOTNET_MAF_SPECIALIST_WORKFLOW);
+  if (codeqlCheck === undefined) missingMandatoryGates.push('CodeQL');
+
+  const isTrusted = check => check.trustedProducer === true;
+  const hasExplicitPlatform = (check, expected) =>
+    Object.hasOwn(check, 'platforms') && check.platforms.includes(expected);
+  const dotnetMafPlatforms = new Set();
+  const dotnetMafAllHavePlatforms = dotnetMafChecks.every(check => Object.hasOwn(check, 'platforms'));
+  if (dotnetMafAllHavePlatforms) {
+    for (const check of dotnetMafChecks) {
+      for (const platform of check.platforms) dotnetMafPlatforms.add(platform);
+    }
+  }
+
+  const buildTestOk = buildTestCheck !== undefined &&
+    buildTestCheck.kind === 'required-execution' &&
+    isTrusted(buildTestCheck) &&
+    hasExplicitPlatform(buildTestCheck, 'linux') &&
+    buildTestCheck.triggers.includes('pull_request');
+  const uploadCoverageOk = uploadCoverageCheck !== undefined &&
+    uploadCoverageCheck.kind === 'reporting' &&
+    isTrusted(uploadCoverageCheck) &&
+    hasExplicitPlatform(uploadCoverageCheck, 'linux') &&
+    uploadCoverageCheck.triggers.includes('pull_request');
+  const windowsAspireOk = windowsAspireCheck !== undefined &&
+    windowsAspireCheck.kind === 'required-execution' &&
+    isTrusted(windowsAspireCheck) &&
+    hasExplicitPlatform(windowsAspireCheck, 'windows') &&
+    windowsAspireCheck.triggers.includes('pull_request');
+  const dotnetMafOk = dotnetMafChecks.length > 0 &&
+    dotnetMafAllHavePlatforms &&
+    dotnetMafChecks.every(check =>
+      check.kind === 'required-execution' &&
+      isTrusted(check) &&
+      check.triggers.includes('pull_request')
+    ) &&
+    dotnetMafPlatforms.has('linux') &&
+    dotnetMafPlatforms.has('windows');
+  const codeqlOk = codeqlCheck !== undefined &&
+    codeqlCheck.kind === 'required-execution' &&
+    isTrusted(codeqlCheck) &&
+    hasExplicitPlatform(codeqlCheck, 'linux') &&
+    codeqlCheck.triggers.includes('pull_request');
+
+  const shadowInventoryOk = input.gates.shadowEventIngestionPreserved === true &&
+    classification.baseline.disabledShadowInventory.every(ctx => {
+      const base = baselineByContext.get(ctx);
+      const prop = proposedByContext.get(ctx);
+      return prop !== undefined &&
+        prop.kind === 'disabled-shadow-inventory' &&
+        isTrusted(prop) &&
+        (!Object.hasOwn(base, 'platforms') ||
+          (Object.hasOwn(prop, 'platforms') && base.platforms.every(p => prop.platforms.includes(p)))) &&
+        base.triggers.every(trigger => prop.triggers.includes(trigger));
+    }) &&
+    classification.proposed.disabledShadowInventory.every(ctx => {
+      const base = baselineByContext.get(ctx);
+      return base !== undefined && base.kind === 'disabled-shadow-inventory';
+    });
+
+  let baselineMergeGroupPreserved = true;
+  for (const baseCheck of input.baselineChecks) {
+    if (baseCheck.kind === 'disabled-shadow-inventory' || !baseCheck.triggers.includes('merge_group')) continue;
+    const target = proposedByContext.get(baseCheck.context) ??
+      (Object.hasOwn(baseCheck, 'consolidatedInto') ? proposedByContext.get(baseCheck.consolidatedInto) : undefined);
+    if (target === undefined || !target.triggers.includes('merge_group')) {
+      baselineMergeGroupPreserved = false;
+    }
+  }
+
+  const mandatoryMergeGroupOk = buildTestCheck !== undefined && buildTestCheck.triggers.includes('merge_group') &&
+    uploadCoverageCheck !== undefined && uploadCoverageCheck.triggers.includes('merge_group') &&
+    windowsAspireCheck !== undefined && windowsAspireCheck.triggers.includes('merge_group') &&
+    dotnetMafChecks.length > 0 && dotnetMafChecks.every(check => check.triggers.includes('merge_group'));
+  const mergeGroupOk = input.gates.mergeGroupCoverage === true &&
+    mandatoryMergeGroupOk &&
+    baselineMergeGroupPreserved;
+  const secretScanningOk = input.gates.secretScanning === true;
+  const independentReviewOk = input.gates.independentExactHeadReview === true;
+  const coverageThresholdsOk = input.gates.lineCoverageMinPct >= 98 &&
+    input.gates.branchCoverageMinPct >= 95 &&
+    input.gates.nativeCoverageIntegrated === true;
+
+  const preservedGates = {
+    buildTest: buildTestOk,
+    uploadCoverageJavascript: uploadCoverageOk,
+    windowsAspireRuntime: windowsAspireOk,
+    dotnetMafSpecialistAgents: dotnetMafOk,
+    codeql: codeqlOk,
+    secretScanning: secretScanningOk,
+    mergeGroupCoverage: mergeGroupOk,
+    independentExactHeadReview: independentReviewOk,
+    coverageThresholds98And95: coverageThresholdsOk,
+    shadowInventoryPreserved: shadowInventoryOk
+  };
+
+  if (missingMandatoryGates.length > 0) {
+    return consolidationBlocked('MANDATORY_CHECK_DROPPED', classification, missingMandatoryGates, preservedGates);
+  }
+  if (!shadowInventoryOk) {
+    return consolidationBlocked('SHADOW_INVENTORY_VIOLATION', classification, [], preservedGates);
+  }
+  if (!buildTestOk || !uploadCoverageOk || !windowsAspireOk || !dotnetMafOk || !codeqlOk) {
+    return consolidationBlocked('MANDATORY_CHECK_ROLE_INVALID', classification, [], preservedGates);
+  }
+  if (!secretScanningOk) {
+    return consolidationBlocked('SECRET_SCANNING_DROPPED', classification, [], preservedGates);
+  }
+  if (!independentReviewOk) {
+    return consolidationBlocked('INDEPENDENT_REVIEW_DROPPED', classification, [], preservedGates);
+  }
+  if (!coverageThresholdsOk) {
+    return consolidationBlocked('COVERAGE_GATE_WEAKENED', classification, [], preservedGates);
+  }
+
+  const consolidatedChecks = [];
+  for (const check of [...input.baselineChecks, ...input.proposedChecks]) {
+    if (KNOWN_EXECUTION_SUBJOBS.has(check.context) && check.kind !== 'required-execution') {
+      return consolidationBlocked('UNVERIFIED_CHECK_CONSOLIDATION', classification, [], preservedGates);
+    }
+  }
+  for (const baseCheck of input.baselineChecks) {
+    if (baseCheck.kind === 'disabled-shadow-inventory') continue;
+    const retained = proposedByContext.get(baseCheck.context);
+    if (retained !== undefined) {
+      if (!isTrusted(retained) ||
+          (baseCheck.kind === 'required-execution' && retained.kind !== 'required-execution') ||
+          (Object.hasOwn(baseCheck, 'platforms') &&
+            (!Object.hasOwn(retained, 'platforms') || !baseCheck.platforms.every(p => retained.platforms.includes(p))))) {
+        return consolidationBlocked('UNVERIFIED_CHECK_CONSOLIDATION', classification, [], preservedGates);
+      }
+      if (baseCheck.triggers.includes('merge_group') && !retained.triggers.includes('merge_group')) {
+        return consolidationBlocked('MERGE_GROUP_COVERAGE_DROPPED', classification, [], preservedGates);
+      }
+      if (!baseCheck.triggers.every(trigger => retained.triggers.includes(trigger))) {
+        return consolidationBlocked('UNVERIFIED_CHECK_CONSOLIDATION', classification, [], preservedGates);
+      }
+      continue;
+    }
+    if (!Object.hasOwn(baseCheck, 'consolidatedInto') || !proposedByContext.has(baseCheck.consolidatedInto)) {
+      return consolidationBlocked('UNVERIFIED_CHECK_CONSOLIDATION', classification, [], preservedGates);
+    }
+    const target = proposedByContext.get(baseCheck.consolidatedInto);
+    if (!isTrusted(target) ||
+        target.kind === 'disabled-shadow-inventory' ||
+        (baseCheck.kind === 'required-execution' && target.kind !== 'required-execution') ||
+        (Object.hasOwn(baseCheck, 'platforms') &&
+          (!Object.hasOwn(target, 'platforms') || !baseCheck.platforms.every(p => target.platforms.includes(p))))) {
+      return consolidationBlocked('UNVERIFIED_CHECK_CONSOLIDATION', classification, [], preservedGates);
+    }
+    if (baseCheck.triggers.includes('merge_group') && !target.triggers.includes('merge_group')) {
+      return consolidationBlocked('MERGE_GROUP_COVERAGE_DROPPED', classification, [], preservedGates);
+    }
+    if (!baseCheck.triggers.every(trigger => target.triggers.includes(trigger))) {
+      return consolidationBlocked('UNVERIFIED_CHECK_CONSOLIDATION', classification, [], preservedGates);
+    }
+    consolidatedChecks.push({
+      context: baseCheck.context,
+      kind: baseCheck.kind,
+      consolidatedInto: target.context
+    });
+  }
+
+  if (!mergeGroupOk) {
+    return consolidationBlocked('MERGE_GROUP_COVERAGE_DROPPED', classification, [], preservedGates);
+  }
+  if (input.gates.equivalentVerificationProven !== true) {
+    return consolidationBlocked('UNVERIFIED_CHECK_CONSOLIDATION', classification, [], preservedGates);
+  }
+  if (classification.proposed.meaningfulCount > TARGET_CONSOLIDATION_CHECK_COUNT ||
+      classification.proposed.meaningfulCount >= classification.baseline.meaningfulCount) {
+    return consolidationBlocked('CHECK_COUNT_CONTRACT_MISMATCH', classification, [], preservedGates);
+  }
+
+  return {
+    valid: true,
+    state: 'verified',
+    shadow: true,
+    consolidationAllowed: true,
+    parityVerified: true,
+    reason: 'CHECK_CONSOLIDATION_PARITY_VERIFIED',
+    targets: {
+      baselineMeaningfulChecks: BASELINE_CONSOLIDATION_CHECK_COUNT,
+      targetMeaningfulChecks: TARGET_CONSOLIDATION_CHECK_COUNT
+    },
+    classification,
+    exactTwelveToEight:
+      classification.baseline.meaningfulCount === BASELINE_CONSOLIDATION_CHECK_COUNT &&
+      classification.proposed.meaningfulCount === TARGET_CONSOLIDATION_CHECK_COUNT,
+    meaningfulChecksReducedBy:
+      classification.baseline.meaningfulCount - classification.proposed.meaningfulCount,
+    consolidatedChecks,
+    missingMandatoryGates: [],
+    preservedGates,
+    fullVerificationRequired: true,
+    skipRequiredChecks: false
   };
 }

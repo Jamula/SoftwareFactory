@@ -36,27 +36,64 @@ jobs:
           test "$(dotnet --version)" = "10.0.404"
           test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
           echo "Candidate $EXPECTED_HEAD"
+      - name: Restore locked NuGet packages (read-only)
+        id: nuget-cache-restore
+        if: github.event_name != 'push'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/nuget-packages
+          key: sf-dotnet-agents-nuget-v1-${{ runner.os }}-${{ runner.arch }}-dotnet-10.0.404-release-${{ hashFiles('global.json', 'apphost.cs', 'src/SoftwareFactory.Agents/SoftwareFactory.Agents.csproj', 'tests/SoftwareFactory.Agents.Tests/SoftwareFactory.Agents.Tests.csproj', '**/packages.lock.json', 'Directory.Build.props', 'Directory.Packages.props') }}
+      - name: Restore and save locked NuGet packages (protected main)
+        id: nuget-cache-main
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.ref_protected == true && github.repository == 'Jamula/SoftwareFactory' && github.repository_id == '1471342715'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/nuget-packages
+          key: sf-dotnet-agents-nuget-v1-${{ runner.os }}-${{ runner.arch }}-dotnet-10.0.404-release-${{ hashFiles('global.json', 'apphost.cs', 'src/SoftwareFactory.Agents/SoftwareFactory.Agents.csproj', 'tests/SoftwareFactory.Agents.Tests/SoftwareFactory.Agents.Tests.csproj', '**/packages.lock.json', 'Directory.Build.props', 'Directory.Packages.props') }}
       - name: Restore and build .NET MAF agents and Aspire AppHost
+        env:
+          NUGET_PACKAGES: ${{ runner.temp }}/nuget-packages
+          CACHE_HIT: ${{ steps.nuget-cache-restore.outputs.cache-hit || steps.nuget-cache-main.outputs.cache-hit || 'false' }}
         run: |
           set -euo pipefail
+          restore_start="$(date +%s%3N)"
           dotnet restore tests/SoftwareFactory.Agents.Tests/SoftwareFactory.Agents.Tests.csproj --source https://api.nuget.org/v3/index.json
-          dotnet build tests/SoftwareFactory.Agents.Tests/SoftwareFactory.Agents.Tests.csproj --configuration Release --no-restore
           dotnet restore apphost.cs --source https://api.nuget.org/v3/index.json
+          restore_end="$(date +%s%3N)"
+          cache_hit="false"
+          if [ "${CACHE_HIT:-false}" = "true" ]; then
+            cache_hit="true"
+          fi
+          printf 'dotnet-agents stage timing: platform=linux cache_hit=%s restore_ms=%s\n' "$cache_hit" "$((restore_end - restore_start))"
+          build_start="$(date +%s%3N)"
+          dotnet build tests/SoftwareFactory.Agents.Tests/SoftwareFactory.Agents.Tests.csproj --configuration Release --no-restore
           dotnet build apphost.cs --configuration Release --no-restore
+          build_end="$(date +%s%3N)"
+          printf 'dotnet-agents stage timing: platform=linux build_ms=%s\n' "$((build_end - build_start))"
       - name: Run xUnit tests with Coverlet 98/95 coverage gate
+        env:
+          NUGET_PACKAGES: ${{ runner.temp }}/nuget-packages
         run: |
           set -euo pipefail
+          test_start="$(date +%s%3N)"
           coverage_file="$RUNNER_TEMP/dotnet-agents-coverage/cobertura.xml"
           dotnet test tests/SoftwareFactory.Agents.Tests/SoftwareFactory.Agents.Tests.csproj --configuration Release --no-build -p:CollectCoverage=true "-p:CoverletOutput=$coverage_file"
           test -s "$coverage_file"
+          test_end="$(date +%s%3N)"
+          printf 'dotnet-agents stage timing: platform=linux test_coverage_ms=%s\n' "$((test_end - test_start))"
       - name: Run synthetic MAF workflow smoke and benchmark CLI
+        env:
+          NUGET_PACKAGES: ${{ runner.temp }}/nuget-packages
         run: |
           set -euo pipefail
+          smoke_start="$(date +%s%3N)"
           smoke_json="$(dotnet run --project src/SoftwareFactory.Agents/SoftwareFactory.Agents.csproj --configuration Release --no-build -- --smoke)"
           printf '%s\n' "$smoke_json"
           printf '%s\n' "$smoke_json" | grep -Fq '"outcome":"eligible"'
           printf '%s\n' "$smoke_json" | grep -Fq '"priorSuperstepsRepeated":0'
           dotnet run --project src/SoftwareFactory.Agents/SoftwareFactory.Agents.csproj --configuration Release --no-build -- --benchmark >/dev/null
+          smoke_end="$(date +%s%3N)"
+          printf 'dotnet-agents stage timing: platform=linux smoke_ms=%s\n' "$((smoke_end - smoke_start))"
 
   windows-dotnet-agents:
     runs-on: windows-latest
@@ -87,27 +124,59 @@ jobs:
           $actual = (git rev-parse HEAD).Trim()
           if ($LASTEXITCODE -ne 0 -or $actual -ne $env:EXPECTED_HEAD) { throw 'Candidate mismatch' }
           Write-Host "Candidate $actual"
+      - name: Restore locked NuGet packages (read-only)
+        id: nuget-cache-restore
+        if: github.event_name != 'push'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/nuget-packages
+          key: sf-dotnet-agents-nuget-v1-${{ runner.os }}-${{ runner.arch }}-dotnet-10.0.404-release-${{ hashFiles('global.json', 'apphost.cs', 'src/SoftwareFactory.Agents/SoftwareFactory.Agents.csproj', 'tests/SoftwareFactory.Agents.Tests/SoftwareFactory.Agents.Tests.csproj', '**/packages.lock.json', 'Directory.Build.props', 'Directory.Packages.props') }}
+      - name: Restore and save locked NuGet packages (protected main)
+        id: nuget-cache-main
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.ref_protected == true && github.repository == 'Jamula/SoftwareFactory' && github.repository_id == '1471342715'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/nuget-packages
+          key: sf-dotnet-agents-nuget-v1-${{ runner.os }}-${{ runner.arch }}-dotnet-10.0.404-release-${{ hashFiles('global.json', 'apphost.cs', 'src/SoftwareFactory.Agents/SoftwareFactory.Agents.csproj', 'tests/SoftwareFactory.Agents.Tests/SoftwareFactory.Agents.Tests.csproj', '**/packages.lock.json', 'Directory.Build.props', 'Directory.Packages.props') }}
       - name: Restore and build .NET MAF agents and Aspire AppHost
+        env:
+          NUGET_PACKAGES: ${{ runner.temp }}/nuget-packages
+          CACHE_HIT: ${{ steps.nuget-cache-restore.outputs.cache-hit || steps.nuget-cache-main.outputs.cache-hit || 'false' }}
         run: |
           $ErrorActionPreference = 'Stop'
+          $restoreTimer = [System.Diagnostics.Stopwatch]::StartNew()
           dotnet restore tests/SoftwareFactory.Agents.Tests/SoftwareFactory.Agents.Tests.csproj --source https://api.nuget.org/v3/index.json
           if ($LASTEXITCODE -ne 0) { throw 'Agent test restore failed' }
-          dotnet build tests/SoftwareFactory.Agents.Tests/SoftwareFactory.Agents.Tests.csproj --configuration Release --no-restore
-          if ($LASTEXITCODE -ne 0) { throw 'Agent test build failed' }
           dotnet restore apphost.cs --source https://api.nuget.org/v3/index.json
           if ($LASTEXITCODE -ne 0) { throw 'AppHost restore failed' }
+          $restoreTimer.Stop()
+          $cacheHit = if ($env:CACHE_HIT -eq 'true') { 'true' } else { 'false' }
+          Write-Host "dotnet-agents stage timing: platform=windows cache_hit=$cacheHit restore_ms=$($restoreTimer.ElapsedMilliseconds)"
+          $buildTimer = [System.Diagnostics.Stopwatch]::StartNew()
+          dotnet build tests/SoftwareFactory.Agents.Tests/SoftwareFactory.Agents.Tests.csproj --configuration Release --no-restore
+          if ($LASTEXITCODE -ne 0) { throw 'Agent test build failed' }
           dotnet build apphost.cs --configuration Release --no-restore
           if ($LASTEXITCODE -ne 0) { throw 'AppHost build failed' }
+          $buildTimer.Stop()
+          Write-Host "dotnet-agents stage timing: platform=windows build_ms=$($buildTimer.ElapsedMilliseconds)"
       - name: Run xUnit tests with Coverlet 98/95 coverage gate
+        env:
+          NUGET_PACKAGES: ${{ runner.temp }}/nuget-packages
         run: |
           $ErrorActionPreference = 'Stop'
+          $testTimer = [System.Diagnostics.Stopwatch]::StartNew()
           $coverageFile = Join-Path $env:RUNNER_TEMP 'dotnet-agents-coverage\cobertura.xml'
           dotnet test tests/SoftwareFactory.Agents.Tests/SoftwareFactory.Agents.Tests.csproj --configuration Release --no-build "-p:CollectCoverage=true" "-p:CoverletOutput=$coverageFile"
           if ($LASTEXITCODE -ne 0) { throw 'xUnit or Coverlet 98/95 gate failed' }
-          if (-not (Test-Path -LiteralPath $coverageFile)) { throw 'Missing Cobertura coverage output' }
+          if (-not (Test-Path -LiteralPath $coverageFile) -or (Get-Item -LiteralPath $coverageFile).Length -le 0) { throw 'Missing Cobertura coverage output' }
+          $testTimer.Stop()
+          Write-Host "dotnet-agents stage timing: platform=windows test_coverage_ms=$($testTimer.ElapsedMilliseconds)"
       - name: Run synthetic MAF workflow smoke and benchmark CLI
+        env:
+          NUGET_PACKAGES: ${{ runner.temp }}/nuget-packages
         run: |
           $ErrorActionPreference = 'Stop'
+          $smokeTimer = [System.Diagnostics.Stopwatch]::StartNew()
           $smoke = (dotnet run --project src/SoftwareFactory.Agents/SoftwareFactory.Agents.csproj --configuration Release --no-build -- --smoke) -join "`n"
           if ($LASTEXITCODE -ne 0) { throw 'MAF synthetic smoke failed' }
           Write-Host $smoke
@@ -116,3 +185,5 @@ jobs:
           }
           $null = dotnet run --project src/SoftwareFactory.Agents/SoftwareFactory.Agents.csproj --configuration Release --no-build -- --benchmark
           if ($LASTEXITCODE -ne 0) { throw 'MAF benchmark failed' }
+          $smokeTimer.Stop()
+          Write-Host "dotnet-agents stage timing: platform=windows smoke_ms=$($smokeTimer.ElapsedMilliseconds)"
