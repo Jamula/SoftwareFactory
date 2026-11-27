@@ -1,0 +1,1433 @@
+{
+  "schemaVersion": 1,
+  "milestone": "M05.01",
+  "issue": 12,
+  "consumerReadinessIssue": 81,
+  "syntheticOnly": true,
+  "containsPrivateFamilyData": false,
+  "mutatesFrozenConsumer": false,
+  "upstreamDependencies": {
+    "m01AutonomousIssue": 10,
+    "consumerOnboardingIssue": 13,
+    "familyTreePilotIssue": 36,
+    "independentOfSpellbookIssue11": true,
+    "independentOfM02Speed": true
+  },
+  "currentPosture": {
+    "ownerFreezeLiftedVerified": false,
+    "migrationCompleteVerified": false,
+    "authoritativeRepoConfirmed": false,
+    "m01AutonomousAccepted": false,
+    "familyTreePilotAccepted": false,
+    "separateScopedOwnerAuth": false,
+    "productionDeploymentIsolated": true,
+    "liveProductionDeployAllowed": false,
+    "liveActivation": false,
+    "expectedDecision": {
+      "milestone": "M05.01",
+      "issue": 12,
+      "shadow": true,
+      "ready": false,
+      "eligible": false,
+      "liveActivation": false,
+      "liveProductionDeployAllowed": false,
+      "mutatesGitHub": false,
+      "state": "blocked",
+      "reason": "CONSUMER_FROZEN"
+    }
+  },
+  "syntheticFixture": {
+    "stop": false,
+    "syntheticFixtureOnly": true,
+    "containsPrivateFamilyData": false,
+    "migrationCompleteVerified": false,
+    "ownerFreezeLiftedVerified": false,
+    "authoritativeRepoConfirmed": false,
+    "m01AutonomousAccepted": false,
+    "familyTreePilotAccepted": false,
+    "spellbookPilotAccepted": false,
+    "m02SpeedAccepted": false,
+    "productionDeploymentIsolated": true,
+    "liveProductionDeployAllowed": false,
+    "authorization": {
+      "separateScopedOwnerAuth": false,
+      "developmentResumptionOnly": false,
+      "familyHubReadiness81Verified": false,
+      "authorizedRepository": "example/family-hub",
+      "authorizedRepositoryId": 900303,
+      "zeroIncrementalSpendVerified": true,
+      "hostedExecutionWithoutLaptopVerified": true
+    },
+    "onboardingPackage": {
+      "contractVersion": 1,
+      "repositoryId": 900303,
+      "stackProfile": "strict-up-to-date-migration-gated",
+      "ownerAuthorized": false,
+      "migrationFreezeClear": false,
+      "autoActivate": false,
+      "productionDeployEnabled": false,
+      "workflowPin": {
+        "uses": "Jamula/SoftwareFactory/.github/workflows/shadow-tests.yml@afc3d223f287b029db32672908097efc67a259c9",
+        "reviewedWorkflowSha": "afc3d223f287b029db32672908097efc67a259c9",
+        "checkoutRef": "1208481843e73d1d2506085c654e84255303541d",
+        "reviewedCheckoutSha": "1208481843e73d1d2506085c654e84255303541d",
+        "permissions": "contents:read",
+        "persistCredentials": false
+      },
+      "policy": {
+        "version": 1,
+        "repository": "example/family-hub",
+        "defaultBranch": "trunk",
+        "mergeMethod": "merge",
+        "mode": "disabled",
+        "killSwitch": true,
+        "checks": [
+          { "name": "copilot-review", "appId": 946600 },
+          { "name": "validate", "appId": 15368 },
+          { "name": "fictional-hub-gate", "appId": 23456 }
+        ],
+        "reviewers": ["synthetic-reviewer", "synthetic-hub-reviewer"],
+        "coverage": { "line": 96, "branch": 92 },
+        "owners": [{ "prefix": "app/", "owner": "synthetic-hub-owner" }],
+        "maxActive": 1,
+        "creditLimit": 100,
+        "riskClasses": ["low", "high"]
+      },
+      "localGates": {
+        "minLineCoverage": 96,
+        "minBranchCoverage": 92,
+        "maxConcurrency": 1,
+        "requiredChecks": [
+          { "name": "copilot-review", "appId": 946600 },
+          { "name": "validate", "appId": 15368 },
+          { "name": "fictional-hub-gate", "appId": 23456 }
+        ],
+        "requireExplicitApproval": true,
+        "requireStrictUpToDate": true
+      },
+      "credentials": {
+        "credentialId": "cred-shadow-family-hub",
+        "scope": "repo-read-only-shadow",
+        "allowedRepositories": ["example/family-hub"],
+        "sharedAdminToken": false,
+        "persistedInCheckout": false
+      },
+      "replaySuite": {
+        "eligibleCandidate": {
+          "policySource": "trusted-default-branch",
+          "repository": "example/family-hub",
+          "issue": 81,
+          "pr": 104,
+          "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "observedHead": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "base": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "observedBase": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "baseBranch": "trunk",
+          "rateLimited": false,
+          "remainingCredits": 25,
+          "activeCount": 0,
+          "providerReady": true,
+          "risk": "low",
+          "priority": 1,
+          "paths": ["app/hub-service.ts"],
+          "dependencies": [],
+          "acceptanceComplete": true,
+          "baseCompatible": true,
+          "mainHealthy": true,
+          "threadsResolved": true,
+          "securityClear": true,
+          "coverage": {
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "line": 97,
+            "branch": 94,
+            "complete": true
+          },
+          "checks": [
+            {
+              "name": "copilot-review",
+              "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "appId": 946600,
+              "status": "completed",
+              "conclusion": "success"
+            },
+            {
+              "name": "validate",
+              "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "appId": 15368,
+              "status": "completed",
+              "conclusion": "success"
+            },
+            {
+              "name": "fictional-hub-gate",
+              "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "appId": 23456,
+              "status": "completed",
+              "conclusion": "success"
+            }
+          ],
+          "author": "synthetic-author",
+          "agent": "copilot-swe-agent[bot]",
+          "reviews": [
+            {
+              "reviewer": "synthetic-hub-reviewer",
+              "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "state": "APPROVED"
+            }
+          ]
+        },
+        "staleReview": {
+          "policySource": "trusted-default-branch",
+          "repository": "example/family-hub",
+          "issue": 81,
+          "pr": 104,
+          "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "observedHead": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "base": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "observedBase": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "baseBranch": "trunk",
+          "rateLimited": false,
+          "remainingCredits": 25,
+          "activeCount": 0,
+          "providerReady": true,
+          "risk": "low",
+          "priority": 1,
+          "paths": ["app/hub-service.ts"],
+          "dependencies": [],
+          "acceptanceComplete": true,
+          "baseCompatible": true,
+          "mainHealthy": true,
+          "threadsResolved": true,
+          "securityClear": true,
+          "coverage": {
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "line": 97,
+            "branch": 94,
+            "complete": true
+          },
+          "checks": [
+            {
+              "name": "copilot-review",
+              "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "appId": 946600,
+              "status": "completed",
+              "conclusion": "success"
+            },
+            {
+              "name": "validate",
+              "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "appId": 15368,
+              "status": "completed",
+              "conclusion": "success"
+            },
+            {
+              "name": "fictional-hub-gate",
+              "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "appId": 23456,
+              "status": "completed",
+              "conclusion": "success"
+            }
+          ],
+          "author": "synthetic-author",
+          "agent": "copilot-swe-agent[bot]",
+          "reviews": [
+            {
+              "reviewer": "synthetic-hub-reviewer",
+              "head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "state": "APPROVED"
+            }
+          ]
+        },
+        "dismissedReview": {
+          "policySource": "trusted-default-branch",
+          "repository": "example/family-hub",
+          "issue": 81,
+          "pr": 104,
+          "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "observedHead": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "base": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "observedBase": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "baseBranch": "trunk",
+          "rateLimited": false,
+          "remainingCredits": 25,
+          "activeCount": 0,
+          "providerReady": true,
+          "risk": "low",
+          "priority": 1,
+          "paths": ["app/hub-service.ts"],
+          "dependencies": [],
+          "acceptanceComplete": true,
+          "baseCompatible": true,
+          "mainHealthy": true,
+          "threadsResolved": true,
+          "securityClear": true,
+          "coverage": {
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "line": 97,
+            "branch": 94,
+            "complete": true
+          },
+          "checks": [
+            {
+              "name": "copilot-review",
+              "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "appId": 946600,
+              "status": "completed",
+              "conclusion": "success"
+            },
+            {
+              "name": "validate",
+              "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "appId": 15368,
+              "status": "completed",
+              "conclusion": "success"
+            },
+            {
+              "name": "fictional-hub-gate",
+              "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "appId": 23456,
+              "status": "completed",
+              "conclusion": "success"
+            }
+          ],
+          "author": "synthetic-author",
+          "agent": "copilot-swe-agent[bot]",
+          "reviews": [
+            {
+              "reviewer": "synthetic-hub-reviewer",
+              "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "state": "DISMISSED"
+            }
+          ]
+        },
+        "commentedBotReview": {
+          "policySource": "trusted-default-branch",
+          "repository": "example/family-hub",
+          "issue": 81,
+          "pr": 104,
+          "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "observedHead": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "base": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "observedBase": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "baseBranch": "trunk",
+          "rateLimited": false,
+          "remainingCredits": 25,
+          "activeCount": 0,
+          "providerReady": true,
+          "risk": "low",
+          "priority": 1,
+          "paths": ["app/hub-service.ts"],
+          "dependencies": [],
+          "acceptanceComplete": true,
+          "baseCompatible": true,
+          "mainHealthy": true,
+          "threadsResolved": true,
+          "securityClear": true,
+          "coverage": {
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "line": 97,
+            "branch": 94,
+            "complete": true
+          },
+          "checks": [
+            {
+              "name": "copilot-review",
+              "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "appId": 946600,
+              "status": "completed",
+              "conclusion": "success"
+            },
+            {
+              "name": "validate",
+              "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "appId": 15368,
+              "status": "completed",
+              "conclusion": "success"
+            },
+            {
+              "name": "fictional-hub-gate",
+              "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "appId": 23456,
+              "status": "completed",
+              "conclusion": "success"
+            }
+          ],
+          "author": "synthetic-author",
+          "agent": "copilot-swe-agent[bot]",
+          "reviews": [
+            {
+              "reviewer": "copilot-pull-request-reviewer[bot]",
+              "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "state": "COMMENTED",
+              "summaryDisposition": "clear"
+            }
+          ]
+        },
+        "wrongRepository": {
+          "policySource": "trusted-default-branch",
+          "repository": "example/foreign-repository",
+          "issue": 81,
+          "pr": 104,
+          "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "observedHead": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "base": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "observedBase": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "baseBranch": "trunk",
+          "rateLimited": false,
+          "remainingCredits": 25,
+          "activeCount": 0,
+          "providerReady": true,
+          "risk": "low",
+          "priority": 1,
+          "paths": ["app/hub-service.ts"],
+          "dependencies": [],
+          "acceptanceComplete": true,
+          "baseCompatible": true,
+          "mainHealthy": true,
+          "threadsResolved": true,
+          "securityClear": true,
+          "coverage": {
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "line": 97,
+            "branch": 94,
+            "complete": true
+          },
+          "checks": [
+            {
+              "name": "copilot-review",
+              "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "appId": 946600,
+              "status": "completed",
+              "conclusion": "success"
+            },
+            {
+              "name": "validate",
+              "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "appId": 15368,
+              "status": "completed",
+              "conclusion": "success"
+            },
+            {
+              "name": "fictional-hub-gate",
+              "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "appId": 23456,
+              "status": "completed",
+              "conclusion": "success"
+            }
+          ],
+          "author": "synthetic-author",
+          "agent": "copilot-swe-agent[bot]",
+          "reviews": [
+            {
+              "reviewer": "synthetic-hub-reviewer",
+              "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "state": "APPROVED"
+            }
+          ]
+        },
+        "missingQuota": {
+          "policySource": "trusted-default-branch",
+          "repository": "example/family-hub",
+          "issue": 81,
+          "pr": 104,
+          "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "observedHead": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "base": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "observedBase": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "baseBranch": "trunk",
+          "rateLimited": false,
+          "remainingCredits": 0,
+          "activeCount": 0,
+          "providerReady": true,
+          "risk": "low",
+          "priority": 1,
+          "paths": ["app/hub-service.ts"],
+          "dependencies": [],
+          "acceptanceComplete": true,
+          "baseCompatible": true,
+          "mainHealthy": true,
+          "threadsResolved": true,
+          "securityClear": true,
+          "coverage": {
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "line": 97,
+            "branch": 94,
+            "complete": true
+          },
+          "checks": [
+            {
+              "name": "copilot-review",
+              "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "appId": 946600,
+              "status": "completed",
+              "conclusion": "success"
+            },
+            {
+              "name": "validate",
+              "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "appId": 15368,
+              "status": "completed",
+              "conclusion": "success"
+            },
+            {
+              "name": "fictional-hub-gate",
+              "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "appId": 23456,
+              "status": "completed",
+              "conclusion": "success"
+            }
+          ],
+          "author": "synthetic-author",
+          "agent": "copilot-swe-agent[bot]",
+          "reviews": [
+            {
+              "reviewer": "synthetic-hub-reviewer",
+              "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "state": "APPROVED"
+            }
+          ]
+        },
+        "killSwitchPolicy": {
+          "version": 1,
+          "repository": "example/family-hub",
+          "defaultBranch": "trunk",
+          "mergeMethod": "merge",
+          "mode": "shadow",
+          "killSwitch": true,
+          "checks": [
+            { "name": "copilot-review", "appId": 946600 },
+            { "name": "validate", "appId": 15368 },
+            { "name": "fictional-hub-gate", "appId": 23456 }
+          ],
+          "reviewers": ["synthetic-reviewer", "synthetic-hub-reviewer"],
+          "coverage": { "line": 96, "branch": 92 },
+          "owners": [{ "prefix": "app/", "owner": "synthetic-hub-owner" }],
+          "maxActive": 1,
+          "creditLimit": 100,
+          "riskClasses": ["low", "high"]
+        }
+      },
+      "rollback": {
+        "disableMode": "disabled",
+        "killSwitch": true,
+        "revokeCredentialId": "cred-shadow-family-hub",
+        "revertWorkflowPinPrRequired": true,
+        "queuedLiveMutations": 0
+      }
+    },
+    "peerOnboardingPackages": [
+      {
+        "contractVersion": 1,
+        "repositoryId": 900101,
+        "stackProfile": "web-genealogy-95-90",
+        "ownerAuthorized": true,
+        "migrationFreezeClear": true,
+        "autoActivate": false,
+        "productionDeployEnabled": false,
+        "workflowPin": {
+          "uses": "Jamula/SoftwareFactory/.github/workflows/shadow-tests.yml@afc3d223f287b029db32672908097efc67a259c9",
+          "reviewedWorkflowSha": "afc3d223f287b029db32672908097efc67a259c9",
+          "checkoutRef": "1208481843e73d1d2506085c654e84255303541d",
+          "reviewedCheckoutSha": "1208481843e73d1d2506085c654e84255303541d",
+          "permissions": "contents:read",
+          "persistCredentials": false
+        },
+        "policy": {
+          "version": 1,
+          "repository": "example/family-tree",
+          "defaultBranch": "main",
+          "mergeMethod": "squash",
+          "mode": "disabled",
+          "killSwitch": true,
+          "checks": [{ "name": "build-test", "appId": 12345 }],
+          "reviewers": ["synthetic-reviewer"],
+          "coverage": { "line": 95, "branch": 90 },
+          "owners": [{ "prefix": "src/", "owner": "synthetic-owner" }],
+          "maxActive": 1,
+          "creditLimit": 100,
+          "riskClasses": ["low", "high"]
+        },
+        "localGates": {
+          "minLineCoverage": 95,
+          "minBranchCoverage": 90,
+          "maxConcurrency": 1,
+          "requiredChecks": [{ "name": "build-test", "appId": 12345 }],
+          "requireExplicitApproval": true,
+          "requireStrictUpToDate": true
+        },
+        "credentials": {
+          "credentialId": "cred-shadow-family-tree",
+          "scope": "repo-read-only-shadow",
+          "allowedRepositories": ["example/family-tree"],
+          "sharedAdminToken": false,
+          "persistedInCheckout": false
+        },
+        "replaySuite": {
+          "eligibleCandidate": {
+            "policySource": "trusted-default-branch",
+            "repository": "example/family-tree",
+            "issue": 10,
+            "pr": 20,
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "observedHead": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "base": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "observedBase": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "baseBranch": "main",
+            "rateLimited": false,
+            "remainingCredits": 25,
+            "activeCount": 0,
+            "providerReady": true,
+            "risk": "low",
+            "priority": 1,
+            "paths": ["src/index.ts"],
+            "dependencies": [],
+            "acceptanceComplete": true,
+            "baseCompatible": true,
+            "mainHealthy": true,
+            "threadsResolved": true,
+            "securityClear": true,
+            "coverage": {
+              "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "line": 95,
+              "branch": 90,
+              "complete": true
+            },
+            "checks": [
+              {
+                "name": "build-test",
+                "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "appId": 12345,
+                "status": "completed",
+                "conclusion": "success"
+              }
+            ],
+            "author": "synthetic-author",
+            "agent": "synthetic-agent",
+            "reviews": [
+              {
+                "reviewer": "synthetic-reviewer",
+                "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "state": "APPROVED"
+              }
+            ]
+          },
+          "staleReview": {
+            "policySource": "trusted-default-branch",
+            "repository": "example/family-tree",
+            "issue": 10,
+            "pr": 20,
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "observedHead": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "base": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "observedBase": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "baseBranch": "main",
+            "rateLimited": false,
+            "remainingCredits": 25,
+            "activeCount": 0,
+            "providerReady": true,
+            "risk": "low",
+            "priority": 1,
+            "paths": ["src/index.ts"],
+            "dependencies": [],
+            "acceptanceComplete": true,
+            "baseCompatible": true,
+            "mainHealthy": true,
+            "threadsResolved": true,
+            "securityClear": true,
+            "coverage": {
+              "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "line": 95,
+              "branch": 90,
+              "complete": true
+            },
+            "checks": [
+              {
+                "name": "build-test",
+                "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "appId": 12345,
+                "status": "completed",
+                "conclusion": "success"
+              }
+            ],
+            "author": "synthetic-author",
+            "agent": "synthetic-agent",
+            "reviews": [
+              {
+                "reviewer": "synthetic-reviewer",
+                "head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "state": "APPROVED"
+              }
+            ]
+          },
+          "dismissedReview": {
+            "policySource": "trusted-default-branch",
+            "repository": "example/family-tree",
+            "issue": 10,
+            "pr": 20,
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "observedHead": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "base": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "observedBase": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "baseBranch": "main",
+            "rateLimited": false,
+            "remainingCredits": 25,
+            "activeCount": 0,
+            "providerReady": true,
+            "risk": "low",
+            "priority": 1,
+            "paths": ["src/index.ts"],
+            "dependencies": [],
+            "acceptanceComplete": true,
+            "baseCompatible": true,
+            "mainHealthy": true,
+            "threadsResolved": true,
+            "securityClear": true,
+            "coverage": {
+              "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "line": 95,
+              "branch": 90,
+              "complete": true
+            },
+            "checks": [
+              {
+                "name": "build-test",
+                "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "appId": 12345,
+                "status": "completed",
+                "conclusion": "success"
+              }
+            ],
+            "author": "synthetic-author",
+            "agent": "synthetic-agent",
+            "reviews": [
+              {
+                "reviewer": "synthetic-reviewer",
+                "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "state": "DISMISSED"
+              }
+            ]
+          },
+          "commentedBotReview": {
+            "policySource": "trusted-default-branch",
+            "repository": "example/family-tree",
+            "issue": 10,
+            "pr": 20,
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "observedHead": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "base": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "observedBase": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "baseBranch": "main",
+            "rateLimited": false,
+            "remainingCredits": 25,
+            "activeCount": 0,
+            "providerReady": true,
+            "risk": "low",
+            "priority": 1,
+            "paths": ["src/index.ts"],
+            "dependencies": [],
+            "acceptanceComplete": true,
+            "baseCompatible": true,
+            "mainHealthy": true,
+            "threadsResolved": true,
+            "securityClear": true,
+            "coverage": {
+              "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "line": 95,
+              "branch": 90,
+              "complete": true
+            },
+            "checks": [
+              {
+                "name": "build-test",
+                "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "appId": 12345,
+                "status": "completed",
+                "conclusion": "success"
+              }
+            ],
+            "author": "synthetic-author",
+            "agent": "synthetic-agent",
+            "reviews": [
+              {
+                "reviewer": "copilot-pull-request-reviewer[bot]",
+                "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "state": "COMMENTED",
+                "summaryDisposition": "clear"
+              }
+            ]
+          },
+          "wrongRepository": {
+            "policySource": "trusted-default-branch",
+            "repository": "example/foreign-repository",
+            "issue": 10,
+            "pr": 20,
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "observedHead": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "base": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "observedBase": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "baseBranch": "main",
+            "rateLimited": false,
+            "remainingCredits": 25,
+            "activeCount": 0,
+            "providerReady": true,
+            "risk": "low",
+            "priority": 1,
+            "paths": ["src/index.ts"],
+            "dependencies": [],
+            "acceptanceComplete": true,
+            "baseCompatible": true,
+            "mainHealthy": true,
+            "threadsResolved": true,
+            "securityClear": true,
+            "coverage": {
+              "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "line": 95,
+              "branch": 90,
+              "complete": true
+            },
+            "checks": [
+              {
+                "name": "build-test",
+                "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "appId": 12345,
+                "status": "completed",
+                "conclusion": "success"
+              }
+            ],
+            "author": "synthetic-author",
+            "agent": "synthetic-agent",
+            "reviews": [
+              {
+                "reviewer": "synthetic-reviewer",
+                "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "state": "APPROVED"
+              }
+            ]
+          },
+          "missingQuota": {
+            "policySource": "trusted-default-branch",
+            "repository": "example/family-tree",
+            "issue": 10,
+            "pr": 20,
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "observedHead": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "base": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "observedBase": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "baseBranch": "main",
+            "rateLimited": false,
+            "remainingCredits": 0,
+            "activeCount": 0,
+            "providerReady": true,
+            "risk": "low",
+            "priority": 1,
+            "paths": ["src/index.ts"],
+            "dependencies": [],
+            "acceptanceComplete": true,
+            "baseCompatible": true,
+            "mainHealthy": true,
+            "threadsResolved": true,
+            "securityClear": true,
+            "coverage": {
+              "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "line": 95,
+              "branch": 90,
+              "complete": true
+            },
+            "checks": [
+              {
+                "name": "build-test",
+                "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "appId": 12345,
+                "status": "completed",
+                "conclusion": "success"
+              }
+            ],
+            "author": "synthetic-author",
+            "agent": "synthetic-agent",
+            "reviews": [
+              {
+                "reviewer": "synthetic-reviewer",
+                "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "state": "APPROVED"
+              }
+            ]
+          },
+          "killSwitchPolicy": {
+            "version": 1,
+            "repository": "example/family-tree",
+            "defaultBranch": "main",
+            "mergeMethod": "squash",
+            "mode": "shadow",
+            "killSwitch": true,
+            "checks": [{ "name": "build-test", "appId": 12345 }],
+            "reviewers": ["synthetic-reviewer"],
+            "coverage": { "line": 95, "branch": 90 },
+            "owners": [{ "prefix": "src/", "owner": "synthetic-owner" }],
+            "maxActive": 1,
+            "creditLimit": 100,
+            "riskClasses": ["low", "high"]
+          }
+        },
+        "rollback": {
+          "disableMode": "disabled",
+          "killSwitch": true,
+          "revokeCredentialId": "cred-shadow-family-tree",
+          "revertWorkflowPinPrRequired": true,
+          "queuedLiveMutations": 0
+        }
+      }
+    ],
+    "candidate": {
+      "candidateHeadSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "candidateBaseSha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "latestProtectedMainSha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "behindByCommits": 0,
+      "triggersProductionDeploy": false,
+      "componentInventory": ["hub-web", "hub-api"],
+      "coverageReports": [
+        {
+          "component": "hub-web",
+          "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "lines": 194,
+          "lineTotal": 200,
+          "branches": 94,
+          "branchTotal": 100
+        },
+        {
+          "component": "hub-api",
+          "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "lines": 194,
+          "lineTotal": 200,
+          "branches": 94,
+          "branchTotal": 100
+        }
+      ],
+      "reviewSummary": {
+        "summaryDisposition": "clear",
+        "unresolvedSummaryFindings": 0,
+        "unresolvedInlineThreads": 0
+      },
+      "snapshot": {
+        "policySource": "trusted-default-branch",
+        "repository": "example/family-hub",
+        "issue": 81,
+        "pr": 104,
+        "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "observedHead": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "base": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "observedBase": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "baseBranch": "trunk",
+        "rateLimited": false,
+        "remainingCredits": 25,
+        "activeCount": 0,
+        "providerReady": true,
+        "risk": "low",
+        "priority": 1,
+        "paths": ["app/hub-service.ts"],
+        "dependencies": [],
+        "acceptanceComplete": true,
+        "baseCompatible": true,
+        "mainHealthy": true,
+        "threadsResolved": true,
+        "securityClear": true,
+        "coverage": {
+          "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "line": 97,
+          "branch": 94,
+          "complete": true
+        },
+        "checks": [
+          {
+            "name": "copilot-review",
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "appId": 946600,
+            "status": "completed",
+            "conclusion": "success"
+          },
+          {
+            "name": "validate",
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "appId": 15368,
+            "status": "completed",
+            "conclusion": "success"
+          },
+          {
+            "name": "fictional-hub-gate",
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "appId": 23456,
+            "status": "completed",
+            "conclusion": "success"
+          }
+        ],
+        "author": "synthetic-author",
+        "agent": "copilot-swe-agent[bot]",
+        "reviews": [
+          {
+            "reviewer": "synthetic-hub-reviewer",
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "APPROVED"
+          }
+        ]
+      }
+    },
+    "shadowDenialSuite": {
+      "staleReview": {
+        "policySource": "trusted-default-branch",
+        "repository": "example/family-hub",
+        "issue": 81,
+        "pr": 104,
+        "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "observedHead": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "base": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "observedBase": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "baseBranch": "trunk",
+        "rateLimited": false,
+        "remainingCredits": 25,
+        "activeCount": 0,
+        "providerReady": true,
+        "risk": "low",
+        "priority": 1,
+        "paths": ["app/hub-service.ts"],
+        "dependencies": [],
+        "acceptanceComplete": true,
+        "baseCompatible": true,
+        "mainHealthy": true,
+        "threadsResolved": true,
+        "securityClear": true,
+        "coverage": {
+          "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "line": 97,
+          "branch": 94,
+          "complete": true
+        },
+        "checks": [
+          {
+            "name": "copilot-review",
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "appId": 946600,
+            "status": "completed",
+            "conclusion": "success"
+          },
+          {
+            "name": "validate",
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "appId": 15368,
+            "status": "completed",
+            "conclusion": "success"
+          },
+          {
+            "name": "fictional-hub-gate",
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "appId": 23456,
+            "status": "completed",
+            "conclusion": "success"
+          }
+        ],
+        "author": "synthetic-author",
+        "agent": "copilot-swe-agent[bot]",
+        "reviews": [
+          {
+            "reviewer": "synthetic-hub-reviewer",
+            "head": "cccccccccccccccccccccccccccccccccccccccc",
+            "state": "APPROVED"
+          }
+        ]
+      },
+      "dismissedReview": {
+        "policySource": "trusted-default-branch",
+        "repository": "example/family-hub",
+        "issue": 81,
+        "pr": 104,
+        "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "observedHead": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "base": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "observedBase": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "baseBranch": "trunk",
+        "rateLimited": false,
+        "remainingCredits": 25,
+        "activeCount": 0,
+        "providerReady": true,
+        "risk": "low",
+        "priority": 1,
+        "paths": ["app/hub-service.ts"],
+        "dependencies": [],
+        "acceptanceComplete": true,
+        "baseCompatible": true,
+        "mainHealthy": true,
+        "threadsResolved": true,
+        "securityClear": true,
+        "coverage": {
+          "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "line": 97,
+          "branch": 94,
+          "complete": true
+        },
+        "checks": [
+          {
+            "name": "copilot-review",
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "appId": 946600,
+            "status": "completed",
+            "conclusion": "success"
+          },
+          {
+            "name": "validate",
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "appId": 15368,
+            "status": "completed",
+            "conclusion": "success"
+          },
+          {
+            "name": "fictional-hub-gate",
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "appId": 23456,
+            "status": "completed",
+            "conclusion": "success"
+          }
+        ],
+        "author": "synthetic-author",
+        "agent": "copilot-swe-agent[bot]",
+        "reviews": [
+          {
+            "reviewer": "synthetic-hub-reviewer",
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "DISMISSED"
+          }
+        ]
+      },
+      "commentedZeroThreadsReview": {
+        "policySource": "trusted-default-branch",
+        "repository": "example/family-hub",
+        "issue": 81,
+        "pr": 104,
+        "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "observedHead": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "base": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "observedBase": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "baseBranch": "trunk",
+        "rateLimited": false,
+        "remainingCredits": 25,
+        "activeCount": 0,
+        "providerReady": true,
+        "risk": "low",
+        "priority": 1,
+        "paths": ["app/hub-service.ts"],
+        "dependencies": [],
+        "acceptanceComplete": true,
+        "baseCompatible": true,
+        "mainHealthy": true,
+        "threadsResolved": true,
+        "securityClear": true,
+        "coverage": {
+          "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "line": 97,
+          "branch": 94,
+          "complete": true
+        },
+        "checks": [
+          {
+            "name": "copilot-review",
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "appId": 946600,
+            "status": "completed",
+            "conclusion": "success"
+          },
+          {
+            "name": "validate",
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "appId": 15368,
+            "status": "completed",
+            "conclusion": "success"
+          },
+          {
+            "name": "fictional-hub-gate",
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "appId": 23456,
+            "status": "completed",
+            "conclusion": "success"
+          }
+        ],
+        "author": "synthetic-author",
+        "agent": "copilot-swe-agent[bot]",
+        "reviews": [
+          {
+            "reviewer": "copilot-pull-request-reviewer[bot]",
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "COMMENTED",
+            "summaryDisposition": "clear"
+          }
+        ]
+      },
+      "behindMainCandidate": {
+        "policySource": "trusted-default-branch",
+        "repository": "example/family-hub",
+        "issue": 81,
+        "pr": 104,
+        "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "observedHead": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "base": "dddddddddddddddddddddddddddddddddddddddd",
+        "observedBase": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "baseBranch": "trunk",
+        "rateLimited": false,
+        "remainingCredits": 25,
+        "activeCount": 0,
+        "providerReady": true,
+        "risk": "low",
+        "priority": 1,
+        "paths": ["app/hub-service.ts"],
+        "dependencies": [],
+        "acceptanceComplete": true,
+        "baseCompatible": true,
+        "mainHealthy": true,
+        "threadsResolved": true,
+        "securityClear": true,
+        "coverage": {
+          "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "line": 97,
+          "branch": 94,
+          "complete": true
+        },
+        "checks": [
+          {
+            "name": "copilot-review",
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "appId": 946600,
+            "status": "completed",
+            "conclusion": "success"
+          },
+          {
+            "name": "validate",
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "appId": 15368,
+            "status": "completed",
+            "conclusion": "success"
+          },
+          {
+            "name": "fictional-hub-gate",
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "appId": 23456,
+            "status": "completed",
+            "conclusion": "success"
+          }
+        ],
+        "author": "synthetic-author",
+        "agent": "copilot-swe-agent[bot]",
+        "reviews": [
+          {
+            "reviewer": "synthetic-hub-reviewer",
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "APPROVED"
+          }
+        ]
+      },
+      "missingCopilotReviewCheck": {
+        "policySource": "trusted-default-branch",
+        "repository": "example/family-hub",
+        "issue": 81,
+        "pr": 104,
+        "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "observedHead": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "base": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "observedBase": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "baseBranch": "trunk",
+        "rateLimited": false,
+        "remainingCredits": 25,
+        "activeCount": 0,
+        "providerReady": true,
+        "risk": "low",
+        "priority": 1,
+        "paths": ["app/hub-service.ts"],
+        "dependencies": [],
+        "acceptanceComplete": true,
+        "baseCompatible": true,
+        "mainHealthy": true,
+        "threadsResolved": true,
+        "securityClear": true,
+        "coverage": {
+          "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "line": 97,
+          "branch": 94,
+          "complete": true
+        },
+        "checks": [
+          {
+            "name": "validate",
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "appId": 15368,
+            "status": "completed",
+            "conclusion": "success"
+          },
+          {
+            "name": "fictional-hub-gate",
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "appId": 23456,
+            "status": "completed",
+            "conclusion": "success"
+          }
+        ],
+        "author": "synthetic-author",
+        "agent": "copilot-swe-agent[bot]",
+        "reviews": [
+          {
+            "reviewer": "synthetic-hub-reviewer",
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "APPROVED"
+          }
+        ]
+      },
+      "missingValidateCheck": {
+        "policySource": "trusted-default-branch",
+        "repository": "example/family-hub",
+        "issue": 81,
+        "pr": 104,
+        "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "observedHead": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "base": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "observedBase": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "baseBranch": "trunk",
+        "rateLimited": false,
+        "remainingCredits": 25,
+        "activeCount": 0,
+        "providerReady": true,
+        "risk": "low",
+        "priority": 1,
+        "paths": ["app/hub-service.ts"],
+        "dependencies": [],
+        "acceptanceComplete": true,
+        "baseCompatible": true,
+        "mainHealthy": true,
+        "threadsResolved": true,
+        "securityClear": true,
+        "coverage": {
+          "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "line": 97,
+          "branch": 94,
+          "complete": true
+        },
+        "checks": [
+          {
+            "name": "copilot-review",
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "appId": 946600,
+            "status": "completed",
+            "conclusion": "success"
+          },
+          {
+            "name": "fictional-hub-gate",
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "appId": 23456,
+            "status": "completed",
+            "conclusion": "success"
+          }
+        ],
+        "author": "synthetic-author",
+        "agent": "copilot-swe-agent[bot]",
+        "reviews": [
+          {
+            "reviewer": "synthetic-hub-reviewer",
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "APPROVED"
+          }
+        ]
+      }
+    },
+    "rollbackReceipt": {
+      "repository": "example/family-hub",
+      "postPolicy": {
+        "version": 1,
+        "repository": "example/family-hub",
+        "defaultBranch": "trunk",
+        "mergeMethod": "merge",
+        "mode": "disabled",
+        "killSwitch": true,
+        "checks": [
+          { "name": "copilot-review", "appId": 946600 },
+          { "name": "validate", "appId": 15368 },
+          { "name": "fictional-hub-gate", "appId": 23456 }
+        ],
+        "reviewers": ["synthetic-reviewer", "synthetic-hub-reviewer"],
+        "coverage": { "line": 96, "branch": 92 },
+        "owners": [{ "prefix": "app/", "owner": "synthetic-hub-owner" }],
+        "maxActive": 1,
+        "creditLimit": 100,
+        "riskClasses": ["low", "high"]
+      },
+      "revokedCredentialId": "cred-shadow-family-hub",
+      "pinRevertedViaReviewedPr": true,
+      "queuedLiveMutations": 0
+    }
+  },
+  "verifiedShadowScenarios": [
+    {
+      "scenario": "freeze-active-default-posture",
+      "description": "Default posture with ownerFreezeLiftedVerified=false blocks immediately as CONSUMER_FROZEN",
+      "expectedReason": "CONSUMER_FROZEN",
+      "ready": false,
+      "liveActivation": false,
+      "liveProductionDeployAllowed": false
+    },
+    {
+      "scenario": "m01-upstream-unaccepted",
+      "description": "Even if freeze were lifted, unaccepted M01 (#10) blocks with M01_UPSTREAM_NOT_ACCEPTED",
+      "expectedReason": "M01_UPSTREAM_NOT_ACCEPTED",
+      "ready": false,
+      "liveActivation": false,
+      "liveProductionDeployAllowed": false
+    },
+    {
+      "scenario": "familytree-pilot-unaccepted",
+      "description": "Unaccepted M03 FamilyTree pilot (#36) blocks with FAMILYTREE_PILOT_NOT_ACCEPTED",
+      "expectedReason": "FAMILYTREE_PILOT_NOT_ACCEPTED",
+      "ready": false,
+      "liveActivation": false,
+      "liveProductionDeployAllowed": false
+    },
+    {
+      "scenario": "commented-only-review-zero-threads",
+      "description": "COMMENTED-only bot review with 0 unresolved threads and clear summary is strictly rejected",
+      "expectedReason": "FORMAL_APPROVAL_REQUIRED",
+      "ready": false,
+      "liveActivation": false,
+      "liveProductionDeployAllowed": false
+    },
+    {
+      "scenario": "stale-or-dismissed-review",
+      "description": "Stale APPROVED or DISMISSED reviews fail closed with FORMAL_APPROVAL_REQUIRED",
+      "expectedReason": "FORMAL_APPROVAL_REQUIRED",
+      "ready": false,
+      "liveActivation": false,
+      "liveProductionDeployAllowed": false
+    },
+    {
+      "scenario": "behind-main-stale-base",
+      "description": "Candidate base SHA behind latestProtectedMainSha fails closed with BASE_NOT_STRICT_UP_TO_DATE",
+      "expectedReason": "BASE_NOT_STRICT_UP_TO_DATE",
+      "ready": false,
+      "liveActivation": false,
+      "liveProductionDeployAllowed": false
+    },
+    {
+      "scenario": "missing-copilot-review-or-validate-check",
+      "description": "Missing or non-exact-head copilot-review or validate check context fails closed",
+      "expectedReason": "REQUIRED_CHECKS_INCOMPLETE",
+      "ready": false,
+      "liveActivation": false,
+      "liveProductionDeployAllowed": false
+    },
+    {
+      "scenario": "production-deploy-not-isolated",
+      "description": "liveProductionDeployAllowed=true or unisolated production deployment fails closed",
+      "expectedReason": "PRODUCTION_ISOLATION_VIOLATION",
+      "ready": false,
+      "liveActivation": false,
+      "liveProductionDeployAllowed": false
+    },
+    {
+      "scenario": "hypothetical-shadow-ready-independent-of-spellbook-and-m02",
+      "description": "Synthetic post-prerequisite shadow readiness passes while keeping spellbookPilotAccepted=false, m02SpeedAccepted=false, liveActivation=false, and liveProductionDeployAllowed=false",
+      "expectedReason": "FAMILYHUB_SHADOW_READY_ONLY",
+      "ready": true,
+      "liveActivation": false,
+      "liveProductionDeployAllowed": false
+    }
+  ]
+}
