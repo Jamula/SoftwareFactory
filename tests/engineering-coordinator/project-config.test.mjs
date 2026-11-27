@@ -90,6 +90,23 @@ const routingRequest = () => ({
 
 test('accepts a disabled, project-specific configuration', () => {
   assert.equal(validateProjectConfig(config()), true);
+  const legacyManyOwners = config();
+  legacyManyOwners.lanes = [{
+    id: 'api',
+    owners: Array.from({length: 40}, (_, index) => `src/api-${index}`),
+    prompt: 'agents/engineering-coordinator.md'
+  }];
+  assert.equal(validateProjectConfig(legacyManyOwners), true);
+  const planned = planLanes(legacyManyOwners, [{
+    id: 1,
+    lane: 'api',
+    state: 'approved',
+    priority: 1,
+    dependencies: [],
+    paths: ['src/api-39/handler.mjs']
+  }]);
+  assert.equal(planned.reason, 'SHADOW_PLAN');
+  assert.deepEqual(planned.scheduled.map(item => item.id), [1]);
 });
 
 test('parses bounded JSON config and rejects malformed or invalid content', () => {

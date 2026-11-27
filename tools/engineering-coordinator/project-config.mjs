@@ -68,7 +68,7 @@ function topologicalOrder(items) {
 function validLanes(lanes) {
   if (!dense(lanes, 32) || lanes.length === 0 ||
       !lanes.every(lane => shape(lane, ['id', 'owners', 'prompt'], ['specialist']) &&
-        id(lane.id) && pathList(lane.owners, 1, 32) && path(lane.prompt) &&
+        id(lane.id) && pathList(lane.owners, 1, Infinity) && path(lane.prompt) &&
         (!Object.hasOwn(lane, 'specialist') || specialist(lane.specialist))) ||
       !unique(lanes.map(lane => lane.id))) return false;
   return disjointPaths(lanes.flatMap(lane => lane.owners));
