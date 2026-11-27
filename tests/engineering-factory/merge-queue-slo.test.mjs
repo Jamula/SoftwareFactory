@@ -50,6 +50,7 @@ function baseDraftSample(overrides = {}) {
     retryTimestamps: [],
     mergedAt: 1_205_000,
     mainVerifiedAt: 1_235_000,
+    humanTouchesComplete: true,
     humanTouches: [],
     stages: {
       ciQueueWaitMs: 6_000,
@@ -534,8 +535,69 @@ test('records right-censored open PR ages, closed-unmerged PRs, pending main ver
   assert.equal(closedUnmergedLongAgo.sloMet, true);
   assert.equal(closedUnmergedLongAgo.counts.closedUnmergedCount, 1);
   assert.equal(closedUnmergedLongAgo.counts.openCensoredCount, 0);
+  assert.equal(closedUnmergedLongAgo.metrics.draftToPublishMs.closedUnmergedCount, 1);
   assert.equal(closedUnmergedLongAgo.metrics.creationToMergeMs.closedUnmergedCount, 1);
   assert.equal(closedUnmergedLongAgo.metrics.creationToMergeMs.overdueOpenCount, 0);
+
+  const publishedLateThenClosedUnmerged = evaluatePullMergeLatencySlo([
+    baseDraftSample({prNumber: 409, createdAt: 300_000, publicationEvents: [{type: 'published', at: 330_000}],
+      headCommits: [{sha: HEAD_1, at: 300_000}]}),
+    baseDraftSample({
+      prNumber: 410,
+      state: 'closed-unmerged',
+      closedAt: 950_000,
+      createdAt: 300_000,
+      observedAt: 1_300_000,
+      publicationEvents: [{type: 'published', at: 900_000}],
+      headCommits: [{sha: HEAD_1, at: 300_000}],
+      eligibilityTimestamps: [],
+      enqueuedAt: null,
+      mergedAt: null,
+      mainVerifiedAt: null,
+      stages: {
+        ciQueueWaitMs: 5_000,
+        linuxRuntimeMs: 45_000,
+        windowsRuntimeMs: null,
+        securityScanMs: 30_000,
+        reviewReworkMs: null,
+        publicationIdleMs: 500_000,
+        eligibilityToEnqueueMs: null,
+        mergeQueueRevalidationMs: null,
+        mainVerificationMs: null
+      }
+    }),
+    baseDraftSample({
+      prNumber: 411,
+      state: 'closed-unmerged',
+      closedAt: 960_000,
+      createdAt: 310_000,
+      observedAt: 1_300_000,
+      publicationEvents: [{type: 'published', at: 910_000}],
+      headCommits: [{sha: HEAD_1, at: 310_000}],
+      eligibilityTimestamps: [],
+      enqueuedAt: null,
+      mergedAt: null,
+      mainVerifiedAt: null,
+      stages: {
+        ciQueueWaitMs: 5_000,
+        linuxRuntimeMs: 45_000,
+        windowsRuntimeMs: null,
+        securityScanMs: 30_000,
+        reviewReworkMs: null,
+        publicationIdleMs: 500_000,
+        eligibilityToEnqueueMs: null,
+        mergeQueueRevalidationMs: null,
+        mainVerificationMs: null
+      }
+    })
+  ], completeCohortOptions({fromMs: 250_000}));
+  assert.equal(publishedLateThenClosedUnmerged.metrics.draftToPublishMs.sampleCount, 3);
+  assert.equal(publishedLateThenClosedUnmerged.metrics.draftToPublishMs.targetMissCount, 2);
+  assert.equal(publishedLateThenClosedUnmerged.metrics.draftToPublishMs.meetsTarget, false);
+  assert.equal(publishedLateThenClosedUnmerged.metrics.creationToMergeMs.closedUnmergedCount, 2);
+  assert.equal(publishedLateThenClosedUnmerged.metrics.creationToMergeMs.overdueOpenCount, 0);
+  assert.equal(publishedLateThenClosedUnmerged.sloMet, false);
+  assert.equal(publishedLateThenClosedUnmerged.reason, 'SLO_MISSED');
 
   const stalledOpen = evaluatePullMergeLatencySlo([
     baseDraftSample({prNumber: 404}),
@@ -587,12 +649,58 @@ test('distinguishes routine human interventions from documented governance excep
   const exceptionCohort = evaluatePullMergeLatencySlo([withApprovedException], completeCohortOptions());
   assert.equal(exceptionCohort.valid, true);
   assert.equal(exceptionCohort.sloMet, true);
+  assert.equal(exceptionCohort.humanTouchesComplete, true);
   assert.equal(exceptionCohort.humanTouchesCount, 1);
   assert.equal(exceptionCohort.routineHumanTouchesCount, 0);
   assert.equal(exceptionCohort.exceptionHumanTouchesCount, 1);
   assert.equal(exceptionCohort.zeroRoutineHumanTouchesMet, true);
   assert.equal(exceptionCohort.counts.unattendedMergedCount, 1);
+  assert.equal(exceptionCohort.counts.unknownHumanTouchesCount, 0);
   assert.equal(exceptionCohort.humanTouches.exceptions.length, 1);
+
+  const untrackedEmpty = baseDraftSample({
+    prNumber: 503,
+    humanTouchesComplete: false,
+    humanTouches: []
+  });
+  const untrackedNull = baseDraftSample({
+    prNumber: 504,
+    humanTouchesComplete: false,
+    humanTouches: null
+  });
+  const untrackedCohort = evaluatePullMergeLatencySlo(
+    [untrackedEmpty, untrackedNull],
+    completeCohortOptions()
+  );
+  assert.equal(untrackedCohort.valid, true);
+  assert.equal(untrackedCohort.known, true);
+  assert.equal(untrackedCohort.humanTouchesComplete, false);
+  assert.equal(untrackedCohort.humanTouchesCount, null);
+  assert.equal(untrackedCohort.routineHumanTouchesCount, null);
+  assert.equal(untrackedCohort.exceptionHumanTouchesCount, null);
+  assert.equal(untrackedCohort.zeroRoutineHumanTouchesMet, null);
+  assert.equal(untrackedCohort.counts.unattendedMergedCount, 0);
+  assert.equal(untrackedCohort.counts.unknownUnattendedMergedCount, 2);
+  assert.equal(untrackedCohort.counts.unknownHumanTouchesCount, 2);
+  assert.equal(untrackedCohort.sloMet, null);
+  assert.equal(untrackedCohort.stretchMet, null);
+  assert.equal(untrackedCohort.reason, 'SLO_INCOMPLETE');
+
+  const partialTrackingWithRoutineBreach = evaluatePullMergeLatencySlo([
+    baseDraftSample({
+      prNumber: 505,
+      humanTouchesComplete: false,
+      humanTouches: [{
+        kind: 'routine',
+        at: 1_205_000,
+        summary: 'Observed manual merge while audit log still syncing'
+      }]
+    })
+  ], completeCohortOptions());
+  assert.equal(partialTrackingWithRoutineBreach.zeroRoutineHumanTouchesMet, false);
+  assert.equal(partialTrackingWithRoutineBreach.samples[0].unattendedMerge, false);
+  assert.equal(partialTrackingWithRoutineBreach.sloMet, false);
+  assert.equal(partialTrackingWithRoutineBreach.reason, 'SLO_MISSED');
 
   const manualMerge = baseDraftSample({
     prNumber: 502,
@@ -961,6 +1069,14 @@ test('enforces fail-closed timeline, provenance, scope, freshness, human-touch, 
   );
 
   assert.equal(
+    evaluatePullMergeLatencySample(baseDraftSample({humanTouchesComplete: 'bad'})).reason,
+    'HUMAN_TOUCH_EVIDENCE_UNKNOWN'
+  );
+  assert.equal(
+    evaluatePullMergeLatencySample(baseDraftSample({humanTouchesComplete: true, humanTouches: null})).reason,
+    'HUMAN_TOUCH_EVIDENCE_UNKNOWN'
+  );
+  assert.equal(
     evaluatePullMergeLatencySample(baseDraftSample({humanTouches: 'bad'})).reason,
     'HUMAN_TOUCH_EVIDENCE_UNKNOWN'
   );
@@ -1258,6 +1374,41 @@ test('enforces fail-closed timeline, provenance, scope, freshness, human-touch, 
   );
   assert.equal(
     evaluatePullMergeLatencySlo([baseDraftSample({prNumber: 802, observedAt: 10_000_000}), staleOpenSample]).reason,
+    'STALE_EVIDENCE'
+  );
+  const staleClosedUnmerged = baseDraftSample({
+    prNumber: 803,
+    state: 'closed-unmerged',
+    closedAt: 1_050_000,
+    createdAt: 1_000_000,
+    observedAt: 1_100_000,
+    publicationEvents: [],
+    headCommits: [{sha: HEAD_1, at: 1_000_000}],
+    eligibilityTimestamps: [],
+    enqueuedAt: null,
+    mergedAt: null,
+    mainVerifiedAt: null,
+    stages: {
+      ciQueueWaitMs: null,
+      linuxRuntimeMs: null,
+      windowsRuntimeMs: null,
+      securityScanMs: null,
+      reviewReworkMs: null,
+      publicationIdleMs: null,
+      eligibilityToEnqueueMs: null,
+      mergeQueueRevalidationMs: null,
+      mainVerificationMs: null
+    }
+  });
+  assert.equal(
+    evaluatePullMergeLatencySlo(
+      [baseDraftSample({prNumber: 804}), staleClosedUnmerged],
+      completeCohortOptions()
+    ).reason,
+    'STALE_EVIDENCE'
+  );
+  assert.equal(
+    evaluatePullMergeLatencySlo([baseDraftSample({prNumber: 805}), staleClosedUnmerged]).reason,
     'STALE_EVIDENCE'
   );
   assert.equal(

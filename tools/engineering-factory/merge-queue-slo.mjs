@@ -110,6 +110,7 @@ const SAMPLE_REQUIRED_KEYS = Object.freeze([
   'retryTimestamps',
   'mergedAt',
   'mainVerifiedAt',
+  'humanTouchesComplete',
   'humanTouches',
   'stages'
 ]);
@@ -289,7 +290,24 @@ function parseMonotonicTimestamps(list, floorAt, ceilingAt, maxLen, shapeReason)
   return {ok: true};
 }
 
-function parseHumanTouches(touches, prNumber, createdAt, observedAt) {
+function parseHumanTouches(touches, touchesComplete, prNumber, createdAt, observedAt) {
+  if (typeof touchesComplete !== 'boolean') {
+    return {ok: false, reason: 'HUMAN_TOUCH_EVIDENCE_UNKNOWN'};
+  }
+  if (touches === null) {
+    if (touchesComplete) return {ok: false, reason: 'HUMAN_TOUCH_EVIDENCE_UNKNOWN'};
+    return {
+      ok: true,
+      complete: false,
+      humanTouchesCount: null,
+      routineHumanTouchesCount: null,
+      exceptionHumanTouchesCount: null,
+      observedRoutineCount: 0,
+      observedExceptionCount: 0,
+      zeroRoutineHumanTouchesMet: null,
+      exceptions: Object.freeze([])
+    };
+  }
   if (!isDenseDataArray(touches, 64)) return {ok: false, reason: 'HUMAN_TOUCH_EVIDENCE_UNKNOWN'};
   let routineCount = 0;
   let exceptionCount = 0;
@@ -327,10 +345,13 @@ function parseHumanTouches(touches, prNumber, createdAt, observedAt) {
   }
   return {
     ok: true,
-    humanTouchesCount: touches.length,
-    routineHumanTouchesCount: routineCount,
-    exceptionHumanTouchesCount: exceptionCount,
-    zeroRoutineHumanTouchesMet: routineCount === 0,
+    complete: touchesComplete,
+    humanTouchesCount: touchesComplete ? touches.length : null,
+    routineHumanTouchesCount: touchesComplete ? routineCount : null,
+    exceptionHumanTouchesCount: touchesComplete ? exceptionCount : null,
+    observedRoutineCount: routineCount,
+    observedExceptionCount: exceptionCount,
+    zeroRoutineHumanTouchesMet: routineCount > 0 ? false : (touchesComplete ? true : null),
     exceptions: Object.freeze(exceptions)
   };
 }
@@ -504,6 +525,7 @@ export function evaluatePullMergeLatencySample(sample) {
 
   const touches = parseHumanTouches(
     sample.humanTouches,
+    sample.humanTouchesComplete,
     sample.prNumber,
     sample.createdAt,
     sample.observedAt
@@ -526,6 +548,9 @@ export function evaluatePullMergeLatencySample(sample) {
   const openEligibleAgeMs = firstEligibleAt !== null && censored
     ? sample.observedAt - firstEligibleAt
     : null;
+  const unattendedMerge = sample.mergedAt === null
+    ? false
+    : (touches.observedRoutineCount > 0 ? false : (touches.complete ? true : null));
 
   return Object.freeze({
     valid: true,
@@ -545,7 +570,7 @@ export function evaluatePullMergeLatencySample(sample) {
     currentlyDraft: pub.currentlyDraft,
     censored,
     mainVerificationCensored: sample.mergedAt !== null && sample.mainVerifiedAt === null,
-    unattendedMerge: sample.mergedAt !== null && touches.routineHumanTouchesCount === 0,
+    unattendedMerge,
     initialHead: heads.initialHead,
     finalHead: heads.finalHead,
     draftToPublishMs: lifecycle.draftToPublishMs,
@@ -564,9 +589,12 @@ export function evaluatePullMergeLatencySample(sample) {
     republishCount: pub.republishCount,
     reeligibilityCount,
     retryCount: sample.retryTimestamps.length,
+    humanTouchesComplete: touches.complete,
     humanTouchesCount: touches.humanTouchesCount,
     routineHumanTouchesCount: touches.routineHumanTouchesCount,
     exceptionHumanTouchesCount: touches.exceptionHumanTouchesCount,
+    observedRoutineHumanTouchesCount: touches.observedRoutineCount,
+    observedExceptionHumanTouchesCount: touches.observedExceptionCount,
     zeroRoutineHumanTouchesMet: touches.zeroRoutineHumanTouchesMet,
     humanTouchExceptions: touches.exceptions,
     stageAttribution: stageResult.stageAttribution
@@ -651,16 +679,14 @@ function summarizeLifecycleMetric(metricKey, evaluatedSamples, cohortComplete) {
   let stretchOverdueOpenCount = 0;
 
   for (const row of evaluatedSamples) {
-    if (row.closedUnmerged) {
-      closedUnmergedCount++;
-      continue;
-    }
     const duration = row[metricKey];
     const openAge = row[spec.openAgeKey];
     if (duration !== null) {
       durations.push(duration);
       if (duration > spec.targetMs) targetMissCount++;
       if (duration > spec.stretchMs) stretchMissCount++;
+    } else if (row.closedUnmerged) {
+      closedUnmergedCount++;
     } else if (openAge !== null) {
       censoredCount++;
       if (openAge > spec.targetMs) overdueOpenCount++;
@@ -760,6 +786,7 @@ export function evaluatePullMergeLatencySlo(samples, options) {
   let mainVerifiedCount = 0;
   let verificationPendingCount = 0;
   let unattendedMergedCount = 0;
+  let unknownUnattendedMergedCount = 0;
   let maxSampleObservedAt = 0;
 
   let headChangesCount = 0;
@@ -770,9 +797,9 @@ export function evaluatePullMergeLatencySlo(samples, options) {
   let prsWithHeadChangesCount = 0;
   let prsWithRedraftCount = 0;
 
-  let humanTouchesCount = 0;
-  let routineHumanTouchesCount = 0;
-  let exceptionHumanTouchesCount = 0;
+  let observedRoutineTouchesSum = 0;
+  let observedExceptionTouchesSum = 0;
+  let unknownHumanTouchesCount = 0;
   const allExceptions = [];
   const openPullRequests = [];
   const closedUnmergedPullRequests = [];
@@ -798,7 +825,7 @@ export function evaluatePullMergeLatencySlo(samples, options) {
     }
     if (opts.observedAt !== null) {
       if (raw.observedAt > opts.observedAt) return invalidCohort('SAMPLE_AFTER_OBSERVATION');
-      if ((measured.censored || measured.mainVerificationCensored) && raw.observedAt < opts.observedAt) {
+      if (measured.mergeToVerifiedMainMs === null && raw.observedAt < opts.observedAt) {
         return invalidCohort('STALE_EVIDENCE');
       }
     }
@@ -827,7 +854,8 @@ export function evaluatePullMergeLatencySlo(samples, options) {
     if (measured.mergeToVerifiedMainMs !== null) mainVerifiedCount++;
     else if (measured.mainVerificationCensored) verificationPendingCount++;
 
-    if (measured.unattendedMerge) unattendedMergedCount++;
+    if (measured.unattendedMerge === true) unattendedMergedCount++;
+    else if (measured.unattendedMerge === null) unknownUnattendedMergedCount++;
 
     headChangesCount += measured.headChangesCount;
     redraftCount += measured.redraftCount;
@@ -837,9 +865,9 @@ export function evaluatePullMergeLatencySlo(samples, options) {
     if (measured.headChangesCount > 0) prsWithHeadChangesCount++;
     if (measured.redraftCount > 0) prsWithRedraftCount++;
 
-    humanTouchesCount += measured.humanTouchesCount;
-    routineHumanTouchesCount += measured.routineHumanTouchesCount;
-    exceptionHumanTouchesCount += measured.exceptionHumanTouchesCount;
+    observedRoutineTouchesSum += measured.observedRoutineHumanTouchesCount;
+    observedExceptionTouchesSum += measured.observedExceptionHumanTouchesCount;
+    if (!measured.humanTouchesComplete) unknownHumanTouchesCount++;
     for (const ex of measured.humanTouchExceptions) allExceptions.push(ex);
 
     if (measured.censored || measured.mainVerificationCensored) {
@@ -857,15 +885,25 @@ export function evaluatePullMergeLatencySlo(samples, options) {
 
   if (opts.observedAt === null &&
       evaluated.some((m, idx) =>
-        (m.censored || m.mainVerificationCensored) && samples[idx].observedAt < maxSampleObservedAt)) {
+        m.mergeToVerifiedMainMs === null && samples[idx].observedAt < maxSampleObservedAt)) {
     return invalidCohort('STALE_EVIDENCE');
   }
 
+  const allTouchesComplete = unknownHumanTouchesCount === 0;
+  const humanTouchesCount = allTouchesComplete
+    ? observedRoutineTouchesSum + observedExceptionTouchesSum
+    : null;
+  const routineHumanTouchesCount = allTouchesComplete ? observedRoutineTouchesSum : null;
+  const exceptionHumanTouchesCount = allTouchesComplete ? observedExceptionTouchesSum : null;
+  const zeroRoutineHumanTouchesMet = observedRoutineTouchesSum > 0
+    ? false
+    : (allTouchesComplete ? true : null);
+
   const metrics = {};
-  let anyTargetMissed = routineHumanTouchesCount > 0;
-  let anyTargetUnmeasured = false;
-  let anyStretchMissed = routineHumanTouchesCount > 0;
-  let anyStretchUnmeasured = false;
+  let anyTargetMissed = observedRoutineTouchesSum > 0;
+  let anyTargetUnmeasured = !allTouchesComplete;
+  let anyStretchMissed = observedRoutineTouchesSum > 0;
+  let anyStretchUnmeasured = !allTouchesComplete;
 
   for (const key of METRIC_KEYS) {
     const summary = summarizeLifecycleMetric(key, evaluated, opts.cohortComplete);
@@ -884,7 +922,6 @@ export function evaluatePullMergeLatencySlo(samples, options) {
   const reason = !known
     ? 'PARTIAL_COHORT_EVIDENCE'
     : (sloMet === true ? 'SLO_MET' : (sloMet === false ? 'SLO_MISSED' : 'SLO_INCOMPLETE'));
-  const zeroRoutineHumanTouchesMet = routineHumanTouchesCount === 0;
 
   return Object.freeze({
     valid: true,
@@ -901,6 +938,7 @@ export function evaluatePullMergeLatencySlo(samples, options) {
     toMs: opts.toMs,
     observedMs: opts.observedAt,
     sourceComplete: opts.sourceComplete,
+    humanTouchesComplete: allTouchesComplete,
     sampleCount: evaluated.length,
     sloMet,
     stretchMet,
@@ -919,7 +957,9 @@ export function evaluatePullMergeLatencySlo(samples, options) {
       closedUnmergedCount,
       mainVerifiedCount,
       verificationPendingCount,
-      unattendedMergedCount
+      unattendedMergedCount,
+      unknownUnattendedMergedCount,
+      unknownHumanTouchesCount
     }),
     rework: Object.freeze({
       headChangesCount,
@@ -932,9 +972,13 @@ export function evaluatePullMergeLatencySlo(samples, options) {
       clockResetsApplied: 0
     }),
     humanTouches: Object.freeze({
+      complete: allTouchesComplete,
+      unknownSampleCount: unknownHumanTouchesCount,
       humanTouchesCount,
       routineHumanTouchesCount,
       exceptionHumanTouchesCount,
+      observedRoutineCount: observedRoutineTouchesSum,
+      observedExceptionCount: observedExceptionTouchesSum,
       zeroRoutineHumanTouchesMet,
       exceptions: Object.freeze(allExceptions)
     }),
