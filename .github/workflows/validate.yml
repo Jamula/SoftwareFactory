@@ -79,7 +79,7 @@ jobs:
           test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
           echo "Candidate $EXPECTED_HEAD"
       - name: Test dashboard verifier fail-closed behavior
-        run: python tests/engineering-factory/test-dashboard-api.py
+        run: node --test tests/engineering-factory/verify-dashboard-api.test.mjs
       - name: Install locked dependencies for runtime
         run: npm ci --ignore-scripts
       - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
@@ -171,14 +171,14 @@ jobs:
             echo "::error::Dashboard export failed"
             exit 1
           fi
-          python tests/engineering-factory/verify-dashboard-export.py "$archive"
-          python tests/engineering-factory/test-dashboard-metric-schema.py
+          node tools/engineering-factory/verify-dashboard-export.mjs "$archive"
+          node --test tests/engineering-factory/inspect-dashboard-metric-schema.test.mjs
           if ! timeout 30s aspire stop --apphost apphost.cs --non-interactive >"$output" 2>&1; then
             echo "::error::Aspire shutdown failed"
             exit 1
           fi
-          python tests/engineering-factory/test-dashboard-metric-receipt.py
-          python tests/engineering-factory/verify-dashboard-metric-receipt.py "$data_root"
+          node --test tests/engineering-factory/verify-dashboard-metric-receipt.test.mjs
+          node tools/engineering-factory/verify-dashboard-metric-receipt.mjs "$data_root"
           trap - EXIT
           rm -f -- "$output" "$certificate" "$archive"
           rm -rf -- "$data_root"

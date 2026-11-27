@@ -154,13 +154,13 @@ jobs:
             # Equivalent authenticated dashboard readback via documented HTTPS API.
             $env:FACTORY_DASHBOARD_ORIGIN = $origin
             $env:FACTORY_DASHBOARD_CA = $cert
-            python tests/engineering-factory/verify-dashboard-api.py
+            node tools/engineering-factory/verify-dashboard-api.mjs
             if ($LASTEXITCODE -ne 0) { throw 'Dashboard trace/log readback failed' }
             $null = Invoke-Aspire @('stop','--apphost','apphost.cs','--non-interactive') 30
             $appHostStopped = $true
-            python tests/engineering-factory/test-dashboard-metric-receipt.py
+            node --test tests/engineering-factory/verify-dashboard-metric-receipt.test.mjs
             if ($LASTEXITCODE -ne 0) { throw 'Metric verifier regression tests failed' }
-            python tests/engineering-factory/verify-dashboard-metric-receipt.py $dataRoot
+            node tools/engineering-factory/verify-dashboard-metric-receipt.mjs $dataRoot
             if ($LASTEXITCODE -ne 0) { throw 'Dashboard metric persistence verification failed' }
             Write-Host 'Isolated Windows AppHost stopped'
           } finally {
