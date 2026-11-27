@@ -1735,6 +1735,7 @@ export async function simulateDurableCasLifecycle(scenario) {
           }));
           continue;
         }
+        latestSequenceByTarget.set(targetKey, ev.eventSequence);
 
         const claimRes = await claimWorkQueueLease({
           refStore: instrumentedStore,
@@ -1745,7 +1746,6 @@ export async function simulateDurableCasLifecycle(scenario) {
         });
         if (claimRes.ok) {
           seenDeliveries.set(deliveryKey, {workId: checked.workId, consumed: true});
-          latestSequenceByTarget.set(targetKey, ev.eventSequence);
           claimsGranted += 1;
           if (ev.readyAtMs !== undefined) readyLatenciesMs.push(step.nowMs - ev.readyAtMs);
           outcomes.push(Object.freeze({

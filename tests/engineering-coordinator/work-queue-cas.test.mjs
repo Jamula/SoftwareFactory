@@ -2581,13 +2581,13 @@ test('simulateDurableCasLifecycle handles seeded initialState compaction, replay
           },
           {
             deliveryId: 'contending-delivery',
-            eventSequence: 1,
+            eventSequence: 20,
             candidate: makeIssueCandidate({issueNumber: 702, lane: 'factory', ownedPaths: ['tools/engineering-factory/b.mjs'], workerId: 'worker-waiter', runId: 9702})
           },
           // Mutating the unconsumed deliveryId to a different workId STILL triggers DELIVERY_CONFLICT
           {
             deliveryId: 'contending-delivery',
-            eventSequence: 1,
+            eventSequence: 20,
             candidate: makeIssueCandidate({issueNumber: 703, lane: 'docs', ownedPaths: ['docs/c.md'], workerId: 'worker-spoof', runId: 9703})
           }
         ]
@@ -2602,19 +2602,25 @@ test('simulateDurableCasLifecycle handles seeded initialState compaction, replay
         outcome: 'completed',
         nowMs: 1500
       },
-      // Replay contending-delivery on the same runner -> now grants lease cleanly; immediate second replay -> DUPLICATE_DELIVERY
+      // Older sequence 10 for issue #702 MUST return OUT_OF_ORDER_EVENT (cannot steal freed lane from sequence 20),
+      // while replaying contending-delivery (sequence 20) grants the lease and immediate second replay returns DUPLICATE_DELIVERY!
       {
         kind: 'replay_events',
         nowMs: 1600,
         events: [
           {
+            deliveryId: 'stale-seq-10-delivery',
+            eventSequence: 10,
+            candidate: makeIssueCandidate({issueNumber: 702, lane: 'factory', ownedPaths: ['tools/engineering-factory/b.mjs'], workerId: 'worker-stale-seq', runId: 9704})
+          },
+          {
             deliveryId: 'contending-delivery',
-            eventSequence: 1,
+            eventSequence: 20,
             candidate: makeIssueCandidate({issueNumber: 702, lane: 'factory', ownedPaths: ['tools/engineering-factory/b.mjs'], workerId: 'worker-waiter', runId: 9702})
           },
           {
             deliveryId: 'contending-delivery',
-            eventSequence: 1,
+            eventSequence: 20,
             candidate: makeIssueCandidate({issueNumber: 702, lane: 'factory', ownedPaths: ['tools/engineering-factory/b.mjs'], workerId: 'worker-waiter', runId: 9702})
           }
         ]
@@ -2625,9 +2631,10 @@ test('simulateDurableCasLifecycle handles seeded initialState compaction, replay
   assert.equal(transientLaneReplaySim.steps[0].outcomes[0].ok, true);
   assert.equal(transientLaneReplaySim.steps[0].outcomes[1].reason, 'LANE_RESERVED');
   assert.equal(transientLaneReplaySim.steps[0].outcomes[2].reason, 'DELIVERY_CONFLICT');
-  assert.equal(transientLaneReplaySim.steps[2].outcomes[0].ok, true);
-  assert.equal(transientLaneReplaySim.steps[2].outcomes[0].reason, 'LEASE_CLAIMED');
-  assert.equal(transientLaneReplaySim.steps[2].outcomes[1].reason, 'DUPLICATE_DELIVERY');
+  assert.equal(transientLaneReplaySim.steps[2].outcomes[0].reason, 'OUT_OF_ORDER_EVENT');
+  assert.equal(transientLaneReplaySim.steps[2].outcomes[1].ok, true);
+  assert.equal(transientLaneReplaySim.steps[2].outcomes[1].reason, 'LEASE_CLAIMED');
+  assert.equal(transientLaneReplaySim.steps[2].outcomes[2].reason, 'DUPLICATE_DELIVERY');
 
   // Same-deliveryId replay after expiry rejects with DUPLICATE_DELIVERY (same runner),
   // and A -> B -> A replay under maxAttempts: 3 across direct settle('requeued'), expiry/reconcile,
