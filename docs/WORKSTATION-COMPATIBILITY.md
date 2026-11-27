@@ -23,9 +23,14 @@ Align local toolchains with the repository's immutable hosted runner pins so beh
 
 ### Headless verification (no Aspire daemon required)
 
-Before exercising the local Aspire AppHost, verify exact locked dependencies, deterministic smoke fixtures, and `98%` line / `95%` branch coverage from the repository root (`<repo-root>`):
+Before exercising the local Aspire AppHost, export telemetry opt-outs first so zero CLI usage telemetry is emitted, then verify exact locked dependencies, deterministic smoke fixtures, and `98%` line / `95%` branch coverage from the repository root (`<repo-root>`):
 
 ```bash
+set -euo pipefail
+export DOTNET_CLI_TELEMETRY_OPTOUT=1
+export ASPIRE_CLI_TELEMETRY_OPTOUT=true
+export ASPIRE_DASHBOARD_TELEMETRY_OPTOUT=true
+
 node --version   # expected: v26.13.1
 dotnet --version # expected: 10.0.404
 npm ci --ignore-scripts
@@ -37,11 +42,15 @@ rm -f coverage-evidence.json cobertura-coverage.xml
 
 ### Scoped `Aspire.Cli 17.0.0` installation
 
-Install `Aspire.Cli` into a disposable local directory rather than mutating global tool state, then restore and build the file-based `apphost.cs` in `Release` configuration:
+Install `Aspire.Cli` into a disposable local directory rather than mutating global tool state, keeping telemetry opt-outs exported in the shell before every `.NET` and Aspire command, then restore and build the file-based `apphost.cs` in `Release` configuration:
 
 ```bash
-DOTNET_CLI_TELEMETRY_OPTOUT=1 ASPIRE_CLI_TELEMETRY_OPTOUT=true \
-  dotnet tool install Aspire.Cli --version 17.0.0 \
+set -euo pipefail
+export DOTNET_CLI_TELEMETRY_OPTOUT=1
+export ASPIRE_CLI_TELEMETRY_OPTOUT=true
+export ASPIRE_DASHBOARD_TELEMETRY_OPTOUT=true
+
+dotnet tool install Aspire.Cli --version 17.0.0 \
   --tool-path "<temp-root>/sf-aspire-tools" \
   --source https://api.nuget.org/v3/index.json
 
@@ -62,10 +71,14 @@ Node.js does not read OS certificate stores by default, so export the `.NET` HTT
 
 ### Windows 11 (`pwsh` 7+)
 
-On an interactive Windows 11 session, `dotnet dev-certs https --trust` triggers a modal Windows Security prompt to add the ASP.NET Core localhost certificate to `CurrentUser\Root`. To avoid mutating the Windows certificate store or blocking non-interactive shells, export a scoped PEM certificate and set `ASPIRE_DCP_USE_DEVELOPER_CERTIFICATE=false` so DCP uses its ephemeral session certificate while Node and `curl.exe` validate the exported PEM directly:
+On an interactive Windows 11 session, `dotnet dev-certs https --trust` triggers a modal Windows Security prompt to add the ASP.NET Core localhost certificate to `CurrentUser\Root`. To avoid mutating the Windows certificate store or blocking non-interactive shells, export telemetry opt-outs first, export a scoped PEM certificate, and set `ASPIRE_DCP_USE_DEVELOPER_CERTIFICATE=false` so DCP uses its ephemeral session certificate while Node and `curl.exe` validate the exported PEM directly:
 
 ```powershell
 $ErrorActionPreference = 'Stop'
+$env:DOTNET_CLI_TELEMETRY_OPTOUT = '1'
+$env:ASPIRE_CLI_TELEMETRY_OPTOUT = 'true'
+$env:ASPIRE_DASHBOARD_TELEMETRY_OPTOUT = 'true'
+
 $workDir = Join-Path ([System.IO.Path]::GetTempPath()) ("sf-workstation-" + [guid]::NewGuid())
 New-Item -ItemType Directory -Path $workDir | Out-Null
 $certPem = Join-Path $workDir 'aspire-dev.pem'
@@ -83,8 +96,15 @@ $env:ASPIRE_DASHBOARD_OTLP_HTTP_ENDPOINT_URL = 'https://127.0.0.1:18890'
 On macOS, `dotnet dev-certs https --trust` prompts for login Keychain authorization (which helps Safari/Chrome trust `https://localhost:<port>`), while Node.js OTLP exporters still require `NODE_EXTRA_CA_CERTS`:
 
 ```bash
+set -euo pipefail
+export DOTNET_CLI_TELEMETRY_OPTOUT=1
+export ASPIRE_CLI_TELEMETRY_OPTOUT=true
+export ASPIRE_DASHBOARD_TELEMETRY_OPTOUT=true
+
 umask 077
-work_dir="$(mktemp -d "${TMPDIR:-/var/folders}/sf-workstation.XXXXXXXX")"
+tmp_parent="${TMPDIR:-/private/tmp}"
+mkdir -p "$tmp_parent"
+work_dir="$(mktemp -d "${tmp_parent%/}/sf-workstation.XXXXXXXX")"
 cert_pem="$work_dir/aspire-dev.pem"
 
 dotnet dev-certs https --export-path "$cert_pem" --format PEM >/dev/null 2>&1
@@ -96,11 +116,18 @@ export ASPIRE_DASHBOARD_OTLP_HTTP_ENDPOINT_URL="https://127.0.0.1:18890"
 
 ### Linux and WSL2 (`bash`)
 
-On Linux distributions and WSL2, OpenSSL/NSS browser trust varies by distro. Exporting the PEM file and supplying `NODE_EXTRA_CA_CERTS` (plus `curl --cacert "$cert_pem"` for CLI checks) provides deterministic loopback TLS verification without root or `update-ca-certificates` changes:
+On Linux distributions and WSL2, OpenSSL/NSS browser trust varies by distro. Ensure the parent runtime/cache directory exists first (for fresh accounts where `XDG_RUNTIME_DIR` is unset and `~/.cache` does not yet exist), export the PEM file with telemetry opt-outs active, and supply `NODE_EXTRA_CA_CERTS` (plus `curl --cacert "$cert_pem"` for CLI checks) for deterministic loopback TLS verification without root or `update-ca-certificates` changes:
 
 ```bash
+set -euo pipefail
+export DOTNET_CLI_TELEMETRY_OPTOUT=1
+export ASPIRE_CLI_TELEMETRY_OPTOUT=true
+export ASPIRE_DASHBOARD_TELEMETRY_OPTOUT=true
+
 umask 077
-work_dir="$(mktemp -d "${XDG_RUNTIME_DIR:-$HOME/.cache}/sf-workstation.XXXXXXXX")"
+cache_parent="${XDG_RUNTIME_DIR:-$HOME/.cache}"
+mkdir -p "$cache_parent"
+work_dir="$(mktemp -d "${cache_parent%/}/sf-workstation.XXXXXXXX")"
 cert_pem="$work_dir/aspire-dev.pem"
 
 dotnet dev-certs https --export-path "$cert_pem" --format PEM >/dev/null 2>&1
@@ -115,6 +142,7 @@ export ASPIRE_DASHBOARD_OTLP_HTTP_ENDPOINT_URL="https://127.0.0.1:18890"
 Use `aspire start --apphost apphost.cs --isolated` so dynamic loopback ports and an isolated dashboard session prevent collisions with other local Aspire projects. Redirect CLI startup output to a private `0600` file so the one-time dashboard login token (`?t=...`) is never printed to shared logs:
 
 ```bash
+set -euo pipefail
 export DOTNET_CLI_TELEMETRY_OPTOUT=1
 export ASPIRE_CLI_TELEMETRY_OPTOUT=true
 export ASPIRE_DASHBOARD_TELEMETRY_OPTOUT=true
@@ -148,7 +176,7 @@ aspire stop --apphost apphost.cs --non-interactive
 rm -rf -- "$work_dir"
 ```
 
-On PowerShell (Windows 11), invoke the identical `aspire start --apphost apphost.cs --isolated --non-interactive --nologo`, `aspire resource synthetic-shadow start --apphost apphost.cs --non-interactive`, `aspire wait synthetic-shadow --status down --timeout 20 --apphost apphost.cs`, `aspire logs synthetic-shadow --apphost apphost.cs --non-interactive`, and `aspire stop --apphost apphost.cs --non-interactive` sequence inside a `try { ... } finally { ... }` block that removes `$workDir` and clears `NODE_EXTRA_CA_CERTS` on exit.
+On PowerShell (Windows 11), keep `$env:DOTNET_CLI_TELEMETRY_OPTOUT = '1'`, `$env:ASPIRE_CLI_TELEMETRY_OPTOUT = 'true'`, and `$env:ASPIRE_DASHBOARD_TELEMETRY_OPTOUT = 'true'` set before invoking the identical `aspire start --apphost apphost.cs --isolated --non-interactive --nologo`, `aspire resource synthetic-shadow start --apphost apphost.cs --non-interactive`, `aspire wait synthetic-shadow --status down --timeout 20 --apphost apphost.cs`, `aspire logs synthetic-shadow --apphost apphost.cs --non-interactive`, and `aspire stop --apphost apphost.cs --non-interactive` sequence inside a `try { ... } finally { ... }` block that removes `$workDir` and clears `NODE_EXTRA_CA_CERTS` on exit.
 
 ## `factory-board` Copilot CLI Extension Canvas preview
 
