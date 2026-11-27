@@ -38,8 +38,8 @@ const GRAPHQL_SNAPSHOT_QUERY = [
   "query($owner:String!,$name:String!){",
   "repository(owner:$owner,name:$name){",
   "milestones(first:100,states:[OPEN,CLOSED]){pageInfo{hasNextPage} nodes{number title state}}",
-  "openIssues:issues(first:100,states:[OPEN],orderBy:{field:UPDATED_AT,direction:DESC}){pageInfo{hasNextPage endCursor} nodes{number title state url updatedAt labels(first:10){nodes{name}} milestone{number title}}}",
-  "closedIssues:issues(first:100,states:[CLOSED],orderBy:{field:UPDATED_AT,direction:DESC}){pageInfo{hasNextPage endCursor} nodes{number title state url updatedAt labels(first:10){nodes{name}} milestone{number title}}}",
+  "openIssues:issues(first:100,states:[OPEN],orderBy:{field:UPDATED_AT,direction:DESC}){pageInfo{hasNextPage endCursor} nodes{number title state url updatedAt labels(first:100){pageInfo{hasNextPage} nodes{name}} milestone{number title}}}",
+  "closedIssues:issues(first:100,states:[CLOSED],orderBy:{field:UPDATED_AT,direction:DESC}){pageInfo{hasNextPage endCursor} nodes{number title state url updatedAt labels(first:100){pageInfo{hasNextPage} nodes{name}} milestone{number title}}}",
   "openPulls:pullRequests(first:100,states:[OPEN],orderBy:{field:UPDATED_AT,direction:DESC}){pageInfo{hasNextPage} nodes{number title isDraft url updatedAt headRefName headRefOid reviewDecision mergeStateStatus autoMergeRequest{enabledAt} mergeQueueEntry{position state} milestone{number title} closingIssuesReferences(first:10){nodes{number repository{nameWithOwner}}} commits(last:1){nodes{commit{statusCheckRollup{state contexts(first:100){totalCount pageInfo{hasNextPage} nodes{__typename ... on CheckRun{name status conclusion} ... on StatusContext{context state}}}}}}}}}",
   "mergedPulls:pullRequests(first:12,states:[MERGED],orderBy:{field:UPDATED_AT,direction:DESC}){nodes{number title url mergedAt headRefName milestone{number title} closingIssuesReferences(first:5){nodes{number repository{nameWithOwner}}}}}",
   "}}",
@@ -50,7 +50,7 @@ const GRAPHQL_ISSUES_PAGE_QUERY = [
   "repository(owner:$owner,name:$name){",
   "issues(first:100,after:$cursor,states:[$state],orderBy:{field:UPDATED_AT,direction:DESC}){",
   "pageInfo{hasNextPage endCursor}",
-  "nodes{number title state url updatedAt labels(first:10){nodes{name}} milestone{number title}}",
+  "nodes{number title state url updatedAt labels(first:100){pageInfo{hasNextPage} nodes{name}} milestone{number title}}",
   "}}}",
 ].join(" ");
 
@@ -320,7 +320,7 @@ export function normalizeReviewStatus(reviewDecision, reviews) {
       hasApproved = true;
     }
   }
-  return hasApproved ? "APPROVED" : "PENDING";
+  return hasApproved ? "HAS_APPROVAL" : "PENDING";
 }
 
 export function normalizeMergeQueue(entry) {
@@ -369,9 +369,14 @@ export function buildFactoryBoardSnapshot(raw, { repo, source, generatedAt }) {
 
   const issueByNumber = new Map();
   const issueMilestoneMap = new Map();
+  let anyLabelsTruncated = false;
   for (const item of rawIssues) {
     if (!Number.isSafeInteger(item?.number) || item.number < 1 || typeof item.title !== "string") {
       continue;
+    }
+    const labelsTruncated = item.labelsTruncated === true;
+    if (labelsTruncated) {
+      anyLabelsTruncated = true;
     }
     const labels = Array.isArray(item.labels)
       ? item.labels.filter((name) => typeof name === "string")
@@ -385,6 +390,7 @@ export function buildFactoryBoardSnapshot(raw, { repo, source, generatedAt }) {
       url: typeof item.url === "string" ? item.url : `https://github.com/${repo}/issues/${item.number}`,
       updatedAt: typeof item.updatedAt === "string" ? item.updatedAt : null,
       labels,
+      labelsTruncated,
       milestoneTitle,
       stepId: extractMilestoneStep(item.title).stepId,
       priority: extractPriority(labels, item.title),
@@ -429,6 +435,8 @@ export function buildFactoryBoardSnapshot(raw, { repo, source, generatedAt }) {
       milestoneId: null,
       ci: normalizeCheckRollup(pr.checkRollup),
       reviewStatus: normalizeReviewStatus(pr.reviewDecision, pr.reviews),
+      reviewDecisionVerified:
+        typeof pr.reviewDecision === "string" || pr.reviewDecision === null,
       mergeStateStatus:
         typeof pr.mergeStateStatus === "string" && pr.mergeStateStatus.length > 0
           ? pr.mergeStateStatus.toUpperCase()
@@ -478,7 +486,7 @@ export function buildFactoryBoardSnapshot(raw, { repo, source, generatedAt }) {
     mergedPulls.push(entry);
   }
 
-  const partial = raw?.truncated === true;
+  const partial = raw?.truncated === true || anyLabelsTruncated;
   const allIssues = [...issueByNumber.values()].sort((a, b) => a.number - b.number);
   const unassignedIssues = allIssues.filter((issue) => issue.milestoneId === null);
 
@@ -500,7 +508,7 @@ export function buildFactoryBoardSnapshot(raw, { repo, source, generatedAt }) {
       id,
       number: native ? native.number : null,
       title: native ? native.title : defaultTitle,
-      state: native ? native.state : "open",
+      state: native ? native.state : "missing",
       openIssues: openCount,
       closedIssues: closedCount,
       totalIssues,
@@ -520,6 +528,8 @@ export function buildFactoryBoardSnapshot(raw, { repo, source, generatedAt }) {
   const issuesClosed = allIssues.filter((i) => i.state === "CLOSED").length;
   const issuesTotal = issuesOpen + issuesClosed;
   const queueUnknown = openPulls.some((pr) => pr.mergeQueue.known === false);
+  const reviewDecisionUnknown =
+    source === "github-rest" || openPulls.some((pr) => pr.reviewStatus === "HAS_APPROVAL");
 
   return {
     repo,
@@ -548,14 +558,16 @@ export function buildFactoryBoardSnapshot(raw, { repo, source, generatedAt }) {
       ciPendingPulls: openPulls.filter((pr) => pr.ci.state === "PENDING").length,
       ciFailingPulls: openPulls.filter((pr) => pr.ci.state === "FAIL").length,
       ciUnknownPulls: openPulls.filter((pr) => pr.ci.state === "UNKNOWN").length,
-      approvedPulls: openPulls.filter((pr) => pr.reviewStatus === "APPROVED").length,
+      approvedPulls: reviewDecisionUnknown
+        ? null
+        : openPulls.filter((pr) => pr.reviewStatus === "APPROVED").length,
       queuedPulls: queueUnknown
         ? null
         : openPulls.filter((pr) => pr.mergeQueue.queued === true).length,
       mergedRecentPulls: mergedPulls.length,
     },
     milestones,
-    openPulls: openPulls.map(({ milestoneTitle: _mt, ...rest }) => rest),
+    openPulls: openPulls.map(({ milestoneTitle: _mt, reviewDecisionVerified: _rv, ...rest }) => rest),
     mergedPulls,
     unassignedIssues: unassignedIssues.map(({ milestoneTitle: _mt, ...rest }) => rest),
   };
@@ -714,6 +726,9 @@ function addGraphqlIssueNodes(issueMap, bucket) {
   }
   for (const node of bucket) {
     if (node && Number.isSafeInteger(node.number)) {
+      if (node.labels !== null && node.labels !== undefined) {
+        assertGraphqlConnection(node.labels);
+      }
       issueMap.set(node.number, {
         number: node.number,
         title: node.title,
@@ -723,6 +738,7 @@ function addGraphqlIssueNodes(issueMap, bucket) {
         labels: Array.isArray(node.labels?.nodes)
           ? node.labels.nodes.map((l) => l?.name).filter((n) => typeof n === "string")
           : [],
+        labelsTruncated: node.labels?.pageInfo?.hasNextPage === true,
         milestoneTitle: node.milestone?.title ?? null,
       });
     }
@@ -903,7 +919,8 @@ function mapGraphqlClosingRefs(nodes) {
     repoNode.milestones?.pageInfo?.hasNextPage ||
       repoNode.openPulls?.pageInfo?.hasNextPage ||
       openTruncated ||
-      closedTruncated,
+      closedTruncated ||
+      [...issueMap.values()].some((i) => i.labelsTruncated),
   );
 
   return { milestones, issues: [...issueMap.values()], openPulls, mergedPulls, truncated };
@@ -1163,6 +1180,7 @@ export async function fetchViaPublicRest({
       labels: Array.isArray(item.labels)
         ? item.labels.map((l) => l?.name).filter((n) => typeof n === "string")
         : [],
+      labelsTruncated: Array.isArray(item.labels) && item.labels.length >= 100,
       milestoneTitle: item.milestone?.title ?? null,
     }));
 
@@ -1646,6 +1664,7 @@ export function initFactoryBoardClient(win) {
 
   function reviewBadge(status) {
     if (status === "APPROVED") return '<span class="pill blue">APPROVED</span>';
+    if (status === "HAS_APPROVAL") return '<span class="pill">APPROVAL OBSERVED</span>';
     if (status === "CHANGES_REQUESTED") return '<span class="pill red">CHANGES REQ</span>';
     if (status === "REVIEW_REQUIRED") return '<span class="pill">REVIEW REQ</span>';
     if (status === "PENDING") return '<span class="pill muted">PENDING</span>';
@@ -1793,7 +1812,10 @@ export function initFactoryBoardClient(win) {
       {
         label: "Review & Merge Queue",
         value: t.queuedPulls === null ? "Unknown queue" : t.queuedPulls + " queued",
-        sub: t.approvedPulls + " approved open PRs",
+        sub:
+          t.approvedPulls === null
+            ? "Approval gates unverified"
+            : t.approvedPulls + " approved open PRs",
       },
       {
         label: "Recent Merges",
@@ -1840,12 +1862,16 @@ export function initFactoryBoardClient(win) {
                 iss.state === "CLOSED"
                   ? '<span class="pill blue">CLOSED</span>'
                   : '<span class="pill muted">OPEN</span>';
+              const truncPill = iss.labelsTruncated
+                ? '<span class="pill muted">LABELS TRUNCATED</span>'
+                : "";
               return (
                 '<li class="issue-item">' +
                 '<div class="issue-main">' +
                 stBadge +
                 step +
                 prio +
+                truncPill +
                 '<a class="truncate" data-focus-key="issue-' +
                 iss.number +
                 '" href="' +
@@ -1876,10 +1902,14 @@ export function initFactoryBoardClient(win) {
             const uClosed = unassignedList.filter((i) => i.state === "CLOSED").length;
             const uOpen = unassignedList.filter((i) => i.state === "OPEN").length;
             const uOpenDrawer = state.openDrawers.has("UNASSIGNED");
+            const uHasTrunc = unassignedList.some((i) => i.labelsTruncated);
+            const uTitle = uHasTrunc ? "Unassigned / Unclassified Issues" : "Unassigned Issues";
             return (
               '<article class="milestone-card">' +
               '<div class="milestone-top">' +
-              '<div><div class="milestone-title">Unassigned Issues</div>' +
+              '<div><div class="milestone-title">' +
+              uTitle +
+              "</div>" +
               '<div class="meta-row">' +
               esc(uClosed + " closed · " + uOpen + " open") +
               "</div></div>" +
@@ -2113,13 +2143,22 @@ export function initFactoryBoardClient(win) {
     }
   });
 
+  const syncFilterButtons = () => {
+    el("pr-filters")
+      .querySelectorAll("button")
+      .forEach((b) => {
+        const selected = b.getAttribute("data-filter") === state.prFilter;
+        b.classList.toggle("active", selected);
+        b.setAttribute("aria-pressed", selected ? "true" : "false");
+      });
+  };
+  syncFilterButtons();
+
   el("pr-filters").addEventListener("click", (ev) => {
     const btn = ev.target.closest("button[data-filter]");
     if (!btn) return;
     state.prFilter = btn.getAttribute("data-filter");
-    el("pr-filters")
-      .querySelectorAll("button")
-      .forEach((b) => b.classList.toggle("active", b === btn));
+    syncFilterButtons();
     render();
   });
 
@@ -2352,11 +2391,11 @@ export function renderBoardHtml({
       <div class="section-header">
         <h2>Open Pull Requests &amp; Merge Queue</h2>
         <div class="filter-tabs" id="pr-filters">
-          <button type="button" data-filter="all" class="active">All</button>
-          <button type="button" data-filter="queue">Merge Queue</button>
-          <button type="button" data-filter="fail">CI Failing</button>
-          <button type="button" data-filter="pending">CI Pending</button>
-          <button type="button" data-filter="pass">CI Passing</button>
+          <button type="button" data-filter="all" class="active" aria-pressed="true">All</button>
+          <button type="button" data-filter="queue" aria-pressed="false">Merge Queue</button>
+          <button type="button" data-filter="fail" aria-pressed="false">CI Failing</button>
+          <button type="button" data-filter="pending" aria-pressed="false">CI Pending</button>
+          <button type="button" data-filter="pass" aria-pressed="false">CI Passing</button>
         </div>
       </div>
       <div class="table-wrap" id="open-prs-wrap"></div>
@@ -3044,23 +3083,31 @@ export async function startFactoryBoardExtension({
     },
   });
 
-  const canvas = createCanvas(createFactoryBoardCanvasSpec({ CanvasError, manager }));
+  try {
+    const canvas = createCanvas(createFactoryBoardCanvasSpec({ CanvasError, manager }));
 
-  activeSession = await joinSession({
-    canvases: {
-      definitions: [canvas],
-    },
-    hooks: {
-      handlers: {
-        onSessionEnd: async () => {
-          await manager.closeAll();
-          if (telemetry) {
-            await telemetry.shutdown().catch(() => {});
-          }
+    activeSession = await joinSession({
+      canvases: {
+        definitions: [canvas],
+      },
+      hooks: {
+        handlers: {
+          onSessionEnd: async () => {
+            await manager.closeAll();
+            if (telemetry) {
+              await telemetry.shutdown().catch(() => {});
+            }
+          },
         },
       },
-    },
-  });
+    });
 
-  return { session: activeSession, manager, canvas };
+    return { session: activeSession, manager, canvas };
+  } catch (err) {
+    await manager.closeAll().catch(() => {});
+    if (telemetry) {
+      await telemetry.shutdown().catch(() => {});
+    }
+    throw err;
+  }
 }

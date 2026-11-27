@@ -398,7 +398,7 @@ test("normalizeCheckRollup, combineRestChecksAndStatus, normalizeReviewStatus, a
   );
   assert.equal(
     normalizeReviewStatus(undefined, [{ user: { login: "alice" }, state: "APPROVED" }]),
-    "APPROVED",
+    "HAS_APPROVAL",
   );
 
   assert.deepEqual(normalizeMergeQueue(undefined), {
@@ -583,8 +583,13 @@ test("buildFactoryBoardSnapshot, summarizeSnapshot, and buildUnavailableSnapshot
 
   const m02 = snap.milestones.find((m) => m.id === "M02");
   assert.equal(m02.number, null);
+  assert.equal(m02.state, "open");
   assert.equal(m02.activePulls, 1);
   assert.equal(m02.ciPendingPulls, 1);
+  // Missing placeholder milestones (M03–M05) report state "missing" and do not count as open
+  const m03 = snap.milestones.find((m) => m.id === "M03");
+  assert.equal(m03.state, "missing");
+  assert.equal(snap.totals.milestonesOpen, 2);
 
   assert.equal(snap.unassignedIssues.length, 1);
   assert.equal(snap.unassignedIssues[0].number, 76);
@@ -688,7 +693,7 @@ test("fetchViaGhGraphql, fetchViaPublicRest, and fetchFactoryBoardSnapshot handl
               state: "OPEN",
               url: "https://github.com/Jamula/SoftwareFactory/issues/4",
               updatedAt: "2026-11-27T00:00:00Z",
-              labels: { nodes: [{ name: "M01" }, null] },
+              labels: { pageInfo: { hasNextPage: false }, nodes: [{ name: "M01" }, null] },
               milestone: { title: "M01 - Autonomous SoftwareFactory" },
             },
           ],
@@ -804,7 +809,14 @@ test("fetchViaGhGraphql, fetchViaPublicRest, and fetchFactoryBoardSnapshot handl
             repository: {
               issues: {
                 pageInfo: { hasNextPage: true, endCursor: "cur-2" },
-                nodes: [{ number: 99, title: "[M01.08] Page 2 issue", state: "OPEN" }],
+                nodes: [
+                  {
+                    number: 99,
+                    title: "[M01.08] Page 2 issue",
+                    state: "OPEN",
+                    labels: { pageInfo: { hasNextPage: true }, nodes: [] },
+                  },
+                ],
               },
             },
           },
@@ -1088,10 +1100,11 @@ test("fetchViaGhGraphql, fetchViaPublicRest, and fetchFactoryBoardSnapshot handl
   assert.equal(fallbackSnap.openPulls[0].reviewStatus, "CHANGES_REQUESTED");
   assert.equal(fallbackSnap.openPulls[1].ci.state, "UNKNOWN");
   assert.equal(fallbackSnap.openPulls[1].reviewStatus, "UNKNOWN");
-  // REST snapshots report unknown queue status/counts rather than fabricating 0 queued
+  // REST snapshots report unknown queue status/counts and unverified aggregate approval counts
   assert.equal(fallbackSnap.openPulls[0].mergeQueue.known, false);
   assert.equal(fallbackSnap.openPulls[0].mergeQueue.queued, null);
   assert.equal(fallbackSnap.totals.queuedPulls, null);
+  assert.equal(fallbackSnap.totals.approvedPulls, null);
   assert.equal(fallbackSnap.milestones.find((m) => m.id === "M02").queuedPulls, null);
 
   // Rate-limit header parsing, low-remaining detail conservation, and hard 403/429 backoff
@@ -2317,6 +2330,7 @@ test("initFactoryBoardClient renders verified, partial, stale, and cold-unavaila
   assert.match(client.ciBadge({ state: "UNKNOWN", passed: 0, total: 0 }), /UNKNOWN/);
 
   assert.match(client.reviewBadge("APPROVED"), /APPROVED/);
+  assert.match(client.reviewBadge("HAS_APPROVAL"), /APPROVAL OBSERVED/);
   assert.match(client.reviewBadge("CHANGES_REQUESTED"), /CHANGES REQ/);
   assert.match(client.reviewBadge("REVIEW_REQUIRED"), /REVIEW REQ/);
   assert.match(client.reviewBadge("PENDING"), /PENDING/);
@@ -2351,7 +2365,7 @@ test("initFactoryBoardClient renders verified, partial, stale, and cold-unavaila
       issues: [
         { number: 4, title: "[M01.01 P0] Closed item", state: "CLOSED", labels: ["M01", "P0"] },
         { number: 5, title: "[M01.03 P1] Open item", state: "OPEN", labels: ["M01", "P1"] },
-        { number: 76, title: "Ordinary unassigned bug", state: "OPEN", labels: [] },
+        { number: 76, title: "Ordinary unassigned bug", state: "OPEN", labels: [], labelsTruncated: true },
         { number: 77, title: "Closed unassigned item", state: "CLOSED", labels: [] },
       ],
       openPulls: [
@@ -2398,8 +2412,9 @@ test("initFactoryBoardClient renders verified, partial, stale, and cold-unavaila
   assert.match(elements.get("error-banner").textContent, /Partial bounded inventory/);
   assert.match(elements.get("kpi-grid").innerHTML, /Closed Issues \(Proxy\)/);
   assert.match(elements.get("kpi-grid").innerHTML, /≥ 2 closed/);
-  // Unassigned issues are rendered in a dedicated Unassigned Issues card/drawer
-  assert.match(elements.get("milestones-grid").innerHTML, /Unassigned Issues/);
+  // Unassigned / truncated-label issues are rendered in a dedicated card/drawer with LABELS TRUNCATED pill
+  assert.match(elements.get("milestones-grid").innerHTML, /Unassigned \/ Unclassified Issues/);
+  assert.match(elements.get("milestones-grid").innerHTML, /LABELS TRUNCATED/);
   assert.match(elements.get("milestones-grid").innerHTML, /#76<\/span> Ordinary unassigned bug/);
   // Partial milestone progress bars expose milestone aria-label and aria-valuetext without numeric aria-valuenow
   assert.match(elements.get("milestones-grid").innerHTML, /role="progressbar" aria-label="M01 - Autonomous SoftwareFactory closed issue activity proxy" aria-valuetext="Unknown \(partial inventory\)"/);
@@ -2412,11 +2427,15 @@ test("initFactoryBoardClient renders verified, partial, stale, and cold-unavaila
   drawers[0].triggerToggle(true);
   assert.equal(client.state.openDrawers.has("M01"), true);
 
-  // Exercise all PR filter tabs + non-button click ignore
+  // Exercise all PR filter tabs + aria-pressed state + non-button click ignore
+  assert.equal(filterBtns[0].getAttribute("aria-pressed"), "true");
+  assert.equal(filterBtns[1].getAttribute("aria-pressed"), "false");
   await elements.get("pr-filters").trigger("click", { target: { closest: () => null } });
   for (const btn of filterBtns) {
     await elements.get("pr-filters").trigger("click", { target: btn });
   }
+  assert.equal(filterBtns[0].getAttribute("aria-pressed"), "false");
+  assert.equal(filterBtns[4].getAttribute("aria-pressed"), "true");
 
   // Trigger Refresh now, Pause toggle, and Interval select (sending X-Factory-Board-Token!)
   await elements.get("refresh-now").trigger("click");
@@ -2522,7 +2541,10 @@ test("initFactoryBoardClient renders verified, partial, stale, and cold-unavaila
   const updatedFocusSnap = buildFactoryBoardSnapshot(
     {
       milestones: [{ number: 2, title: "M01 - Auto", state: "OPEN" }],
-      issues: [{ number: 9, title: "[M01] New item", state: "OPEN", labels: ["M01"] }],
+      issues: [
+        { number: 9, title: "[M01] New item", state: "OPEN", labels: ["M01"] },
+        { number: 10, title: "Plain unassigned item", state: "OPEN", labels: [] },
+      ],
       openPulls: [{ number: 150, title: "[M01] REST PR", mergeQueueEntry: undefined }],
       mergedPulls: [],
     },
@@ -2632,6 +2654,42 @@ test("startFactoryBoardExtension and extension.mjs register canvas, forward logs
   assert.equal(typeof capturedObserve, "function");
   assert.equal(telemetryShutdownCalls, 1);
   assert.equal(otelBoot.canvas.id, CANVAS_ID);
+
+  // Verify cleanup of manager & telemetry if joinSession rejects during startup
+  let failedCloseAllCalls = 0;
+  let failedTelemetryShutdownCalls = 0;
+  await assert.rejects(
+    () =>
+      startFactoryBoardExtension({
+        CanvasError: MockCanvasError,
+        createCanvas: (spec) => spec,
+        env: {
+          OTEL_EXPORTER_OTLP_ENDPOINT: "http://127.0.0.1:4318",
+          OTEL_EXPORTER_OTLP_HEADERS: "x-otlp-api-key=local-test-key",
+        },
+        startTelemetry: async () => ({
+          observe: async (_stage, work) => work(),
+          shutdown: async () => {
+            failedTelemetryShutdownCalls += 1;
+          },
+        }),
+        createManager: () => ({
+          openInstance: async () => ({}),
+          closeInstance: async () => true,
+          closeAll: async () => {
+            failedCloseAllCalls += 1;
+          },
+          refreshInstance: async () => null,
+          setInstanceInterval: () => ({ ok: false, code: "instance_not_found", message: "none" }),
+        }),
+        joinSession: async () => {
+          throw new Error("joinSession rejected");
+        },
+      }),
+    /joinSession rejected/,
+  );
+  assert.equal(failedCloseAllCalls, 1);
+  assert.equal(failedTelemetryShutdownCalls, 1);
 
   // Execute .github/extensions/factory-board/extension.mjs in a real Node subprocess with a stubbed @microsoft/copilot-sdk/extension module
   const loaderSource = `
