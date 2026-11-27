@@ -537,8 +537,49 @@ test('evaluateFamilyTreeShadowCandidate enforces config, schema, stop, repoId, d
         ]
       }
     },
+    { ...baseCand, snapshot: { ...baseCand.snapshot, repository: null } },
+    { ...baseCand, snapshot: { ...baseCand.snapshot, repository: { toLowerCase: trap } } },
+    { ...baseCand, snapshot: { ...baseCand.snapshot, paths: ['/abs.ts'] } },
+    { ...baseCand, snapshot: { ...baseCand.snapshot, paths: ['src\\win.ts'] } },
+    { ...baseCand, snapshot: { ...baseCand.snapshot, paths: ['src/../escape.ts'] } },
+    { ...baseCand, snapshot: { ...baseCand.snapshot, paths: ['src/tree.ts', 'src/tree.ts'] } },
+    {
+      ...baseCand,
+      snapshot: {
+        ...baseCand.snapshot,
+        dependencies: [{ issue: 1, accepted: true }, { issue: 1, accepted: true }]
+      }
+    },
+    {
+      ...baseCand,
+      snapshot: { ...baseCand.snapshot, coverage: { ...baseCand.snapshot.coverage, line: Number.NaN } }
+    },
+    {
+      ...baseCand,
+      snapshot: { ...baseCand.snapshot, coverage: { ...baseCand.snapshot.coverage, line: 101 } }
+    },
+    {
+      ...baseCand,
+      snapshot: { ...baseCand.snapshot, coverage: { ...baseCand.snapshot.coverage, branch: -1 } }
+    },
+    { ...baseCand, snapshot: { ...baseCand.snapshot, author: '   ' } },
+    { ...baseCand, snapshot: { ...baseCand.snapshot, agent: '   ' } },
     { ...baseCand, snapshot: { ...baseCand.snapshot, reviews: 'bad' } },
-    { ...baseCand, snapshot: { ...baseCand.snapshot, reviews: [{}] } }
+    { ...baseCand, snapshot: { ...baseCand.snapshot, reviews: [{}] } },
+    {
+      ...baseCand,
+      snapshot: {
+        ...baseCand.snapshot,
+        reviews: [{ reviewer: 'synthetic-reviewer', head, state: 'APPROVED', summaryDisposition: 'clear' }]
+      }
+    },
+    {
+      ...baseCand,
+      snapshot: {
+        ...baseCand.snapshot,
+        reviews: [{ reviewer: 'synthetic-reviewer', head, state: 'PENDING' }]
+      }
+    }
   ]) {
     assert.equal(evaluateFamilyTreeShadowCandidate(baseConfig, badCand).reason, 'CANDIDATE_SCHEMA_INVALID');
   }
@@ -582,9 +623,6 @@ test('evaluateFamilyTreeShadowCandidate enforces config, schema, stop, repoId, d
   for (const covOverride of [
     { complete: false },
     { head: base },
-    { line: Number.NaN },
-    { line: 101 },
-    { branch: -1 },
     { line: 94.9 },
     { branch: 89.9 }
   ]) {
@@ -985,6 +1023,15 @@ test('proveFamilyTreeShadowDenials rejects invalid suite shapes, broken scenario
     { ...suite, denials: { ...d, wrongRepositoryId: cand } },
     { ...suite, denials: { ...d, wrongRepositoryId: { ...cand, repositoryId: 0 } } },
     { ...suite, denials: { ...d, wrongRepositorySlug: cand } },
+    { ...suite, denials: { ...d, wrongRepositorySlug: { ...cand, snapshot: { ...snap, repository: null } } } },
+    {
+      ...suite,
+      denials: { ...d, wrongRepositorySlug: { ...cand, snapshot: { ...snap, repository: { toLowerCase: trap } } } }
+    },
+    {
+      ...suite,
+      eligibleCandidate: { ...cand, snapshot: { ...snap, repository: { toLowerCase: trap } } }
+    },
     { ...suite, denials: { ...d, wrongRepositorySlug: { ...cand, snapshot: { ...snap, repository: 'invalid' } } } },
     { ...suite, denials: { ...d, wrongRepositorySlug: { ...cand, snapshot: { ...snap, repository: 'acme/foreign-repo' } } } },
     { ...suite, denials: { ...d, wrongRepositorySlug: { ...cand, snapshot: { ...snap, repository: 'EXAMPLE/FAMILY-TREE' } } } },
@@ -1064,7 +1111,19 @@ test('proveFamilyTreeShadowDenials rejects invalid suite shapes, broken scenario
     'SHADOW_DENIAL_NOT_PROVEN'
   );
 
-  // Structurally valid candidate + derived denials that fails shadow eligibility (mainHealthy: false)
+  // Structurally valid candidate + derived denials that fails shadow eligibility (mainHealthy: false or remainingCredits: null)
+  const nullSnapshotCreditsCand = {
+    ...cand,
+    snapshot: { ...snap, remainingCredits: null }
+  };
+  assert.equal(
+    proveFamilyTreeShadowDenials({
+      ...suite,
+      eligibleCandidate: nullSnapshotCreditsCand,
+      denials: makeDenialsFromCandidate(nullSnapshotCreditsCand)
+    }).reason,
+    'SHADOW_DENIAL_NOT_PROVEN'
+  );
   const unhealthyCand = {
     ...cand,
     snapshot: { ...snap, mainHealthy: false }

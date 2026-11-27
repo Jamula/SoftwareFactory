@@ -27,8 +27,6 @@ export const FAMILYTREE_REQUIRED_SHADOW_DENIALS = Object.freeze([
 ]);
 
 const MAX_ARRAY_LEN = 64;
-const MAX_EQUAL_DEPTH = 8;
-const MAX_EQUAL_VISITS = 2048;
 
 const CONFIG_KEYS = Object.freeze([
   'repositoryId',
@@ -169,15 +167,28 @@ const dense = value =>
 const text = value =>
   typeof value === 'string' && value.length > 0 && value.length <= 200 && value.trim() === value;
 const repoSlug = value => text(value) && /^[^/]+\/[^/]+$/.test(value);
+const repoPath = value =>
+  text(value) &&
+  !value.startsWith('/') &&
+  !value.includes('\\') &&
+  !value.split('/').some(part => part.length === 0 || part === '.' || part === '..');
 const isSyntheticExampleRepo = value => identity(value).startsWith('example/');
+const nonNegInt = value => Number.isSafeInteger(value) && value >= 0;
 const posInt = value => Number.isSafeInteger(value) && value > 0;
 const pct = value => Number.isFinite(value) && value >= 0 && value <= 100;
 const sha40 = value => typeof value === 'string' && /^[0-9a-f]{40}$/.test(value);
 const identity = value => value.toLowerCase();
+const unique = values => new Set(values).size === values.length;
+const VALID_REVIEW_STATES = Object.freeze(['APPROVED', 'CHANGES_REQUESTED', 'COMMENTED', 'DISMISSED']);
 
 const validReviewShape = r =>
-  exact(r, ['reviewer', 'head', 'state']) ||
-  exact(r, ['reviewer', 'head', 'state', 'summaryDisposition']);
+  (exact(r, ['reviewer', 'head', 'state']) ||
+    (exact(r, ['reviewer', 'head', 'state', 'summaryDisposition']) &&
+      r.state === 'COMMENTED' &&
+      text(r.summaryDisposition))) &&
+  text(r.reviewer) &&
+  sha40(r.head) &&
+  VALID_REVIEW_STATES.includes(r.state);
 
 const validCheckShape = c =>
   exact(c, ['name', 'head', 'appId', 'status', 'conclusion']) &&
@@ -187,67 +198,108 @@ const validCheckShape = c =>
   text(c.status) &&
   (c.conclusion === null || text(c.conclusion));
 
+const validDependencyShape = d =>
+  exact(d, ['issue', 'accepted']) &&
+  posInt(d.issue) &&
+  typeof d.accepted === 'boolean';
+
+const validAiQuotaShape = q =>
+  exact(q, AI_QUOTA_KEYS) &&
+  text(q.accountingSource) &&
+  typeof q.isEstimated === 'boolean' &&
+  (q.remainingAiCredits === null || Number.isSafeInteger(q.remainingAiCredits)) &&
+  Number.isSafeInteger(q.runAiCreditsRequired) &&
+  typeof q.paidOverageEnabled === 'boolean' &&
+  Number.isSafeInteger(q.overageHardStopUsdCents);
+
 const strictPolicyEnvelope = p =>
   exact(p, [
     'version', 'repository', 'defaultBranch', 'mergeMethod', 'mode',
     'killSwitch', 'checks', 'reviewers', 'coverage', 'owners', 'maxActive',
     'creditLimit', 'riskClasses'
   ]) &&
+  repoSlug(p.repository) &&
+  text(p.defaultBranch) &&
   exact(p.coverage, ['line', 'branch']) &&
   dense(p.checks) &&
-  p.checks.every(c => exact(c, ['name', 'appId'])) &&
+  p.checks.every(c => exact(c, ['name', 'appId']) && text(c.name)) &&
   dense(p.reviewers) &&
+  p.reviewers.every(text) &&
   dense(p.owners) &&
-  p.owners.every(o => exact(o, ['prefix', 'owner'])) &&
+  p.owners.every(o => exact(o, ['prefix', 'owner']) && text(o.prefix) && text(o.owner)) &&
   dense(p.riskClasses) &&
+  p.riskClasses.every(text) &&
   validPolicy(p);
 
 const strictSnapshotShape = s =>
   exact(s, SNAPSHOT_KEYS) &&
-  exact(s.coverage, ['head', 'line', 'branch', 'complete']) &&
+  text(s.policySource) &&
+  repoSlug(s.repository) &&
+  posInt(s.issue) &&
+  posInt(s.pr) &&
+  sha40(s.head) &&
+  sha40(s.observedHead) &&
+  sha40(s.base) &&
+  sha40(s.observedBase) &&
+  text(s.baseBranch) &&
+  typeof s.rateLimited === 'boolean' &&
+  (s.remainingCredits === null || Number.isFinite(s.remainingCredits)) &&
+  nonNegInt(s.activeCount) &&
+  typeof s.providerReady === 'boolean' &&
+  text(s.risk) &&
+  Number.isSafeInteger(s.priority) &&
   dense(s.paths) &&
+  s.paths.length > 0 &&
+  s.paths.every(repoPath) &&
+  unique(s.paths) &&
   dense(s.dependencies) &&
-  s.dependencies.every(d => exact(d, ['issue', 'accepted'])) &&
+  s.dependencies.every(validDependencyShape) &&
+  unique(s.dependencies.map(d => d.issue)) &&
+  typeof s.acceptanceComplete === 'boolean' &&
+  typeof s.baseCompatible === 'boolean' &&
+  typeof s.mainHealthy === 'boolean' &&
+  typeof s.threadsResolved === 'boolean' &&
+  typeof s.securityClear === 'boolean' &&
+  exact(s.coverage, ['head', 'line', 'branch', 'complete']) &&
+  sha40(s.coverage.head) &&
+  pct(s.coverage.line) &&
+  pct(s.coverage.branch) &&
+  typeof s.coverage.complete === 'boolean' &&
   dense(s.checks) &&
+  s.checks.length > 0 &&
   s.checks.every(validCheckShape) &&
+  unique(s.checks.map(c => c.name)) &&
+  text(s.author) &&
+  text(s.agent) &&
   dense(s.reviews) &&
-  s.reviews.every(validReviewShape);
+  s.reviews.length > 0 &&
+  s.reviews.every(validReviewShape) &&
+  unique(s.reviews.map(r => identity(r.reviewer)));
 
-function sameDataBounded(candidateVal, expectedVal, depth, budget) {
-  budget.remaining -= 1;
-  if (depth > MAX_EQUAL_DEPTH ||
-      budget.remaining < 0 ||
-      types.isProxy(expectedVal) ||
-      types.isProxy(candidateVal)) {
-    return false;
-  }
-  if (!expectedVal || typeof expectedVal !== 'object') {
+const validCandidateEnvelope = candidate =>
+  exact(candidate, CANDIDATE_KEYS) &&
+  text(candidate.deliveryId) &&
+  posInt(candidate.repositoryId) &&
+  typeof candidate.stop === 'boolean' &&
+  validAiQuotaShape(candidate.aiCreditQuota) &&
+  strictSnapshotShape(candidate.snapshot);
+
+function equalData(candidateVal, expectedVal) {
+  if (expectedVal === null || typeof expectedVal !== 'object') {
     return Object.is(candidateVal, expectedVal);
   }
   if (Array.isArray(expectedVal)) {
-    return dense(expectedVal) &&
-      dense(candidateVal) &&
-      candidateVal.length === expectedVal.length &&
-      expectedVal.every((item, i) => sameDataBounded(candidateVal[i], item, depth + 1, budget));
+    return candidateVal.length === expectedVal.length &&
+      expectedVal.every((item, i) => equalData(candidateVal[i], item));
   }
-  if (Object.getPrototypeOf(expectedVal) !== Object.prototype) {
-    return false;
-  }
-  const keys = Reflect.ownKeys(expectedVal);
-  if (!keys.every(key => typeof key === 'string' && ownData(expectedVal, key))) {
-    return false;
-  }
-  return exact(candidateVal, keys) &&
-    keys.every(key => sameDataBounded(candidateVal[key], expectedVal[key], depth + 1, budget));
+  const keys = Object.keys(expectedVal);
+  return Object.keys(candidateVal).length === keys.length &&
+    keys.every(key => equalData(candidateVal[key], expectedVal[key]));
 }
-
-const equalData = (candidateVal, expectedVal) =>
-  sameDataBounded(candidateVal, expectedVal, 0, { remaining: MAX_EQUAL_VISITS });
 
 const singleMutation = (baseObj, candidateObj, mutatedField) => {
   const keys = Object.keys(baseObj);
-  return exact(candidateObj, keys) &&
-    keys.every(key => key === mutatedField || equalData(candidateObj[key], baseObj[key]));
+  return keys.every(key => key === mutatedField || equalData(candidateObj[key], baseObj[key]));
 };
 
 const denyCandidate = reason =>
@@ -288,12 +340,7 @@ export function evaluateFamilyTreeShadowCandidate(config, candidate) {
     return denyCandidate('CANDIDATE_CONFIG_INVALID');
   }
 
-  if (!exact(candidate, CANDIDATE_KEYS) ||
-      !text(candidate.deliveryId) ||
-      !posInt(candidate.repositoryId) ||
-      typeof candidate.stop !== 'boolean' ||
-      !exact(candidate.aiCreditQuota, AI_QUOTA_KEYS) ||
-      !strictSnapshotShape(candidate.snapshot)) {
+  if (!validCandidateEnvelope(candidate)) {
     return denyCandidate('CANDIDATE_SCHEMA_INVALID');
   }
 
@@ -334,8 +381,6 @@ export function evaluateFamilyTreeShadowCandidate(config, candidate) {
   const cov = candidate.snapshot.coverage;
   if (cov.complete !== true ||
       cov.head !== candidate.snapshot.head ||
-      !pct(cov.line) ||
-      !pct(cov.branch) ||
       cov.line < minLine ||
       cov.branch < minBranch) {
     return denyCandidate('COVERAGE_BELOW_FLOOR');
@@ -364,22 +409,17 @@ export function evaluateFamilyTreeShadowCandidate(config, candidate) {
 const isStaleReviewCandidate = (baseCand, cand) =>
   singleMutation(baseCand, cand, 'snapshot') &&
   singleMutation(baseCand.snapshot, cand.snapshot, 'reviews') &&
-  dense(cand.snapshot.reviews) &&
   cand.snapshot.reviews.length === baseCand.snapshot.reviews.length &&
   cand.snapshot.reviews.every((r, i) =>
-    exact(r, ['reviewer', 'head', 'state']) &&
     r.reviewer === baseCand.snapshot.reviews[i].reviewer &&
     r.state === 'APPROVED' &&
-    sha40(r.head) &&
     r.head !== baseCand.snapshot.head);
 
 const isDismissedReviewCandidate = (baseCand, cand) =>
   singleMutation(baseCand, cand, 'snapshot') &&
   singleMutation(baseCand.snapshot, cand.snapshot, 'reviews') &&
-  dense(cand.snapshot.reviews) &&
   cand.snapshot.reviews.length === baseCand.snapshot.reviews.length &&
   cand.snapshot.reviews.every((r, i) =>
-    exact(r, ['reviewer', 'head', 'state']) &&
     r.reviewer === baseCand.snapshot.reviews[i].reviewer &&
     r.head === baseCand.snapshot.head &&
     r.state === 'DISMISSED');
@@ -387,10 +427,7 @@ const isDismissedReviewCandidate = (baseCand, cand) =>
 const isCommentedBotCandidate = (baseCand, cand) =>
   singleMutation(baseCand, cand, 'snapshot') &&
   singleMutation(baseCand.snapshot, cand.snapshot, 'reviews') &&
-  dense(cand.snapshot.reviews) &&
   cand.snapshot.reviews.length === 1 &&
-  exact(cand.snapshot.reviews[0], ['reviewer', 'head', 'state', 'summaryDisposition']) &&
-  text(cand.snapshot.reviews[0].reviewer) &&
   BOT_REVIEWERS.includes(identity(cand.snapshot.reviews[0].reviewer)) &&
   cand.snapshot.reviews[0].head === baseCand.snapshot.head &&
   cand.snapshot.reviews[0].state === 'COMMENTED' &&
@@ -398,13 +435,11 @@ const isCommentedBotCandidate = (baseCand, cand) =>
 
 const isWrongRepositoryIdCandidate = (baseCand, cand) =>
   singleMutation(baseCand, cand, 'repositoryId') &&
-  posInt(cand.repositoryId) &&
   cand.repositoryId !== baseCand.repositoryId;
 
 const isWrongRepositorySlugCandidate = (baseCand, cand) =>
   singleMutation(baseCand, cand, 'snapshot') &&
   singleMutation(baseCand.snapshot, cand.snapshot, 'repository') &&
-  repoSlug(cand.snapshot.repository) &&
   isSyntheticExampleRepo(cand.snapshot.repository) &&
   identity(cand.snapshot.repository) !== identity(baseCand.snapshot.repository);
 
@@ -412,13 +447,10 @@ const isMissingAiCreditCandidate = (baseCand, cand) =>
   singleMutation(baseCand, cand, 'aiCreditQuota') &&
   singleMutation(baseCand.aiCreditQuota, cand.aiCreditQuota, 'remainingAiCredits') &&
   (cand.aiCreditQuota.remainingAiCredits === null ||
-    (Number.isSafeInteger(cand.aiCreditQuota.remainingAiCredits) &&
-      cand.aiCreditQuota.remainingAiCredits <= 0));
+    cand.aiCreditQuota.remainingAiCredits <= 0);
 
 const isEstimatedAiCreditCandidate = (baseCand, cand) =>
   singleMutation(baseCand, cand, 'aiCreditQuota') &&
-  exact(cand.aiCreditQuota, AI_QUOTA_KEYS) &&
-  text(cand.aiCreditQuota.accountingSource) &&
   cand.aiCreditQuota.isEstimated === true &&
   AI_QUOTA_KEYS.every(key =>
     key === 'isEstimated' ||
@@ -429,7 +461,6 @@ const isBelowFloorCoverageCandidate = (baseCand, cand, field, floor) =>
   singleMutation(baseCand, cand, 'snapshot') &&
   singleMutation(baseCand.snapshot, cand.snapshot, 'coverage') &&
   singleMutation(baseCand.snapshot.coverage, cand.snapshot.coverage, field) &&
-  pct(cand.snapshot.coverage[field]) &&
   cand.snapshot.coverage[field] < floor;
 
 const isEmergencyStopCandidate = (baseCand, cand) =>
@@ -479,9 +510,9 @@ export function proveFamilyTreeShadowDenials(suite) {
   }
 
   const baseCand = suite.eligibleCandidate;
-  if (!exact(baseCand, CANDIDATE_KEYS) ||
-      !exact(baseCand.aiCreditQuota, AI_QUOTA_KEYS) ||
-      !strictSnapshotShape(baseCand.snapshot)) {
+  const d = suite.denials;
+  if (!validCandidateEnvelope(baseCand) ||
+      !FAMILYTREE_REQUIRED_SHADOW_DENIALS.every(key => validCandidateEnvelope(d[key]))) {
     return denySuite('SHADOW_DENIAL_SCENARIO_INVALID');
   }
 
@@ -496,7 +527,6 @@ export function proveFamilyTreeShadowDenials(suite) {
     suite.onboardingPackage.localGates.minBranchCoverage
   );
 
-  const d = suite.denials;
   if (!isStaleReviewCandidate(baseCand, d.staleReview) ||
       !isDismissedReviewCandidate(baseCand, d.dismissedReview) ||
       !isCommentedBotCandidate(baseCand, d.commentedBotReview) ||
