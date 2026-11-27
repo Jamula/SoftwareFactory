@@ -28,17 +28,21 @@ Offline evaluators never fabricate live owner billing settings or check off `#10
    - Confirm `.github/workflows/copilot-hosted-pilot.yml` remains absent on `main`.
    - Open **Repository Settings -> Secrets and variables -> Actions** and **Environments** (including any organization-scoped Actions secrets when applicable), or run the paginated CLI audit across repository secrets and **every** repository environment before asserting `retiredDiyWorkflowAbsent: true`, `zeroPersonalPatSecretsVerified: true`, and `customPilotEnvironmentAbsent: true`:
      ```bash
-     gh secret list --repo Jamula/SoftwareFactory
-     envs="$(gh api --paginate repos/Jamula/SoftwareFactory/environments --jq '.environments[].name')"
-     if printf '%s\n' "$envs" | grep -Fxq 'factory-copilot-pilot'; then
-       echo "Forbidden factory-copilot-pilot environment present" >&2
-       exit 1
-     fi
-     while IFS= read -r env_name; do
-       if [ -n "$env_name" ]; then
-         gh secret list --repo Jamula/SoftwareFactory --env "$env_name"
+     (
+       set -euo pipefail
+       test ! -e .github/workflows/copilot-hosted-pilot.yml
+       gh secret list --repo Jamula/SoftwareFactory
+       envs="$(gh api --paginate repos/Jamula/SoftwareFactory/environments --jq '.environments[].name')"
+       if printf '%s\n' "$envs" | grep -Fx 'factory-copilot-pilot' >/dev/null; then
+         echo "Forbidden factory-copilot-pilot environment present" >&2
+         exit 1
        fi
-     done <<< "$envs"
+       while IFS= read -r env_name; do
+         if [ -n "$env_name" ]; then
+           gh secret list --repo Jamula/SoftwareFactory --env "$env_name"
+         fi
+       done <<< "$envs"
+     )
      ```
    - Confirm zero personal PAT secrets (`FACTORY_COPILOT_REQUESTS_TOKEN` and any user-scoped PAT absent across both repository and per-environment secret lists) and no custom `factory-copilot-pilot` environment.
 2. **Verify `$0` paid-overage hard-stop budgets across all three GitHub Billing meters:**
