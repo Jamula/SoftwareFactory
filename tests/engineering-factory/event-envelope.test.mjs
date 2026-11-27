@@ -449,7 +449,7 @@ test('orchestrates pull, review, check, main, issue and manual triggers through 
  } finally {
   crashedJournal.close();
  }
- // At t=2000 an unrelated push trigger does NOT falsely acknowledge 'crashed-review' without its reviewId (leaves it EVIDENCE_UNKNOWN).
+ // At t=2000 an unrelated push trigger does NOT falsely acknowledge 'crashed-review' without its reviewId; default retry deferral (3600000 ms) backs off 'crashed-review' so later work is not starved once its 30s lease expires.
  const queuedBehind = await reconcileEventTrigger({...actions, GITHUB_EVENT_NAME: 'push', GITHUB_REF: 'refs/heads/main', GITHUB_RUN_ID: 'after-crash'}, {
   clock: () => 2000, request, snapshot: crashedSnapshot
  });
@@ -457,21 +457,28 @@ test('orchestrates pull, review, check, main, issue and manual triggers through 
  assert.equal(queuedBehind.reason, 'QUEUED');
  assert.equal(queuedBehind.recoveredDeliveryId, 'crashed-review');
  assert.equal(queuedBehind.recoveryReason, 'EVIDENCE_UNKNOWN');
+ assert.equal(queuedBehind.snapshot.entries.find(row => row.deliveryId === 'crashed-review').retryAfter, 3602000);
 
- // Re-delivering 'crashed-review' after its lease expires (t=60000) supplies FACTORY_REVIEW_ID and completes it cleanly; then 'after-crash' reconciles.
+ // At t=33000 (after the 30s lease expires, while 'crashed-review' is still deferred until 3602000), 'after-crash' proceeds immediately without starvation!
+ const replayMain = await reconcileEventTrigger({...actions, GITHUB_EVENT_NAME: 'push', GITHUB_REF: 'refs/heads/main', GITHUB_RUN_ID: 'after-crash'}, {
+  clock: () => 33000, request, snapshot: JSON.parse(JSON.stringify(queuedBehind.snapshot))
+ });
+ assert.equal(replayMain.reconciled, true);
+ assert.equal(replayMain.reason, 'SHADOW_RECONCILED');
+
+ // Once the retry deferral elapses (t=3602000), re-delivering 'crashed-review' with FACTORY_REVIEW_ID recovers and reconciles it cleanly.
  const retriedReview = await reconcileEventTrigger({
   ...actions, GITHUB_EVENT_NAME: 'pull_request_review', FACTORY_REVIEW_ID: '77', GITHUB_RUN_ID: 'crashed-review'
  }, {
-  clock: () => 60000, request, snapshot: JSON.parse(JSON.stringify(queuedBehind.snapshot))
+  clock: () => 3602000, request, snapshot: JSON.parse(JSON.stringify(replayMain.snapshot))
  });
  assert.equal(retriedReview.reconciled, true);
  assert.equal(retriedReview.reason, 'SHADOW_RECONCILED');
 
- const replayMain = await reconcileEventTrigger({...actions, GITHUB_EVENT_NAME: 'push', GITHUB_REF: 'refs/heads/main', GITHUB_RUN_ID: 'after-crash'}, {
-  clock: () => 60001, request, snapshot: JSON.parse(JSON.stringify(retriedReview.snapshot))
- });
- assert.equal(replayMain.reconciled, true);
- assert.equal(replayMain.reason, 'SHADOW_RECONCILED');
+ // Explicit deferUnknown override remains supported and fails closed on invalid callback type.
+ assert.equal((await reconcileEventTrigger(actions, {
+  clock: () => 100, request, deferUnknown: 'invalid'
+ })).reason, 'RUNTIME_UNKNOWN');
 
  // Moved PR head on review trigger supersedes the hint without granting authority.
  currentPullHead = 'c'.repeat(40);

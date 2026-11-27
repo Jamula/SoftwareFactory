@@ -10,6 +10,7 @@ const DEFAULT_REPOSITORY = 'Jamula/SoftwareFactory';
 const DEFAULT_REPOSITORY_ID = 1471342715;
 const DEFAULT_BRANCH = 'main';
 const DEFAULT_WORKFLOW_PATH = '.github/workflows/shadow-reconcile.yml';
+const DEFAULT_RETRY_DELAY_MS = 3600000;
 const scopeKeys = ['repository', 'repositoryId', 'branch', 'workflowPath'];
 const kinds = new Set(['issue', 'pull', 'review', 'check', 'main', 'manual']);
 const reviewStates = new Set(['APPROVED', 'CHANGES_REQUESTED', 'COMMENTED', 'DISMISSED']);
@@ -578,7 +579,7 @@ export async function reconcileEventTrigger(env, options = {}) {
   const snapshot = readOwn(options, 'snapshot');
   const owner = readOwn(options, 'owner', 'github-actions');
   const leaseMs = readOwn(options, 'leaseMs', 30000);
-  const deferUnknown = readOwn(options, 'deferUnknown');
+  const customDeferUnknown = readOwn(options, 'deferUnknown');
   const now = clock();
   const trust = {repositoryId: resolved.repositoryId, workflowSha};
   const observed = eventEnvelope({
@@ -595,10 +596,13 @@ export async function reconcileEventTrigger(env, options = {}) {
       const imported = importJournalSnapshot(store, snapshot);
       if (!imported.imported) return blocked(imported.reason);
     }
-    if (!store || typeof store.enqueue !== 'function' ||
-        typeof store.claim !== 'function' || typeof store.complete !== 'function') {
+    if (!store || typeof store.enqueue !== 'function' || typeof store.claim !== 'function' ||
+        typeof store.complete !== 'function' || typeof store.defer !== 'function') {
       return blocked('JOURNAL_UNAVAILABLE');
     }
+    const deferUnknown = customDeferUnknown !== undefined
+      ? customDeferUnknown
+      : (ticket, finished) => store.defer(ticket, finished, DEFAULT_RETRY_DELAY_MS);
     const beforeExport = exportJournalSnapshot(store, {repositoryId: resolved.repositoryId});
     const alreadyCompleted = beforeExport.exported &&
       beforeExport.entries.some(row => row.deliveryId === observed.deliveryId && row.completed);
