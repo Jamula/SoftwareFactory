@@ -111,8 +111,7 @@ export function evaluateHostedWorkerLadder(e) {
   if (gateError) return report(gateError);
   const ceiling = Math.min(prop(e, 'verifiedProviderLimit'), prop(e, 'repositoryLimit'),
     prop(e, 'repositoryActive') + budget.available);
-  let actualMax = 0;
-  for (const tier of WORKER_LADDER) if (tier <= ceiling) actualMax = tier;
+  const actualMax = prop(e, 'observedPeak');
   if (prop(e, 'afterAccepted') <= prop(e, 'beforeAccepted'))
     return report('NO_MEASURED_GAIN', null, actualMax, ceiling);
   const next = WORKER_LADDER[WORKER_LADDER.indexOf(currentLimit) + 1];

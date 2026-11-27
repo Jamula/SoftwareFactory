@@ -9,28 +9,41 @@ const hosted={...e,environmentVerified:true,protectedEnvironment:'factory-copilo
 test('dry run only, deterministic idempotency',()=>{
  assert.deepEqual(plan(e),{shadow:true,liveDispatch:false,reason:'DRY_RUN_ONLY',key:'1:2:'+e.head+':3',repositoryId:1,issue:2});
  assert.deepEqual(plan({...e,environmentVerified:true,hardStopReceipt:receipt,nowMs:5500,executionTtlMs:3600000}),{shadow:true,liveDispatch:false,reason:'DRY_RUN_ONLY',key:'1:2:'+e.head+':3',repositoryId:1,issue:2});
+ assert.deepEqual(plan({...e,hardStopReceipt:receipt},5500),{shadow:true,liveDispatch:false,reason:'DRY_RUN_ONLY',key:'1:2:'+e.head+':3',repositoryId:1,issue:2});
+ assert.equal(plan({...e,hardStopReceipt:receipt,nowMs:5500},5500).reason,'DRY_RUN_ONLY');
 });
 
-test('deny unknown permission quota and duplicate',()=>{
+test('deny unknown permission quota, clock mismatch, and duplicate',()=>{
  for(const x of [null,[],new Proxy(e,{}),Object.create(e)])assert.equal(plan(x).reason,'EVIDENCE_UNKNOWN');
+ assert.equal(plan(e,-1).reason,'EVIDENCE_UNKNOWN');
+ assert.equal(plan({...e,hardStopReceipt:receipt,nowMs:5000},70000).reason,'STALE_HARD_STOP_RECEIPT');
+ assert.equal(plan({...e,hardStopReceipt:receipt},70000).reason,'STALE_HARD_STOP_RECEIPT');
  for(const x of [{stop:true},{repositoryId:0},{approvedRepositoryId:2},{issue:0},{head:'bad'},{generation:0},{approved:false},{leaseVerified:false},{environmentVerified:false},{includedOnly:false},{overageDisabled:false},{capacity:0},{hardStopReceipt:null,nowMs:5500},{hardStopReceipt:{...receipt,overageDisabled:false},nowMs:5500},{executionTtlMs:0},{executionTtlMs:3600001},{alreadyDispatched:true},{alreadyDispatched:null}])assert.notEqual(plan({...e,...x}).reason,'DRY_RUN_ONLY');
 });
 
-test('own accessor for each required and optional field is denied without a read',()=>{
+test('own and inherited accessors for required and optional fields are denied without a read',()=>{
  let calls=0;
  for(const field of [...Object.keys(e),'environmentVerified','hardStopReceipt','nowMs','executionTtlMs']){
   const x={...e};
   Object.defineProperty(x,field,{get(){calls++;throw Error('unexpected getter');}});
   assert.equal(plan(x).reason,'EVIDENCE_UNKNOWN',field);
  }
+ // Inherited nowMs accessor on prototype must never execute when hardStopReceipt is an own property.
+ const proto={};
+ Object.defineProperty(proto,'nowMs',{get(){calls++;throw Error('unexpected inherited nowMs getter');}});
+ const inheritedClock=Object.assign(Object.create(proto),{...e,hardStopReceipt:receipt});
+ assert.equal(plan(inheritedClock).reason,'STALE_HARD_STOP_RECEIPT');
  assert.equal(calls,0);
 });
 
-test('hosted worker dispatch intent enforces environment, hard-stop receipt, worker ladder, and bounded TTL',()=>{
+test('hosted worker dispatch intent enforces environment, hard-stop receipt, authoritative clock, worker ladder, and bounded TTL',()=>{
  for(const tier of [1,2,4,8,10,12]){
   const res=hostedWorkerDispatchIntent({...hosted,capacity:12,requestedWorkers:tier});
   assert.deepEqual(res,{shadow:true,liveDispatch:false,reason:'DRY_RUN_ONLY',key:'1:2:'+e.head+':3',repositoryId:1,issue:2,protectedEnvironment:'factory-copilot-pilot',requestedWorkers:tier,executionTtlMs:300000,receiptId:'hsr-7-001'});
  }
+ assert.equal(hostedWorkerDispatchIntent(hosted,5500).reason,'DRY_RUN_ONLY');
+ assert.equal(hostedWorkerDispatchIntent(hosted,-1).reason,'EVIDENCE_UNKNOWN');
+ assert.equal(hostedWorkerDispatchIntent(hosted,70000).reason,'STALE_HARD_STOP_RECEIPT');
  const proxyHosted = new Proxy(hosted, {});
  for(const [change,reason] of [
   [null,'EVIDENCE_UNKNOWN'],

@@ -35,7 +35,7 @@ test('bounds repo and global slots and settles only the exact in-flight reservat
     const other = ledger.reserve(candidate(2, 12), quota(2), now);
     assert.equal(other.reason, 'SHADOW_RESERVED');
     assert.equal(ledger.reserve(candidate(2, 13), quota(2), now).reason, 'CAPACITY_EXHAUSTED');
-    assert.equal(ledger.reconcile(first.ticket, terminal(first.ticket)).reason, 'RESERVATION_UNAVAILABLE');
+    assert.equal(ledger.reconcile(first.ticket, terminal(first.ticket), now).reason, 'RESERVATION_UNAVAILABLE');
     assert.equal(ledger.begin(first.ticket, fixture, now).reason, 'SHADOW_SIMULATION_RECORDED');
     assert.equal(ledger.begin(first.ticket, fixture, now).reason, 'RESERVATION_UNAVAILABLE');
     assert.equal(ledger.cancel(first.ticket).reason, 'RESERVATION_UNAVAILABLE');
@@ -44,19 +44,20 @@ test('bounds repo and global slots and settles only the exact in-flight reservat
     assert.equal(ledger.reserve(candidate(1, 13), quota(), now).reason, 'CAPACITY_EXHAUSTED');
     for (const change of [{generation: 2}, {head: 'b'.repeat(40)}, {repositoryId: 2},
       {state: 'pending'}, {shadow: false}]) {
-      assert.equal(ledger.reconcile(first.ticket, {...terminal(first.ticket), ...change}).reason,
+      assert.equal(ledger.reconcile(first.ticket, {...terminal(first.ticket), ...change}, now).reason,
         'TERMINAL_RECEIPT_UNKNOWN');
     }
-    assert.equal(ledger.reconcile(first.ticket, first.ticket).reason, 'TERMINAL_RECEIPT_UNKNOWN');
-    assert.equal(ledger.reconcile(first.ticket, terminal(first.ticket)).reason, 'SHADOW_SETTLED');
-    assert.equal(ledger.reconcile(first.ticket, terminal(first.ticket)).reason, 'RESERVATION_UNAVAILABLE');
+    assert.equal(ledger.reconcile(first.ticket, first.ticket, now).reason, 'TERMINAL_RECEIPT_UNKNOWN');
+    assert.equal(ledger.reconcile(first.ticket, terminal(first.ticket)).reason, 'TERMINAL_RECEIPT_UNKNOWN');
+    assert.equal(ledger.reconcile(first.ticket, terminal(first.ticket), now).reason, 'SHADOW_SETTLED');
+    assert.equal(ledger.reconcile(first.ticket, terminal(first.ticket), now).reason, 'RESERVATION_UNAVAILABLE');
     assert.equal(ledger.reserve({...fixture, generation: 2}, quota(), now).reason, 'DUPLICATE_OR_ACTIVE');
     assert.equal(ledger.cancel(other.ticket).reason, 'SHADOW_CANCELLED_BEFORE_SIMULATION');
     assert.equal(ledger.cancel(other.ticket).reason, 'RESERVATION_UNAVAILABLE');
     const last = ledger.reserve(candidate(2, 13), quota(2), now);
     assert.equal(last.reason, 'SHADOW_RESERVED');
     assert.equal(ledger.begin(last.ticket, candidate(2, 13), now).reason, 'SHADOW_SIMULATION_RECORDED');
-    assert.equal(ledger.reconcile(last.ticket, terminal(last.ticket, 'cancelled')).reason, 'SHADOW_SETTLED');
+    assert.equal(ledger.reconcile(last.ticket, terminal(last.ticket, 'cancelled'), now).reason, 'SHADOW_SETTLED');
     assert.equal(ledger.reserve(candidate(2, 14), quota(2), now).reason, 'SHADOW_RESERVED');
     assert.equal(ledger.reserve(candidate(1, 15), quota(), now).reason, 'CAPACITY_EXHAUSTED');
     assert.throws(() => openShadowDispatchLedger(path, {...plan, window: 'different'}),
@@ -76,7 +77,7 @@ test('rechecks stop, identity, lease and freshness before recording a dry-run st
       {...ticket, head: 'bad'}, {...ticket, generation: 0}]) {
       assert.equal(ledger.begin(input, c, now).reason, 'SCOPE_OR_LEASE_UNKNOWN');
       assert.equal(ledger.cancel(input).reason, 'SCOPE_OR_LEASE_UNKNOWN');
-      assert.equal(ledger.reconcile(input, terminal(ticket)).reason, 'TERMINAL_RECEIPT_UNKNOWN');
+      assert.equal(ledger.reconcile(input, terminal(ticket), now).reason, 'TERMINAL_RECEIPT_UNKNOWN');
     }
     for (const change of [{generation: 2}, {leaseUntil: null}, {leaseUntil: now}]) {
       assert.equal(ledger.begin(ticket, {...c, ...change}, now).reason, 'SCOPE_OR_LEASE_UNKNOWN');
@@ -179,7 +180,7 @@ test('bounds stored reservations and fails closed on locked, broken, and closed 
     assert.equal(ledger.begin(ticket, c, now).reason, 'STORE_UNAVAILABLE');
     assert.equal(ledger.expire(now).reason, 'STORE_UNAVAILABLE');
     assert.equal(ledger.cancel(ticket).reason, 'STORE_UNAVAILABLE');
-    assert.equal(ledger.reconcile(ticket, terminal(ticket)).reason, 'STORE_UNAVAILABLE');
+    assert.equal(ledger.reconcile(ticket, terminal(ticket), now).reason, 'STORE_UNAVAILABLE');
     assert.equal(ledger.exportSnapshot({signingKey: 'synthetic-key-012345', now}).reason, 'STORE_UNAVAILABLE');
     assert.equal(ledger.importSnapshot({
       version: 1,
@@ -256,7 +257,7 @@ test('reclaims expired reserved and hung in-flight workers deterministically und
     const r2 = ledger.reserve(c1NextHead, {...q1, observedMs: 2000}, 2000);
     assert.equal(r2.reason, 'SHADOW_RESERVED');
 
-    // Validate executionTtlMs bounds in begin.
+    // Validate executionTtlMs bounds and authoritative hardStopReceipt clock in begin.
     const getterCurrent = {...c1NextHead};
     Object.defineProperty(getterCurrent, 'executionTtlMs', {get() { return 100; }});
     assert.equal(ledger.begin(r2.ticket, getterCurrent, 2000).reason, 'EXECUTION_DEADLINE_INVALID');
@@ -264,6 +265,11 @@ test('reclaims expired reserved and hung in-flight workers deterministically und
       assert.equal(ledger.begin(r2.ticket, {...c1NextHead, executionTtlMs: badTtl}, 2000).reason,
         'EXECUTION_DEADLINE_INVALID');
     }
+    // Stale hardStopReceipt or mismatched nowMs on candidate/current is rejected against authoritative ledger now.
+    assert.equal(ledger.reserve({...candidate(2, 77), leaseUntil: 80000, hardStopReceipt: receipt, nowMs: now},
+      {...quota(2), remaining: 8, observedMs: 70000}, 70000).reason, 'STALE_HARD_STOP_RECEIPT');
+    assert.equal(ledger.begin(r2.ticket, {...c1NextHead, hardStopReceipt: receipt, nowMs: now}, 2000).reason,
+      'STALE_HARD_STOP_RECEIPT');
 
     // Even with huge leaseUntil, begin enforces plan.maxExecutionMs (500ms -> deadline 2500) or smaller executionTtlMs.
     const started = ledger.begin(r2.ticket, {...c1NextHead, executionTtlMs: 300}, 2000);
@@ -276,10 +282,11 @@ test('reclaims expired reserved and hung in-flight workers deterministically und
     // Repo 1 maxActive=1 is occupied while in-flight before deadline.
     assert.equal(ledger.reserve({...candidate(1, 11), leaseUntil: 9000}, {...q1, observedMs: 2300}, 2300).reason,
       'REPO_CAPACITY_EXHAUSTED');
-    // Reconcile rejects invalid now, and past deadline (2301) deterministically marks run expired and frees slot.
+    // Reconcile requires authoritative now (omitting now fails closed even when overdue), and past deadline marks expired.
+    assert.equal(ledger.reconcile(r2.ticket, terminal(r2.ticket)).reason, 'TERMINAL_RECEIPT_UNKNOWN');
     assert.equal(ledger.reconcile(r2.ticket, terminal(r2.ticket), -1).reason, 'TERMINAL_RECEIPT_UNKNOWN');
     assert.equal(ledger.reconcile(r2.ticket, terminal(r2.ticket), 2301).reason, 'EXECUTION_DEADLINE_EXCEEDED');
-    assert.equal(ledger.reconcile(r2.ticket, terminal(r2.ticket)).reason, 'EXECUTION_DEADLINE_EXCEEDED');
+    assert.equal(ledger.reconcile(r2.ticket, terminal(r2.ticket), 2302).reason, 'EXECUTION_DEADLINE_EXCEEDED');
 
     // Slot is now free, and inline expiry during reserve also reclaims hung runs using plan.maxExecutionMs.
     const c3 = {...candidate(1, 11), leaseUntil: 99999999, observedMs: 2400};
@@ -333,7 +340,7 @@ test('exports and restores integrity/signature-fenced snapshots across stateless
     const cSettled = {...candidate(1, 10), head: '2'.repeat(40)};
     const tSettled = runnerA.reserve(cSettled, q(1), now).ticket;
     assert.equal(runnerA.begin(tSettled, cSettled, now).reason, 'SHADOW_SIMULATION_RECORDED');
-    assert.equal(runnerA.reconcile(tSettled, terminal(tSettled)).reason, 'SHADOW_SETTLED');
+    assert.equal(runnerA.reconcile(tSettled, terminal(tSettled), now).reason, 'SHADOW_SETTLED');
     const tReserved = runnerA.reserve(candidate(1, 11), q(1), now).ticket;
     const cInFlight = candidate(2, 5);
     const tInFlight = runnerA.reserve(cInFlight, q(2), now).ticket;
@@ -396,9 +403,14 @@ test('exports and restores integrity/signature-fenced snapshots across stateless
         const rows = [baseRow, {...baseRow, issue: 99}];
         return {...exported1.snapshot, reservations: rows, ...sign(pSig, 1, 1200, rows)};
       })(),
-      // Exceeds includedUnits (10)
+      // Signed undercharged row (units !== plan.unitsPerRun) is rejected
       (() => {
-        const rows = [{...baseRow, phase: 'settled', units: 6}, {...baseRow, issue: 99, phase: 'settled', units: 6}];
+        const rows = [{...baseRow, units: 1}];
+        return {...exported1.snapshot, reservations: rows, ...sign(pSig, 1, 1200, rows)};
+      })(),
+      // Exceeds includedUnits (10) while matching unitsPerRun (2 * 6 = 12 > 10)
+      (() => {
+        const rows = Array.from({length: 6}, (_, idx) => ({...baseRow, issue: 50 + idx, phase: 'settled'}));
         return {...exported1.snapshot, reservations: rows, ...sign(pSig, 1, 1200, rows)};
       })(),
       // Bad row field (validThrough < reservedAt)
@@ -507,7 +519,7 @@ test('fails closed on storage lock and rollback errors during expire, reconcile,
     // Locked DB triggers outer BEGIN IMMEDIATE catch on expire, reconcile, exportSnapshot, importSnapshot.
     db.exec('BEGIN IMMEDIATE');
     assert.equal(ledger.expire(now).reason, 'STORE_UNAVAILABLE');
-    assert.equal(ledger.reconcile(ticket, terminal(ticket)).reason, 'STORE_UNAVAILABLE');
+    assert.equal(ledger.reconcile(ticket, terminal(ticket), now).reason, 'STORE_UNAVAILABLE');
     assert.equal(ledger.exportSnapshot({signingKey, now}).reason, 'STORE_UNAVAILABLE');
     assert.equal(ledger.importSnapshot(snap2, {signingKey, now}).reason, 'STORE_UNAVAILABLE');
     db.exec('ROLLBACK');
@@ -515,7 +527,7 @@ test('fails closed on storage lock and rollback errors during expire, reconcile,
     // Triggers with RAISE(ROLLBACK) end the transaction inside SQLite so inner ROLLBACK catch is also exercised.
     db.exec("CREATE TRIGGER abort_res_update BEFORE UPDATE ON shadow_dispatch_reservations BEGIN SELECT RAISE(ROLLBACK, 'abort'); END");
     assert.equal(ledger.expire(5000).reason, 'STORE_UNAVAILABLE');
-    assert.equal(ledger.reconcile(ticket, terminal(ticket)).reason, 'STORE_UNAVAILABLE');
+    assert.equal(ledger.reconcile(ticket, terminal(ticket), now).reason, 'STORE_UNAVAILABLE');
     assert.equal(ledger.importSnapshot(snap2, {signingKey, now}).reason, 'STORE_UNAVAILABLE');
     db.exec('DROP TRIGGER abort_res_update');
 
@@ -525,6 +537,62 @@ test('fails closed on storage lock and rollback errors during expire, reconcile,
   } finally {
     ledger.close();
     db.close();
+    rmSync(dir, {recursive: true, force: true});
+  }
+});
+
+test('migrates pre-deadline v0 on-disk ledgers in place while preserving spent units, duplicate fences, and plan checks', () => {
+  const dir = mkdtempSync(join(tmpdir(), root));
+  const legacyPath = join(dir, 'legacy-v0.sqlite');
+  const legacySignature = JSON.stringify([plan.window, plan.maxActive, plan.includedUnits, plan.unitsPerRun,
+    [[1, 1], [2, 2]]]);
+  const raw = new DatabaseSync(legacyPath);
+  raw.exec(`
+    CREATE TABLE shadow_dispatch_plan (
+      id INTEGER PRIMARY KEY CHECK(id = 1), signature TEXT NOT NULL
+    );
+    CREATE TABLE shadow_dispatch_reservations (
+      repository INTEGER NOT NULL, issue INTEGER NOT NULL, head TEXT NOT NULL, generation INTEGER NOT NULL,
+      units INTEGER NOT NULL CHECK(units > 0),
+      phase TEXT NOT NULL CHECK(phase IN ('reserved', 'in-flight', 'settled', 'cancelled')),
+      valid_through INTEGER NOT NULL, reserved_at INTEGER NOT NULL CHECK(reserved_at >= 0),
+      CHECK(valid_through >= reserved_at),
+      PRIMARY KEY (repository, issue, head)
+    );
+  `);
+  raw.prepare('INSERT INTO shadow_dispatch_plan VALUES (1, ?)').run(legacySignature);
+  raw.prepare('INSERT INTO shadow_dispatch_reservations VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+    .run(1, 12, head, 1, 2, 'settled', 1999, 1000);
+  raw.prepare('INSERT INTO shadow_dispatch_reservations VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+    .run(2, 20, 'c'.repeat(40), 1, 2, 'in-flight', 1500, 1000);
+  raw.close();
+
+  try {
+    // Opening a legacy DB with a custom maxExecutionMs or changed plan still fails closed without mutating it.
+    assert.throws(() => openShadowDispatchLedger(legacyPath, {...plan, maxExecutionMs: 60000}),
+      /SHADOW_DISPATCH_PLAN_CHANGED/);
+    const migrated = openShadowDispatchLedger(legacyPath, plan);
+    try {
+      // Duplicate fence on settled v0 entry is preserved before expiry.
+      assert.equal(migrated.reserve(candidate(1, 12), quota(1), 1400).reason, 'DUPLICATE_OR_ACTIVE');
+      // Phase constraint is upgraded so hung v0 in-flight entry (valid_through=1500) transitions to 'expired' at 1600.
+      assert.deepEqual(migrated.expire(1600), {
+        shadow: true,
+        liveDispatch: false,
+        reason: 'SHADOW_EXPIRED_RECLAIMED',
+        expiredReserved: 0,
+        expiredInFlight: 1,
+        reclaimed: 1
+      });
+      // Spent units from settled (2) + expired in-flight (2) = 4 are preserved: remaining=5 (only 1 free unit) exhausts!
+      assert.equal(migrated.reserve({...candidate(1, 13), leaseUntil: 4000, observedMs: 1600},
+        {...quota(1), remaining: 5, observedMs: 1600}, 1600).reason, 'CAPACITY_EXHAUSTED');
+      assert.equal(migrated.reserve({...candidate(1, 13), leaseUntil: 4000, observedMs: 1600},
+        {...quota(1), remaining: 6, observedMs: 1600}, 1600).reason, 'SHADOW_RESERVED');
+    } finally {
+      migrated.close();
+    }
+  } finally {
     rmSync(dir, {recursive: true, force: true});
   }
 });

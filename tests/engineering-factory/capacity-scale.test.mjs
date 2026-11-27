@@ -50,26 +50,26 @@ test('evaluates hosted 1->2->4->8->10->12 ladder with actual max workers and sho
     liveDispatch:false,
     reason:'SHADOW_SCALE_RECOMMENDED',
     nextLimit:2,
-    actualMaxWorkers:12,
+    actualMaxWorkers:1,
     verifiedCapacityCeiling:12,
     goalMinWorkers:10,
     goalMaxWorkers:12,
-    shortfallMin:0,
-    shortfallMax:0,
-    goalMet:true
+    shortfallMin:9,
+    shortfallMax:11,
+    goalMet:false
   });
   assert.equal(Object.isFrozen(full),true);
-  // Non-ladder verified quota ceiling (e.g. 6 remaining units) caps actualMaxWorkers to ladder tier 4, reporting shortfall 6/8.
+  // Observed peak of 2 reports actualMaxWorkers=2 and shortfall 8/10 while keeping prospective ceiling=6 in verifiedCapacityCeiling.
   const proPlus=evaluateHostedWorkerLadder({...hostedFixture(),currentLimit:2,observedPeak:2,
     verifiedProviderLimit:8,repositoryLimit:8,budget:{...hostedFixture().budget,maxActive:8,remaining:6}});
   assert.equal(proPlus.reason,'SHADOW_SCALE_RECOMMENDED');
   assert.equal(proPlus.nextLimit,4);
   assert.equal(proPlus.verifiedCapacityCeiling,6);
-  assert.equal(proPlus.actualMaxWorkers,4);
-  assert.equal(proPlus.shortfallMin,6);
-  assert.equal(proPlus.shortfallMax,8);
+  assert.equal(proPlus.actualMaxWorkers,2);
+  assert.equal(proPlus.shortfallMin,8);
+  assert.equal(proPlus.shortfallMax,10);
   assert.equal(proPlus.goalMet,false);
-  // At ceiling 4 with all 4 workers active (budget available = 0), blocks 4->8 while preserving actualMaxWorkers=4 and shortfall 6/8.
+  // At ceiling 4 with all 4 workers active (budget available = 0), blocks 4->8 while reporting observed actualMaxWorkers=4 and shortfall 6/8.
   const saturated4=evaluateHostedWorkerLadder({...hostedFixture(),currentLimit:4,observedPeak:4,
     verifiedProviderLimit:4,repositoryLimit:4,repositoryActive:4,
     budget:{...hostedFixture().budget,maxActive:4,active:4,remaining:4}});
@@ -79,7 +79,7 @@ test('evaluates hosted 1->2->4->8->10->12 ladder with actual max workers and sho
   assert.equal(saturated4.shortfallMin,6);
   assert.equal(saturated4.shortfallMax,8);
   assert.equal(saturated4.goalMet,false);
-  // Verified ceiling of 10 meets 10-worker minimum (shortfallMin=0) while reporting shortfallMax=2 against 12, blocking 10->12.
+  // Observed peak of 10 meets 10-worker minimum (shortfallMin=0) while reporting shortfallMax=2 against 12, blocking 10->12.
   const tenCap=evaluateHostedWorkerLadder({...hostedFixture(),currentLimit:10,observedPeak:10,
     verifiedProviderLimit:10,repositoryLimit:12,budget:{...hostedFixture().budget,maxActive:10,remaining:10}});
   assert.equal(tenCap.reason,'CAPACITY_INSUFFICIENT');
@@ -88,14 +88,15 @@ test('evaluates hosted 1->2->4->8->10->12 ladder with actual max workers and sho
   assert.equal(tenCap.shortfallMin,0);
   assert.equal(tenCap.shortfallMax,2);
   assert.equal(tenCap.goalMet,true);
-  // Zero remaining units yields ceiling=0, actualMaxWorkers=0, shortfall 10/12.
+  // Zero remaining units yields verifiedCapacityCeiling=0, blocking 1->2 while reporting observed actualMaxWorkers=1 (shortfall 9/11).
   const zeroRemaining=evaluateHostedWorkerLadder({...hostedFixture(),budget:{...hostedFixture().budget,remaining:0}});
   assert.equal(zeroRemaining.reason,'CAPACITY_INSUFFICIENT');
-  assert.equal(zeroRemaining.actualMaxWorkers,0);
-  assert.equal(zeroRemaining.shortfallMin,10);
-  assert.equal(zeroRemaining.shortfallMax,12);
-  // No measured gain and ladder complete still report verified max workers.
-  const noGain=evaluateHostedWorkerLadder({...hostedFixture(),afterAccepted:5,
+  assert.equal(zeroRemaining.verifiedCapacityCeiling,0);
+  assert.equal(zeroRemaining.actualMaxWorkers,1);
+  assert.equal(zeroRemaining.shortfallMin,9);
+  assert.equal(zeroRemaining.shortfallMax,11);
+  // No measured gain at observed peak 8 and ladder complete at observed peak 12 report observed actual workers accurately.
+  const noGain=evaluateHostedWorkerLadder({...hostedFixture(),currentLimit:8,observedPeak:8,afterAccepted:5,
     verifiedProviderLimit:8,budget:{...hostedFixture().budget,maxActive:8}});
   assert.equal(noGain.reason,'NO_MEASURED_GAIN');
   assert.equal(noGain.actualMaxWorkers,8);
@@ -105,6 +106,7 @@ test('evaluates hosted 1->2->4->8->10->12 ladder with actual max workers and sho
   assert.equal(done.reason,'LADDER_COMPLETE');
   assert.equal(done.actualMaxWorkers,12);
   assert.equal(done.shortfallMax,0);
+  assert.equal(done.goalMet,true);
 });
 
 test('hosted worker ladder blocks fail-closed on missing environment, overage enabled, unknown quota, or invalid hard-stop receipt',()=>{
