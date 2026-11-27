@@ -15,7 +15,7 @@ Executable production JavaScript lives in two ESM packages under `tools/` (`tool
 - **Read-only GitHub metadata adapters and shadow CLI** (bounded unauthenticated reads, no write credentials):
   - `run.mjs`, `shadow-runtime.mjs`, `event-envelope.mjs`, `issue-event.mjs`, `pull-signals.mjs`, `shadow-dispatch-ledger.mjs`, and `local-shadow-host.mjs`: provide the CLI (`--smoke`, `--inventory`, `--reconcile-pull`, `--reconcile-issue`), bounded same-repository REST reads that discard raw user prose and reject fork PRs/moved heads/pagination overflow, and local shadow reconciliation loops.
 - **Local and hosted synthetic Aspire / OpenTelemetry boundary**:
-  - `apphost.cs`, `telemetry.mjs`, `local-otel-sdk.mjs`, `aspire-smoke.mjs`, and `aspire-telemetry-smoke.mjs`: orchestrate the isolated synthetic shadow resource under Aspire AppHost (`17.0.0`, .NET `10.0.404`) and export sanitized low-cardinality traces, metrics, and correlated logs over authenticated loopback HTTPS OTLP only, leaving pure evaluators uninstrumented.
+  - `apphost.cs`, `telemetry.mjs`, `local-otel-sdk.mjs`, `aspire-smoke.mjs`, and `aspire-telemetry-smoke.mjs`: orchestrate the isolated synthetic shadow resource under Aspire AppHost (`17.0.0`, .NET `10.0.404`) and export sanitized low-cardinality traces, metrics, and correlated logs to authenticated loopback OTLP (`127.0.0.1` / `[::1]` over HTTP or HTTPS with `x-otlp-api-key` in `telemetry.mjs`, while hosted CI workflows enforce loopback HTTPS with `ASPIRE_ALLOW_UNSECURED_TRANSPORT=false` and scoped certificate trust), leaving pure evaluators uninstrumented.
 
 ### `tools/engineering-coordinator/` — portable lane planner, runner, and local SQLite fencing
 
@@ -61,7 +61,7 @@ FamilyTree (M03) is the first intended consumer after M01 SoftwareFactory accept
 
 ## Local and hosted diagnostic runtime
 
-`apphost.cs` orchestrates the synthetic shadow runner and authenticated loopback HTTPS Aspire Dashboard for optional local development and standard GitHub-hosted Linux/Windows CI verification (`validate.yml` and `windows-aspire.yml`). Orchestration/adapter boundaries emit OpenTelemetry signals to local OTLP only; pure decision modules remain side-effect free, with no public endpoint, external collector, or live provider calls. See [local development](LOCAL-DEVELOPMENT.md).
+`apphost.cs` orchestrates the synthetic shadow runner and authenticated loopback Aspire Dashboard for optional local development and standard GitHub-hosted Linux/Windows CI verification (`validate.yml` and `windows-aspire.yml`, which enforce loopback HTTPS with `ASPIRE_ALLOW_UNSECURED_TRANSPORT=false`). Orchestration/adapter boundaries emit OpenTelemetry signals to authenticated loopback OTLP (`http:` or `https:` in `telemetry.mjs`) only; pure decision modules remain side-effect free, with no public endpoint, external collector, or live provider calls. See [local development](LOCAL-DEVELOPMENT.md).
 
 ## Roadmap v2 operational target
 
