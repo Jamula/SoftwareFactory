@@ -196,6 +196,8 @@ test('verifies full Cloud Agent public receipt and minimal private/internal Clou
       },
       smokeReceipt: {
         harness: 'copilot-cloud-automation',
+        runner: 'cloud-sandbox',
+        laptopOrChatDependency: false,
         taskId: '550e8400-e29b-41d4-a716-446655440000',
         sessionId: 'auto_session:01',
         actor: 'copilot-swe-agent[bot]',
@@ -215,8 +217,8 @@ test('verifies full Cloud Agent public receipt and minimal private/internal Clou
     assert.equal(res.autonomousExitAccepted, false);
     assert.equal(res.guardrails.customPilotEnvironmentAbsent, null);
     assert.equal(res.billingHardStop.ghAwCapsSoftOnlyAcknowledged, null);
-    assert.equal(res.smokeReceipt.runner, null);
-    assert.equal(res.smokeReceipt.laptopOrChatDependency, null);
+    assert.equal(res.smokeReceipt.runner, 'cloud-sandbox');
+    assert.equal(res.smokeReceipt.laptopOrChatDependency, false);
     assert.equal(res.smokeReceipt.aiCreditsUsed, null);
     assert.equal(res.smokeReceipt.includedAiCreditsUsdCents, null);
     assert.equal(res.smokeReceipt.premiumRequestsUsed, null);
@@ -573,8 +575,14 @@ test('enforces step 2 Cloud Agent/Mission Control smoke receipt provenance, visi
     assert.equal(nonZeroSpend.verificationCode, 'INCREMENTAL_SPEND_NONZERO');
   }
 
+  const missingRunner = {...baseSmoke};
+  delete missingRunner.runner;
+  const missingLaptopFlag = {...baseSmoke};
+  delete missingLaptopFlag.laptopOrChatDependency;
   for (const badSmokeShape of [
     null,
+    missingRunner,
+    missingLaptopFlag,
     {...baseSmoke, harness: 123},
     {...baseSmoke, actor: ''},
     {...baseSmoke, actor: null},

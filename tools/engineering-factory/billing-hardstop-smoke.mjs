@@ -77,6 +77,8 @@ const METER_ITEM_KEYS = new Set(REQUIRED_METER_ITEM_KEYS);
 
 const REQUIRED_SMOKE_BASE_KEYS = Object.freeze([
   'harness',
+  'runner',
+  'laptopOrChatDependency',
   'taskId',
   'sessionId',
   'actor',
@@ -88,8 +90,6 @@ const SMOKE_KEYS = new Set([
   ...REQUIRED_SMOKE_BASE_KEYS,
   'accountingSource',
   'isEstimated',
-  'runner',
-  'laptopOrChatDependency',
   'aiCreditsUsed',
   'premiumRequestsUsed',
   'linkedPullRequest',
@@ -280,6 +280,8 @@ function evaluateSmokeReceipt(smokeReceipt, repositoryVisibility, nowMs, maxRece
   if (!plainObject(smokeReceipt, SMOKE_KEYS) ||
       !hasRequiredKeys(smokeReceipt, REQUIRED_SMOKE_BASE_KEYS) ||
       typeof smokeReceipt.harness !== 'string' ||
+      typeof smokeReceipt.runner !== 'string' ||
+      typeof smokeReceipt.laptopOrChatDependency !== 'boolean' ||
       typeof smokeReceipt.actor !== 'string' ||
       smokeReceipt.actor.length === 0 ||
       !nonneg(smokeReceipt.observedAtMs) ||
@@ -293,25 +295,11 @@ function evaluateSmokeReceipt(smokeReceipt, repositoryVisibility, nowMs, maxRece
       !AUTOMATION_ALLOWED_VISIBILITIES.includes(repositoryVisibility)) {
     return {error: deny('CAPACITY_UNVERIFIED', 'AUTOMATIONS_REQUIRE_PRIVATE_REPO')};
   }
-  let runner = null;
-  if (Object.hasOwn(smokeReceipt, 'runner')) {
-    if (typeof smokeReceipt.runner !== 'string') {
-      return {error: deny('EVIDENCE_UNKNOWN', 'SMOKE_RECEIPT_INVALID')};
-    }
-    if (!SUPPORTED_RUNNERS.includes(smokeReceipt.runner)) {
-      return {error: deny('PROVIDER_FORBIDDEN', 'UNSUPPORTED_SMOKE_RUNNER')};
-    }
-    runner = smokeReceipt.runner;
+  if (!SUPPORTED_RUNNERS.includes(smokeReceipt.runner)) {
+    return {error: deny('PROVIDER_FORBIDDEN', 'UNSUPPORTED_SMOKE_RUNNER')};
   }
-  let laptopOrChatDependency = null;
-  if (Object.hasOwn(smokeReceipt, 'laptopOrChatDependency')) {
-    if (typeof smokeReceipt.laptopOrChatDependency !== 'boolean') {
-      return {error: deny('EVIDENCE_UNKNOWN', 'SMOKE_RECEIPT_INVALID')};
-    }
-    if (smokeReceipt.laptopOrChatDependency) {
-      return {error: deny('PROVIDER_FORBIDDEN', 'LAPTOP_OR_CHAT_DEPENDENCY_FORBIDDEN')};
-    }
-    laptopOrChatDependency = false;
+  if (smokeReceipt.laptopOrChatDependency) {
+    return {error: deny('PROVIDER_FORBIDDEN', 'LAPTOP_OR_CHAT_DEPENDENCY_FORBIDDEN')};
   }
   if (!validUuid(smokeReceipt.taskId)) {
     return {error: deny('EVIDENCE_UNKNOWN', 'SMOKE_TASK_ID_INVALID')};
@@ -374,8 +362,8 @@ function evaluateSmokeReceipt(smokeReceipt, repositoryVisibility, nowMs, maxRece
     error: null,
     smokeSummary: Object.freeze({
       harness: smokeReceipt.harness,
-      runner,
-      laptopOrChatDependency,
+      runner: smokeReceipt.runner,
+      laptopOrChatDependency: false,
       taskId: smokeReceipt.taskId.toLowerCase(),
       sessionId: smokeReceipt.sessionId,
       actor: NATIVE_CLOUD_AGENT_ACTOR,

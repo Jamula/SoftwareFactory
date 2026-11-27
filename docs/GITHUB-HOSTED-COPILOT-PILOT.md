@@ -26,7 +26,21 @@ Offline evaluators never fabricate live owner billing settings or check off `#10
 
 1. **Verify repository secret, environment, and workflow hygiene (`Jamula/SoftwareFactory`):**
    - Confirm `.github/workflows/copilot-hosted-pilot.yml` remains absent on `main`.
-   - Open **Repository Settings -> Secrets and variables -> Actions** and **Environments** (or run `gh secret list --repo Jamula/SoftwareFactory` and `gh api repos/Jamula/SoftwareFactory/environments`) and confirm zero personal PAT secrets (`FACTORY_COPILOT_REQUESTS_TOKEN` absent) and no custom `factory-copilot-pilot` environment (`retiredDiyWorkflowAbsent: true`, `zeroPersonalPatSecretsVerified: true`, `customPilotEnvironmentAbsent: true`).
+   - Open **Repository Settings -> Secrets and variables -> Actions** and **Environments** (including any organization-scoped Actions secrets when applicable), or run the paginated CLI audit across repository secrets and **every** repository environment before asserting `retiredDiyWorkflowAbsent: true`, `zeroPersonalPatSecretsVerified: true`, and `customPilotEnvironmentAbsent: true`:
+     ```bash
+     gh secret list --repo Jamula/SoftwareFactory
+     envs="$(gh api --paginate repos/Jamula/SoftwareFactory/environments --jq '.environments[].name')"
+     if printf '%s\n' "$envs" | grep -Fxq 'factory-copilot-pilot'; then
+       echo "Forbidden factory-copilot-pilot environment present" >&2
+       exit 1
+     fi
+     while IFS= read -r env_name; do
+       if [ -n "$env_name" ]; then
+         gh secret list --repo Jamula/SoftwareFactory --env "$env_name"
+       fi
+     done <<< "$envs"
+     ```
+   - Confirm zero personal PAT secrets (`FACTORY_COPILOT_REQUESTS_TOKEN` and any user-scoped PAT absent across both repository and per-environment secret lists) and no custom `factory-copilot-pilot` environment.
 2. **Verify `$0` paid-overage hard-stop budgets across all three GitHub Billing meters:**
    - Open **GitHub Settings -> Billing & Licensing -> Budgets and alerts** (and **Usage / Spending limits**) for the `Jamula` account.
    - Confirm and record that paid overages are disabled (`$0.00` overage budget / stop usage when limit is reached; `overageLimitUsdCents: 0`, `overageAllowed: false`) for all three meters:
@@ -121,7 +135,7 @@ Synthetic schema example (**non-live template** — replace timestamps and IDs w
 | `retiredDiyWorkflowAbsent`, `zeroPersonalPatSecretsVerified`, `customPilotEnvironmentAbsent?` | Required `true` (`customPilotEnvironmentAbsent` optional `true`) | `PROVIDER_FORBIDDEN` / `RETIRED_DIY_WORKFLOW_PRESENT`, `PERSONAL_PAT_SECRETS_FORBIDDEN`, `CUSTOM_PILOT_ENVIRONMENT_FORBIDDEN` |
 | `billingHardStop.authenticatedBillingCheck`, `observedAtMs`, `aiCreditUnitUsdCents?`, `ghAwCapsSoftOnlyAcknowledged?` | `authenticatedBillingCheck === true`, `0 <= nowMs - observedAtMs <= maxReceiptAgeMs`, optional `aiCreditUnitUsdCents === 1` (`$0.01`) and `ghAwCapsSoftOnlyAcknowledged === true` | `BUDGET_UNKNOWN` / `BILLING_CHECK_UNAUTHENTICATED`, `STALE_EVIDENCE` / `BILLING_TIMESTAMP_IN_FUTURE`, `STALE_QUOTA` / `STALE_BILLING_HARD_STOP_RECEIPT`, `INVALID_POLICY` |
 | `billingHardStop.meters.{aiCredits,copilotPremiumRequests,cloudSandboxesAndActions}` | All 3 meters required with `verified === true`, `overageLimitUsdCents === 0`, and `overageAllowed === false` | `BUDGET_UNKNOWN` / `HARD_STOP_METERS_INCOMPLETE`, `HARD_STOP_METER_INVALID`, `HARD_STOP_METER_UNVERIFIED`, `PAID_OVERAGE_ALLOWED`, `OVERAGE_LIMIT_NONZERO` |
-| `smokeReceipt.harness`, `runner?`, `laptopOrChatDependency?` | `harness` in `['copilot-cloud-agent', 'copilot-cloud-automation']` (`'copilot-cloud-automation'` rejected on `'public'`), optional `runner` in `['github-hosted', 'cloud-sandbox']`, optional `laptopOrChatDependency === false` | `PROVIDER_FORBIDDEN` / `UNSUPPORTED_SMOKE_HARNESS`, `CAPACITY_UNVERIFIED` / `AUTOMATIONS_REQUIRE_PRIVATE_REPO`, `PROVIDER_FORBIDDEN` / `UNSUPPORTED_SMOKE_RUNNER`, `LAPTOP_OR_CHAT_DEPENDENCY_FORBIDDEN` |
+| `smokeReceipt.harness`, `runner`, `laptopOrChatDependency` | Required `harness` in `['copilot-cloud-agent', 'copilot-cloud-automation']` (`'copilot-cloud-automation'` rejected on `'public'`), required `runner` in `['github-hosted', 'cloud-sandbox']`, and required `laptopOrChatDependency === false` | `EVIDENCE_UNKNOWN` / `SMOKE_RECEIPT_INVALID`, `PROVIDER_FORBIDDEN` / `UNSUPPORTED_SMOKE_HARNESS`, `CAPACITY_UNVERIFIED` / `AUTOMATIONS_REQUIRE_PRIVATE_REPO`, `PROVIDER_FORBIDDEN` / `UNSUPPORTED_SMOKE_RUNNER`, `LAPTOP_OR_CHAT_DEPENDENCY_FORBIDDEN` |
 | `smokeReceipt.taskId`, `sessionId`, `actor`, `observedAtMs`, `linkedPullRequest?`, `linkedRunId?` | RFC UUID `taskId` (v1–v8), bounded `sessionId`, `actor === "copilot-swe-agent[bot]"`, fresh `observedAtMs`, optional positive-int or `null` PR/run refs | `EVIDENCE_UNKNOWN` / `SMOKE_TASK_ID_INVALID`, `SMOKE_SESSION_ID_INVALID`, `SMOKE_LINKED_REFERENCE_INVALID`, `PROVENANCE_MISMATCH` / `SMOKE_ACTOR_MISMATCH` |
 | `smokeReceipt.accountingSource`, `isEstimated?`, `includedQuotaAttributed`, `incrementalBilledUsdCents`, `aiCreditsUsed?`, `premiumRequestsUsed?` | `accountingSource === "verified"`, optional `isEstimated === false`, `includedQuotaAttributed === true`, `incrementalBilledUsdCents === 0`, optional bounded integer credit/request counts | `BUDGET_UNKNOWN` / `ACCOUNTING_ESTIMATED_OR_MISSING`, `INCLUDED_QUOTA_NOT_ATTRIBUTED`, `INCREMENTAL_SPEND_NONZERO` |
 
