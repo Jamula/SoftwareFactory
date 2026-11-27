@@ -99,7 +99,8 @@ export function compareTrainExperiment(pairs) {
 const THROUGHPUT_CHECKPOINTS = Object.freeze([2, 5, 10, 15, 20, 25]);
 const ENGINE_WORKER_TIERS = Object.freeze([12, 50, 100]);
 const DAY_MS = 86400000;
-const NODE_ENGINE_PATTERN = /^node(?:-[0-9]+\.[0-9]+\.[0-9]+)?$/;
+const PINNED_NODE_ENGINE = 'node-26.13.1';
+const NODE_CANDIDATE_PATTERN = /^node(?:$|[-._])/;
 
 const slug = value => typeof value === 'string' && /^[a-z0-9][a-z0-9._-]{0,63}$/.test(value);
 const repoSlug = value => typeof value === 'string' && /^[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}$/.test(value);
@@ -165,7 +166,7 @@ export function evaluateThroughputCheckpoints(evidence) {
  const {minLinePercent, minBranchPercent} = evidence.policy;
  if (!nonnegative(minLinePercent, 100) || !nonnegative(minBranchPercent, 100))
   return checkpointBlocked('EVIDENCE_UNKNOWN');
- const isFactory = evidence.repository === 'Jamula/SoftwareFactory';
+ const isFactory = evidence.repository.toLowerCase() === 'jamula/softwarefactory';
  const lineFloor = isFactory ? 98 : 95;
  const branchFloor = isFactory ? 95 : 90;
  if (minLinePercent < lineFloor || minBranchPercent < branchFloor)
@@ -267,8 +268,20 @@ function parseEngineProfile(profile) {
  const peakMemoryMb = Math.max(...orderedTiers.map(tier => tier.peakMemoryMb));
  const maxP95LatencyMs = Math.max(...orderedTiers.map(tier => tier.p95LatencyMs));
  const ciOverheadMs = profile.ciCompileMs + profile.ciCoverageMs;
+ const copyTier = tier => ({
+  workers: tier.workers,
+  wallClockMs: tier.wallClockMs,
+  cpuTimeMs: tier.cpuTimeMs,
+  peakMemoryMb: tier.peakMemoryMb,
+  p95LatencyMs: tier.p95LatencyMs,
+  contentionWaitMs: tier.contentionWaitMs,
+  cancellationPropagated: tier.cancellationPropagated,
+  cancellationMs: tier.cancellationMs,
+  endToEndMs: tier.wallClockMs + ciOverheadMs
+ });
+ const sanitizedTiers = orderedTiers.map(copyTier);
  return {
-  orderedTiers,
+  orderedTiers: sanitizedTiers,
   summary: {
    engine: profile.engine,
    totalWallClockMs,
@@ -279,7 +292,7 @@ function parseEngineProfile(profile) {
    ciCoverageMs: profile.ciCoverageMs,
    ciOverheadMs,
    netEndToEndMs: totalWallClockMs + ciOverheadMs,
-   tiers: orderedTiers.map(tier => ({...tier}))
+   tiers: sanitizedTiers.map(tier => ({...tier}))
   }
  };
 }
@@ -301,7 +314,7 @@ export function evaluateEngineExperiment(spec) {
   return engineBlocked('EVIDENCE_UNKNOWN');
 
  const nodeParsed = parseEngineProfile(spec.node);
- if (!nodeParsed || !NODE_ENGINE_PATTERN.test(spec.node.engine))
+ if (!nodeParsed || spec.node.engine !== PINNED_NODE_ENGINE)
   return engineBlocked('EVIDENCE_UNKNOWN');
  if (spec.node.workload !== spec.workload) return engineBlocked('UNMATCHED_WORKLOAD');
  if (!spec.node.costVerified || spec.node.incrementalSpendMicros !== 0)
@@ -329,7 +342,7 @@ export function evaluateEngineExperiment(spec) {
  }
 
  const candParsed = parseEngineProfile(spec.candidate);
- if (!candParsed || NODE_ENGINE_PATTERN.test(spec.candidate.engine))
+ if (!candParsed || NODE_CANDIDATE_PATTERN.test(spec.candidate.engine))
   return engineBlocked('EVIDENCE_UNKNOWN');
  if (spec.candidate.workload !== spec.workload) return engineBlocked('UNMATCHED_WORKLOAD');
  if (!spec.candidate.costVerified || spec.candidate.incrementalSpendMicros !== 0)
@@ -338,15 +351,20 @@ export function evaluateEngineExperiment(spec) {
  const tierComparisons = ENGINE_WORKER_TIERS.map((workers, index) => {
   const nodeTier = nodeParsed.orderedTiers[index];
   const candTier = candParsed.orderedTiers[index];
+  const endToEndDeltaMs = candTier.endToEndMs - nodeTier.endToEndMs;
   return {
    workers,
    wallClockDeltaMs: candTier.wallClockMs - nodeTier.wallClockMs,
+   endToEndDeltaMs,
+   netGainPercent: ((nodeTier.endToEndMs - candTier.endToEndMs) * 100) / nodeTier.endToEndMs,
    cpuTimeDeltaMs: candTier.cpuTimeMs - nodeTier.cpuTimeMs,
    peakMemoryDeltaMb: candTier.peakMemoryMb - nodeTier.peakMemoryMb,
    p95LatencyDeltaMs: candTier.p95LatencyMs - nodeTier.p95LatencyMs,
    contentionDeltaMs: candTier.contentionWaitMs - nodeTier.contentionWaitMs,
    cancellationDeltaMs: candTier.cancellationMs - nodeTier.cancellationMs,
-   cancellationPropagated: candTier.cancellationPropagated
+   cancellationPropagated: candTier.cancellationPropagated,
+   nodeEndToEndMs: nodeTier.endToEndMs,
+   candidateEndToEndMs: candTier.endToEndMs
   };
  });
  const nodeNetMs = nodeParsed.summary.netEndToEndMs;
@@ -379,9 +397,12 @@ export function evaluateEngineExperiment(spec) {
       tier.wallClockDeltaMs > 0 || tier.cpuTimeDeltaMs > 0 || tier.peakMemoryDeltaMb > 0 ||
       tier.p95LatencyDeltaMs > 0 || tier.contentionDeltaMs > 0 || tier.cancellationDeltaMs > 0))
   return comparisonResult('retain-node', 'TIER_METRIC_REGRESSION');
- if (candNetMs >= nodeNetMs)
+ if (tierComparisons.some(tier => tier.endToEndDeltaMs >= 0))
   return comparisonResult('retain-node', 'CI_OVERHEAD_EXCEEDS_RUNTIME_GAIN');
- if (BigInt(nodeNetMs - candNetMs) * 100n < BigInt(spec.minNetGainPercent) * BigInt(nodeNetMs))
+ if (tierComparisons.some(tier =>
+      BigInt(tier.nodeEndToEndMs - tier.candidateEndToEndMs) * 100n <
+      BigInt(spec.minNetGainPercent) * BigInt(tier.nodeEndToEndMs)) ||
+     BigInt(nodeNetMs - candNetMs) * 100n < BigInt(spec.minNetGainPercent) * BigInt(nodeNetMs))
   return comparisonResult('retain-node', 'INSUFFICIENT_NET_END_TO_END_GAIN');
  return comparisonResult('candidate-eligible', 'MATERIAL_NET_GAIN_PROVEN');
 }

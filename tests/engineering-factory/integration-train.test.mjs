@@ -209,6 +209,8 @@ test('throughput checkpoints fail closed on stop, policy, quality, coverage, rew
  for (const badPolicy of [
   {repository: 'Jamula/SoftwareFactory', policy: {minLinePercent: 97, minBranchPercent: 95}},
   {repository: 'Jamula/SoftwareFactory', policy: {minLinePercent: 98, minBranchPercent: 94}},
+  {repository: 'jamula/softwarefactory', policy: {minLinePercent: 95, minBranchPercent: 90}},
+  {repository: 'JAMULA/SoftwareFactory', policy: {minLinePercent: 98, minBranchPercent: 94}},
   {repository: 'Jamula/Spellbook', policy: {minLinePercent: 94, minBranchPercent: 90}},
   {repository: 'Jamula/Spellbook', policy: {minLinePercent: 95, minBranchPercent: 89}}
  ]) {
@@ -350,9 +352,9 @@ test('throughput checkpoints reject malformed objects, proxies and accessors wit
 });
 
 const nodeTiers = [
- {workers: 100, wallClockMs: 30000, cpuTimeMs: 24000, peakMemoryMb: 320, p95LatencyMs: 900,
+ {workers: 100, wallClockMs: 28000, cpuTimeMs: 24000, peakMemoryMb: 320, p95LatencyMs: 900,
   contentionWaitMs: 180, cancellationPropagated: true, cancellationMs: 45},
- {workers: 12, wallClockMs: 4000, cpuTimeMs: 3200, peakMemoryMb: 140, p95LatencyMs: 160,
+ {workers: 12, wallClockMs: 6000, cpuTimeMs: 3200, peakMemoryMb: 140, p95LatencyMs: 160,
   contentionWaitMs: 20, cancellationPropagated: true, cancellationMs: 12},
  {workers: 50, wallClockMs: 14000, cpuTimeMs: 11000, peakMemoryMb: 220, p95LatencyMs: 420,
   contentionWaitMs: 75, cancellationPropagated: true, cancellationMs: 25}
@@ -386,8 +388,8 @@ const fastCandidateTiers = [
 const rustCandidateProfile = {
  ...nodeProfile,
  engine: 'rust-prototype',
- ciCompileMs: 12000,
- ciCoverageMs: 3000,
+ ciCompileMs: 3000,
+ ciCoverageMs: 2000,
  coveredLines: 995,
  coveredBranches: 980,
  tiers: fastCandidateTiers
@@ -420,38 +422,86 @@ test('records Node-first baseline across 12, 50 and 100 simulated workers and re
  assert.equal(baselineOnly.candidate, null);
  assert.equal(baselineOnly.netGainPercent, null);
  assert.deepEqual(baselineOnly.node.tiers.map(t => t.workers), [12, 50, 100]);
+ assert.deepEqual(baselineOnly.node.tiers.map(t => t.endToEndMs), [8000, 16000, 30000]);
  assert.equal(baselineOnly.node.totalWallClockMs, 48000);
  assert.equal(baselineOnly.node.ciOverheadMs, 2000);
  assert.equal(baselineOnly.node.netEndToEndMs, 50000);
 });
 
-test('recommends retain-node unless material net end-to-end gain inclusive of CI compile overhead is proven', () => {
- const overheadDominates = evaluateEngineExperiment({
+test('recommends retain-node unless material CI-inclusive gain is proven across every worker tier and overall', () => {
+ const tier12OverheadRegression = evaluateEngineExperiment({
   ...engineSpec,
-  candidate: {...rustCandidateProfile, ciCompileMs: 36000, ciCoverageMs: 4000}
+  candidate: {...rustCandidateProfile, ciCompileMs: 12000, ciCoverageMs: 3000}
  });
- assert.equal(overheadDominates.comparable, true);
- assert.equal(overheadDominates.recommendation, 'retain-node');
- assert.equal(overheadDominates.reason, 'CI_OVERHEAD_EXCEEDS_RUNTIME_GAIN');
+ assert.equal(tier12OverheadRegression.comparable, true);
+ assert.equal(tier12OverheadRegression.netGainPercent, 46);
+ assert.equal(tier12OverheadRegression.tierComparisons[0].endToEndDeltaMs, 8000);
+ assert.equal(tier12OverheadRegression.recommendation, 'retain-node');
+ assert.equal(tier12OverheadRegression.reason, 'CI_OVERHEAD_EXCEEDS_RUNTIME_GAIN');
 
- const marginalGain = evaluateEngineExperiment({
+ const tier12MarginalGain = evaluateEngineExperiment({
   ...engineSpec,
-  candidate: {...rustCandidateProfile, ciCompileMs: 30000, ciCoverageMs: 3000}
+  candidate: {...rustCandidateProfile, ciCompileMs: 4000, ciCoverageMs: 2000}
  });
- assert.equal(marginalGain.comparable, true);
- assert.equal(marginalGain.recommendation, 'retain-node');
- assert.equal(marginalGain.reason, 'INSUFFICIENT_NET_END_TO_END_GAIN');
- assert.equal(marginalGain.netGainPercent, 10);
+ assert.equal(tier12MarginalGain.comparable, true);
+ assert.equal(tier12MarginalGain.netGainPercent, 64);
+ assert.equal(tier12MarginalGain.tierComparisons[0].netGainPercent, 12.5);
+ assert.equal(tier12MarginalGain.recommendation, 'retain-node');
+ assert.equal(tier12MarginalGain.reason, 'INSUFFICIENT_NET_END_TO_END_GAIN');
 
- const proven = evaluateEngineExperiment(engineSpec);
+ const suiteMarginalGain = evaluateEngineExperiment({
+  ...engineSpec,
+  minNetGainPercent: 30,
+  node: {
+   ...nodeProfile,
+   ciCompileMs: 0,
+   ciCoverageMs: 10000,
+   tiers: [
+    {...nodeTiers[0], wallClockMs: 10000},
+    {...nodeTiers[1], wallClockMs: 10000},
+    {...nodeTiers[2], wallClockMs: 10000}
+   ]
+  },
+  candidate: {
+   ...rustCandidateProfile,
+   ciCompileMs: 0,
+   ciCoverageMs: 0,
+   tiers: [
+    {...fastCandidateTiers[0], wallClockMs: 10000},
+    {...fastCandidateTiers[1], wallClockMs: 10000},
+    {...fastCandidateTiers[2], wallClockMs: 10000}
+   ]
+  }
+ });
+ assert.equal(suiteMarginalGain.comparable, true);
+ assert.equal(suiteMarginalGain.tierComparisons.every(t => t.netGainPercent === 50), true);
+ assert.equal(suiteMarginalGain.netGainPercent, 25);
+ assert.equal(suiteMarginalGain.recommendation, 'retain-node');
+ assert.equal(suiteMarginalGain.reason, 'INSUFFICIENT_NET_END_TO_END_GAIN');
+
+ const withExtraGetter = tier => Object.defineProperties({}, {
+  ...Object.getOwnPropertyDescriptors(tier),
+  unvalidated: {value: 'drop-me', enumerable: true},
+  evil: {enumerable: true, get() {throw Error('must not run');}}
+ });
+ const proven = evaluateEngineExperiment({
+  ...engineSpec,
+  node: {...nodeProfile, tiers: nodeTiers.map(withExtraGetter)},
+  candidate: {...rustCandidateProfile, tiers: fastCandidateTiers.map(withExtraGetter)}
+ });
  assert.equal(proven.shadow, true);
  assert.equal(proven.liveMerge, false);
  assert.equal(proven.comparable, true);
  assert.equal(proven.baselineReady, true);
  assert.equal(proven.recommendation, 'candidate-eligible');
  assert.equal(proven.reason, 'MATERIAL_NET_GAIN_PROVEN');
- assert.equal(proven.netGainPercent, 46);
+ assert.equal(proven.netGainPercent, 66);
+ assert.equal(proven.tierComparisons[0].netGainPercent, 25);
  assert.deepEqual(proven.tierComparisons.map(t => t.workers), [12, 50, 100]);
+ for (const tier of [...proven.node.tiers, ...proven.candidate.tiers]) {
+  assert.equal(Object.hasOwn(tier, 'unvalidated'), false);
+  assert.equal(Object.hasOwn(tier, 'evil'), false);
+ }
 });
 
 test('engine experiments retain Node on safety, coverage, review, rollback or per-tier metric regressions', () => {
@@ -505,7 +555,7 @@ test('engine experiments retain Node on safety, coverage, review, rollback or pe
  }
 
  for (const tierRegression of [
-  {wallClockMs: 5000},
+  {wallClockMs: 7000},
   {cpuTimeMs: 4000},
   {peakMemoryMb: 200},
   {p95LatencyMs: 200},
@@ -580,8 +630,13 @@ test('engine experiments fail closed on stop, unhosted runs, unmatched workloads
   {...engineSpec, minNetGainPercent: 14},
   {...engineSpec, minNetGainPercent: 91},
   {...engineSpec, node: null},
+  {...engineSpec, node: {...nodeProfile, engine: 'node'}},
+  {...engineSpec, node: {...nodeProfile, engine: 'node-18.0.0'}},
   {...engineSpec, node: {...nodeProfile, engine: 'python'}},
   {...engineSpec, candidate: {...rustCandidateProfile, engine: 'node'}},
+  {...engineSpec, candidate: {...rustCandidateProfile, engine: 'node-26.13.1'}},
+  {...engineSpec, candidate: {...rustCandidateProfile, engine: 'node-28.0.0'}},
+  {...engineSpec, candidate: {...rustCandidateProfile, engine: 'node_esm'}},
   {...engineSpec, candidate: {...rustCandidateProfile, engine: 'BAD NAME'}},
   {...engineSpec, candidate: {...rustCandidateProfile, workload: 'bad'}},
   {...engineSpec, candidate: {...rustCandidateProfile, deterministic: 'yes'}},
