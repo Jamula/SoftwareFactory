@@ -11,6 +11,7 @@ import {
   FAMILYTREE_BASELINE_COVERAGE,
   FAMILYTREE_PILOT_VERSION,
   FAMILYTREE_REQUIRED_SHADOW_DENIALS,
+  equalData,
   evaluateFamilyTreeShadowCandidate,
   evaluateFamilyTreeShadowReadiness,
   proveFamilyTreeShadowDenials
@@ -350,12 +351,40 @@ function makeReadinessInput(overrides = {}) {
   };
 }
 
-test('constants are frozen and declare synthetic baseline and required denial catalog', () => {
+test('constants are frozen and equalData safely rejects proxies, incompatible containers, cycles, and DAGs', () => {
   assert.equal(FAMILYTREE_PILOT_VERSION, '0.1.0');
   assert.equal(Object.isFrozen(FAMILYTREE_BASELINE_COVERAGE), true);
   assert.deepEqual(FAMILYTREE_BASELINE_COVERAGE, { line: 95, branch: 90 });
   assert.equal(Object.isFrozen(FAMILYTREE_REQUIRED_SHADOW_DENIALS), true);
   assert.equal(FAMILYTREE_REQUIRED_SHADOW_DENIALS.length, 11);
+
+  let traps = 0;
+  const trap = () => {
+    traps += 1;
+    throw new Error('equalData trap must not run');
+  };
+  const callableProxy = new Proxy(() => {}, { ownKeys: trap, get: trap, getOwnPropertyDescriptor: trap });
+  const getterObj = {};
+  Object.defineProperty(getterObj, 'x', { enumerable: true, get: trap });
+  const cyclic = {};
+  cyclic.self = cyclic;
+  let dag = Array.from({ length: 64 }, () => 1);
+  for (let i = 0; i < 4; i += 1) {
+    const prev = dag;
+    dag = Array.from({ length: 64 }, () => prev);
+  }
+
+  assert.equal(equalData({ a: [1, 'ok'] }, { a: [1, 'ok'] }), true);
+  assert.equal(equalData(null, {}), false);
+  assert.equal(equalData({}, null), false);
+  assert.equal(equalData(callableProxy, {}), false);
+  assert.equal(equalData({}, callableProxy), false);
+  assert.equal(equalData({}, Object.create(null)), false);
+  assert.equal(equalData({}, { [Symbol('s')]: 1 }), false);
+  assert.equal(equalData({}, getterObj), false);
+  assert.equal(equalData(cyclic, cyclic), false);
+  assert.equal(equalData(dag, dag), false);
+  assert.equal(traps, 0);
 });
 
 test('evaluateFamilyTreeShadowCandidate enforces config, schema, stop, repoId, duplicate event, AI-credit quota, and coverage floors', () => {
@@ -1154,6 +1183,66 @@ test('proveFamilyTreeShadowDenials rejects invalid suite shapes, broken scenario
     }).reason,
     'FAMILYTREE_PROFILE_CONSTRAINTS_INVALID'
   );
+
+  // Malformed nested replaySuite in onboardingPackage or peerPackages fails closed without traps or stalls
+  const makeMutatedReplaySuite = (basePkg, mutateSnap) => {
+    const rs = basePkg.replaySuite;
+    const baseEligible = mutateSnap(rs.eligibleCandidate);
+    return {
+      ...basePkg,
+      replaySuite: {
+        eligibleCandidate: baseEligible,
+        staleReview: { ...baseEligible, reviews: rs.staleReview.reviews },
+        dismissedReview: { ...baseEligible, reviews: rs.dismissedReview.reviews },
+        commentedBotReview: { ...baseEligible, reviews: rs.commentedBotReview.reviews },
+        wrongRepository: { ...baseEligible, repository: 'example/foreign-repository' },
+        missingQuota: { ...baseEligible, remainingCredits: 0 },
+        killSwitchPolicy: rs.killSwitchPolicy
+      }
+    };
+  };
+  const callableRepoProxy = new Proxy(() => {}, {
+    get: trap,
+    ownKeys: trap,
+    getOwnPropertyDescriptor: trap
+  });
+  const proxyReplayTargetPkg = makeMutatedReplaySuite(familyTreePkg, s => ({
+    ...s,
+    repository: callableRepoProxy
+  }));
+  const dagReplayTargetPkg = makeMutatedReplaySuite(familyTreePkg, s => ({
+    ...s,
+    priority: sharedDag
+  }));
+  const proxyReplayPeerPkg = makeMutatedReplaySuite(spellbookPkg, s => ({
+    ...s,
+    repository: callableRepoProxy
+  }));
+  const dagReplayPeerPkg = makeMutatedReplaySuite(spellbookPkg, s => ({
+    ...s,
+    priority: sharedDag
+  }));
+  assert.equal(
+    proveFamilyTreeShadowDenials({ ...suite, onboardingPackage: null }).reason,
+    'PACKAGE_INVALID'
+  );
+  assert.equal(
+    proveFamilyTreeShadowDenials({ ...suite, onboardingPackage: proxyReplayTargetPkg }).reason,
+    'SHADOW_REPLAY_INCOMPLETE'
+  );
+  assert.equal(
+    proveFamilyTreeShadowDenials({ ...suite, onboardingPackage: dagReplayTargetPkg }).reason,
+    'SHADOW_REPLAY_INCOMPLETE'
+  );
+  assert.equal(
+    proveFamilyTreeShadowDenials({ ...suite, peerPackages: [proxyReplayPeerPkg] }).reason,
+    'INVALID_PACKAGE_SET'
+  );
+  assert.equal(
+    proveFamilyTreeShadowDenials({ ...suite, peerPackages: [dagReplayPeerPkg] }).reason,
+    'INVALID_PACKAGE_SET'
+  );
+  assert.equal(getterInvocations, 0);
 });
 
 test('evaluateFamilyTreeShadowReadiness enforces M01 acceptance, scoped auth, privacy, token, deploy, onboarding, and shadow denials', () => {
@@ -1246,6 +1335,56 @@ test('evaluateFamilyTreeShadowReadiness enforces M01 acceptance, scoped auth, pr
     ).reason,
     'ENROLLMENT_NOT_AUTHORIZED'
   );
+
+  // Optional replay check conclusion {} vs null or callable Proxy fails closed without throwing or traps
+  const callableConclusionProxy = new Proxy(() => {}, {
+    ownKeys: trap,
+    get: trap,
+    getOwnPropertyDescriptor: trap
+  });
+  const withOptionalReplayConclusion = conclusion => {
+    const rs = familyTreePkg.replaySuite;
+    const extraChecks = [
+      ...rs.eligibleCandidate.checks,
+      { name: 'optional-check', head, appId: 12345, status: 'completed', conclusion }
+    ];
+    const baseEligible = { ...rs.eligibleCandidate, checks: extraChecks };
+    return {
+      ...familyTreePkg,
+      replaySuite: {
+        eligibleCandidate: baseEligible,
+        staleReview: { ...baseEligible, reviews: rs.staleReview.reviews },
+        dismissedReview: { ...baseEligible, reviews: rs.dismissedReview.reviews },
+        commentedBotReview: { ...baseEligible, reviews: rs.commentedBotReview.reviews },
+        wrongRepository: { ...baseEligible, repository: 'example/foreign-repository' },
+        missingQuota: { ...baseEligible, remainingCredits: 0 },
+        killSwitchPolicy: rs.killSwitchPolicy
+      }
+    };
+  };
+  assert.equal(
+    evaluateFamilyTreeShadowReadiness({
+      ...validInput,
+      onboardingPackage: withOptionalReplayConclusion({}),
+      shadowDenialSuite: {
+        ...makeShadowSuite(familyTreePkg),
+        onboardingPackage: withOptionalReplayConclusion(null)
+      }
+    }).reason,
+    'SHADOW_REPLAY_INCOMPLETE'
+  );
+  assert.equal(
+    evaluateFamilyTreeShadowReadiness({
+      ...validInput,
+      onboardingPackage: withOptionalReplayConclusion(null),
+      shadowDenialSuite: {
+        ...makeShadowSuite(familyTreePkg),
+        onboardingPackage: withOptionalReplayConclusion(callableConclusionProxy)
+      }
+    }).reason,
+    'SHADOW_REPLAY_INCOMPLETE'
+  );
+  assert.equal(traps, 0);
 
   assert.equal(
     evaluateFamilyTreeShadowReadiness(

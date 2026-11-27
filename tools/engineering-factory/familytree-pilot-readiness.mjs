@@ -27,6 +27,22 @@ export const FAMILYTREE_REQUIRED_SHADOW_DENIALS = Object.freeze([
 ]);
 
 const MAX_ARRAY_LEN = 64;
+const MAX_EQUAL_DEPTH = 8;
+const MAX_EQUAL_VISITS = 2048;
+
+const REPLAY_SUITE_SNAPSHOT_KEYS = Object.freeze([
+  'eligibleCandidate',
+  'staleReview',
+  'dismissedReview',
+  'commentedBotReview',
+  'wrongRepository',
+  'missingQuota'
+]);
+
+const REPLAY_SUITE_KEYS = Object.freeze([
+  ...REPLAY_SUITE_SNAPSHOT_KEYS,
+  'killSwitchPolicy'
+]);
 
 const CONFIG_KEYS = Object.freeze([
   'repositoryId',
@@ -147,12 +163,15 @@ const ownData = (obj, key) => {
   return Boolean(desc && desc.enumerable && Object.hasOwn(desc, 'value'));
 };
 
-const exact = (value, keys) =>
+const isPlainObject = value =>
   value !== null &&
   typeof value === 'object' &&
   !types.isProxy(value) &&
   !Array.isArray(value) &&
-  Object.getPrototypeOf(value) === Object.prototype &&
+  Object.getPrototypeOf(value) === Object.prototype;
+
+const exact = (value, keys) =>
+  isPlainObject(value) &&
   Reflect.ownKeys(value).length === keys.length &&
   keys.every(key => ownData(value, key));
 
@@ -284,22 +303,58 @@ const validCandidateEnvelope = candidate =>
   validAiQuotaShape(candidate.aiCreditQuota) &&
   strictSnapshotShape(candidate.snapshot);
 
-function equalData(candidateVal, expectedVal) {
+const validReplaySuiteScalars = replaySuite =>
+  exact(replaySuite, REPLAY_SUITE_KEYS) &&
+  strictPolicyEnvelope(replaySuite.killSwitchPolicy) &&
+  REPLAY_SUITE_SNAPSHOT_KEYS.every(key => strictSnapshotShape(replaySuite[key]));
+
+function sanitizeOnboardingPackage(pkg) {
+  if (!isPlainObject(pkg) ||
+      Reflect.ownKeys(pkg).length > MAX_ARRAY_LEN ||
+      !Reflect.ownKeys(pkg).every(key => typeof key === 'string' && ownData(pkg, key)) ||
+      !Object.hasOwn(pkg, 'replaySuite')) {
+    return pkg;
+  }
+  return validReplaySuiteScalars(pkg.replaySuite)
+    ? pkg
+    : { ...pkg, replaySuite: null };
+}
+
+function sameDataBounded(candidateVal, expectedVal, depth, budget) {
+  budget.remaining -= 1;
+  if (depth > MAX_EQUAL_DEPTH ||
+      budget.remaining < 0 ||
+      types.isProxy(expectedVal) ||
+      types.isProxy(candidateVal)) {
+    return false;
+  }
   if (expectedVal === null || typeof expectedVal !== 'object') {
     return Object.is(candidateVal, expectedVal);
   }
   if (Array.isArray(expectedVal)) {
-    return candidateVal.length === expectedVal.length &&
-      expectedVal.every((item, i) => equalData(candidateVal[i], item));
+    return dense(expectedVal) &&
+      dense(candidateVal) &&
+      candidateVal.length === expectedVal.length &&
+      expectedVal.every((item, i) => sameDataBounded(candidateVal[i], item, depth + 1, budget));
   }
-  const keys = Object.keys(expectedVal);
-  return Object.keys(candidateVal).length === keys.length &&
-    keys.every(key => equalData(candidateVal[key], expectedVal[key]));
+  if (!isPlainObject(expectedVal)) {
+    return false;
+  }
+  const keys = Reflect.ownKeys(expectedVal);
+  if (!keys.every(key => typeof key === 'string' && ownData(expectedVal, key))) {
+    return false;
+  }
+  return exact(candidateVal, keys) &&
+    keys.every(key => sameDataBounded(candidateVal[key], expectedVal[key], depth + 1, budget));
 }
+
+export const equalData = (candidateVal, expectedVal) =>
+  sameDataBounded(candidateVal, expectedVal, 0, { remaining: MAX_EQUAL_VISITS });
 
 const singleMutation = (baseObj, candidateObj, mutatedField) => {
   const keys = Object.keys(baseObj);
-  return keys.every(key => key === mutatedField || equalData(candidateObj[key], baseObj[key]));
+  return exact(candidateObj, keys) &&
+    keys.every(key => key === mutatedField || equalData(candidateObj[key], baseObj[key]));
 };
 
 const denyCandidate = reason =>
@@ -484,7 +539,8 @@ export function proveFamilyTreeShadowDenials(suite) {
     return denySuite('SHADOW_SUITE_INVALID');
   }
 
-  const onboarding = verifyConsumerOnboardingPackage(suite.onboardingPackage);
+  const sanitizedTargetPkg = sanitizeOnboardingPackage(suite.onboardingPackage);
+  const onboarding = verifyConsumerOnboardingPackage(sanitizedTargetPkg);
   if (!onboarding.valid) {
     return denySuite(onboarding.reason);
   }
@@ -589,10 +645,11 @@ export function proveFamilyTreeShadowDenials(suite) {
     return denySuite('SHADOW_DENIAL_NOT_PROVEN');
   }
 
+  const sanitizedPeers = suite.peerPackages.map(sanitizeOnboardingPackage);
   const rollbackCheck = verifyIndependentRollback(
     suite.onboardingPackage.policy.repository,
     suite.rollbackReceipt,
-    [suite.onboardingPackage, ...suite.peerPackages]
+    [sanitizedTargetPkg, ...sanitizedPeers]
   );
   if (!rollbackCheck.valid) {
     return denySuite(rollbackCheck.reason);
@@ -679,7 +736,9 @@ export function evaluateFamilyTreeShadowReadiness(input) {
     return denyReadinessEarly('VERSION_OR_RELEASE_FORBIDDEN');
   }
 
-  const onboarding = verifyConsumerOnboardingPackage(input.onboardingPackage);
+  const onboarding = verifyConsumerOnboardingPackage(
+    sanitizeOnboardingPackage(input.onboardingPackage)
+  );
   if (!onboarding.valid) {
     return denyReadinessEarly(onboarding.reason);
   }
