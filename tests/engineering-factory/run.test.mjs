@@ -325,3 +325,520 @@ test('runner emits sanitized laptop-free receipts across commands without requir
   assert.match(errs[0],/^Usage:/);
  }
 });
+
+test('unified subcommands, parameterized repositoryId, and bounded JSON input enforce fail-closed contracts and receipts',async()=>{
+ const {
+  DEFAULT_REPOSITORY_ID,
+  MAX_INPUT_UTF8_BYTES,
+  evaluateProtectedSquash
+ }=await import('../../tools/engineering-factory/run.mjs');
+ const {M01_STRUCTURAL_PREREQUISITES}=await import('../../tools/engineering-factory/pilot-readiness.mjs');
+
+ assert.equal(DEFAULT_REPOSITORY_ID,1471342715);
+ assert.equal(MAX_INPUT_UTF8_BYTES,262_144);
+
+ let now=10_000;
+ const clock=()=>{now+=10;return now;};
+ const nowMs=1_764_200_000_000;
+ const workflowSha='a'.repeat(40);
+ const baseSha='b'.repeat(40);
+
+ // 1. --reconcile-event strips internal snapshot on stdout and maps receipts cleanly
+ const eventEnv={
+  GITHUB_ACTIONS:'true',
+  RUNNER_ENVIRONMENT:'github-hosted',
+  GITHUB_EVENT_NAME:'push',
+  GITHUB_REPOSITORY_ID:'1471342715',
+  GITHUB_REF:'refs/heads/main',
+  GITHUB_WORKFLOW_REF:'Jamula/SoftwareFactory/.github/workflows/shadow-reconcile.yml@refs/heads/main',
+  GITHUB_REF_PROTECTED:'true',
+  GITHUB_WORKFLOW_SHA:workflowSha,
+  GITHUB_SHA:workflowSha,
+  FACTORY_CHECKOUT_SHA:workflowSha,
+  FACTORY_MAIN_HEAD:workflowSha,
+  GITHUB_RUN_ID:'556677'
+ };
+ const eventRequest=async url=>{
+  if(url.endsWith('/repos/Jamula/SoftwareFactory')) {
+   return new Response(JSON.stringify({id:1471342715,full_name:'Jamula/SoftwareFactory',fork:false}));
+  }
+  return new Response(JSON.stringify({name:'main',protected:true,commit:{sha:workflowSha}}));
+ };
+ const eventOut=[],eventReceiptOut=[];
+ assert.equal(await run(['--reconcile-event'],{
+  clock:()=>nowMs,
+  env:eventEnv,
+  reconcileEvent:(env,opts)=>import('../../tools/engineering-factory/event-envelope.mjs')
+   .then(m=>m.reconcileEventTrigger(env,{...opts,clock:()=>nowMs,request:eventRequest})),
+  write:v=>eventOut.push(JSON.parse(v))
+ }),0);
+ assert.equal(eventOut[0].reconciled,true);
+ assert.equal(eventOut[0].reason,'SHADOW_RECONCILED');
+ assert.equal('snapshot' in eventOut[0],false);
+
+ assert.equal(await run(['--reconcile-event','--receipt'],{
+  clock,
+  env:eventEnv,
+  input:{owner:'gh-aw-worker',leaseMs:15000},
+  reconcileEvent:async(_env,opts)=>{
+   assert.equal(opts.owner,'gh-aw-worker');
+   return {shadow:true,evidenceComplete:false,reconciled:false,reason:'CLAIM_PENDING',snapshot:{nonPlain:()=>1}};
+  },
+  write:v=>eventReceiptOut.push(JSON.parse(v))
+ }),0);
+ assert.equal(eventReceiptOut[0].valid,true);
+ assert.equal(eventReceiptOut[0].stage,'reconcile');
+ assert.equal(eventReceiptOut[0].outcome,'blocked');
+ assert.equal(eventReceiptOut[0].reason,'LEASE');
+
+ // Non-plain or non-JSON fields outside snapshot fail closed in --reconcile-event
+ for(const badEventReturn of [null,[],Object.create({}),{reason:'SHADOW_RECONCILED',bad:()=>1}]){
+  const sanitized=[];
+  assert.equal(await run(['--reconcile-event'],{
+   env:{},
+   reconcileEvent:async()=>badEventReturn,
+   write:v=>sanitized.push(JSON.parse(v))
+  }),0);
+  assert.equal(sanitized[0].reason,'READ_FAILED');
+ }
+ const badEventInput=[];
+ assert.equal(await run(['--reconcile-event'],{
+  env:{},
+  input:{disallowedKey:true},
+  write:v=>badEventInput.push(JSON.parse(v))
+ }),0);
+ assert.equal(badEventInput[0].reason,'EVIDENCE_UNKNOWN');
+
+ // 2. --plan-lanes invokes planner.mjs and normalizes output + receipts
+ const validConfig={
+  schemaVersion:1,
+  project:{key:'sf',repository:'Jamula/SoftwareFactory',defaultBranch:'main'},
+  execution:{mode:'shadow',enabled:true,stop:false},
+  limits:{maxConcurrentLanes:2,leaseMs:30000,maxAttempts:3,baseDelayMs:100,maxDelayMs:1000},
+  adapters:{workTracker:'mock',engineeringAgent:'mock',state:'sqlite'},
+  lanes:[
+   {id:'admission',owners:['tools/engineering-factory'],prompt:'prompts/factory.md'},
+   {id:'docs',owners:['docs'],prompt:'prompts/docs.md'}
+  ]
+ };
+ const planInput={
+  config:validConfig,
+  tasks:[
+   {id:7,lane:'admission',state:'approved',priority:0,dependencies:[],paths:['tools/engineering-factory/cloud-agent-admission.mjs']},
+   {id:8,lane:'docs',state:'approved',priority:1,dependencies:[],paths:['docs/CLOUD-AGENT-ADMISSION.md']}
+  ]
+ };
+ const planOut=[],planReceiptOut=[],badPlanOut=[];
+ assert.equal(await run(['--plan-lanes'],{
+  env:{FACTORY_INPUT_JSON:JSON.stringify(planInput)},
+  write:v=>planOut.push(JSON.parse(v))
+ }),0);
+ assert.equal(planOut[0].reason,'SHADOW_PLAN');
+ assert.equal(planOut[0].liveDispatch,false);
+ assert.equal(planOut[0].scheduled.length,2);
+
+ assert.equal(await run(['--plan-lanes','--receipt'],{
+  clock,
+  env:eventEnv,
+  input:planInput,
+  write:v=>planReceiptOut.push(JSON.parse(v))
+ }),0);
+ assert.equal(planReceiptOut[0].valid,true);
+ assert.equal(planReceiptOut[0].stage,'evaluate');
+ assert.equal(planReceiptOut[0].outcome,'eligible');
+ assert.equal(planReceiptOut[0].reason,'NONE');
+
+ for(const invalidPlanInput of [undefined,{config:validConfig},{config:validConfig,tasks:[],extra:1}]){
+  assert.equal(await run(['--plan-lanes'],{
+   env:{},
+   ...(invalidPlanInput===undefined?{}:{input:invalidPlanInput}),
+   write:v=>badPlanOut.push(JSON.parse(v))
+  }),0);
+  assert.equal(badPlanOut.at(-1).reason,'INVALID_TASKS');
+ }
+ const customPlanNorm=[];
+ assert.equal(await run(['--plan-lanes'],{
+  env:{},input:{config:validConfig,tasks:[]},
+  plan:async()=>({shadow:true,scheduled:[{id:1,lane:'docs',paths:['docs']}]}),
+  write:v=>customPlanNorm.push(JSON.parse(v))
+ }),0);
+ assert.equal(customPlanNorm[0].reason,'SHADOW_PLAN');
+ assert.equal(await run(['--plan-lanes'],{
+  env:{},input:{config:validConfig,tasks:[]},
+  plan:async()=>({shadow:true}),
+  write:v=>customPlanNorm.push(JSON.parse(v))
+ }),0);
+ assert.equal(customPlanNorm[1].reason,'NO_READY_WORK');
+ assert.equal(await run(['--plan-lanes'],{
+  env:{},input:{config:validConfig,tasks:[]},
+  plan:async()=>null,
+  write:v=>customPlanNorm.push(JSON.parse(v))
+ }),0);
+ assert.equal(customPlanNorm[2].reason,'INVALID_TASKS');
+
+ // 3. --evaluate-squash invokes protected-squash.mjs guardedSquashEvidence
+ const reviewer='copilot-pull-request-reviewer[bot]';
+ const checks=['build-test','upload-coverage-javascript','windows-aspire-runtime','CodeQL']
+  .map((name,i)=>({name,appId:i+1}));
+ const squashIntent={
+  repository:'Jamula/SoftwareFactory',repositoryId:1471342715,branch:'main',
+  number:42,expectedHead:workflowSha,expectedBase:baseSha
+ };
+ const squashEvidence={
+  repository:'Jamula/SoftwareFactory',repositoryId:1471342715,branch:'main',
+  number:42,head:workflowSha,base:baseSha,
+  open:true,draft:false,stop:false,scopeVerified:true,nativeQueue:false,
+  protection:{
+   repository:'Jamula/SoftwareFactory',repositoryId:1471342715,branch:'main',
+   base:baseSha,verified:true,protected:true,bypass:false,method:'squash',
+   upToDate:true,review:true,threads:true,security:true,requiredChecks:checks
+  },
+  policy:{
+   version:1,repository:'Jamula/SoftwareFactory',defaultBranch:'main',mergeMethod:'squash',
+   mode:'shadow',killSwitch:false,checks,reviewers:[reviewer],coverage:{line:98,branch:95},
+   owners:[{prefix:'src',owner:'synthetic-owner'}],maxActive:1,creditLimit:5,riskClasses:['low']
+  },
+  snapshot:{
+   repository:'Jamula/SoftwareFactory',policySource:'trusted-default-branch',pr:42,issue:7,
+   head:workflowSha,base:baseSha,observedHead:workflowSha,observedBase:baseSha,baseBranch:'main',
+   rateLimited:false,remainingCredits:1,activeCount:0,providerReady:true,risk:'low',priority:1,
+   paths:['src/a.mjs'],dependencies:[],acceptanceComplete:true,baseCompatible:true,mainHealthy:true,
+   author:'author',agent:'copilot-swe-agent[bot]',
+   checks:checks.map(c=>({...c,head:workflowSha,status:'completed',conclusion:'success'}))
+  },
+  reviewHistory:[{sequence:1,reviewer,head:workflowSha,state:'COMMENTED',summaryDisposition:'clear'}],
+  coverageReports:[{component:'core',head:workflowSha,lines:98,lineTotal:100,branches:95,branchTotal:100}],
+  expectedComponents:['core'],
+  threads:{head:workflowSha,resolved:true},
+  security:{head:workflowSha,clear:true},
+  platformReview:{head:workflowSha,complete:true,independent:true,summaryDisposition:'clear',findings:[]}
+ };
+ const squashOut=[],squashReceiptOut=[];
+ assert.equal(await run(['--evaluate-squash'],{
+  env:{},input:{intent:squashIntent,evidence:squashEvidence},
+  write:v=>squashOut.push(JSON.parse(v))
+ }),0);
+ assert.equal(squashOut[0].reason,'SHADOW_SQUASH_ELIGIBLE');
+ assert.equal(squashOut[0].liveMerge,false);
+
+ assert.equal(await run(['--evaluate-squash','--receipt'],{
+  clock,env:eventEnv,input:{intent:squashIntent,evidence:squashEvidence},
+  write:v=>squashReceiptOut.push(JSON.parse(v))
+ }),0);
+ assert.equal(squashReceiptOut[0].valid,true);
+ assert.equal(squashReceiptOut[0].stage,'merge-shadow');
+ assert.equal(squashReceiptOut[0].outcome,'eligible');
+ assert.equal(squashReceiptOut[0].reason,'NONE');
+ assert.equal(evaluateProtectedSquash(null).reason,'INTENT_UNKNOWN');
+
+ // 4. --verify-admission invokes cloud-agent-admission.mjs
+ const meter={verified:true,paidOverageEnabled:false,overageHardStopUsdCents:0};
+ const admissionInput={
+  stop:false,
+  repositoryId:1471342715,
+  approvedRepositoryId:1471342715,
+  repositoryVisibility:'private',
+  personalPatInActionsSecrets:false,
+  nowMs,
+  model:{id:'gpt-5.4',allowlist:['gpt-5.4'],verifiedAvailable:true},
+  harness:{kind:'copilot-cloud-automation',verified:true},
+  billingEntitlement:{
+   entitlementVerified:true,
+   includedOnly:true,
+   incrementalBilledUsdCents:0,
+   meters:{aiCredits:meter,copilotPremiumRequests:meter,cloudSandboxesAndActions:meter},
+   accounting:{
+    accountingSource:'verified',
+    isEstimated:false,
+    observedAtMs:nowMs-1000,
+    remainingIncludedAiCredits:500,
+    remainingIncludedPremiumRequests:20,
+    dailyAiCreditsUsed:10,
+    runAiCreditsRequired:20,
+    premiumRequestsRequired:1
+   },
+   ghAwCaps:{maxAiCredits:50,maxDailyAiCredits:200}
+  },
+  runner:{kind:'cloud-sandbox',verified:true,ephemeral:true,isolated:true},
+  workerPool:{
+   requestedWorkers:2,
+   verifiedPriorWorkerTier:1,
+   repoConcurrencyCap:4,
+   verifiedWorkerCeiling:4,
+   remainingIncludedSlots:4,
+   reservations:[]
+  },
+  candidate:{
+   issue:7,pr:null,lane:'admission',paths:['tools/engineering-factory/cloud-agent-admission.mjs'],
+   leaseGeneration:1,leaseExpiresAtMs:nowMs+60000
+  }
+ };
+ const admOut=[],admReceiptOut=[],admDeniedReceipt=[];
+ assert.equal(await run(['--verify-admission'],{
+  env:{},input:JSON.stringify(admissionInput),
+  write:v=>admOut.push(JSON.parse(v))
+ }),0);
+ assert.equal(admOut[0].admitted,true);
+ assert.equal(admOut[0].reason,'SHADOW_ALLOCATION');
+
+ assert.equal(await run(['--verify-admission','--receipt'],{
+  clock,env:eventEnv,input:admissionInput,
+  write:v=>admReceiptOut.push(JSON.parse(v))
+ }),0);
+ assert.equal(admReceiptOut[0].valid,true);
+ assert.equal(admReceiptOut[0].stage,'dispatch');
+ assert.equal(admReceiptOut[0].outcome,'eligible');
+ assert.equal(admReceiptOut[0].reason,'NONE');
+
+ assert.equal(await run(['--verify-admission','--receipt'],{
+  clock,env:eventEnv,
+  input:{...admissionInput,repositoryVisibility:'public'},
+  write:v=>admDeniedReceipt.push(JSON.parse(v))
+ }),0);
+ assert.equal(admDeniedReceipt[0].valid,true);
+ assert.equal(admDeniedReceipt[0].outcome,'blocked');
+ assert.equal(admDeniedReceipt[0].reason,'QUOTA');
+
+ // 5. --verify-m01-readiness maps M01_EXIT_EVIDENCE_READY_ONLY and denial reasons cleanly for receipts
+ const m01Prereqs=Object.fromEntries(M01_STRUCTURAL_PREREQUISITES.map(k=>[k,true]));
+ const makeCycle=(n,extra={})=>({
+  repositoryId:1471342715,issue:n,pr:100+n,head:String(n).repeat(40),reviewedHead:String(n).repeat(40),
+  reviewIndependent:true,checksPassed:true,securityClear:true,threadsResolved:true,
+  coverageReports:[{component:'core',head:String(n).repeat(40),lines:98,lineTotal:100,branches:19,branchTotal:20}],
+  mainVerified:true,costVerified:true,extraCost:0,humanInterventions:0,unauthorizedWrites:0,
+  duplicateDispatches:0,startedAt:0,eligibleAt:10,mergedAt:10+n*1000,
+  reviewFix:n===1,parallelCandidate:n===2,acceptanceVerified:true,gateBypasses:0,...extra
+ });
+ const m01Input={
+  policy:{repositoryId:1471342715,pin:'c'.repeat(40),lineMin:98,branchMin:95,firstPilot:true},
+  readiness:{
+   repositoryId:1471342715,pin:'c'.repeat(40),enrolled:true,stop:false,upstreamAccepted:false,
+   review:true,coverageLine:99,coverageBranch:96,requiredChecks:true,quotaVerified:true,
+   rollbackVerified:true,securityClear:true
+  },
+  ...m01Prereqs,
+  cycles:[makeCycle(1),makeCycle(2),makeCycle(3)],
+  expectedComponents:['core'],
+  actualWorkerMax:4,
+  workerShortfallFrom12:8
+ };
+ const m01Out=[],m01ReceiptOut=[],m01BlockedReceipt=[];
+ assert.equal(await run(['--verify-m01-readiness'],{
+  env:{},input:m01Input,
+  write:v=>m01Out.push(JSON.parse(v))
+ }),0);
+ assert.equal(m01Out[0].ready,true);
+ assert.equal(m01Out[0].reason,'M01_EXIT_EVIDENCE_READY_ONLY');
+
+ assert.equal(await run(['--verify-m01-readiness','--receipt'],{
+  clock,env:eventEnv,input:m01Input,
+  write:v=>m01ReceiptOut.push(JSON.parse(v))
+ }),0);
+ assert.equal(m01ReceiptOut[0].valid,true);
+ assert.equal(m01ReceiptOut[0].stage,'acceptance');
+ assert.equal(m01ReceiptOut[0].outcome,'eligible');
+ assert.equal(m01ReceiptOut[0].reason,'NONE');
+
+ assert.equal(await run(['--verify-m01-readiness','--receipt'],{
+  clock,env:eventEnv,input:{...m01Input,hardStopBillingVerified:false},
+  write:v=>m01BlockedReceipt.push(JSON.parse(v))
+ }),0);
+ assert.equal(m01BlockedReceipt[0].valid,true);
+ assert.equal(m01BlockedReceipt[0].outcome,'blocked');
+ assert.equal(m01BlockedReceipt[0].reason,'INVALID_EVIDENCE');
+
+ assert.equal(await run(['--verify-m01-readiness','--receipt'],{
+  clock,env:eventEnv,input:{...m01Input,readiness:{...m01Input.readiness,stop:true}},
+  write:v=>m01BlockedReceipt.push(JSON.parse(v))
+ }),0);
+ assert.equal(m01BlockedReceipt[1].outcome,'blocked');
+ assert.equal(m01BlockedReceipt[1].reason,'POLICY');
+
+ // 6. Parameterized repositoryId (options.repositoryId and env.FACTORY_EXPECTED_REPO_ID)
+ const consumerRepoId=200036;
+ const consumerHostedEnv={
+  GITHUB_ACTIONS:'true',
+  RUNNER_ENVIRONMENT:'github-hosted',
+  FACTORY_EXPECTED_REPO_ID:String(consumerRepoId),
+  GITHUB_REPOSITORY_ID:String(consumerRepoId),
+  GITHUB_RUN_ID:'889900',
+  GITHUB_RUN_ATTEMPT:'1'
+ };
+ const consumerReceipts=[];
+ assert.equal(await run(['--verify-admission','--receipt'],{
+  clock,
+  env:consumerHostedEnv,
+  input:{...admissionInput,repositoryId:consumerRepoId,approvedRepositoryId:consumerRepoId},
+  write:v=>consumerReceipts.push(JSON.parse(v))
+ }),0);
+ assert.equal(consumerReceipts[0].valid,true);
+ assert.equal(consumerReceipts[0].source,'github-hosted');
+ assert.equal(consumerReceipts[0].repositoryId,consumerRepoId);
+
+ // Custom repositoryId propagates to reconcile-pull, reconcile-issue, reconcile-event, and evaluate-squash
+ let seenPullRepo=null,seenIssueRepo=null,seenEventRepo=null;
+ assert.equal(await run(['--reconcile-pull'],{
+  repositoryId:consumerRepoId,env:{},
+  reconcile:async(_e,opts)=>{seenPullRepo=opts.repositoryId;return {shadow:true,reconciled:false,reason:'TRUST_UNKNOWN'};},
+  write:()=>{}
+ }),0);
+ assert.equal(seenPullRepo,consumerRepoId);
+ assert.equal(await run(['--reconcile-issue'],{
+  repositoryId:consumerRepoId,env:{},
+  reconcileIssue:async(_e,opts)=>{seenIssueRepo=opts.repositoryId;return {shadow:true,reconciled:false,reason:'TRUST_UNKNOWN'};},
+  write:()=>{}
+ }),0);
+ assert.equal(seenIssueRepo,consumerRepoId);
+ assert.equal(await run(['--reconcile-event'],{
+  repositoryId:consumerRepoId,env:{},
+  reconcileEvent:async(_e,opts)=>{seenEventRepo=opts.repositoryId;return {shadow:true,reconciled:false,reason:'TRUST_UNKNOWN'};},
+  write:()=>{}
+ }),0);
+ assert.equal(seenEventRepo,consumerRepoId);
+ assert.equal(await run(['--reconcile-event'],{
+  repositoryId:consumerRepoId,env:{},input:{owner:'worker'},
+  reconcileEvent:async(_e,opts)=>{seenEventRepo=opts.repositoryId;return {shadow:true,reconciled:false,reason:'TRUST_UNKNOWN'};},
+  write:()=>{}
+ }),0);
+ assert.equal(seenEventRepo,consumerRepoId);
+
+ const consumerSquashScope=[];
+ assert.equal(await run(['--evaluate-squash'],{
+  repositoryId:consumerRepoId,env:{},
+  input:{
+   intent:{repository:'Jamula/FamilyTree',repositoryId:consumerRepoId,branch:'main',number:1,expectedHead:workflowSha,expectedBase:baseSha},
+   evidence:{}
+  },
+  evaluateSquash:(_i,_ev,sc)=>{consumerSquashScope.push(sc);return {shadow:true,liveMerge:false,dependentWorkAllowed:false,reason:'EVIDENCE_UNKNOWN'};},
+  write:()=>{}
+ }),0);
+ assert.equal(consumerSquashScope[0].repositoryId,consumerRepoId);
+ assert.equal(consumerSquashScope[0].branch,'main');
+
+ assert.equal(await run(['--evaluate-squash'],{
+  repositoryId:consumerRepoId,env:{},
+  input:{
+   intent:{repository:'Jamula/FamilyTree',repositoryId:consumerRepoId,number:1,expectedHead:workflowSha,expectedBase:baseSha},
+   evidence:{}
+  },
+  evaluateSquash:(_i,_ev,sc)=>{consumerSquashScope.push(sc);return {shadow:true,liveMerge:false,dependentWorkAllowed:false,reason:'EVIDENCE_UNKNOWN'};},
+  write:()=>{}
+ }),0);
+ assert.equal(consumerSquashScope[1].branch,undefined);
+
+ // Explicit repositoryId mismatch against payload repositoryId fails closed
+ const mismatchEvent=[],mismatchSquash=[],mismatchAdm=[],mismatchM01=[];
+ assert.equal(await run(['--reconcile-event'],{
+  repositoryId:consumerRepoId,env:{},input:{scope:{repositoryId:999}},
+  write:v=>mismatchEvent.push(JSON.parse(v))
+ }),0);
+ assert.equal(mismatchEvent[0].reason,'PROVENANCE_MISMATCH');
+ assert.equal(await run(['--reconcile-event'],{
+  repositoryId:consumerRepoId,env:{},input:{repositoryId:999},
+  write:v=>mismatchEvent.push(JSON.parse(v))
+ }),0);
+ assert.equal(mismatchEvent[1].reason,'PROVENANCE_MISMATCH');
+ assert.equal(await run(['--evaluate-squash'],{
+  repositoryId:consumerRepoId,env:{},
+  input:{intent:squashIntent,evidence:squashEvidence,scope:{repository:'Jamula/SoftwareFactory',repositoryId:1471342715}},
+  write:v=>mismatchSquash.push(JSON.parse(v))
+ }),0);
+ assert.equal(mismatchSquash[0].reason,'PROVENANCE_MISMATCH');
+ assert.equal(await run(['--evaluate-squash'],{
+  repositoryId:consumerRepoId,env:{},
+  input:{intent:squashIntent,evidence:squashEvidence},
+  write:v=>mismatchSquash.push(JSON.parse(v))
+ }),0);
+ assert.equal(mismatchSquash[1].reason,'PROVENANCE_MISMATCH');
+ assert.equal(await run(['--verify-admission'],{
+  repositoryId:consumerRepoId,env:{},input:admissionInput,
+  write:v=>mismatchAdm.push(JSON.parse(v))
+ }),0);
+ assert.equal(mismatchAdm[0].reason,'PROVENANCE_MISMATCH');
+ assert.equal(await run(['--verify-m01-readiness'],{
+  repositoryId:consumerRepoId,env:{},input:m01Input,
+  write:v=>mismatchM01.push(JSON.parse(v))
+ }),0);
+ assert.equal(mismatchM01[0].reason,'IDENTITY_OR_PIN');
+
+ // Invalid/mismatched repositoryId & GITHUB_REPOSITORY_ID fail closed with exit code 1
+ for(const badRepoOpts of [
+  {repositoryId:0,env:{}},
+  {repositoryId:-5,env:{}},
+  {repositoryId:'200036',env:{}},
+  {env:'bad-env'},
+  {env:[]},
+  {env:{FACTORY_EXPECTED_REPO_ID:'0'}},
+  {env:{FACTORY_EXPECTED_REPO_ID:'bad'}},
+  {repositoryId:200036,env:{FACTORY_EXPECTED_REPO_ID:'1471342715'}},
+  {env:{GITHUB_REPOSITORY_ID:'999'}},
+  {repositoryId:200036,env:{GITHUB_REPOSITORY_ID:'1471342715'}}
+ ]){
+  const out=[];
+  assert.equal(await run(['--verify-admission'],{...badRepoOpts,write:v=>out.push(JSON.parse(v))}),1);
+  assert.equal(out[0].reason,'PROVENANCE_MISMATCH');
+ }
+
+ // 7. Bounded JSON input (<= 262,144 UTF-8 bytes), malformed JSON, proxies, and getters fail closed
+ const exactBoundJson=JSON.stringify({pad:'x'.repeat(MAX_INPUT_UTF8_BYTES-20)});
+ assert.ok(Buffer.byteLength(exactBoundJson,'utf8')<=MAX_INPUT_UTF8_BYTES);
+ assert.equal(await run(['--verify-admission'],{env:{FACTORY_INPUT_JSON:exactBoundJson},write:()=>{}}),0);
+
+ const oversizedStr='{"pad":"'+'x'.repeat(MAX_INPUT_UTF8_BYTES)+'"}';
+ const oversizedObj={pad:'x'.repeat(MAX_INPUT_UTF8_BYTES)};
+ const sparseArr=new Array(2);sparseArr[0]=1;
+ let deepObj={leaf:1};
+ for(let i=0;i<14;i++) deepObj={child:deepObj};
+ const wideObj=Object.fromEntries(Array.from({length:130},(_,i)=>[`k${i}`,i]));
+ for(const [badInputOpts,expectedReason] of [
+  [{env:{FACTORY_INPUT_JSON:oversizedStr}},'RESPONSE_LIMIT'],
+  [{env:{},input:oversizedObj},'RESPONSE_LIMIT'],
+  [{env:{FACTORY_INPUT_JSON:'{bad-json'}},'EVIDENCE_UNKNOWN'],
+  [{env:{FACTORY_INPUT_JSON:'[]'}},'EVIDENCE_UNKNOWN'],
+  [{env:{FACTORY_INPUT_JSON:'"str"'}},'EVIDENCE_UNKNOWN'],
+  [{env:{},input:null},'EVIDENCE_UNKNOWN'],
+  [{env:{},input:42},'EVIDENCE_UNKNOWN'],
+  [{env:{},input:[1,2,3]},'EVIDENCE_UNKNOWN'],
+  [{env:{},input:{badNum:Infinity}},'EVIDENCE_UNKNOWN'],
+  [{env:{},input:{badFn:()=>1}},'EVIDENCE_UNKNOWN'],
+  [{env:{},input:{sparse:sparseArr}},'EVIDENCE_UNKNOWN'],
+  [{env:{},input:{arrFn:[()=>1]}},'EVIDENCE_UNKNOWN'],
+  [{env:{},input:deepObj},'EVIDENCE_UNKNOWN'],
+  [{env:{},input:wideObj},'EVIDENCE_UNKNOWN'],
+  [{env:{},input:{nested:Object.setPrototypeOf([1],Object.create(Array.prototype))}},'EVIDENCE_UNKNOWN']
+ ]){
+  const out=[],side=[];
+  assert.equal(await run(['--verify-admission'],{
+   ...badInputOpts,clock,write:v=>out.push(JSON.parse(v)),writeReceipt:r=>side.push(r)
+  }),1);
+  assert.equal(out[0].reason,expectedReason);
+  assert.equal(side[0].valid,true);
+  assert.equal(side[0].outcome,'blocked');
+  assert.equal(side[0].reason,'INVALID_EVIDENCE');
+ }
+
+ let traps=0;
+ const trap=()=>{traps++;throw Error('unexpected trap');};
+ const getterOpts={write:()=>{},clock,env:{}};
+ Object.defineProperty(getterOpts,'input',{enumerable:true,get:trap});
+ assert.equal(await run(['--verify-admission','--receipt'],getterOpts),1);
+
+ const getterEnv={};
+ Object.defineProperty(getterEnv,'FACTORY_INPUT_JSON',{get:trap});
+ assert.equal(await run(['--verify-admission'],{env:getterEnv,write:()=>{}}),1);
+
+ const getterRepoEnv={};
+ Object.defineProperty(getterRepoEnv,'FACTORY_EXPECTED_REPO_ID',{get:trap});
+ assert.equal(await run(['--verify-admission'],{env:getterRepoEnv,write:()=>{}}),1);
+
+ const getterGhRepoEnv={};
+ Object.defineProperty(getterGhRepoEnv,'GITHUB_REPOSITORY_ID',{get:trap});
+ assert.equal(await run(['--verify-admission'],{env:getterGhRepoEnv,write:()=>{}}),1);
+
+ assert.equal(await run(['--verify-admission'],{env:new Proxy({},{get:trap}),write:()=>{}}),1);
+ assert.equal(await run(new Proxy(['--smoke'],{get:trap}),{write:assert.fail,fail:()=>{}}),2);
+ assert.equal(await run('not-an-array',{write:assert.fail,fail:()=>{}}),2);
+ assert.equal(await run(['--smoke'],null),1);
+ assert.equal(await run(['--smoke'],new Proxy({},{get:trap})),1);
+ assert.equal(traps,0);
+});
