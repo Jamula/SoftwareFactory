@@ -13,7 +13,12 @@ const positive = n => nonnegative(n) && n > 0;
 const envSlug = s => typeof s === 'string' && /^[a-z0-9][a-z0-9_-]{1,63}$/.test(s);
 const result = (reason, nextLimit = null) => ({shadow: true, liveDispatch: false, reason, nextLimit});
 
-function validateScaleGates(e, budgetInput, activeCount) {
+function hasObservedPeak(e, currentLimit) {
+  const observedPeak = prop(e, 'observedPeak');
+  return nonnegative(observedPeak) && observedPeak === currentLimit;
+}
+
+function validateConcurrencyGates(e, budgetInput, activeCount) {
   const verifiedProviderLimit = prop(e, 'verifiedProviderLimit');
   const currentLimit = prop(e, 'currentLimit');
   if (!positive(verifiedProviderLimit) || prop(budgetInput, 'maxActive') !== verifiedProviderLimit ||
@@ -24,21 +29,39 @@ function validateScaleGates(e, budgetInput, activeCount) {
       !nonnegative(repositoryActive) || repositoryActive > activeCount ||
       repositoryActive > currentLimit || currentLimit > repositoryLimit)
     return 'REPOSITORY_CAPACITY_UNKNOWN';
+  return null;
+}
+
+function validateSafetyAndCostGates(e) {
+  if (prop(e, 'qualityClear') !== true || prop(e, 'mainHealthy') !== true ||
+      prop(e, 'costVerified') !== true || prop(e, 'extraCost') !== 0 ||
+      prop(e, 'duplicateDispatches') !== 0 || prop(e, 'unauthorizedWrites') !== 0)
+    return 'SAFETY_OR_COST_UNKNOWN';
+  return null;
+}
+
+function validateHostedScaleGates(e, budgetInput, activeCount) {
+  const concurrencyError = validateConcurrencyGates(e, budgetInput, activeCount);
+  if (concurrencyError) return concurrencyError;
+  if (!hasObservedPeak(e, prop(e, 'currentLimit'))) return 'OBSERVED_WORKERS_UNKNOWN';
+  return validateSafetyAndCostGates(e);
+}
+
+function validateComparativeThroughputGates(e, currentLimit) {
   const beforeCohort = prop(e, 'beforeCohort');
   if (prop(e, 'comparabilityVerified') !== true || typeof beforeCohort !== 'string' ||
       !/^[a-zA-Z0-9_-]{1,80}$/.test(beforeCohort) || beforeCohort !== prop(e, 'afterCohort'))
     return 'COHORT_UNKNOWN';
   const beforeWindowMs = prop(e, 'beforeWindowMs'), beforeAccepted = prop(e, 'beforeAccepted'),
     afterAccepted = prop(e, 'afterAccepted');
-  if (!nonnegative(prop(e, 'observedPeak')) || prop(e, 'observedPeak') !== currentLimit ||
+  if (!hasObservedPeak(e, currentLimit) ||
       !positive(beforeWindowMs) || beforeWindowMs !== prop(e, 'afterWindowMs') ||
       !nonnegative(beforeAccepted) || !nonnegative(afterAccepted) ||
       beforeAccepted < 5 || afterAccepted < 5)
     return 'EXPERIMENT_EVIDENCE_UNKNOWN';
-  if (prop(e, 'qualityClear') !== true || prop(e, 'mainHealthy') !== true ||
-      prop(e, 'costVerified') !== true || prop(e, 'extraCost') !== 0 ||
-      prop(e, 'duplicateDispatches') !== 0 || prop(e, 'unauthorizedWrites') !== 0)
-    return 'SAFETY_OR_COST_UNKNOWN';
+  const safetyError = validateSafetyAndCostGates(e);
+  if (safetyError) return safetyError;
+  if (afterAccepted <= beforeAccepted) return 'NO_MEASURED_GAIN';
   return null;
 }
 
@@ -57,9 +80,10 @@ export function recommendShadowScale(e) {
     const check = verifyHardStopReceipt(prop(e, 'hardStopReceipt'), prop(budgetInput, 'nowMs'));
     if (!check.valid) return result(check.reason);
   }
-  const gateError = validateScaleGates(e, budgetInput, prop(budgetInput, 'active'));
-  if (gateError) return result(gateError);
-  if (prop(e, 'afterAccepted') <= prop(e, 'beforeAccepted')) return result('NO_MEASURED_GAIN');
+  const concurrencyError = validateConcurrencyGates(e, budgetInput, prop(budgetInput, 'active'));
+  if (concurrencyError) return result(concurrencyError);
+  const throughputError = validateComparativeThroughputGates(e, currentLimit);
+  if (throughputError) return result(throughputError);
   const next = WORKER_LADDER[WORKER_LADDER.indexOf(currentLimit) + 1];
   if (next === undefined) return result('LADDER_COMPLETE');
   if (next > prop(e, 'verifiedProviderLimit') || next > prop(e, 'repositoryLimit') ||
@@ -107,13 +131,11 @@ export function evaluateHostedWorkerLadder(e) {
     return report(budget.reason);
   const receipt = verifyHardStopReceipt(receiptInput, prop(budgetInput, 'nowMs'));
   if (!receipt.valid) return report(receipt.reason);
-  const gateError = validateScaleGates(e, budgetInput, prop(budgetInput, 'active'));
+  const gateError = validateHostedScaleGates(e, budgetInput, prop(budgetInput, 'active'));
   if (gateError) return report(gateError);
   const ceiling = Math.min(prop(e, 'verifiedProviderLimit'), prop(e, 'repositoryLimit'),
     prop(e, 'repositoryActive') + budget.available);
   const actualMax = prop(e, 'observedPeak');
-  if (prop(e, 'afterAccepted') <= prop(e, 'beforeAccepted'))
-    return report('NO_MEASURED_GAIN', null, actualMax, ceiling);
   const next = WORKER_LADDER[WORKER_LADDER.indexOf(currentLimit) + 1];
   if (next === undefined) return report('LADDER_COMPLETE', null, actualMax, ceiling);
   if (next > ceiling) return report('CAPACITY_INSUFFICIENT', null, actualMax, ceiling);

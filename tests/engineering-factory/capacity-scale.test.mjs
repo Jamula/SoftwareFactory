@@ -1,9 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {WORKER_GOAL, WORKER_LADDER, evaluateHostedWorkerLadder, recommendShadowScale} from '../../tools/engineering-factory/capacity-scale.mjs';
-const receipt=()=>({receiptId:'hsr-scale-001',provider:'github-hosted-copilot',includedOnly:true,overageDisabled:true,hardStopEnforced:true,paidUsageMicros:0,observedMs:100});
-const fixture=()=>({stop:false,repositoryId:1,approvedRepositoryId:1,independentEvidence:true,currentLimit:1,observedPeak:1,verifiedProviderLimit:12,repositoryLimitVerified:true,repositoryLimit:12,repositoryActive:0,comparabilityVerified:true,beforeCohort:'small-comparable',afterCohort:'small-comparable',beforeWindowMs:1000,afterWindowMs:1000,beforeAccepted:5,afterAccepted:8,qualityClear:true,mainHealthy:true,costVerified:true,extraCost:0,duplicateDispatches:0,unauthorizedWrites:0,budget:{stop:false,includedOnly:true,overageDisabled:true,authorityVerified:true,nowMs:100,observedMs:100,remaining:20,reserved:0,active:0,maxActive:12,unitsPerRun:1}});
-const hostedFixture=()=>({...fixture(),environmentVerified:true,protectedEnvironment:'factory-copilot-pilot',isolatedWorktrees:true,overageDisabled:true,hardStopReceipt:receipt()});
+const receipt = () => ({receiptId: 'hsr-scale-001', provider: 'github-hosted-copilot', includedOnly: true, overageDisabled: true, hardStopEnforced: true, paidUsageMicros: 0, observedMs: 100});
+const baseFixture = () => ({stop: false, repositoryId: 1, approvedRepositoryId: 1, independentEvidence: true, currentLimit: 1, observedPeak: 1, verifiedProviderLimit: 12, repositoryLimitVerified: true, repositoryLimit: 12, repositoryActive: 0, qualityClear: true, mainHealthy: true, costVerified: true, extraCost: 0, duplicateDispatches: 0, unauthorizedWrites: 0, budget: {stop: false, includedOnly: true, overageDisabled: true, authorityVerified: true, nowMs: 100, observedMs: 100, remaining: 20, reserved: 0, active: 0, maxActive: 12, unitsPerRun: 1}});
+const fixture = () => ({...baseFixture(), comparabilityVerified: true, beforeCohort: 'small-comparable', afterCohort: 'small-comparable', beforeWindowMs: 1000, afterWindowMs: 1000, beforeAccepted: 5, afterAccepted: 8});
+const hostedFixture = () => ({...baseFixture(), environmentVerified: true, protectedEnvironment: 'factory-copilot-pilot', isolatedWorktrees: true, overageDisabled: true, hardStopReceipt: receipt()});
 test('advises only one synthetic tier at a time, never live dispatch',()=>{
   assert.deepEqual(WORKER_LADDER,[1,2,4,8,10,12]);
   assert.deepEqual(WORKER_GOAL,{min:10,max:12});
@@ -95,51 +96,70 @@ test('evaluates hosted 1->2->4->8->10->12 ladder with actual max workers and sho
   assert.equal(zeroRemaining.actualMaxWorkers,1);
   assert.equal(zeroRemaining.shortfallMin,9);
   assert.equal(zeroRemaining.shortfallMax,11);
-  // No measured gain at observed peak 8 and ladder complete at observed peak 12 report observed actual workers accurately.
-  const noGain=evaluateHostedWorkerLadder({...hostedFixture(),currentLimit:8,observedPeak:8,afterAccepted:5,
-    verifiedProviderLimit:8,budget:{...hostedFixture().budget,maxActive:8}});
-  assert.equal(noGain.reason,'NO_MEASURED_GAIN');
-  assert.equal(noGain.actualMaxWorkers,8);
-  assert.equal(noGain.shortfallMin,2);
-  assert.equal(noGain.shortfallMax,4);
-  const done=evaluateHostedWorkerLadder({...hostedFixture(),currentLimit:12,observedPeak:12});
-  assert.equal(done.reason,'LADDER_COMPLETE');
-  assert.equal(done.actualMaxWorkers,12);
-  assert.equal(done.shortfallMax,0);
-  assert.equal(done.goalMet,true);
+  // Hosted M01 ladder does not require M02 comparative-throughput cohorts or >=5 accepted gains when safety/capacity pass,
+  // while recommendShadowScale retains comparative cohort and measured-gain gates.
+  const m01NonComparative = {...hostedFixture(), currentLimit: 8, observedPeak: 8,
+    comparabilityVerified: false, beforeAccepted: 2, afterAccepted: 2,
+    verifiedProviderLimit: 10, budget: {...hostedFixture().budget, maxActive: 10}};
+  const eightStep = evaluateHostedWorkerLadder(m01NonComparative);
+  assert.equal(eightStep.reason, 'SHADOW_SCALE_RECOMMENDED');
+  assert.equal(eightStep.nextLimit, 10);
+  assert.equal(eightStep.actualMaxWorkers, 8);
+  assert.equal(eightStep.shortfallMin, 2);
+  assert.equal(eightStep.shortfallMax, 4);
+  assert.equal(eightStep.goalMet, false);
+  assert.equal(recommendShadowScale(hostedFixture()).reason, 'COHORT_UNKNOWN');
+  assert.equal(recommendShadowScale({...fixture(), currentLimit: 8, observedPeak: 8, afterAccepted: 5}).reason, 'NO_MEASURED_GAIN');
+  const done = evaluateHostedWorkerLadder({...hostedFixture(), currentLimit: 12, observedPeak: 12});
+  assert.equal(done.reason, 'LADDER_COMPLETE');
+  assert.equal(done.actualMaxWorkers, 12);
+  assert.equal(done.shortfallMax, 0);
+  assert.equal(done.goalMet, true);
 });
 
-test('hosted worker ladder blocks fail-closed on missing environment, overage enabled, unknown quota, or invalid hard-stop receipt',()=>{
+test('hosted worker ladder blocks fail-closed on missing environment, overage enabled, unknown quota, or invalid hard-stop receipt', () => {
   const proxyHosted = new Proxy(hostedFixture(), {});
-  const blockedCases=[
-    [null,'STOPPED'],
-    [proxyHosted,'STOPPED'],
-    [{stop:true},'STOPPED'],
-    [{environmentVerified:false},'ENVIRONMENT_UNVERIFIED'],
-    [{protectedEnvironment:'INVALID_ENV'},'ENVIRONMENT_UNVERIFIED'],
-    [{isolatedWorktrees:false},'ENVIRONMENT_UNVERIFIED'],
-    [{overageDisabled:false},'OVERAGE_ENABLED'],
-    [{budget:{...hostedFixture().budget,overageDisabled:false}},'OVERAGE_ENABLED'],
-    [{hardStopReceipt:{...receipt(),overageDisabled:false}},'OVERAGE_ENABLED'],
-    [{repositoryId:0},'SCOPE_UNKNOWN'],
-    [{currentLimit:6},'SCOPE_UNKNOWN'],
-    [{budget:null},'QUOTA_UNKNOWN'],
-    [{budget:{...hostedFixture().budget,includedOnly:false}},'QUOTA_UNKNOWN'],
-    [{budget:{...hostedFixture().budget,overageDisabled:null}},'QUOTA_UNKNOWN'],
-    [{budget:{...hostedFixture().budget,authorityVerified:false}},'QUOTA_UNKNOWN'],
-    [{budget:{...hostedFixture().budget,nowMs:999999}},'STALE_QUOTA'],
-    [{budget:{...hostedFixture().budget,unitsPerRun:0}},'INVALID_QUOTA'],
-    [{hardStopReceipt:null},'HARD_STOP_UNVERIFIED'],
-    [{hardStopReceipt:{...receipt(),paidUsageMicros:1}},'PAID_USAGE_NONZERO'],
-    [{hardStopReceipt:{...receipt(),observedMs:200}},'STALE_HARD_STOP_RECEIPT'],
-    [{verifiedProviderLimit:4},'PROVIDER_LIMIT_UNKNOWN'],
-    [{repositoryLimitVerified:false},'REPOSITORY_CAPACITY_UNKNOWN'],
-    [{comparabilityVerified:false},'COHORT_UNKNOWN'],
-    [{observedPeak:0},'EXPERIMENT_EVIDENCE_UNKNOWN'],
-    [{extraCost:1},'SAFETY_OR_COST_UNKNOWN']
+  const getterPeakHosted = Object.defineProperty(hostedFixture(), 'observedPeak', {
+    get: () => 1,
+    enumerable: true
+  });
+  const blockedCases = [
+    [null, 'STOPPED'],
+    [proxyHosted, 'STOPPED'],
+    [{stop: true}, 'STOPPED'],
+    [{environmentVerified: false}, 'ENVIRONMENT_UNVERIFIED'],
+    [{protectedEnvironment: 'INVALID_ENV'}, 'ENVIRONMENT_UNVERIFIED'],
+    [{isolatedWorktrees: false}, 'ENVIRONMENT_UNVERIFIED'],
+    [{overageDisabled: false}, 'OVERAGE_ENABLED'],
+    [{budget: {...hostedFixture().budget, overageDisabled: false}}, 'OVERAGE_ENABLED'],
+    [{hardStopReceipt: {...receipt(), overageDisabled: false}}, 'OVERAGE_ENABLED'],
+    [{repositoryId: 0}, 'SCOPE_UNKNOWN'],
+    [{currentLimit: 6}, 'SCOPE_UNKNOWN'],
+    [{budget: null}, 'QUOTA_UNKNOWN'],
+    [{budget: {...hostedFixture().budget, includedOnly: false}}, 'QUOTA_UNKNOWN'],
+    [{budget: {...hostedFixture().budget, overageDisabled: null}}, 'QUOTA_UNKNOWN'],
+    [{budget: {...hostedFixture().budget, authorityVerified: false}}, 'QUOTA_UNKNOWN'],
+    [{budget: {...hostedFixture().budget, nowMs: 999999}}, 'STALE_QUOTA'],
+    [{budget: {...hostedFixture().budget, unitsPerRun: 0}}, 'INVALID_QUOTA'],
+    [{hardStopReceipt: null}, 'HARD_STOP_UNVERIFIED'],
+    [{hardStopReceipt: {...receipt(), paidUsageMicros: 1}}, 'PAID_USAGE_NONZERO'],
+    [{hardStopReceipt: {...receipt(), observedMs: 200}}, 'STALE_HARD_STOP_RECEIPT'],
+    [{verifiedProviderLimit: 4}, 'PROVIDER_LIMIT_UNKNOWN'],
+    [{repositoryLimitVerified: false}, 'REPOSITORY_CAPACITY_UNKNOWN'],
+    [{observedPeak: null}, 'OBSERVED_WORKERS_UNKNOWN'],
+    [{observedPeak: 0}, 'OBSERVED_WORKERS_UNKNOWN'],
+    [{observedPeak: 2}, 'OBSERVED_WORKERS_UNKNOWN'],
+    [getterPeakHosted, 'OBSERVED_WORKERS_UNKNOWN'],
+    [{qualityClear: false}, 'SAFETY_OR_COST_UNKNOWN'],
+    [{mainHealthy: false}, 'SAFETY_OR_COST_UNKNOWN'],
+    [{costVerified: false}, 'SAFETY_OR_COST_UNKNOWN'],
+    [{extraCost: 1}, 'SAFETY_OR_COST_UNKNOWN'],
+    [{duplicateDispatches: 1}, 'SAFETY_OR_COST_UNKNOWN'],
+    [{unauthorizedWrites: 1}, 'SAFETY_OR_COST_UNKNOWN']
   ];
   for (const [change, reason] of blockedCases) {
-    const input = (change === null || change === proxyHosted) ? change : {...hostedFixture(), ...change};
+    const isDirectInput = change === null || change === proxyHosted || change === getterPeakHosted;
+    const input = isDirectInput ? change : {...hostedFixture(), ...change};
     const out = evaluateHostedWorkerLadder(input);
     assert.deepEqual(out,{
       shadow:true,

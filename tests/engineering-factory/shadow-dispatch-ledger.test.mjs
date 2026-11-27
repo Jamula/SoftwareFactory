@@ -282,9 +282,12 @@ test('reclaims expired reserved and hung in-flight workers deterministically und
     // Repo 1 maxActive=1 is occupied while in-flight before deadline.
     assert.equal(ledger.reserve({...candidate(1, 11), leaseUntil: 9000}, {...q1, observedMs: 2300}, 2300).reason,
       'REPO_CAPACITY_EXHAUSTED');
-    // Reconcile requires authoritative now (omitting now fails closed even when overdue), and past deadline marks expired.
+    // Reconcile requires authoritative now >= reserved_at (omitting now fails closed even when overdue), and past deadline marks expired.
     assert.equal(ledger.reconcile(r2.ticket, terminal(r2.ticket)).reason, 'TERMINAL_RECEIPT_UNKNOWN');
     assert.equal(ledger.reconcile(r2.ticket, terminal(r2.ticket), -1).reason, 'TERMINAL_RECEIPT_UNKNOWN');
+    assert.equal(ledger.reconcile(r2.ticket, terminal(r2.ticket), 1999).reason, 'TERMINAL_RECEIPT_UNKNOWN');
+    const missingTicket = {...r2.ticket, generation: 99};
+    assert.equal(ledger.reconcile(missingTicket, terminal(missingTicket), 2000).reason, 'RESERVATION_UNAVAILABLE');
     assert.equal(ledger.reconcile(r2.ticket, terminal(r2.ticket), 2301).reason, 'EXECUTION_DEADLINE_EXCEEDED');
     assert.equal(ledger.reconcile(r2.ticket, terminal(r2.ticket), 2302).reason, 'EXECUTION_DEADLINE_EXCEEDED');
 
@@ -403,9 +406,13 @@ test('exports and restores integrity/signature-fenced snapshots across stateless
         const rows = [baseRow, {...baseRow, issue: 99}];
         return {...exported1.snapshot, reservations: rows, ...sign(pSig, 1, 1200, rows)};
       })(),
-      // Signed undercharged row (units !== plan.unitsPerRun) is rejected
+      // Signed undercharged or overcharged row (units !== plan.unitsPerRun) is rejected
       (() => {
         const rows = [{...baseRow, units: 1}];
+        return {...exported1.snapshot, reservations: rows, ...sign(pSig, 1, 1200, rows)};
+      })(),
+      (() => {
+        const rows = [{...baseRow, units: 4}];
         return {...exported1.snapshot, reservations: rows, ...sign(pSig, 1, 1200, rows)};
       })(),
       // Exceeds includedUnits (10) while matching unitsPerRun (2 * 6 = 12 > 10)
@@ -441,6 +448,64 @@ test('exports and restores integrity/signature-fenced snapshots across stateless
       reservations: lateExportRows,
       ...sign(pSig, 1, 100000, lateExportRows)
     }, {signingKey, now: 100000}).reason, 'INVALID_SNAPSHOT');
+
+    // Regression: signed undercharged row with units: 1 under unitsPerRun: 4 is rejected.
+    const fourUnitPlan = {...runnerPlan, includedUnits: 12, unitsPerRun: 4};
+    const fourUnitLedger = openShadowDispatchLedger(':memory:', fourUnitPlan);
+    try {
+      const fourUnitSig = fourUnitLedger.exportSnapshot({signingKey, now: 1000}).snapshot.planSignature;
+      const underchargedRows = [{...baseRow, units: 1, reservedAt: 1000, validThrough: 1999}];
+      assert.equal(fourUnitLedger.importSnapshot({
+        version: 1,
+        window: fourUnitPlan.window,
+        planSignature: fourUnitSig,
+        sequence: 2,
+        exportedAt: 1000,
+        reservations: underchargedRows,
+        ...sign(fourUnitSig, 2, 1000, underchargedRows)
+      }, {signingKey, now: 1000}).reason, 'INVALID_SNAPSHOT');
+    } finally {
+      fourUnitLedger.close();
+    }
+
+    // Regression: maxExecutionMs: 500, exportedAt: 1000, signed in-flight row with validThrough: MAX_SAFE_INTEGER fails closed,
+    // and near-MAX_SAFE_INTEGER timestamps remain overflow-safe.
+    const shortExecPlan = {...runnerPlan, maxExecutionMs: 500};
+    const shortExecLedger = openShadowDispatchLedger(':memory:', shortExecPlan);
+    try {
+      const shortSig = shortExecLedger.exportSnapshot({signingKey, now: 1000}).snapshot.planSignature;
+      for (const badValidThrough of [Number.MAX_SAFE_INTEGER, 1501]) {
+        const overlongRows = [{...baseRow, phase: 'in-flight', reservedAt: 1000, validThrough: badValidThrough}];
+        assert.equal(shortExecLedger.importSnapshot({
+          version: 1,
+          window: shortExecPlan.window,
+          planSignature: shortSig,
+          sequence: 2,
+          exportedAt: 1000,
+          reservations: overlongRows,
+          ...sign(shortSig, 2, 1000, overlongRows)
+        }, {signingKey, now: 1000}).reason, 'INVALID_SNAPSHOT');
+      }
+      const nearMaxReserved = Number.MAX_SAFE_INTEGER - 10;
+      const nearMaxExported = Number.MAX_SAFE_INTEGER - 5;
+      const nearMaxRows = [{
+        ...baseRow,
+        phase: 'in-flight',
+        reservedAt: nearMaxReserved,
+        validThrough: Number.MAX_SAFE_INTEGER
+      }];
+      assert.equal(shortExecLedger.importSnapshot({
+        version: 1,
+        window: shortExecPlan.window,
+        planSignature: shortSig,
+        sequence: 2,
+        exportedAt: nearMaxExported,
+        reservations: nearMaxRows,
+        ...sign(shortSig, 2, nearMaxExported, nearMaxRows)
+      }, {signingKey, now: Number.MAX_SAFE_INTEGER}).reason, 'SHADOW_SNAPSHOT_IMPORTED');
+    } finally {
+      shortExecLedger.close();
+    }
 
     // Restore onto stateless Runner B and verify active slots, units, and duplicate fencing carry over.
     const imported1 = runnerB.importSnapshot(exported1.snapshot, {signingKey, now: 1200});
@@ -590,7 +655,9 @@ test('migrates pre-deadline v0 on-disk ledgers in place while preserving spent u
     // Opening a legacy DB with a custom maxExecutionMs or changed plan still fails closed without mutating it.
     assert.throws(() => openShadowDispatchLedger(legacyPath, {...plan, maxExecutionMs: 60000}),
       /SHADOW_DISPATCH_PLAN_CHANGED/);
-    const migrated = openShadowDispatchLedger(legacyPath, plan);
+    assert.throws(() => openShadowDispatchLedger(legacyPath, {...plan, window: 'different'}),
+      /SHADOW_DISPATCH_PLAN_CHANGED/);
+    const migrated = openShadowDispatchLedger(legacyPath, {...plan, maxExecutionMs: 900000});
     try {
       // Duplicate fence on settled v0 entry is preserved before expiry.
       assert.equal(migrated.reserve(candidate(1, 12), quota(1), 1400).reason, 'DUPLICATE_OR_ACTIVE');
@@ -611,6 +678,15 @@ test('migrates pre-deadline v0 on-disk ledgers in place while preserving spent u
     } finally {
       migrated.close();
     }
+    // Verify PRAGMA user_version was promoted to 1 and unsupported future schema versions fail closed.
+    const verifyDb = new DatabaseSync(legacyPath);
+    try {
+      assert.equal(verifyDb.prepare('PRAGMA user_version').get().user_version, 1);
+      verifyDb.exec('PRAGMA user_version = 2');
+    } finally {
+      verifyDb.close();
+    }
+    assert.throws(() => openShadowDispatchLedger(legacyPath, plan), /SHADOW_DISPATCH_SCHEMA_UNSUPPORTED/);
   } finally {
     rmSync(dir, {recursive: true, force: true});
   }

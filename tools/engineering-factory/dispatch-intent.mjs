@@ -45,10 +45,10 @@ export function dispatchIntent(e, ...clock) {
 }
 
 // GitHub-hosted worker dry-run intent requiring verified environment, isolation,
-// bounded execution TTL, worker ladder compliance, and a zero-overage hard-stop receipt.
+// bounded execution TTL, single-step worker ladder progression, and a zero-overage hard-stop receipt.
 export function hostedWorkerDispatchIntent(e, ...clock) {
   if (!own(e, [...baseFields, 'environmentVerified', 'protectedEnvironment', 'isolatedWorktree',
-    'hardStopReceipt', 'nowMs', 'executionTtlMs', 'requestedWorkers']) ||
+    'hardStopReceipt', 'nowMs', 'executionTtlMs', 'requestedWorkers', 'verifiedPriorTier']) ||
     (clock.length > 0 && !nonneg(clock[0]))) return deny('EVIDENCE_UNKNOWN');
   if (clock.length > 0 && e.nowMs !== clock[0]) return deny('STALE_HARD_STOP_RECEIPT');
   if (e.stop !== false) return deny('STOPPED');
@@ -62,7 +62,10 @@ export function hostedWorkerDispatchIntent(e, ...clock) {
     return deny('BUDGET_OR_CAPACITY_UNKNOWN');
   const receipt = verifyHardStopReceipt(e.hardStopReceipt, clock.length > 0 ? clock[0] : e.nowMs);
   if (!receipt.valid) return deny(receipt.reason);
-  if (!ladder.includes(e.requestedWorkers) || e.requestedWorkers > e.capacity)
+  const tierIndex = ladder.indexOf(e.requestedWorkers);
+  const prevTier = tierIndex > 0 ? ladder[tierIndex - 1] : 0;
+  if (tierIndex === -1 || e.requestedWorkers > e.capacity ||
+      (e.verifiedPriorTier !== e.requestedWorkers && e.verifiedPriorTier !== prevTier))
     return deny('WORKER_LADDER_VIOLATION');
   if (!pos(e.executionTtlMs) || e.executionTtlMs > maxExecutionTtlMs)
     return deny('EXECUTION_TTL_INVALID');

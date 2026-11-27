@@ -6,6 +6,7 @@ import {dispatchIntent} from './dispatch-intent.mjs';
 
 const defaultMaxExecutionMs = 900000;
 const maxAllowedExecutionMs = 3600000;
+const schemaVersion = 1;
 const snapshotVersion = 1;
 const phases = new Set(['reserved', 'in-flight', 'settled', 'cancelled', 'expired']);
 const time = value => Number.isSafeInteger(value) && value >= 0;
@@ -60,8 +61,7 @@ function normalizePlan(plan) {
       !positive(plan.includedUnits) || plan.includedUnits > 10000000 ||
       !positive(plan.unitsPerRun) || plan.unitsPerRun > plan.includedUnits) return null;
   let maxExecutionMs = defaultMaxExecutionMs;
-  const customExecutionBound = Object.hasOwn(plan, 'maxExecutionMs');
-  if (customExecutionBound) {
+  if (Object.hasOwn(plan, 'maxExecutionMs')) {
     if (!data(plan, ['maxExecutionMs']) || !positive(plan.maxExecutionMs) ||
         plan.maxExecutionMs > maxAllowedExecutionMs) return null;
     maxExecutionMs = plan.maxExecutionMs;
@@ -76,8 +76,8 @@ function normalizePlan(plan) {
     repos.set(entry.repositoryId, entry.maxActive);
   }
   const sortedRepos = [...repos].sort(([a], [b]) => a - b);
-  const legacySignature = customExecutionBound ? null :
-    JSON.stringify([plan.window, plan.maxActive, plan.includedUnits, plan.unitsPerRun, sortedRepos]);
+  const legacySignature = maxExecutionMs === defaultMaxExecutionMs ?
+    JSON.stringify([plan.window, plan.maxActive, plan.includedUnits, plan.unitsPerRun, sortedRepos]) : null;
   const signature = JSON.stringify([plan.window, plan.maxActive, plan.includedUnits, plan.unitsPerRun,
     maxExecutionMs, sortedRepos]);
   return {repos, signature, legacySignature, window: plan.window, maxActive: plan.maxActive,
@@ -92,6 +92,9 @@ export function openShadowDispatchLedger(filename, fixturePlan) {
   try {
     db.exec('BEGIN IMMEDIATE');
     try {
+      const userVersion = db.prepare('PRAGMA user_version').get().user_version;
+      if (userVersion !== 0 && userVersion !== schemaVersion)
+        throw Error('SHADOW_DISPATCH_SCHEMA_UNSUPPORTED');
       db.exec(`
         CREATE TABLE IF NOT EXISTS shadow_dispatch_plan (
           id INTEGER PRIMARY KEY CHECK(id = 1), signature TEXT NOT NULL
@@ -112,29 +115,32 @@ export function openShadowDispatchLedger(filename, fixturePlan) {
       db.prepare('INSERT OR IGNORE INTO shadow_dispatch_plan VALUES (1, ?)').run(plan.signature);
       const storedSignature = db.prepare('SELECT signature FROM shadow_dispatch_plan WHERE id = 1').get().signature;
       if (storedSignature !== plan.signature) {
-        if (plan.legacySignature === null || storedSignature !== plan.legacySignature)
+        if (userVersion !== 0 || plan.legacySignature === null || storedSignature !== plan.legacySignature)
           throw Error('SHADOW_DISPATCH_PLAN_CHANGED');
         db.prepare('UPDATE shadow_dispatch_plan SET signature = ? WHERE id = 1').run(plan.signature);
       }
-      const tableDDL = db.prepare(
-        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'shadow_dispatch_reservations'"
-      ).get().sql;
-      if (!tableDDL.includes("'expired'")) {
-        db.exec(`
-          CREATE TABLE shadow_dispatch_reservations_v2 (
-            repository INTEGER NOT NULL, issue INTEGER NOT NULL, head TEXT NOT NULL, generation INTEGER NOT NULL,
-            units INTEGER NOT NULL CHECK(units > 0),
-            phase TEXT NOT NULL CHECK(phase IN ('reserved', 'in-flight', 'settled', 'cancelled', 'expired')),
-            valid_through INTEGER NOT NULL, reserved_at INTEGER NOT NULL CHECK(reserved_at >= 0),
-            CHECK(valid_through >= reserved_at),
-            PRIMARY KEY (repository, issue, head)
-          );
-          INSERT INTO shadow_dispatch_reservations_v2
-            SELECT repository, issue, head, generation, units, phase, valid_through, reserved_at
-            FROM shadow_dispatch_reservations;
-          DROP TABLE shadow_dispatch_reservations;
-          ALTER TABLE shadow_dispatch_reservations_v2 RENAME TO shadow_dispatch_reservations;
-        `);
+      if (userVersion === 0) {
+        const tableDDL = db.prepare(
+          "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'shadow_dispatch_reservations'"
+        ).get().sql;
+        if (!tableDDL.includes("'expired'")) {
+          db.exec(`
+            CREATE TABLE shadow_dispatch_reservations_v2 (
+              repository INTEGER NOT NULL, issue INTEGER NOT NULL, head TEXT NOT NULL, generation INTEGER NOT NULL,
+              units INTEGER NOT NULL CHECK(units > 0),
+              phase TEXT NOT NULL CHECK(phase IN ('reserved', 'in-flight', 'settled', 'cancelled', 'expired')),
+              valid_through INTEGER NOT NULL, reserved_at INTEGER NOT NULL CHECK(reserved_at >= 0),
+              CHECK(valid_through >= reserved_at),
+              PRIMARY KEY (repository, issue, head)
+            );
+            INSERT INTO shadow_dispatch_reservations_v2
+              SELECT repository, issue, head, generation, units, phase, valid_through, reserved_at
+              FROM shadow_dispatch_reservations;
+            DROP TABLE shadow_dispatch_reservations;
+            ALTER TABLE shadow_dispatch_reservations_v2 RENAME TO shadow_dispatch_reservations;
+          `);
+        }
+        db.exec(`PRAGMA user_version = ${schemaVersion}`);
       }
       db.prepare('INSERT OR IGNORE INTO shadow_dispatch_snapshot_fence VALUES (1, 0)').run();
       db.exec('COMMIT');
@@ -172,7 +178,7 @@ export function openShadowDispatchLedger(filename, fixturePlan) {
         AND phase = 'reserved' AND reserved_at <= ? AND valid_through >= ?
     `);
     const readReservation = db.prepare(`
-      SELECT phase, valid_through FROM shadow_dispatch_reservations
+      SELECT phase, valid_through, reserved_at FROM shadow_dispatch_reservations
       WHERE repository = ? AND issue = ? AND head = ? AND generation = ?
     `);
     const transition = db.prepare(`
@@ -340,11 +346,13 @@ export function openShadowDispatchLedger(filename, fixturePlan) {
           validThrough: row.validThrough,
           reservedAt: row.reservedAt
         };
-        const maxDeadline = (clean.phase === 'reserved' || clean.phase === 'cancelled') ?
-          clean.reservedAt + 60000 :
-          Math.min(snapshot.exportedAt, clean.reservedAt + 60000) + plan.maxExecutionMs;
-        if (clean.reservedAt > snapshot.exportedAt || clean.validThrough > maxDeadline)
-          return state('INVALID_SNAPSHOT');
+        if (clean.reservedAt > snapshot.exportedAt) return state('INVALID_SNAPSHOT');
+        const maxBeginAt = snapshot.exportedAt - clean.reservedAt > 60000 ?
+          clean.reservedAt + 60000 : snapshot.exportedAt;
+        const deadlineExceeded = (clean.phase === 'reserved' || clean.phase === 'cancelled') ?
+          clean.validThrough - clean.reservedAt > 60000 :
+          clean.validThrough - maxBeginAt > plan.maxExecutionMs;
+        if (deadlineExceeded) return state('INVALID_SNAPSHOT');
         if (normalized.length && compareRows(normalized[normalized.length - 1], clean) >= 0)
           return state('INVALID_SNAPSHOT');
         if (clean.phase !== 'cancelled') {
@@ -449,7 +457,9 @@ export function openShadowDispatchLedger(filename, fixturePlan) {
           const row = readReservation.get(...values(ticket));
           let reason = 'RESERVATION_UNAVAILABLE';
           if (row) {
-            if (row.phase === 'expired' || (row.phase === 'in-flight' && row.valid_through < now)) {
+            if (now < row.reserved_at) {
+              reason = 'TERMINAL_RECEIPT_UNKNOWN';
+            } else if (row.phase === 'expired' || (row.phase === 'in-flight' && row.valid_through < now)) {
               if (row.phase === 'in-flight') transition.run('expired', ...values(ticket), 'in-flight');
               reason = 'EXECUTION_DEADLINE_EXCEEDED';
             } else if (row.phase === 'in-flight') {
