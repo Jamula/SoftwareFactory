@@ -17,7 +17,7 @@ The AppHost manages local processes and resource health; the evaluator stays det
 
 ## Local setup and acceptance
 
-Use a supported stable Aspire SDK/CLI, pinned supported Node LTS, and locked dependencies. Use the launch and evidence checklist in [Aspire synthetic smoke](ASPIRE-SYNTHETIC-SMOKE.md). No mandatory Docker or remote service; explicitly document any container prerequisites. Bind dashboard and collector to loopback; keep authentication enabled where supported. No remote exporter by default. Stop/cleanup must not leave external agent runs, credentials or mutable consumer state. Use synthetic metadata, bounded scenarios and mocked adapters.
+Use a supported stable Aspire SDK/CLI, pinned supported Node LTS, and locked dependencies. Dashboard API, archive export, and read-only SQLite persistence verifiers run on pinned Node.js `26.13.1` (`tools/engineering-factory/verify-dashboard-*.mjs` and `tools/engineering-factory/inspect-dashboard-metric-schema.mjs`) using built-in modules only; Python source and workflow invocations are rejected by `tools/engineering-factory/no-python-guard.mjs`. Use the launch and evidence checklist in [Aspire synthetic smoke](ASPIRE-SYNTHETIC-SMOKE.md). No mandatory Docker or remote service; explicitly document any container prerequisites. Bind dashboard and collector to loopback; keep authentication enabled where supported. No remote exporter by default. Stop/cleanup must not leave external agent runs, credentials or mutable consumer state. Use synthetic metadata, bounded scenarios and mocked adapters.
 
 | Signal | Examples |
 | --- | --- |
