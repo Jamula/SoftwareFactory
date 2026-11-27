@@ -13,6 +13,7 @@ const RECEIPT_KEYS = [
   'codeScanning', 'secretScanningClear', 'threadsResolved', 'review',
   'expectedComponents', 'coverageReports'
 ];
+const RECEIPT_ALLOWED_KEYS = new Set([...RECEIPT_KEYS, 'branchless']);
 const RULESET_KEYS = [
   'strict_required_status_checks_policy', 'required_status_checks',
   'minimum_coverage', 'max_coverage_drop', 'required_approving_review_count',
@@ -151,8 +152,7 @@ function verifyRuleset(ruleset) {
     return {ok: false, reason: 'COVERAGE_RULESET_BELOW_TARGET'};
   if (ruleset.strict_required_status_checks_policy !== true ||
       ruleset.required_review_thread_resolution !== true ||
-      !Number.isSafeInteger(ruleset.required_approving_review_count) ||
-      ruleset.required_approving_review_count < 0 ||
+      ruleset.required_approving_review_count !== 0 ||
       ruleset.allowed_merge_methods.length !== 1 || ruleset.allowed_merge_methods[0] !== 'squash' ||
       ruleset.merge_queue_grouping !== 'ALLGREEN' ||
       ruleset.bypass_actors !== 0 || ruleset.secret_scanning_required !== true)
@@ -200,7 +200,9 @@ function verifyChecks(checks, requiredMap, expectedHead, requiredEvent) {
 // Reconcile effective main rulesets (required_approving_review_count: 0, separate CodeQL
 // code_scanning rule, minimum_coverage >= 98) with exact-head PR/merge_group/fork gates.
 export function verifyCandidateGateReceipt(receipt) {
-  if (!exact(receipt, RECEIPT_KEYS) || receipt.repository !== FACTORY_REPO ||
+  if (!plainSubset(receipt, RECEIPT_ALLOWED_KEYS) ||
+      !RECEIPT_KEYS.every(k => Object.hasOwn(receipt, k)) ||
+      receipt.repository !== FACTORY_REPO ||
       receipt.repositoryId !== FACTORY_REPO_ID || receipt.branch !== 'main' ||
       !repoName(receipt.headRepository) || typeof receipt.isFork !== 'boolean' ||
       !sha(receipt.head) || !sha(receipt.mergeGroupHead) ||
@@ -215,8 +217,8 @@ export function verifyCandidateGateReceipt(receipt) {
   if (!verifyChecks(receipt.mergeGroupChecks, rules.requiredMap, receipt.mergeGroupHead, 'merge_group'))
     return gateDeny('MERGE_GROUP_CHECKS_INCOMPLETE');
   const cs = receipt.codeScanning;
-  if (!exact(cs, ['tool', 'head', 'status', 'openAlerts']) || cs.tool !== 'CodeQL' ||
-      cs.head !== receipt.head || cs.status !== 'completed' ||
+  if (!exact(cs, ['tool', 'head', 'status', 'conclusion', 'openAlerts']) || cs.tool !== 'CodeQL' ||
+      cs.head !== receipt.head || cs.status !== 'completed' || cs.conclusion !== 'success' ||
       !Number.isSafeInteger(cs.openAlerts) || cs.openAlerts !== 0)
     return gateDeny('CODEQL_ALERTS_OR_INCOMPLETE');
   if (!receipt.secretScanningClear || !receipt.threadsResolved)
@@ -230,8 +232,10 @@ export function verifyCandidateGateReceipt(receipt) {
         ['copilot-pull-request-reviewer', 'copilot-pull-request-reviewer[bot]'].includes(rv.reviewer.toLowerCase()))) ||
       rv.summaryDisposition !== 'clear' || rv.unresolvedSummaryFindings !== 0 || rv.blockingReviewCount !== 0)
     return gateDeny('INDEPENDENT_REVIEW_INCOMPLETE');
-  const cov = coverageEvidence(receipt.head, receipt.expectedComponents, receipt.coverageReports,
-    {repository: FACTORY_REPO, lineMin: rules.minimumCoverage, branchMin: 95});
+  const covPolicy = receipt.branchless === undefined
+    ? {repository: FACTORY_REPO, lineMin: rules.minimumCoverage, branchMin: 95}
+    : {repository: FACTORY_REPO, lineMin: rules.minimumCoverage, branchMin: 95, branchless: receipt.branchless};
+  const cov = coverageEvidence(receipt.head, receipt.expectedComponents, receipt.coverageReports, covPolicy);
   if (!cov.valid) return gateDeny('COVERAGE_UNVERIFIED');
   return Object.freeze({
     shadow: true,

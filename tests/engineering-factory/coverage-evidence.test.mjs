@@ -108,7 +108,7 @@ test('verifyCandidateGateReceipt reconciles rulesets, fork PRs, merge_group chec
    {name:'pinned-synthetic-replay',head:h,appId:15368,status:'completed',conclusion:'success'}
   ],
   mergeGroupChecks:contexts.map(name=>({name,head:mg,appId:15368,event:'merge_group',status:'completed',conclusion:'success'})),
-  codeScanning:{tool:'CodeQL',head:h,status:'completed',openAlerts:0},
+  codeScanning:{tool:'CodeQL',head:h,status:'completed',conclusion:'success',openAlerts:0},
   secretScanningClear:true,
   threadsResolved:true,
   review:{
@@ -135,9 +135,10 @@ test('verifyCandidateGateReceipt reconciles rulesets, fork PRs, merge_group chec
 
  for(const patch of [
   {repository:'example/other'},{repositoryId:1},{branch:'dev'},{headRepository:'bad'},
-  {isFork:'no'},{head:'bad'},{mergeGroupHead:'bad'},{secretScanningClear:'yes'},{threadsResolved:null}
+  {isFork:'no'},{head:'bad'},{mergeGroupHead:'bad'},{secretScanningClear:'yes'},{threadsResolved:null},{extra:1}
  ])assert.equal(verifyReceipt({...baseReceipt(),...patch}).reason,'RECEIPT_UNKNOWN');
  assert.equal(verifyReceipt(null).reason,'RECEIPT_UNKNOWN');
+ assert.equal(verifyReceipt({repository:'Jamula/SoftwareFactory'}).reason,'RECEIPT_UNKNOWN');
 
  assert.equal(verifyReceipt({...baseReceipt(),isFork:true}).reason,'FORK_PR_PLATFORM_GATES_UNTRUSTED');
  assert.equal(verifyReceipt({...baseReceipt(),headRepository:'fork-owner/SoftwareFactory'}).reason,'FORK_PR_PLATFORM_GATES_UNTRUSTED');
@@ -156,7 +157,8 @@ test('verifyCandidateGateReceipt reconciles rulesets, fork PRs, merge_group chec
 
  for(const patch of [
   {strict_required_status_checks_policy:false},{required_review_thread_resolution:false},
-  {required_approving_review_count:-1},{allowed_merge_methods:['merge']},{allowed_merge_methods:['squash','merge']},
+  {required_approving_review_count:-1},{required_approving_review_count:1},{required_approving_review_count:2},
+  {allowed_merge_methods:['merge']},{allowed_merge_methods:['squash','merge']},
   {merge_queue_grouping:'SOLO'},{bypass_actors:1},{secret_scanning_required:false},
   {required_status_checks:baseReceipt().ruleset.required_status_checks.slice(0,2)},
   {required_status_checks:baseReceipt().ruleset.required_status_checks.map((c,i)=>i===0?{...c,integration_id:99}:c)},
@@ -186,9 +188,15 @@ test('verifyCandidateGateReceipt reconciles rulesets, fork PRs, merge_group chec
  ])assert.equal(verifyReceipt({...baseReceipt(),mergeGroupChecks:badMgChecks}).reason,'MERGE_GROUP_CHECKS_INCOMPLETE');
 
  for(const badCs of [
-  null,{tool:'Other',head:h,status:'completed',openAlerts:0},{tool:'CodeQL',head:mg,status:'completed',openAlerts:0},
-  {tool:'CodeQL',head:h,status:'in_progress',openAlerts:0},{tool:'CodeQL',head:h,status:'completed',openAlerts:1},
-  {tool:'CodeQL',head:h,status:'completed',openAlerts:1.5}
+  null,{tool:'CodeQL',head:h,status:'completed',openAlerts:0},
+  {tool:'Other',head:h,status:'completed',conclusion:'success',openAlerts:0},
+  {tool:'CodeQL',head:mg,status:'completed',conclusion:'success',openAlerts:0},
+  {tool:'CodeQL',head:h,status:'in_progress',conclusion:'success',openAlerts:0},
+  {tool:'CodeQL',head:h,status:'completed',conclusion:'failure',openAlerts:0},
+  {tool:'CodeQL',head:h,status:'completed',conclusion:'skipped',openAlerts:0},
+  {tool:'CodeQL',head:h,status:'completed',conclusion:'cancelled',openAlerts:0},
+  {tool:'CodeQL',head:h,status:'completed',conclusion:'success',openAlerts:1},
+  {tool:'CodeQL',head:h,status:'completed',conclusion:'success',openAlerts:1.5}
  ])assert.equal(verifyReceipt({...baseReceipt(),codeScanning:badCs}).reason,'CODEQL_ALERTS_OR_INCOMPLETE');
 
  assert.equal(verifyReceipt({...baseReceipt(),secretScanningClear:false}).reason,'SECURITY_OR_THREADS_UNRESOLVED');
@@ -207,8 +215,17 @@ test('verifyCandidateGateReceipt reconciles rulesets, fork PRs, merge_group chec
  stricterRulesetReceipt.ruleset={...stricterRulesetReceipt.ruleset,minimum_coverage:99};
  assert.equal(verifyReceipt(stricterRulesetReceipt).reason,'COVERAGE_UNVERIFIED');
 
+ const zero={component:'schema',head:h,lines:50,lineTotal:50,branches:0,branchTotal:0};
+ const branchlessEntry={component:'schema',head:h,reviewedBy:'independent-reviewer',reason:'pure constant schema definition'};
+ assert.equal(verifyReceipt({...baseReceipt(),expectedComponents:['core','schema'],coverageReports:[r,zero]}).reason,'COVERAGE_UNVERIFIED');
+ assert.equal(verifyReceipt({...baseReceipt(),expectedComponents:['core','schema'],coverageReports:[r,zero],branchless:[branchlessEntry]}).valid,true);
+ assert.equal(verifyReceipt({...baseReceipt(),expectedComponents:['core','schema'],coverageReports:[r,zero],branchless:[{...branchlessEntry,head:mg}]}).reason,'COVERAGE_UNVERIFIED');
+
  let traps=0;
  const trap=()=>{traps++;throw Error('unexpected proxy trap');};
+ const getterBranchless=baseReceipt();
+ Object.defineProperty(getterBranchless,'branchless',{get:trap,enumerable:true});
+ assert.equal(verifyReceipt(getterBranchless).reason,'RECEIPT_UNKNOWN');
  assert.equal(verifyReceipt(new Proxy(baseReceipt(),{get:trap,ownKeys:trap})).reason,'RECEIPT_UNKNOWN');
  assert.equal(verifyReceipt({...baseReceipt(),ruleset:new Proxy(baseReceipt().ruleset,{get:trap})}).reason,'RULESET_UNKNOWN');
  assert.equal(verifyReceipt({...baseReceipt(),review:new Proxy(baseReceipt().review,{get:trap})}).reason,'INDEPENDENT_REVIEW_INCOMPLETE');
