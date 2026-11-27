@@ -1087,6 +1087,15 @@ test('enforces ruleset completeness, scope matching, and strict types.isProxy / 
     {mergeQueueMergeMethod: 'MERGE'},
     {mergeQueueGrouping: 'SOLO'},
     {requiredStatusChecks: [{context: 'build-test', integrationId: GITHUB_ACTIONS_APP_ID}]},
+    {
+      requiredStatusChecks: [
+        ...REQUIRED_STATUS_CHECK_CONTEXTS.map(context => ({
+          context,
+          integrationId: GITHUB_ACTIONS_APP_ID
+        })),
+        {context: 'linux-aspire-runtime', integrationId: 99999}
+      ]
+    },
     {codeScanningTools: []},
     {
       codeScanningTools: [

@@ -68,6 +68,12 @@ const MAIN_WORKFLOW_REQUIRED_JOBS = new Map([
 
 const defaultOffSet = new Set(DEFAULT_OFF_MAIN_WORKFLOWS);
 const activeWorkflowSet = new Set(ACTIVE_MAIN_WORKFLOWS);
+const builtInActionsJobSet = new Set([
+  ...REQUIRED_STATUS_CHECK_CONTEXTS,
+  ...REQUIRED_CANDIDATE_PULL_CHECKS,
+  ...REQUIRED_MERGE_GROUP_CHECKS,
+  ...[...MAIN_WORKFLOW_REQUIRED_JOBS.values()].flat()
+]);
 
 const CHECK_STATUSES = new Set([
   'queued',
@@ -323,6 +329,13 @@ function auditRuleset(ruleset) {
     (codeqlRule.alertsThreshold === 'errors_and_warnings' ||
       codeqlRule.alertsThreshold === 'all');
 
+  let builtInProducerOverridden = false;
+  for (const [ctx, appId] of checkMap) {
+    if (builtInActionsJobSet.has(ctx) && appId !== GITHUB_ACTIONS_APP_ID) {
+      builtInProducerOverridden = true;
+    }
+  }
+
   if (!Number.isFinite(ruleset.minimumCoverage) ||
       ruleset.minimumCoverage < 98 ||
       ruleset.minimumCoverage > 100 ||
@@ -331,6 +344,7 @@ function auditRuleset(ruleset) {
       ruleset.requiredReviewThreadResolution !== true ||
       ruleset.secretScanningRequired !== true ||
       !codeqlProtected ||
+      builtInProducerOverridden ||
       ruleset.bypassActorsCount !== 0 ||
       ruleset.requiredApprovingReviewCount < 0 ||
       (ruleset.requiredApprovingReviewCount === 0 && ruleset.copilotCodeReviewOnPush !== true) ||
@@ -562,9 +576,13 @@ function auditMainSection(main, lineMin, requiredCheckMap) {
       presentJobs.add(job.name);
       if (!isDefaultOff) presentNonDefaultOffJobs.add(job.name);
       if (job.headSha !== main.head) addReason(reasons, 'MAIN_HEAD_MISMATCH');
-      const expectedAppId = requiredCheckMap.has(job.name)
-        ? requiredCheckMap.get(job.name)
-        : GITHUB_ACTIONS_APP_ID;
+      const isBuiltInWorkflowOrJob =
+        activeWorkflowSet.has(run.workflow) ||
+        isDefaultOff ||
+        builtInActionsJobSet.has(job.name);
+      const expectedAppId = isBuiltInWorkflowOrJob
+        ? GITHUB_ACTIONS_APP_ID
+        : (requiredCheckMap.has(job.name) ? requiredCheckMap.get(job.name) : GITHUB_ACTIONS_APP_ID);
       if (job.appId !== expectedAppId) addReason(reasons, 'UNTRUSTED_CHECK_APP');
       if (job.status !== 'completed') {
         runHasIncompleteJob = true;
@@ -852,9 +870,9 @@ function auditCandidateSection(candidate, mainHead, mainAudit, lineMin, required
   for (let i = 0; i < candidate.pullChecks.length; i++) {
     const c = candidate.pullChecks[i];
     if (c.headSha !== candidate.head) addReason(reasons, 'CANDIDATE_PULL_HEAD_MISMATCH');
-    const expectedAppId = requiredCheckMap.has(c.name)
-      ? requiredCheckMap.get(c.name)
-      : GITHUB_ACTIONS_APP_ID;
+    const expectedAppId = builtInActionsJobSet.has(c.name)
+      ? GITHUB_ACTIONS_APP_ID
+      : (requiredCheckMap.has(c.name) ? requiredCheckMap.get(c.name) : GITHUB_ACTIONS_APP_ID);
     if (c.appId !== expectedAppId) addReason(reasons, 'UNTRUSTED_CHECK_APP');
     const eventOk = requiredPullCheckSet.has(c.name)
       ? c.event === 'pull_request'
@@ -969,9 +987,9 @@ function auditCandidateSection(candidate, mainHead, mainAudit, lineMin, required
   for (let i = 0; i < mg.checks.length; i++) {
     const c = mg.checks[i];
     if (c.headSha !== mg.head) addReason(reasons, 'MERGE_GROUP_SHA_MISMATCH');
-    const expectedAppId = requiredCheckMap.has(c.name)
-      ? requiredCheckMap.get(c.name)
-      : GITHUB_ACTIONS_APP_ID;
+    const expectedAppId = builtInActionsJobSet.has(c.name)
+      ? GITHUB_ACTIONS_APP_ID
+      : (requiredCheckMap.has(c.name) ? requiredCheckMap.get(c.name) : GITHUB_ACTIONS_APP_ID);
     if (c.appId !== expectedAppId) addReason(reasons, 'UNTRUSTED_CHECK_APP');
     if (c.event !== 'merge_group') addReason(reasons, 'MERGE_GROUP_EVENT_MISMATCH');
     if (c.status !== 'completed' || c.conclusion !== 'success') mgAllGreen = false;
