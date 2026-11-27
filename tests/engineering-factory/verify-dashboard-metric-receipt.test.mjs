@@ -220,10 +220,10 @@ test('verifyRun enforces private single-run directory structure, rejects symlink
     makeLink(join(runsRoot,'runs'),join(symRoot,'runs'),join(runsRoot,'runs'));
     assert.throws(()=>verifyRun(symRoot),/missing run root/);
 
-    // Symlinked dashboard.db is rejected
+    // Symlinked dashboard.db is rejected (true regular-file symlink)
     const symDbRoot=join(dir,'sym-db');
     mkdirSync(join(symDbRoot,'runs','r1'),{recursive:true});
-    makeLink(dbPath,join(symDbRoot,'runs','r1','dashboard.db'),runDir);
+    symlinkSync(dbPath,join(symDbRoot,'runs','r1','dashboard.db'),'file');
     assert.throws(()=>verifyRun(symDbRoot),/missing database/);
 
     // CLI direct and subprocess execution

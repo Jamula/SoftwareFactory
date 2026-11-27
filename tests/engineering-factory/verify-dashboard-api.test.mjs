@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {spawnSync} from 'node:child_process';
 import crypto from 'node:crypto';
-import {mkdtempSync,rmSync,symlinkSync,writeFileSync} from 'node:fs';
+import {constants,mkdtempSync,rmSync,statSync,symlinkSync,writeFileSync} from 'node:fs';
 import https from 'node:https';
 import {tmpdir} from 'node:os';
 import {join,resolve} from 'node:path';
@@ -276,13 +276,14 @@ test('readBoundedFile enforces regular, non-symlink, non-empty, size-bounded fil
     const valid=join(dir,'valid.pem');
     writeFileSync(valid,'cert-bytes');
     assert.equal(readBoundedFile(valid).toString('utf8'),'cert-bytes');
+    const validInfo=statSync(valid);
+    assert.throws(()=>readBoundedFile(valid,1_000_000,{statPath:()=>({isSymbolicLink:()=>false,isFile:()=>false,dev:validInfo.dev,ino:validInfo.ino})}),/invalid file/);
+    assert.throws(()=>readBoundedFile(valid,1_000_000,{statPath:()=>({isSymbolicLink:()=>false,isFile:()=>true,dev:validInfo.dev+1,ino:validInfo.ino})}),/invalid file/);
+    assert.throws(()=>readBoundedFile(valid,1_000_000,{statPath:()=>({isSymbolicLink:()=>false,isFile:()=>true,dev:validInfo.dev,ino:validInfo.ino+1})}),/invalid file/);
     const link=join(dir,'link.pem');
-    try{
-      symlinkSync(valid,link);
-    }catch{
-      symlinkSync(dir,link,'junction');
-    }
+    symlinkSync(valid,link,'file');
     assert.throws(()=>readBoundedFile(link));
+    assert.throws(()=>readBoundedFile(link,1_000_000,{openFlags:constants.O_RDONLY}),/invalid file/);
   }finally{
     rmSync(dir,{recursive:true,force:true});
   }

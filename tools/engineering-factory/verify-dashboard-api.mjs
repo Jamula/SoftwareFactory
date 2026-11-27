@@ -1,6 +1,6 @@
 // Runner-only authenticated dashboard readback using an explicitly trusted local CA.
 // No root-store mutation, redirect, proxy, or raw telemetry/key output.
-import {openSync,fstatSync,readSync,closeSync,constants} from 'node:fs';
+import {openSync,fstatSync,lstatSync,readSync,closeSync,constants} from 'node:fs';
 import https from 'node:https';
 import {pathToFileURL} from 'node:url';
 
@@ -19,12 +19,15 @@ export function parseOrigin(rawOrigin){
   return {hostname,port};
 }
 
-export function readBoundedFile(filePath,limit=MAX_CA_BYTES){
+export function readBoundedFile(filePath,limit=MAX_CA_BYTES,{openFlags=SAFE_READ_FLAGS,statPath=lstatSync}={}){
   if(typeof filePath!=='string'||filePath.length===0)throw Error('invalid file path');
-  const fd=openSync(filePath,SAFE_READ_FLAGS);
+  const fd=openSync(filePath,openFlags);
   try{
     const info=fstatSync(fd);
-    if(!info.isFile()||info.size===0||info.size>limit)throw Error('invalid file');
+    const linkInfo=statPath(filePath);
+    if(!info.isFile()||linkInfo.isSymbolicLink()||!linkInfo.isFile()||
+       info.dev!==linkInfo.dev||info.ino!==linkInfo.ino||info.size===0||info.size>limit)
+      throw Error('invalid file');
     const buffer=Buffer.alloc(limit+1);
     let offset=0;
     while(offset<buffer.length){
