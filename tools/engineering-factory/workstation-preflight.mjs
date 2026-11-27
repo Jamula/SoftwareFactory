@@ -218,9 +218,9 @@ const XDG_RUNTIME_UID_RE = /(?<![A-Za-z0-9_.-])\/run\/user\/[0-9]{1,12}/g;
 const DARWIN_USER_TMP_RE =
   /(?<![A-Za-z0-9_.-])(?:\/private)?\/var\/folders\/[^/\s"':]{1,64}\/[^/\s"':]{1,128}/g;
 
-const URL_USERINFO_RE = /(https?:\/\/)([^\s/?#@]{1,128}@)/gi;
+const URL_USERINFO_RE = /\b([a-z][a-z0-9+.-]{1,15}:\/\/)([^\s/?#@]{1,128}@)/gi;
 const URL_HOST_AUTHORITY_RE =
-  /\b(https?:\/\/(?:[^\s/?#@]{1,128}@)?)(\[[^\]]{1,64}\]|[^[\s/?#:@"']{1,255})/gi;
+  /\b([a-z][a-z0-9+.-]{1,15}:\/\/(?:[^\s/?#@]{1,128}@)?)(\[[^\]]{1,64}\]|[^[\s/?#:@"']{1,255})/gi;
 const EMAIL_CANDIDATE_RE = /\b[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+\b/g;
 const IDENTITY_ASSIGNMENT_RE =
   /(?<![A-Za-z0-9_.-])(user(?:name)?|logname|login|hostname|computer[-_]?name|userdomain|machine[-_]?name|machine[-_]?id|serial[-_]?number|userprofile|home(?:dir|directory|path)?)(?:\\?["'])?\s*[:=]\s*(?:\\?"(?:\\.|[^"\\\r\n]){1,4096}\\?"|\\?'(?:\\.|[^'\\\r\n]){1,4096}\\?'|[^\s"',;}\]]{1,4096})/gi;
@@ -249,10 +249,7 @@ const POSIX_OS_TRUST_PREFIXES = [
   '/system/volumes/data/library/keychains'
 ];
 
-const WINDOWS_OS_TRUST_PREFIXES = [
-  'c:/windows',
-  'c:/programdata/microsoft/crypto'
-];
+const WINDOWS_OS_TRUST_PATH_RE = /^[a-z]:\/(?:windows|programdata\/microsoft\/crypto)(?:\/|$)/i;
 
 function isOwnEnumerableData(target, key) {
   const descriptor = Object.getOwnPropertyDescriptor(target, key);
@@ -560,17 +557,9 @@ function classifyLoopbackHttpsEndpoint(rawUrl) {
   if (redaction.strippedCategories.includes('non-loopback-ip')) {
     return 'NON_LOOPBACK_ADDRESS_FORBIDDEN';
   }
-  const match = /^https:\/\/([^/?#@\s]+):([1-9][0-9]{0,4})$/.exec(rawUrl);
-  if (!match) {
+  const match = /^https:\/\/(localhost|127\.0\.0\.1|\[::1\]):([1-9][0-9]{0,4})$/.exec(rawUrl);
+  if (!match || Number(match[2]) > 65535) {
     return 'INSECURE_LOOPBACK_POSTURE';
-  }
-  const host = match[1];
-  const port = Number(match[2]);
-  if (port > 65535) {
-    return 'INSECURE_LOOPBACK_POSTURE';
-  }
-  if (host !== 'localhost' && host !== '127.0.0.1' && host !== '[::1]') {
-    return 'NON_LOOPBACK_ADDRESS_FORBIDDEN';
   }
   return 'OK';
 }
@@ -578,14 +567,10 @@ function classifyLoopbackHttpsEndpoint(rawUrl) {
 function isOsRootTrustStorePath(rawPath) {
   const normalizedSlashes = rawPath.replaceAll('\\', '/');
   const lowerNormalized = normalizedSlashes.toLowerCase();
-  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(rawPath) || /^cert:[\\/]/i.test(rawPath)) {
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(normalizedSlashes) || /^cert:[\\/]/i.test(rawPath)) {
     return true;
   }
-  if (
-    WINDOWS_OS_TRUST_PREFIXES.some(
-      prefix => lowerNormalized === prefix || lowerNormalized.startsWith(`${prefix}/`)
-    )
-  ) {
+  if (WINDOWS_OS_TRUST_PATH_RE.test(normalizedSlashes)) {
     return true;
   }
   return (
@@ -1183,10 +1168,10 @@ function isLocalFilesystemPathCandidate(rawPath) {
   ) {
     return false;
   }
+  const normalizedSlashes = rawPath.replaceAll('\\', '/');
   if (
-    rawPath.startsWith('\\\\') ||
-    rawPath.startsWith('//') ||
-    /^[a-z][a-z0-9+.-]*:\/\//i.test(rawPath)
+    normalizedSlashes.startsWith('//') ||
+    /^[a-z][a-z0-9+.-]*:\/\//i.test(normalizedSlashes)
   ) {
     return false;
   }

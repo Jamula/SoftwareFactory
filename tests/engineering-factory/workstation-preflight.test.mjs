@@ -573,6 +573,8 @@ test('enforces telemetry opt-outs, loopback HTTPS posture, proxy restrictions, a
     { platform: 'windows-11', caPath: 'Cert:\\CurrentUser\\Root\\aspire-dev.pem' },
     { platform: 'windows-11', caPath: 'file:///C:/Temp/aspire-dev.pem' },
     { platform: 'windows-11', caPath: 'C:\\Windows\\System32\\aspire-dev.pem' },
+    { platform: 'windows-11', caPath: 'D:\\Windows\\System32\\aspire-dev.pem' },
+    { platform: 'windows-11', caPath: 'D:\\ProgramData\\Microsoft\\Crypto\\aspire-dev.pem' },
     { platform: 'linux', caPath: '/tmp/aspire-dev.pem', aspireHome: '/etc/ssl' }
   ]) {
     assert.equal(
@@ -765,9 +767,15 @@ test('rejects and strips private workstation identifiers, tokens, MACs, and non-
     { diagnosticNotes: ['2001:db8::1: connection refused'] },
     { diagnosticNotes: ['Profile: C:\\Users\\Jane Doe 192.168.1.50'] },
     { diagnosticNotes: ['Dashboard https://synthetic-workstation.local:18888 observed'] },
+    { diagnosticNotes: ['Socket wss://synthetic-workstation.local:18888 observed'] },
+    { diagnosticNotes: ['Transfer ftp://synthetic-workstation.local:18888 observed'] },
     {
       privacyMode: 'strip',
       diagnosticNotes: ['https://synthetic-user@synthetic-workstation.local:18888']
+    },
+    {
+      privacyMode: 'strip',
+      diagnosticNotes: ['ssh://synthetic-user@synthetic-workstation.local:22']
     }
   ]) {
     const res = evaluateWorkstationCompatibilityPreflight(buildValidObservation(badIpScenario));
@@ -826,11 +834,12 @@ test('rejects and strips private workstation identifiers, tokens, MACs, and non-
     '<redacted-home>'
   );
   const apostropheAndEscaped = stripPrivateWorkstationIdentifiers(
-    'escaped=C:\\\\Users\\\\Jane Doe\\\\certs\\\\a.pem apos=C:\\Users\\O\'Connor\\certs\\a.pem mac=/Users/O\'Connor/certs/a.pem json={"x-api-key":"SyntheticCanary\\\\suffix"} q=https://localhost:18888/login?t="QuotedTok" url=https://synthetic-user@synthetic-workstation.local:18888'
+    'escaped=C:\\\\Users\\\\Jane Doe\\\\certs\\\\a.pem apos=C:\\Users\\O\'Connor\\certs\\a.pem mac=/Users/O\'Connor/certs/a.pem json={"x-api-key":"SyntheticCanary\\\\suffix"} q=https://localhost:18888/login?t="QuotedTok" url=https://synthetic-user@synthetic-workstation.local:18888 ws=wss://synthetic-ws.local:18888 ftp=ftp://synthetic-ftp.local:21 loop=wss://localhost:18888'
   );
-  for (const leaked of ['Jane', 'Doe', 'Connor', 'SyntheticCanary', 'suffix', 'QuotedTok', 'synthetic-user', 'synthetic-workstation']) {
+  for (const leaked of ['Jane', 'Doe', 'Connor', 'SyntheticCanary', 'suffix', 'QuotedTok', 'synthetic-user', 'synthetic-workstation', 'synthetic-ws', 'synthetic-ftp']) {
     assert.equal(apostropheAndEscaped.sanitizedText.includes(leaked), false);
   }
+  assert.equal(apostropheAndEscaped.sanitizedText.includes('wss://localhost:18888'), true);
   const longSecret = `Bearer ${'A'.repeat(1200)}`;
   const longRedacted = stripPrivateWorkstationIdentifiers(longSecret);
   assert.equal(longRedacted.sanitizedText, '[REDACTED_TOKEN]');
@@ -1120,6 +1129,7 @@ test('inspectPemCaFile, collectWorkstationPreflightObservation, and CLI remain r
       invalidOptions: true
     });
 
+    const simulatedPosixPemPath = '/tmp/sf-preflight-mock/aspire-dev.pem';
     const mockedCollected = collectWorkstationPreflightObservation({
       env: {
         PATH: '/usr/bin',
@@ -1129,13 +1139,15 @@ test('inspectPemCaFile, collectWorkstationPreflightObservation, and CLI remain r
         ASPIRE_DASHBOARD_TELEMETRY_OPTOUT: 'true',
         ASPIRE_ALLOW_UNSECURED_TRANSPORT: 'false',
         ASPIRE_DASHBOARD_UNSECURED_ALLOW_ANONYMOUS: 'false',
-        NODE_EXTRA_CA_CERTS: validPemPath
+        NODE_EXTRA_CA_CERTS: simulatedPosixPemPath
       },
       platform: 'linux',
       arch: 'x64',
       nodeVersion: 'v26.13.1',
       kernelRelease: '6.8.0-generic',
-      execVersion: bin => (bin === 'dotnet' ? '10.0.404' : '17.0.0+abc1234')
+      execVersion: bin => (bin === 'dotnet' ? '10.0.404' : '17.0.0+abc1234'),
+      resolvePath: p => p,
+      inspectCa: p => (p === simulatedPosixPemPath ? inspected : inspectPemCaFile(''))
     });
     assert.equal(mockedCollected.platform, 'linux');
     assert.equal(mockedCollected.aspireCliVersion, '17.0.0');
@@ -1184,26 +1196,33 @@ test('inspectPemCaFile, collectWorkstationPreflightObservation, and CLI remain r
       close() {},
       openFlags: 0
     };
-    assert.equal(inspectPemCaFile('\\\\attacker.example\\share\\cert.pem', forbidFsDeps).readable, false);
-    assert.equal(
-      collectWorkstationPreflightObservation({
-        env: { NODE_EXTRA_CA_CERTS: '\\\\attacker.example\\share\\cert.pem' },
-        platform: 'win32',
-        kernelRelease: '10.0.22631',
-        nodeVersion: 'v26.13.1',
-        execVersion: () => '10.0.404',
-        resolvePath: () => { fsSyscallCount++; return ''; },
-        inspectCa: p => inspectPemCaFile(p, forbidFsDeps)
-      }).pemCa.readable,
-      false
-    );
-    assert.equal(
-      runWorkstationPreflightCli(['--observation', '\\\\attacker.example\\share\\obs.json'], {
-        fsDeps: forbidFsDeps,
-        write: line => lines.push(line)
-      }),
-      1
-    );
+    for (const uncPath of [
+      '\\\\attacker.example\\share\\cert.pem',
+      '//attacker.example/share/cert.pem',
+      '\\/attacker.example/share/cert.pem',
+      '/\\attacker.example/share/cert.pem'
+    ]) {
+      assert.equal(inspectPemCaFile(uncPath, forbidFsDeps).readable, false);
+      assert.equal(
+        collectWorkstationPreflightObservation({
+          env: { NODE_EXTRA_CA_CERTS: uncPath },
+          platform: 'win32',
+          kernelRelease: '10.0.22631',
+          nodeVersion: 'v26.13.1',
+          execVersion: () => '10.0.404',
+          resolvePath: () => { fsSyscallCount++; return ''; },
+          inspectCa: p => inspectPemCaFile(p, forbidFsDeps)
+        }).pemCa.readable,
+        false
+      );
+      assert.equal(
+        runWorkstationPreflightCli(['--observation', uncPath], {
+          fsDeps: forbidFsDeps,
+          write: line => lines.push(line)
+        }),
+        1
+      );
+    }
     assert.equal(fsSyscallCount, 0);
 
     const obsSymlink = join(dir, 'obs-link.json');
