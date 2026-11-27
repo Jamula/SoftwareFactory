@@ -19,6 +19,152 @@
     "state": "sqlite"
   },
   "lanes": [
-    {"id": "engineering-coordinator", "owners": ["tools/engineering-coordinator", "tests/engineering-coordinator"], "prompt": "agents/engineering-coordinator.md"}
-  ]
+    {
+      "id": "engineering-coordinator",
+      "specialist": "coordinator",
+      "owners": ["tools/engineering-coordinator", "tests/engineering-coordinator", "config", "agents"],
+      "prompt": "agents/engineering-coordinator.md"
+    },
+    {
+      "id": "engineering-factory",
+      "specialist": "api",
+      "owners": ["tools/engineering-factory", "tests/engineering-factory"],
+      "prompt": "agents/engineering-coordinator.md"
+    },
+    {
+      "id": "workflows",
+      "specialist": "security",
+      "owners": [".github/workflows"],
+      "prompt": "agents/engineering-coordinator.md"
+    },
+    {
+      "id": "apphost",
+      "specialist": "infra",
+      "owners": ["apphost.cs", "apphost.run.json", "aspire.config.json", "global.json"],
+      "prompt": "agents/engineering-coordinator.md"
+    },
+    {
+      "id": "docs",
+      "specialist": "docs",
+      "owners": ["docs"],
+      "prompt": "agents/engineering-coordinator.md"
+    }
+  ],
+  "knowledgeMap": {
+    "repository": "Jamula/SoftwareFactory",
+    "revision": "c84edc30dbbe760af6ceadfd1434f0ddb363623d",
+    "source": "trusted-default-branch",
+    "generatedAtMs": 1795737600000,
+    "maxAgeMs": 86400000,
+    "components": [
+      {
+        "id": "engineering-coordinator",
+        "lane": "engineering-coordinator",
+        "specialist": "coordinator",
+        "owners": ["tools/engineering-coordinator", "tests/engineering-coordinator", "config", "agents"],
+        "interfaces": [
+          "tools/engineering-coordinator/project-config.mjs",
+          "tools/engineering-coordinator/planner.mjs",
+          "tools/engineering-coordinator/coordinator.mjs",
+          "config/engineering-coordinator.schema.json"
+        ],
+        "decisions": [
+          "docs/ENGINEERING-COORDINATOR.md",
+          "docs/COORDINATOR-EVENT-JOURNAL.md",
+          "docs/COORDINATOR-REVIEW-PROVIDER.md"
+        ],
+        "tests": [
+          "tests/engineering-coordinator/project-config.test.mjs",
+          "tests/engineering-coordinator/planner.test.mjs",
+          "tests/engineering-coordinator/coordinator.test.mjs"
+        ],
+        "dependsOn": []
+      },
+      {
+        "id": "engineering-factory",
+        "lane": "engineering-factory",
+        "specialist": "api",
+        "owners": ["tools/engineering-factory", "tests/engineering-factory"],
+        "interfaces": [
+          "tools/engineering-factory/core.mjs",
+          "tools/engineering-factory/contract-routing.mjs",
+          "tools/engineering-factory/coverage-evidence.mjs"
+        ],
+        "decisions": [
+          "docs/ARCHITECTURE.md",
+          "docs/POLICY.md",
+          "docs/ENGINEERING-STANDARDS.md"
+        ],
+        "tests": [
+          "tests/engineering-factory/core.test.mjs",
+          "tests/engineering-factory/contract-routing.test.mjs",
+          "tests/engineering-factory/coverage-evidence.test.mjs"
+        ],
+        "dependsOn": []
+      },
+      {
+        "id": "workflows",
+        "lane": "workflows",
+        "specialist": "security",
+        "owners": [".github/workflows"],
+        "interfaces": [
+          ".github/workflows/validate.yml",
+          ".github/workflows/shadow-tests.yml",
+          ".github/workflows/shadow-reconcile.yml"
+        ],
+        "decisions": [
+          "docs/WORKFLOWS.md",
+          "docs/CI-CONSOLIDATION.md",
+          "docs/THREAT-MODEL.md"
+        ],
+        "tests": [
+          "tests/engineering-factory/coverage-evidence.test.mjs",
+          "tests/engineering-factory/platform-merge-gates.test.mjs"
+        ],
+        "dependsOn": ["engineering-coordinator", "engineering-factory"]
+      },
+      {
+        "id": "apphost",
+        "lane": "apphost",
+        "specialist": "infra",
+        "owners": ["apphost.cs", "apphost.run.json", "aspire.config.json", "global.json"],
+        "interfaces": [
+          "apphost.cs",
+          "aspire.config.json",
+          "tools/engineering-factory/aspire-smoke.mjs"
+        ],
+        "decisions": [
+          "docs/LOCAL-DEVELOPMENT.md",
+          "docs/ASPIRE-SYNTHETIC-SMOKE.md",
+          "docs/ASPIRE-TELEMETRY-ACCEPTANCE.md"
+        ],
+        "tests": [
+          "tests/engineering-factory/aspire-telemetry-smoke.test.mjs",
+          "tests/engineering-factory/local-otel-sdk.test.mjs"
+        ],
+        "dependsOn": ["engineering-factory"]
+      },
+      {
+        "id": "docs",
+        "lane": "docs",
+        "specialist": "docs",
+        "owners": ["docs"],
+        "interfaces": [
+          "docs/README.md",
+          "docs/CONSUMER-ADOPTION-CONTRACT.md",
+          "docs/ENGINEERING-METRIC-CONTRACT.md"
+        ],
+        "decisions": [
+          "docs/ROADMAP.md",
+          "docs/ENGINEERING-STANDARDS.md",
+          "docs/DELIVERY-LIFECYCLE.md"
+        ],
+        "tests": [
+          "tests/engineering-factory/profiles.test.mjs",
+          "tests/engineering-coordinator/project-config.test.mjs"
+        ],
+        "dependsOn": ["engineering-coordinator", "engineering-factory"]
+      }
+    ]
+  }
 }
