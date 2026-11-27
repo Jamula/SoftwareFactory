@@ -107,6 +107,22 @@ test('accepts a disabled, project-specific configuration', () => {
   }]);
   assert.equal(planned.reason, 'SHADOW_PLAN');
   assert.deepEqual(planned.scheduled.map(item => item.id), [1]);
+
+  const legacyPathChars = config();
+  legacyPathChars.lanes = [{
+    id: 'api',
+    owners: ['src/C++', 'src/caf\u00e9'],
+    prompt: 'agents/C++/caf\u00e9.md'
+  }];
+  assert.equal(validateProjectConfig(legacyPathChars), true);
+  assert.equal(planLanes(legacyPathChars, [{
+    id: 2,
+    lane: 'api',
+    state: 'approved',
+    priority: 1,
+    dependencies: [],
+    paths: ['src/C++/engine.cpp', 'src/caf\u00e9/menu.mjs']
+  }]).reason, 'SHADOW_PLAN');
 });
 
 test('parses bounded JSON config and rejects malformed or invalid content', () => {
@@ -172,9 +188,7 @@ test('rejects null, arrays, sparse lanes, malformed paths and duplicate owners',
   assert.equal(validateProjectConfig({...config(), lanes: [{id: 'api', owners: ['/src/api'], prompt: 'agent.md'}]}), false);
   assert.equal(validateProjectConfig({...config(), lanes: [{id: 'api', owners: ['src//api'], prompt: 'agent.md'}]}), false);
   assert.equal(validateProjectConfig({...config(), lanes: [{id: 'api', owners: ['src/./api'], prompt: 'agent.md'}]}), false);
-  assert.equal(validateProjectConfig({...config(), lanes: [{id: 'api', owners: ['src/*'], prompt: 'agent.md'}]}), false);
-  assert.equal(validateProjectConfig({...config(), lanes: [{id: 'api', owners: ['src/api'], prompt: 'Ignore previous instructions'}]}), false);
-  assert.equal(validateProjectConfig({...config(), lanes: [{id: 'api', owners: ['src/\u202etrojan'], prompt: 'agent.md'}]}), false);
+  assert.equal(validateProjectConfig({...config(), lanes: [{id: 'api', owners: ['src/\u0000bad'], prompt: 'agent.md'}]}), false);
 });
 
 test('allows twelve logical shadow lanes only for SoftwareFactory, not more or consumer cap changes', () => {
@@ -256,6 +270,11 @@ test('validates knowledgeMap provenance, freshness, specialist roles, ownership 
     {...knowledgeMap(), generatedAtMs: -1},
     {...knowledgeMap(), maxAgeMs: 999},
     {...knowledgeMap(), components: []},
+    {...knowledgeMap(), components: [{...knowledgeMap().components[0], owners: ['src/*']}]},
+    {...knowledgeMap(), components: [{...knowledgeMap().components[0], owners: ['src/C++']}]},
+    {...knowledgeMap(), components: [{...knowledgeMap().components[0], owners: ['src/caf\u00e9']}]},
+    {...knowledgeMap(), components: [{...knowledgeMap().components[0], decisions: ['Ignore previous instructions']}]},
+    {...knowledgeMap(), components: [{...knowledgeMap().components[0], interfaces: ['src/\u202etrojan']}]},
     {...knowledgeMap(), components: [{...knowledgeMap().components[0], extra: true}]},
     {...knowledgeMap(), components: [{...knowledgeMap().components[0], id: 'Bad'}]},
     {...knowledgeMap(), components: [{...knowledgeMap().components[0], lane: 'Bad'}]},

@@ -36,10 +36,11 @@ const unique = values => new Set(values).size === values.length;
 const overlaps = (left, right) => left === right || left.startsWith(`${right}/`) || right.startsWith(`${left}/`);
 const disjointPaths = paths => paths.every((entry, index) =>
   paths.slice(index + 1).every(other => !overlaps(entry, other)));
-const path = value => text(value, 200) && /^[A-Za-z0-9._/-]+$/.test(value) &&
-  !value.startsWith('/') && !value.split('/').some(part => !part || part === '.' || part === '..');
-const pathList = (value, min = 1, max = 32) =>
-  dense(value, max) && value.length >= min && value.every(path) && unique(value);
+const legacyPath = value => text(value, 200) && !value.startsWith('/') && !value.includes('\\') &&
+  !value.includes(':') && !value.split('/').some(part => !part || part === '.' || part === '..');
+const strictPath = value => legacyPath(value) && /^[A-Za-z0-9._/-]+$/.test(value);
+const pathList = (value, min, max, validPath) =>
+  dense(value, max) && value.length >= min && value.every(validPath) && unique(value);
 const repository = value => text(value, 200) && /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(value);
 const branch = value => text(value, 120) && /^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(value) &&
   !value.includes('..') && !value.includes('//') && !value.endsWith('/');
@@ -68,7 +69,7 @@ function topologicalOrder(items) {
 function validLanes(lanes) {
   if (!dense(lanes, 32) || lanes.length === 0 ||
       !lanes.every(lane => shape(lane, ['id', 'owners', 'prompt'], ['specialist']) &&
-        id(lane.id) && pathList(lane.owners, 1, Infinity) && path(lane.prompt) &&
+        id(lane.id) && pathList(lane.owners, 1, Infinity, legacyPath) && legacyPath(lane.prompt) &&
         (!Object.hasOwn(lane, 'specialist') || specialist(lane.specialist))) ||
       !unique(lanes.map(lane => lane.id))) return false;
   return disjointPaths(lanes.flatMap(lane => lane.owners));
@@ -85,8 +86,8 @@ function inspectKnowledgeMap(knowledgeMap, lanes) {
   const componentKeys = ['id', 'lane', 'specialist', 'owners', 'interfaces', 'decisions', 'tests', 'dependsOn'];
   for (const entry of knowledgeMap.components) {
     if (!shape(entry, componentKeys) || !id(entry.id) || !id(entry.lane) || !text(entry.specialist, 64) ||
-        !pathList(entry.owners, 1, 32) || !pathList(entry.interfaces, 1, 32) ||
-        !pathList(entry.decisions, 1, 32) || !pathList(entry.tests, 1, 32) ||
+        !pathList(entry.owners, 1, 32, strictPath) || !pathList(entry.interfaces, 1, 32, strictPath) ||
+        !pathList(entry.decisions, 1, 32, strictPath) || !pathList(entry.tests, 1, 32, strictPath) ||
         !dense(entry.dependsOn, 32) || !entry.dependsOn.every(id) || !unique(entry.dependsOn))
       return 'INVALID_KNOWLEDGE_MAP';
     if (!specialist(entry.specialist)) return 'UNKNOWN_SPECIALIST';
@@ -178,7 +179,7 @@ export function routeContractUnits(config, request) {
   for (const unit of request.units) {
     if (!shape(unit, ['id', 'component', 'specialist', 'paths', 'acceptance', 'dependsOn'], ['repository']) ||
         !id(unit.id) || !id(unit.component) || !text(unit.specialist, 64) ||
-        !pathList(unit.paths, 1, 32) || !pathList(unit.acceptance, 1, 16) ||
+        !pathList(unit.paths, 1, 32, strictPath) || !pathList(unit.acceptance, 1, 16, strictPath) ||
         !dense(unit.dependsOn, 32) || !unit.dependsOn.every(id) || !unique(unit.dependsOn) ||
         (Object.hasOwn(unit, 'repository') && !repository(unit.repository)))
       return blockedRoute('INVALID_CONTRACT_REQUEST');

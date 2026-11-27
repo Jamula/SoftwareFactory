@@ -119,7 +119,7 @@
         ],
         "tests": [
           "tests/engineering-factory/coverage-evidence.test.mjs",
-          "tests/engineering-factory/copilot-hosted-pilot.test.mjs"
+          "tests/engineering-factory/platform-merge-gates.test.mjs"
         ],
         "dependsOn": ["engineering-coordinator", "engineering-factory"]
       },
