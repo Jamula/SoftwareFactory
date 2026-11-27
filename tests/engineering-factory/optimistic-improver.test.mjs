@@ -1223,6 +1223,21 @@ test('queryCausalAuditTrail fails closed on missing repositoryId, proxies, incom
       authorIdentity: 'cyrusjamula',
       reviewerIdentity: 'senior-maintainer'
     }),
+    buildSampleCircuitBreaker(SF_REPO_ID, {
+      authorIdentity: null,
+      reviewerIdentity: null
+    }),
+    buildSampleCircuitBreaker(SF_REPO_ID, {
+      authorIdentity: 'cyrusjamula',
+      implementationAgentIdentity: null,
+      reviewerIdentity: 'copilot-pull-request-reviewer[bot]'
+    }),
+    buildSampleCircuitBreaker(SF_REPO_ID, {
+      authorIdentity: undefined,
+      reviewerIdentity: undefined
+    }),
+    buildSampleCircuitBreaker(SF_REPO_ID, {reviewerIdentity: null}),
+    buildSampleCircuitBreaker(SF_REPO_ID, {mainHealthy: null}),
     buildSampleCircuitBreaker(SF_REPO_ID, {mainHealthy: false})
   ]) {
     assert.equal(

@@ -788,21 +788,25 @@ function circuitBreakerMatchesLineage(cbInput, stages, repositoryId) {
     return false;
   }
   const review = stages.independentReview;
-  if (cbInput.authorIdentity !== undefined &&
-      cbInput.authorIdentity.toLowerCase() !== review.authorIdentity.toLowerCase()) {
+  if (hasOwnEnumerableData(cbInput, 'authorIdentity') &&
+      (typeof cbInput.authorIdentity !== 'string' ||
+        cbInput.authorIdentity.toLowerCase() !== review.authorIdentity.toLowerCase())) {
     return false;
   }
-  if (cbInput.implementationAgentIdentity !== undefined &&
-      cbInput.implementationAgentIdentity.toLowerCase() !==
-      review.implementationAgentIdentity.toLowerCase()) {
+  if (hasOwnEnumerableData(cbInput, 'implementationAgentIdentity') &&
+      (typeof cbInput.implementationAgentIdentity !== 'string' ||
+        cbInput.implementationAgentIdentity.toLowerCase() !==
+        review.implementationAgentIdentity.toLowerCase())) {
     return false;
   }
-  if (cbInput.reviewerIdentity !== undefined &&
-      cbInput.reviewerIdentity.toLowerCase() !== review.reviewerIdentity.toLowerCase()) {
+  if (hasOwnEnumerableData(cbInput, 'reviewerIdentity') &&
+      (typeof cbInput.reviewerIdentity !== 'string' ||
+        cbInput.reviewerIdentity.toLowerCase() !== review.reviewerIdentity.toLowerCase())) {
     return false;
   }
-  if (cbInput.mainHealthy !== undefined &&
-      cbInput.mainHealthy !== stages.verifiedMain.mainHealthy) {
+  if (hasOwnEnumerableData(cbInput, 'mainHealthy') &&
+      (typeof cbInput.mainHealthy !== 'boolean' ||
+        cbInput.mainHealthy !== stages.verifiedMain.mainHealthy)) {
     return false;
   }
   return true;
