@@ -831,6 +831,9 @@ test('rejects and strips private workstation identifiers, tokens, MACs, and non-
   for (const leaked of ['Jane', 'Doe', 'Connor', 'SyntheticCanary', 'suffix', 'QuotedTok', 'synthetic-user', 'synthetic-workstation']) {
     assert.equal(apostropheAndEscaped.sanitizedText.includes(leaked), false);
   }
+  const longSecret = `Bearer ${'A'.repeat(1200)}`;
+  const longRedacted = stripPrivateWorkstationIdentifiers(longSecret);
+  assert.equal(longRedacted.sanitizedText, '[REDACTED_TOKEN]');
   assert.equal(stripPrivateWorkstationIdentifiers(null), null);
   assert.equal(stripPrivateWorkstationIdentifiers('bad\u0007text'), null);
 
@@ -1169,6 +1172,39 @@ test('inspectPemCaFile, collectWorkstationPreflightObservation, and CLI remain r
       }),
       1
     );
+
+    // UNC / network paths never trigger filesystem open/lstat/realpath syscalls
+    let fsSyscallCount = 0;
+    const forbidFsDeps = {
+      open: () => { fsSyscallCount++; return 1; },
+      fstat: () => { fsSyscallCount++; return {}; },
+      lstat: () => { fsSyscallCount++; return {}; },
+      realpath: () => { fsSyscallCount++; return ''; },
+      read: () => 0,
+      close() {},
+      openFlags: 0
+    };
+    assert.equal(inspectPemCaFile('\\\\attacker.example\\share\\cert.pem', forbidFsDeps).readable, false);
+    assert.equal(
+      collectWorkstationPreflightObservation({
+        env: { NODE_EXTRA_CA_CERTS: '\\\\attacker.example\\share\\cert.pem' },
+        platform: 'win32',
+        kernelRelease: '10.0.22631',
+        nodeVersion: 'v26.13.1',
+        execVersion: () => '10.0.404',
+        resolvePath: () => { fsSyscallCount++; return ''; },
+        inspectCa: p => inspectPemCaFile(p, forbidFsDeps)
+      }).pemCa.readable,
+      false
+    );
+    assert.equal(
+      runWorkstationPreflightCli(['--observation', '\\\\attacker.example\\share\\obs.json'], {
+        fsDeps: forbidFsDeps,
+        write: line => lines.push(line)
+      }),
+      1
+    );
+    assert.equal(fsSyscallCount, 0);
 
     const obsSymlink = join(dir, 'obs-link.json');
     symlinkSync(obsPath, obsSymlink);
