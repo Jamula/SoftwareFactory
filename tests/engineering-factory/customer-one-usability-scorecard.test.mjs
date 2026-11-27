@@ -758,7 +758,19 @@ test('compares matched baseline windows and blocks cross-class, mismatched, stal
     'INCOMPLETE_OR_STALE_EVIDENCE'
   );
 
-  // Invalid / forged baselines (including tampered freshnessStatus/stale/timestamps) fail closed with INVALID_BASELINE
+  // Multi-observation baseline exercising order-statistic quantile & violation bounds
+  const multiObsBaseline = evaluateCustomerOneUsabilityAndPortfolio(makeInput(
+    Array.from({length: 20}, (_, idx) => makeObservation(idx + 1, {
+      observedAtMs: 11_000 + idx * 500,
+      metrics: {
+        initialPlanMs: idx === 19 ? 350_000 : (idx >= 10 ? 250_000 : 100_000),
+        attributableSpendUsdCents: idx >= 18 ? 10 : 0
+      }
+    })),
+    {fromMs: 10_000, toMs: 30_000, nowMs: 32_000, maxAgeMs: 20_000}
+  ));
+
+  // Invalid / forged baselines (including tampered freshnessStatus/stale/timestamps/quantiles/totals) fail closed with INVALID_BASELINE
   for (const badBaseline of [
     'not-an-object',
     {},
@@ -794,6 +806,39 @@ test('compares matched baseline windows and blocks cross-class, mismatched, stal
             ...baseline.usability.metrics.initialPlanMs,
             sloStatus: 'failed',
             sloMet: false,
+            violationCount: 1
+          }
+        }
+      }
+    },
+    {
+      ...baseline,
+      usability: {
+        ...baseline.usability,
+        metrics: {
+          ...baseline.usability.metrics,
+          initialPlanMs: {...baseline.usability.metrics.initialPlanMs, min: 100_000}
+        }
+      }
+    },
+    {
+      ...multiObsBaseline,
+      usability: {
+        ...multiObsBaseline.usability,
+        metrics: {
+          ...multiObsBaseline.usability.metrics,
+          initialPlanMs: {...multiObsBaseline.usability.metrics.initialPlanMs, violationCount: 15}
+        }
+      }
+    },
+    {
+      ...multiObsBaseline,
+      usability: {
+        ...multiObsBaseline.usability,
+        metrics: {
+          ...multiObsBaseline.usability.metrics,
+          attributableSpendUsdCents: {
+            ...multiObsBaseline.usability.metrics.attributableSpendUsdCents,
             violationCount: 1
           }
         }

@@ -656,15 +656,28 @@ function validCompleteMetricEntry(entry, spec, observationCount) {
       entry.min > entry.p50 || entry.p50 > entry.p95 || entry.p95 > entry.max) {
     return false;
   }
+  const idx50 = Math.ceil(0.5 * observationCount) - 1;
+  const idx95 = Math.ceil(0.95 * observationCount) - 1;
+  if ((idx50 === 0 && entry.p50 !== entry.min) ||
+      (idx95 === observationCount - 1 && entry.p95 !== entry.max)) {
+    return false;
+  }
   if (!spec.includeTotal) {
     if (entry.total !== null || entry.confirmedTotal !== null) return false;
   } else {
     const totalBig = nonnegInt(entry.total) ? BigInt(entry.total) : -1n;
-    const countBig = BigInt(observationCount);
+    const minTotal = BigInt(idx50) * BigInt(entry.min) +
+      BigInt(idx95 - idx50) * BigInt(entry.p50) +
+      BigInt(observationCount - 1 - idx95) * BigInt(entry.p95) +
+      BigInt(entry.max);
+    const maxTotal = BigInt(entry.min) +
+      BigInt(idx50) * BigInt(entry.p50) +
+      BigInt(idx95 - idx50) * BigInt(entry.p95) +
+      BigInt(observationCount - 1 - idx95) * BigInt(entry.max);
     if (totalBig < 0n ||
         entry.confirmedTotal !== entry.total ||
-        totalBig < BigInt(entry.min) * countBig ||
-        totalBig > BigInt(entry.max) * countBig) {
+        totalBig < minTotal ||
+        totalBig > maxTotal) {
       return false;
     }
   }
@@ -674,10 +687,25 @@ function validCompleteMetricEntry(entry, spec, observationCount) {
       entry.violationCount === null;
   }
   if (entry.max > spec.targetMax) {
+    const minViolations = entry.min > spec.targetMax
+      ? observationCount
+      : entry.p50 > spec.targetMax
+        ? observationCount - idx50
+        : entry.p95 > spec.targetMax
+          ? observationCount - idx95
+          : 1;
+    const maxViolations = entry.p95 <= spec.targetMax
+      ? observationCount - 1 - idx95
+      : entry.p50 <= spec.targetMax
+        ? observationCount - 1 - idx50
+        : entry.min <= spec.targetMax
+          ? observationCount - 1
+          : observationCount;
     return entry.sloStatus === 'failed' &&
       entry.sloMet === false &&
       positiveInt(entry.violationCount) &&
-      entry.violationCount <= observationCount;
+      entry.violationCount >= minViolations &&
+      entry.violationCount <= maxViolations;
   }
   return entry.sloStatus === 'passed' &&
     entry.sloMet === true &&
