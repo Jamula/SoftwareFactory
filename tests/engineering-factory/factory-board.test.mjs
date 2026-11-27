@@ -275,7 +275,7 @@ test("normalizeCheckRollup, combineRestChecksAndStatus, normalizeReviewStatus, a
     }),
     { state: "PENDING", total: 60, passed: 1, failed: 0, pending: 0, truncated: true },
   );
-  // Truncated contexts without authoritative aggregate state fail closed to UNKNOWN
+  // Truncated or unrecognized contexts without authoritative aggregate state fail closed to UNKNOWN
   assert.deepEqual(
     normalizeCheckRollup({
       state: null,
@@ -283,6 +283,21 @@ test("normalizeCheckRollup, combineRestChecksAndStatus, normalizeReviewStatus, a
       contexts: [{ status: "COMPLETED", conclusion: "SUCCESS" }],
     }),
     { state: "UNKNOWN", total: 120, passed: 1, failed: 0, pending: 0, truncated: true },
+  );
+  assert.deepEqual(
+    normalizeCheckRollup({
+      state: null,
+      totalCount: 2,
+      contexts: [{ status: "COMPLETED", conclusion: "SUCCESS" }, null],
+    }),
+    { state: "UNKNOWN", total: 2, passed: 1, failed: 0, pending: 0, truncated: false },
+  );
+  assert.deepEqual(
+    normalizeCheckRollup({
+      state: null,
+      contexts: [{ status: "COMPLETED", conclusion: "SUCCESS" }, { unrecognizedShape: true }],
+    }),
+    { state: "UNKNOWN", total: 1, passed: 1, failed: 0, pending: 0, truncated: false },
   );
   // Truncated contexts with authoritative aggregate SUCCESS preserve PASS
   assert.deepEqual(
@@ -403,13 +418,13 @@ test("normalizeCheckRollup, combineRestChecksAndStatus, normalizeReviewStatus, a
     state: null,
     position: null,
   });
-  assert.deepEqual(normalizeMergeQueue({ state: "AWAITING_CHECKS", position: 0 }), {
+  assert.deepEqual(normalizeMergeQueue({ state: "AWAITING_CHECKS", position: 1 }), {
     known: true,
     queued: true,
     state: "AWAITING_CHECKS",
-    position: 0,
+    position: 1,
   });
-  assert.deepEqual(normalizeMergeQueue({ state: "", position: -1 }), {
+  assert.deepEqual(normalizeMergeQueue({ state: "", position: 0 }), {
     known: true,
     queued: true,
     state: "QUEUED",
@@ -488,7 +503,7 @@ test("buildFactoryBoardSnapshot, summarizeSnapshot, and buildUnavailableSnapshot
         reviewDecision: "APPROVED",
         mergeStateStatus: "clean",
         autoMerge: true,
-        mergeQueueEntry: { state: "QUEUED", position: 0 },
+        mergeQueueEntry: { state: "QUEUED", position: 1 },
         closingIssuesReferences: [
           { number: 5, repo: "Jamula/SoftwareFactory" },
           { number: 18, repo: "Jamula/FamilyTree" },
@@ -1253,16 +1268,72 @@ test("fetchViaGhGraphql, fetchViaPublicRest, and fetchFactoryBoardSnapshot handl
   assert.equal(bothFailed.stale, true);
   assert.equal(bothFailed.error.code, "SNAPSHOT_FETCH_FAILED");
 
-  // Exercise defaultExecGh error path with non-existent command or failing gh call
-  const realFallback = await fetchFactoryBoardSnapshot({
-    repo: DEFAULT_REPO,
-    timeoutMs: 1,
-    request: async () => {
-      throw new Error("offline");
+  // When remaining=0 and both retry-after and x-ratelimit-reset are present, enforce the later deadline
+  await assert.rejects(
+    () =>
+      fetchViaPublicRest({
+        owner: "Jamula",
+        name: "SoftwareFactory",
+        nowMs: 1_700_000_000_000,
+        request: async () =>
+          new Response("rate limit", {
+            status: 403,
+            headers: {
+              "retry-after": "30",
+              "x-ratelimit-remaining": "0",
+              "x-ratelimit-reset": "1700003600",
+            },
+          }),
+      }),
+    (err) => err.code === "REST_RATE_LIMITED" && err.blockedUntilMs === 1_700_003_600_000,
+  );
+
+  // Offline subprocess test for defaultExecGh error fallback and success path (never invokes ambient gh)
+  const emptyConn = { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } };
+  const gqlOk = JSON.stringify({
+    data: {
+      repository: {
+        milestones: emptyConn,
+        issues: emptyConn,
+        openPulls: emptyConn,
+        mergedPulls: emptyConn,
+      },
     },
   });
-  assert.equal(realFallback.ok, false);
-  assert.equal(realFallback.error.code, "SNAPSHOT_FETCH_FAILED");
+  const cpLoaderSource = `
+    import { registerHooks } from "node:module";
+    registerHooks({
+      resolve(specifier, context, nextResolve) {
+        if (specifier === "node:child_process") {
+          return { shortCircuit: true, url: "data:text/javascript," + encodeURIComponent(
+            "let n = 0; const gqlOk = " + ${JSON.stringify(JSON.stringify(gqlOk))} + ";" +
+            "export function execFile(_cmd, _args, _opts, cb) { n += 1; if (n === 1) cb(new Error('stubbed offline gh failure'), '', 'err'); else cb(null, gqlOk, ''); }"
+          )};
+        }
+        return nextResolve(specifier, context);
+      }
+    });
+  `;
+  const cpLoaderUrl = `data:text/javascript,${encodeURIComponent(cpLoaderSource)}`;
+  const boardModuleUrl = new URL("../../tools/engineering-factory/factory-board.mjs", import.meta.url).href;
+  const offlineRunner = `
+    import assert from "node:assert/strict";
+    import { DEFAULT_REPO, fetchFactoryBoardSnapshot } from ${JSON.stringify(boardModuleUrl)};
+    const fallbackRes = await fetchFactoryBoardSnapshot({
+      repo: DEFAULT_REPO,
+      clock: () => "2026-11-27T01:20:00Z",
+      request: async () => new Response("[]"),
+    });
+    assert.equal(fallbackRes.ok, true);
+    assert.equal(fallbackRes.source, "github-rest");
+    const directRes = await fetchFactoryBoardSnapshot({
+      repo: DEFAULT_REPO,
+      clock: () => "2026-11-27T01:21:00Z",
+    });
+    assert.equal(directRes.ok, true);
+    assert.equal(directRes.source, "gh-graphql");
+  `;
+  await execFileAsync(process.execPath, ["--import", cpLoaderUrl, "--input-type=module", "-e", offlineRunner]);
 });
 
 test("createBoardPoller coalesces concurrent refreshes, reschedules intervals, pauses, and cleans up timers", async () => {
@@ -1994,7 +2065,7 @@ test("initFactoryBoardClient renders verified, partial, stale, and cold-unavaila
   assert.match(client.reviewBadge("PENDING"), /PENDING/);
   assert.match(client.reviewBadge("UNKNOWN"), /UNKNOWN/);
 
-  assert.match(client.queueBadge({ mergeQueue: { known: true, queued: true, position: 1 } }), /QUEUED #2/);
+  assert.match(client.queueBadge({ mergeQueue: { known: true, queued: true, position: 1 } }), /QUEUED #1/);
   assert.match(client.queueBadge({ mergeQueue: { known: true, queued: true, position: null } }), /QUEUED</);
   assert.match(client.queueBadge({ isDraft: true, mergeQueue: { known: true, queued: false } }), /DRAFT</);
   assert.match(client.queueBadge({ isDraft: true, mergeQueue: { known: false, queued: null } }), /DRAFT · QUEUE UNKNOWN/);
@@ -2031,7 +2102,7 @@ test("initFactoryBoardClient renders verified, partial, stale, and cold-unavaila
           headRefName: "u/dev/1",
           reviewDecision: "APPROVED",
           mergeStateStatus: "CLEAN",
-          mergeQueueEntry: { state: "QUEUED", position: 0 },
+          mergeQueueEntry: { state: "QUEUED", position: 1 },
           checkRollup: { contexts: [{ status: "COMPLETED", conclusion: "SUCCESS" }] },
         },
         {
@@ -2089,7 +2160,22 @@ test("initFactoryBoardClient renders verified, partial, stale, and cold-unavaila
 
   assert.equal(posted.length, 3);
   assert.equal(posted[0].headers["X-Factory-Board-Token"], "tok-123");
-  // Cold-start unavailable response from fakeWin.fetch renders unknown placeholders ("—")
+  // Out-of-order HTTP POST responses must NOT overwrite SSE state before ordered SSE delivery
+  assert.equal(elements.get("toggle-pause").textContent, "Pause auto-refresh");
+
+  // Ordered SSE delivery of cold-start unavailable state renders unknown placeholders ("—")
+  sseHandlers.get("state")({
+    data: JSON.stringify({
+      config: { repo: DEFAULT_REPO, intervalSeconds: 60, paused: true, status: "Paused" },
+      snapshot: buildUnavailableSnapshot({
+        repo: DEFAULT_REPO,
+        generatedAt: "2026-11-27T03:00:00Z",
+        error: { code: "OFFLINE", message: "No network" },
+        previousSnapshot: null,
+      }),
+    }),
+  });
+  assert.equal(elements.get("toggle-pause").textContent, "Resume auto-refresh");
   assert.match(elements.get("kpi-grid").innerHTML, /Unavailable until verified read/);
   assert.match(elements.get("milestones-grid").innerHTML, /awaiting verified snapshot/);
 
@@ -2145,7 +2231,18 @@ test("initFactoryBoardClient renders verified, partial, stale, and cold-unavaila
       snapshot: restUnknownQueueSnap,
     }),
   });
-  // Unchanged SSE refresh skips DOM rewrite; changed refresh restores activeElement focus by data-focus-key
+  // Unchanged SSE refresh skips DOM rewrite even when browser serializes boolean open as open=""
+  let milestonesDomWrites = 0;
+  const origMilestonesEl = elements.get("milestones-grid");
+  const baseSetInner = Object.getOwnPropertyDescriptor(origMilestonesEl, "innerHTML").set;
+  Object.defineProperty(origMilestonesEl, "innerHTML", {
+    get: () => origMilestonesEl._browserNormalizedHtml ?? "",
+    set(val) {
+      milestonesDomWrites += 1;
+      origMilestonesEl._browserNormalizedHtml = String(val).replace(/ open>/g, ' open="">');
+      baseSetInner.call(origMilestonesEl, val);
+    },
+  });
   fakeWin.document.activeElement = {
     getAttribute: (k) => (k === "data-focus-key" ? "ms-summary-M01" : null),
   };
@@ -2155,6 +2252,7 @@ test("initFactoryBoardClient renders verified, partial, stale, and cold-unavaila
       snapshot: restUnknownQueueSnap,
     }),
   });
+  assert.equal(milestonesDomWrites, 0);
   const updatedFocusSnap = buildFactoryBoardSnapshot(
     {
       milestones: [{ number: 2, title: "M01 - Auto", state: "OPEN" }],

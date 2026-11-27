@@ -219,8 +219,10 @@ export function normalizeCheckRollup(rollup) {
   let passed = 0;
   let failed = 0;
   let pending = 0;
+  let unrecognized = 0;
   for (const item of contexts) {
     if (!item || typeof item !== "object") {
+      unrecognized += 1;
       continue;
     }
     if (typeof item.status === "string") {
@@ -244,6 +246,8 @@ export function normalizeCheckRollup(rollup) {
       } else {
         failed += 1;
       }
+    } else {
+      unrecognized += 1;
     }
   }
 
@@ -260,12 +264,13 @@ export function normalizeCheckRollup(rollup) {
     };
   }
 
+  const incomplete = truncated || unrecognized > 0 || counted < total;
   let state;
   if (failed > 0 || aggregateState === "FAIL") {
     state = "FAIL";
   } else if (pending > 0 || aggregateState === "PENDING") {
     state = "PENDING";
-  } else if (truncated && aggregateState !== "PASS") {
+  } else if (incomplete && aggregateState !== "PASS") {
     state = "UNKNOWN";
   } else {
     state = "PASS";
@@ -328,7 +333,7 @@ export function normalizeMergeQueue(entry) {
     known: true,
     queued: true,
     state: typeof entry.state === "string" && entry.state.length > 0 ? entry.state : "QUEUED",
-    position: Number.isSafeInteger(entry.position) && entry.position >= 0 ? entry.position : null,
+    position: Number.isSafeInteger(entry.position) && entry.position >= 1 ? entry.position : null,
   };
 }
 
@@ -985,7 +990,11 @@ export async function fetchViaPublicRest({
       (response.status === 429 ||
         (response.status === 403 && (rl.remaining === 0 || rl.retryAfterMs !== null)))
     ) {
-      const blockedUntilMs = rl.retryAfterMs ?? rl.resetAtMs ?? nowMs + 60_000;
+      const candidateDeadlines = [rl.retryAfterMs, rl.resetAtMs].filter(
+        (v) => typeof v === "number" && Number.isFinite(v),
+      );
+      const blockedUntilMs =
+        candidateDeadlines.length > 0 ? Math.max(...candidateDeadlines) : nowMs + 60_000;
       if (latestRetryAfterMs === null || blockedUntilMs > latestRetryAfterMs) {
         latestRetryAfterMs = blockedUntilMs;
       }
@@ -1456,7 +1465,7 @@ export function initFactoryBoardClient(win) {
 
   function updateSectionHtml(id, nextHtml, onUpdated) {
     const container = el(id);
-    if (state.sectionHtml.get(id) === nextHtml && container.innerHTML === nextHtml) {
+    if (state.sectionHtml.get(id) === nextHtml) {
       return;
     }
     const activeKey = doc.activeElement?.getAttribute?.("data-focus-key") ?? null;
@@ -1521,7 +1530,7 @@ export function initFactoryBoardClient(win) {
 
   function queueBadge(pr) {
     if (pr.mergeQueue && pr.mergeQueue.queued === true) {
-      const pos = pr.mergeQueue.position !== null ? " #" + (pr.mergeQueue.position + 1) : "";
+      const pos = pr.mergeQueue.position !== null ? " #" + pr.mergeQueue.position : "";
       return '<span class="pill blue">QUEUED' + pos + "</span>";
     }
     const unknownQueue = !pr.mergeQueue || pr.mergeQueue.known === false;
@@ -1905,7 +1914,7 @@ export function initFactoryBoardClient(win) {
   }
 
   async function postJson(path, body) {
-    const res = await fetchImpl(path, {
+    await fetchImpl(path, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -1913,10 +1922,6 @@ export function initFactoryBoardClient(win) {
       },
       body: JSON.stringify(body),
     });
-    if (res.ok) {
-      state.envelope = await res.json();
-      render();
-    }
   }
 
   el("refresh-now").addEventListener("click", async () => {
