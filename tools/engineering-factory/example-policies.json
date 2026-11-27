@@ -22,9 +22,9 @@
     "mode": "disabled",
     "killSwitch": true,
     "checks": [{"name": "fictional-hub-gate", "appId": 23456}],
-    "reviewers": ["synthetic-reviewer"],
+    "reviewers": ["synthetic-reviewer", "synthetic-hub-reviewer"],
     "coverage": {"line": 100, "branch": 100},
-    "owners": [{"prefix": "app/", "owner": "synthetic-owner"}],
+    "owners": [{"prefix": "app/", "owner": "synthetic-hub-owner"}],
     "maxActive": 1,
     "creditLimit": 100,
     "riskClasses": ["low", "high"]
@@ -36,10 +36,16 @@
     "mergeMethod": "squash",
     "mode": "disabled",
     "killSwitch": true,
-    "checks": [{"name": "fictional-spellbook-gate", "appId": 34567}],
-    "reviewers": ["synthetic-reviewer"],
-    "coverage": {"line": 100, "branch": 100},
-    "owners": [{"prefix": "src/", "owner": "synthetic-owner"}],
+    "checks": [
+      {"name": "fictional-webkit-gate", "appId": 34567},
+      {"name": "fictional-ios-gate", "appId": 34568}
+    ],
+    "reviewers": ["synthetic-spellbook-reviewer"],
+    "coverage": {"line": 97, "branch": 90},
+    "owners": [
+      {"prefix": "ios/", "owner": "synthetic-ios-owner"},
+      {"prefix": "src/", "owner": "synthetic-spellbook-owner"}
+    ],
     "maxActive": 2,
     "creditLimit": 100,
     "riskClasses": ["low", "high"]
