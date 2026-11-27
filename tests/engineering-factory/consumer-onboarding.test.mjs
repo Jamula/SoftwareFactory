@@ -7,7 +7,14 @@ import {
   CONSUMER_CONTRACT_VERSION,
   FACTORY_REPOSITORY,
   FACTORY_REPOSITORY_ID,
+  MANDATORY_ONBOARDING_SETTINGS,
+  MAX_MANDATORY_USER_SETTINGS,
+  ONBOARDING_DISCOVERY_MODES,
+  ONBOARDING_STACK_PROFILES,
+  OPTIONAL_ONBOARDING_SETTINGS,
   REUSABLE_WORKFLOW_PREFIX,
+  TRUSTED_WORKFLOW_CHECKOUT_PINS,
+  buildReadOnlyOnboardingPlan,
   planConsumerBootstrap,
   verifyConsumerOnboardingPackage,
   verifyIndependentRollback,
@@ -943,4 +950,824 @@ test('planConsumerBootstrap creates dry-run pinned plans, preserves stricter gat
     assert.equal(planConsumerBootstrap(badPolicyReq).reason, 'BOOTSTRAP_POLICY_INVALID');
   }
   assert.equal(hookCalls, 0);
+});
+
+test('buildReadOnlyOnboardingPlan plans greenfield and existing-repository onboarding from <=5 mandatory settings with independent rollback', () => {
+  assert.equal(MAX_MANDATORY_USER_SETTINGS, 5);
+  assert.equal(Object.isFrozen(ONBOARDING_DISCOVERY_MODES), true);
+  assert.equal(Object.isFrozen(MANDATORY_ONBOARDING_SETTINGS), true);
+  assert.equal(Object.isFrozen(OPTIONAL_ONBOARDING_SETTINGS), true);
+  assert.equal(Object.isFrozen(ONBOARDING_STACK_PROFILES), true);
+  assert.equal(Object.isFrozen(TRUSTED_WORKFLOW_CHECKOUT_PINS), true);
+  assert.equal(Object.getPrototypeOf(TRUSTED_WORKFLOW_CHECKOUT_PINS), null);
+  assert.equal(TRUSTED_WORKFLOW_CHECKOUT_PINS[reviewedWorkflowSha], reviewedCheckoutSha);
+  assert.deepEqual(ONBOARDING_DISCOVERY_MODES, ['greenfield', 'existing-repository']);
+  assert.deepEqual(MANDATORY_ONBOARDING_SETTINGS, [
+    'repository',
+    'repositoryId',
+    'pinnedFactorySha',
+    'stackProfile'
+  ]);
+
+  // Greenfield onboarding from just 4 mandatory settings resolves cataloged checkoutRef without extra user inputs
+  const greenfieldStart = performance.now();
+  const greenfieldPlan = buildReadOnlyOnboardingPlan({
+    repository: 'example/greenfield-app',
+    repositoryId: 900501,
+    pinnedFactorySha: reviewedWorkflowSha,
+    stackProfile: 'baseline-95-90'
+  });
+  const greenfieldElapsedMs = performance.now() - greenfieldStart;
+  assert.ok(greenfieldElapsedMs < 5_000);
+
+  assert.equal(greenfieldPlan.valid, true);
+  assert.equal(greenfieldPlan.reason, 'READ_ONLY_ONBOARDING_PLAN_READY');
+  assert.equal(greenfieldPlan.mode, 'greenfield');
+  assert.equal(greenfieldPlan.shadow, true);
+  assert.equal(greenfieldPlan.readOnly, true);
+  assert.equal(greenfieldPlan.dryRun, true);
+  assert.equal(greenfieldPlan.defaultEnabled, false);
+  assert.equal(greenfieldPlan.implicitActivation, false);
+  assert.equal(greenfieldPlan.overwriteExistingFiles, false);
+  assert.equal(greenfieldPlan.liveActivation, false);
+  assert.equal(greenfieldPlan.productionDeployEnabled, false);
+  assert.equal(greenfieldPlan.mutatesGitHub, false);
+  assert.equal(greenfieldPlan.liveMutations, 0);
+  assert.equal(greenfieldPlan.deployments, 0);
+  assert.equal(greenfieldPlan.incrementalSpendUsd, 0);
+  assert.equal(greenfieldPlan.reviewablePrRequired, true);
+  assert.equal(greenfieldPlan.mandatorySettings.maxAllowed, 5);
+  assert.equal(greenfieldPlan.mandatorySettings.requiredCount, 4);
+  assert.equal(greenfieldPlan.mandatorySettings.suppliedCount, 4);
+  assert.deepEqual(greenfieldPlan.mandatorySettings.keys, [
+    'repository',
+    'repositoryId',
+    'pinnedFactorySha',
+    'stackProfile'
+  ]);
+  assert.equal(greenfieldPlan.workflowPin.checkoutRef, reviewedCheckoutSha);
+  assert.equal(greenfieldPlan.workflowPin.reviewedCheckoutSha, reviewedCheckoutSha);
+  assert.deepEqual(greenfieldPlan.policy.coverage, { line: 95, branch: 90 });
+  assert.equal(greenfieldPlan.policy.mode, 'disabled');
+  assert.equal(greenfieldPlan.policy.killSwitch, true);
+  assert.equal(greenfieldPlan.executionOptions.copilotCloudAutomationsSupported, true);
+  assert.equal(greenfieldPlan.killSwitch.defaultTrippedAtRest, true);
+  assert.equal(greenfieldPlan.killSwitch.sharedWithPeers, false);
+  assert.equal(greenfieldPlan.rollbackPlan.strategy, 'single-commit-revert');
+  assert.equal(greenfieldPlan.rollbackPlan.commitsToRevert, 1);
+  assert.equal(greenfieldPlan.rollbackPlan.singleCommitRevert, true);
+  assert.equal(greenfieldPlan.plannedFiles.length, 2);
+  assert.equal(verifyWorkflowPin(greenfieldPlan.workflowPin).valid, true);
+
+  // Pure repeatability & uncataloged workflow SHA with explicit observedCheckoutRef + pinnedCheckoutSha
+  const repeatGreenfield = buildReadOnlyOnboardingPlan({
+    repository: 'example/greenfield-app',
+    repositoryId: 900501,
+    pinnedFactorySha: reviewedWorkflowSha,
+    pinnedCheckoutSha: reviewedCheckoutSha,
+    observedCheckoutRef: reviewedCheckoutSha,
+    stackProfile: 'baseline-95-90'
+  });
+  assert.deepEqual(repeatGreenfield, greenfieldPlan);
+
+  const customWorkflowSha = '3'.repeat(40);
+  const customCheckoutSha = '4'.repeat(40);
+  const publicGreenfield = buildReadOnlyOnboardingPlan({
+    mode: 'greenfield',
+    repository: 'example/public-greenfield',
+    repositoryId: 900502,
+    pinnedFactorySha: customWorkflowSha,
+    pinnedCheckoutSha: customCheckoutSha,
+    observedCheckoutRef: customCheckoutSha,
+    stackProfile: 'web-genealogy-95-90',
+    stricterCoverageThresholds: { line: 98, branch: 94 },
+    mandatorySettings: [
+      'repository',
+      'repositoryId',
+      'pinnedFactorySha',
+      'stackProfile',
+      'stricterCoverageThresholds'
+    ],
+    defaultEnabled: false,
+    implicitActivation: false,
+    overwriteExistingFiles: false,
+    visibility: 'public',
+    unsupportedResources: [],
+    existingFiles: []
+  });
+  assert.equal(publicGreenfield.valid, true);
+  assert.equal(publicGreenfield.mandatorySettings.requiredCount, 5);
+  assert.equal(publicGreenfield.mandatorySettings.suppliedCount, 5);
+  assert.deepEqual(publicGreenfield.policy.coverage, { line: 98, branch: 94 });
+  assert.deepEqual(
+    {
+      line: publicGreenfield.localGates.minLineCoverage,
+      branch: publicGreenfield.localGates.minBranchCoverage
+    },
+    { line: 95, branch: 90 }
+  );
+  assert.equal(publicGreenfield.workflowPin.checkoutRef, customCheckoutSha);
+  assert.equal(publicGreenfield.workflowPin.reviewedCheckoutSha, customCheckoutSha);
+  assert.equal(publicGreenfield.executionOptions.copilotCloudAgentSupported, true);
+  assert.equal(publicGreenfield.executionOptions.copilotCloudAutomationsSupported, false);
+
+  // Existing-repository mode preserves Spellbook 97/90, FamilyHub trunk/100/100, and custom stricter discovered gates
+  // Also exercises unpaired UTF-16 surrogates, valid surrogate pairs, quotes, backslashes, and control chars in hook-free JSON
+  const mutableChecks = [
+    { name: 'fictional-"webkit"\\gate\u0001-🚀-\ud800x-\udfff-\ud800', appId: 34567 },
+    { name: 'fictional-ios-gate', appId: 34568 }
+  ];
+  const mutableOwners = [
+    { prefix: 'ios/', owner: 'synthetic-ios-owner' },
+    { prefix: 'src/', owner: 'synthetic-spellbook-owner' }
+  ];
+  const mutableReviewers = ['synthetic-spellbook-reviewer'];
+
+  const existingStart = performance.now();
+  const spellbookPlan = buildReadOnlyOnboardingPlan({
+    mode: 'existing-repository',
+    repository: 'example/spellbook',
+    repositoryId: 900202,
+    pinnedFactorySha: reviewedWorkflowSha,
+    pinnedCheckoutSha: reviewedCheckoutSha,
+    stackProfile: 'ios-webkit-97-90',
+    stricterCoverageThresholds: { line: 98, branch: 92 },
+    discoveredRepository: {
+      defaultBranch: 'main',
+      mergeMethod: 'squash',
+      checks: mutableChecks,
+      reviewers: mutableReviewers,
+      owners: mutableOwners,
+      coverage: { line: 97, branch: 90 },
+      maxConcurrency: 1,
+      requireExplicitApproval: true,
+      requireStrictUpToDate: true,
+      allowCommentedBotApproval: false,
+      migrationFreezeClear: true,
+      visibility: 'internal',
+      existingFiles: [
+        '.github/workflows/ios-ci.yml',
+        { path: 'src/bridge.ts', content: 'export const ok = true;\n' }
+      ]
+    }
+  });
+  const existingElapsedMs = performance.now() - existingStart;
+  assert.ok(existingElapsedMs < 5_000);
+
+  // Mutating caller arrays after planning cannot alter the frozen plan
+  mutableChecks[0].appId = 99999;
+  mutableOwners[0].prefix = 'mutated/';
+  mutableReviewers.push('attacker');
+
+  assert.equal(spellbookPlan.valid, true);
+  assert.equal(spellbookPlan.mode, 'existing-repository');
+  assert.deepEqual(spellbookPlan.policy.coverage, { line: 98, branch: 92 });
+  assert.equal(spellbookPlan.localGates.minLineCoverage, 97);
+  assert.equal(spellbookPlan.localGates.minBranchCoverage, 90);
+  assert.equal(spellbookPlan.policy.maxActive, 1);
+  assert.equal(spellbookPlan.localGates.maxConcurrency, 1);
+  assert.equal(spellbookPlan.policy.checks[0].appId, 34567);
+  assert.equal(spellbookPlan.policy.owners[0].prefix, 'ios/');
+  assert.equal(spellbookPlan.policy.reviewers.length, 1);
+  assert.equal(spellbookPlan.reviewPolicy.formalApprovedReviewRequired, true);
+  assert.equal(spellbookPlan.reviewPolicy.allowCommentedBotApproval, false);
+  assert.equal(spellbookPlan.executionOptions.copilotCloudAutomationsSupported, true);
+  assert.equal(
+    spellbookPlan.plannedFiles[1].content,
+    `${JSON.stringify(spellbookPlan.policy, null, 2)}\n`
+  );
+  assert.equal(
+    Buffer.from(spellbookPlan.plannedFiles[1].content, 'utf8').toString('utf8'),
+    spellbookPlan.plannedFiles[1].content
+  );
+  assert.equal(spellbookPlan.plannedFiles[1].content.includes('\ufffd'), false);
+  assert.deepEqual(JSON.parse(spellbookPlan.plannedFiles[1].content), spellbookPlan.policy);
+
+  // Surrogate-escaped policy content reruns idempotently in planConsumerBootstrap without EXISTING_FILE_CONFLICT
+  const surrogateBootstrapRerun = planConsumerBootstrap({
+    repository: spellbookPlan.repository,
+    repositoryId: spellbookPlan.repositoryId,
+    workflowPin: spellbookPlan.workflowPin,
+    checks: structuredClone(spellbookPlan.policy.checks),
+    owners: structuredClone(spellbookPlan.policy.owners),
+    reviewers: structuredClone(spellbookPlan.policy.reviewers),
+    existingState: {
+      defaultBranch: spellbookPlan.policy.defaultBranch,
+      mergeMethod: spellbookPlan.policy.mergeMethod,
+      lineCoverageGate: spellbookPlan.policy.coverage.line,
+      branchCoverageGate: spellbookPlan.policy.coverage.branch,
+      maxConcurrency: spellbookPlan.policy.maxActive,
+      existingFiles: [...spellbookPlan.plannedFiles]
+    }
+  });
+  assert.equal(surrogateBootstrapRerun.valid, true);
+  assert.equal(surrogateBootstrapRerun.reason, 'IDEMPOTENT_NOOP');
+
+  // Flexible baseline-95-90 profile accepts custom discovered branch and mergeMethod
+  const customBaselineExisting = buildReadOnlyOnboardingPlan({
+    mode: 'existing-repository',
+    repository: 'example/custom-existing',
+    repositoryId: 900399,
+    pinnedFactorySha: reviewedWorkflowSha,
+    stackProfile: 'baseline-95-90',
+    discoveredRepository: {
+      defaultBranch: 'release',
+      mergeMethod: 'rebase',
+      checks: [{ name: 'ci-gate', appId: 15368 }],
+      reviewers: ['synthetic-reviewer'],
+      owners: [{ prefix: 'src/', owner: 'synthetic-owner' }],
+      coverage: { line: 95, branch: 90 },
+      maxConcurrency: 1,
+      existingFiles: []
+    }
+  });
+  assert.equal(customBaselineExisting.valid, true);
+  assert.equal(customBaselineExisting.policy.defaultBranch, 'release');
+  assert.equal(customBaselineExisting.policy.mergeMethod, 'rebase');
+
+  // Inferred existing-repository mode when complete discoveredRepository inventory is provided and mode omitted
+  const hubPlan = buildReadOnlyOnboardingPlan({
+    repository: 'example/family-hub',
+    repositoryId: 900303,
+    pinnedFactorySha: reviewedWorkflowSha,
+    stackProfile: 'strict-up-to-date-migration-gated',
+    discoveredRepository: {
+      defaultBranch: 'trunk',
+      mergeMethod: 'merge',
+      checks: [{ name: 'fictional-hub-gate', appId: 23456 }],
+      reviewers: ['synthetic-reviewer', 'synthetic-hub-reviewer'],
+      owners: [{ prefix: 'app/', owner: 'synthetic-hub-owner' }],
+      coverage: { line: 96, branch: 92 },
+      maxConcurrency: 1,
+      existingFiles: []
+    }
+  });
+  assert.equal(hubPlan.valid, true);
+  assert.equal(hubPlan.mode, 'existing-repository');
+  assert.equal(hubPlan.policy.defaultBranch, 'trunk');
+  assert.equal(hubPlan.policy.mergeMethod, 'merge');
+  assert.deepEqual(hubPlan.policy.coverage, { line: 100, branch: 100 });
+
+  // End-to-end integration: generated read-only plans satisfy verifyConsumerOnboardingPackage & verifyIndependentRollback
+  const toVerifiedPackage = plan => ({
+    contractVersion: plan.contractVersion,
+    repositoryId: plan.repositoryId,
+    stackProfile: plan.stackProfile,
+    ownerAuthorized: true,
+    migrationFreezeClear: true,
+    autoActivate: plan.implicitActivation,
+    productionDeployEnabled: plan.productionDeployEnabled,
+    workflowPin: plan.workflowPin,
+    policy: structuredClone(plan.policy),
+    localGates: structuredClone(plan.localGates),
+    credentials: {
+      credentialId: plan.rollbackPlan.revokeCredentialId,
+      scope: 'repo-read-only-shadow',
+      allowedRepositories: [plan.repository],
+      sharedAdminToken: false,
+      persistedInCheckout: false
+    },
+    replaySuite: makeReplaySuite(plan.policy),
+    rollback: {
+      disableMode: plan.rollbackPlan.disableMode,
+      killSwitch: plan.rollbackPlan.killSwitch,
+      revokeCredentialId: plan.rollbackPlan.revokeCredentialId,
+      revertWorkflowPinPrRequired: plan.rollbackPlan.revertWorkflowPinPrRequired,
+      queuedLiveMutations: plan.rollbackPlan.queuedLiveMutations
+    }
+  });
+
+  const greenfieldPkg = toVerifiedPackage(greenfieldPlan);
+  const spellbookPlannedPkg = toVerifiedPackage(spellbookPlan);
+  assert.equal(verifyConsumerOnboardingPackage(greenfieldPkg).valid, true);
+  assert.equal(
+    verifyConsumerOnboardingPackage(spellbookPlannedPkg, [
+      {
+        repository: greenfieldPkg.policy.repository,
+        repositoryId: greenfieldPkg.repositoryId,
+        credentialId: greenfieldPkg.credentials.credentialId
+      }
+    ]).valid,
+    true
+  );
+
+  const rollbackOutcome = verifyIndependentRollback(
+    'example/spellbook',
+    {
+      repository: 'example/spellbook',
+      postPolicy: structuredClone(spellbookPlan.policy),
+      revokedCredentialId: spellbookPlan.rollbackPlan.revokeCredentialId,
+      pinRevertedViaReviewedPr: true,
+      queuedLiveMutations: 0
+    },
+    [greenfieldPkg, spellbookPlannedPkg]
+  );
+  assert.equal(rollbackOutcome.valid, true);
+  assert.equal(rollbackOutcome.targetDecision, 'STOPPED');
+  assert.deepEqual(rollbackOutcome.unaffectedPeers, ['example/greenfield-app']);
+});
+
+test('buildReadOnlyOnboardingPlan fails closed on >5 mandatory settings, unsafe flags, proxy/getter tricks, gate weakening and file collisions', () => {
+  const validMinimal = {
+    repository: 'example/consumer-one',
+    repositoryId: 900601,
+    pinnedFactorySha: reviewedWorkflowSha,
+    stackProfile: 'web-genealogy-95-90'
+  };
+  const completeDiscovered = {
+    defaultBranch: 'main',
+    mergeMethod: 'squash',
+    checks: [{ name: 'build-test', appId: 12345 }],
+    reviewers: ['synthetic-reviewer'],
+    owners: [{ prefix: 'src/', owner: 'synthetic-owner' }],
+    coverage: { line: 95, branch: 90 },
+    maxConcurrency: 1,
+    existingFiles: []
+  };
+  const validPlan = buildReadOnlyOnboardingPlan(validMinimal);
+  assert.equal(validPlan.valid, true);
+
+  // > 5 mandatory inputs fails closed
+  const tooManyMandatory = buildReadOnlyOnboardingPlan({
+    ...validMinimal,
+    stricterCoverageThresholds: { line: 96, branch: 91 },
+    mandatorySettings: [
+      'repository',
+      'repositoryId',
+      'pinnedFactorySha',
+      'stackProfile',
+      'stricterCoverageThresholds',
+      'customManualDatabaseUrl'
+    ]
+  });
+  assert.equal(tooManyMandatory.valid, false);
+  assert.equal(tooManyMandatory.reason, 'MANDATORY_SETTINGS_LIMIT_EXCEEDED');
+  assert.equal(tooManyMandatory.defaultEnabled, false);
+  assert.equal(tooManyMandatory.implicitActivation, false);
+  assert.equal(tooManyMandatory.overwriteExistingFiles, false);
+  assert.equal(tooManyMandatory.liveMutations, 0);
+  assert.equal(tooManyMandatory.deployments, 0);
+
+  // Unsafe read-only discovery default overrides fail closed
+  for (const unsafeFlag of [
+    { defaultEnabled: true },
+    { implicitActivation: true },
+    { overwriteExistingFiles: true }
+  ]) {
+    assert.equal(
+      buildReadOnlyOnboardingPlan({ ...validMinimal, ...unsafeFlag }).reason,
+      'UNSAFE_DISCOVERY_DEFAULTS'
+    );
+  }
+
+  // Rejects ANY collision with existing consumer files (even identical content, case-variant, ancestor, or descendant)
+  for (const collidingFiles of [
+    [validPlan.plannedFiles[0]],
+    [validPlan.plannedFiles[1]],
+    ['.github/softwarefactory-policy.json'],
+    ['.GITHUB/workflows/softwarefactory-shadow-replay.yml'],
+    ['.github/workflows'],
+    ['.github/softwarefactory-policy.json/nested.txt']
+  ]) {
+    const topCollision = buildReadOnlyOnboardingPlan({
+      ...validMinimal,
+      existingFiles: collidingFiles
+    });
+    assert.equal(topCollision.valid, false);
+    assert.equal(topCollision.reason, 'EXISTING_FILE_CONFLICT');
+    assert.ok(topCollision.conflicts.length >= 1);
+
+    const discoveredCollision = buildReadOnlyOnboardingPlan({
+      ...validMinimal,
+      mode: 'existing-repository',
+      discoveredRepository: { ...completeDiscovered, existingFiles: collidingFiles }
+    });
+    assert.equal(discoveredCollision.valid, false);
+    assert.equal(discoveredCollision.reason, 'EXISTING_FILE_CONFLICT');
+  }
+
+  // Absent or incomplete existing-repository discovery inventory blocks readiness with explicit blockers
+  const missingAllDiscovered = buildReadOnlyOnboardingPlan({
+    ...validMinimal,
+    mode: 'existing-repository'
+  });
+  assert.equal(missingAllDiscovered.valid, false);
+  assert.equal(missingAllDiscovered.reason, 'DISCOVERY_INVENTORY_INCOMPLETE');
+  assert.deepEqual(missingAllDiscovered.blockers, [
+    'missing-discovered-defaultBranch',
+    'missing-discovered-mergeMethod',
+    'missing-discovered-checks',
+    'missing-discovered-reviewers',
+    'missing-discovered-owners',
+    'missing-discovered-coverage',
+    'missing-discovered-maxConcurrency',
+    'missing-discovered-existingFiles'
+  ]);
+
+  const missingFilesInventory = buildReadOnlyOnboardingPlan({
+    ...validMinimal,
+    mode: 'existing-repository',
+    discoveredRepository: {
+      defaultBranch: 'main',
+      mergeMethod: 'squash',
+      checks: [{ name: 'build-test', appId: 12345 }],
+      reviewers: ['synthetic-reviewer'],
+      owners: [{ prefix: 'src/', owner: 'synthetic-owner' }],
+      coverage: { line: 95, branch: 90 },
+      maxConcurrency: 1
+    }
+  });
+  assert.equal(missingFilesInventory.valid, false);
+  assert.equal(missingFilesInventory.reason, 'DISCOVERY_INVENTORY_INCOMPLETE');
+  assert.deepEqual(missingFilesInventory.blockers, ['missing-discovered-existingFiles']);
+
+  // Uncataloged workflow SHAs require both observedCheckoutRef and pinnedCheckoutSha; mismatches fail closed
+  const uncatalogedSha = '5'.repeat(40);
+  const missingBothCheckoutPins = buildReadOnlyOnboardingPlan({
+    ...validMinimal,
+    pinnedFactorySha: uncatalogedSha
+  });
+  assert.equal(missingBothCheckoutPins.reason, 'CHECKOUT_PIN_UNVERIFIED');
+  assert.deepEqual(missingBothCheckoutPins.blockers, [
+    'workflow-checkout-ref-discovery-required',
+    'reviewed-checkout-sha-required'
+  ]);
+  assert.equal(
+    buildReadOnlyOnboardingPlan({
+      ...validMinimal,
+      pinnedFactorySha: uncatalogedSha,
+      pinnedCheckoutSha: altSha
+    }).reason,
+    'CHECKOUT_PIN_UNVERIFIED'
+  );
+  assert.equal(
+    buildReadOnlyOnboardingPlan({
+      ...validMinimal,
+      pinnedFactorySha: uncatalogedSha,
+      observedCheckoutRef: altSha
+    }).reason,
+    'CHECKOUT_PIN_UNVERIFIED'
+  );
+  assert.equal(
+    buildReadOnlyOnboardingPlan({
+      ...validMinimal,
+      pinnedFactorySha: uncatalogedSha,
+      observedCheckoutRef: '6'.repeat(40),
+      pinnedCheckoutSha: altSha
+    }).reason,
+    'PIN_SHA_MISMATCH'
+  );
+  assert.equal(
+    buildReadOnlyOnboardingPlan({
+      ...validMinimal,
+      pinnedCheckoutSha: reviewedWorkflowSha
+    }).reason,
+    'PIN_SHA_MISMATCH'
+  );
+  assert.equal(
+    buildReadOnlyOnboardingPlan({
+      ...validMinimal,
+      observedCheckoutRef: reviewedWorkflowSha
+    }).reason,
+    'PIN_SHA_MISMATCH'
+  );
+
+  // Proxy, revoked proxy, own-data-descriptor, Object.prototype.value, and inherited toJSON traps never execute
+  let traps = 0;
+  const failTrap = () => {
+    traps += 1;
+    throw new Error('unexpected trap or getter');
+  };
+  const trapHandler = {
+    get: failTrap,
+    has: failTrap,
+    ownKeys: failTrap,
+    getPrototypeOf: failTrap,
+    getOwnPropertyDescriptor: failTrap
+  };
+  const revokedObj = Proxy.revocable({ ...validMinimal }, {});
+  revokedObj.revoke();
+  const revokedArr = Proxy.revocable(['src/a.ts'], {});
+  revokedArr.revoke();
+
+  const getterInput = { ...validMinimal };
+  Object.defineProperty(getterInput, 'repository', { enumerable: true, get: failTrap });
+  const nonEnumInput = { ...validMinimal };
+  Object.defineProperty(nonEnumInput, 'toJSON', { value: failTrap });
+  const symInput = { ...validMinimal, [Symbol('tag')]: 1 };
+
+  for (const badInput of [
+    null,
+    undefined,
+    'string',
+    [],
+    Object.create(null),
+    new Proxy({ ...validMinimal }, trapHandler),
+    revokedObj.proxy,
+    getterInput,
+    nonEnumInput,
+    symInput,
+    { ...validMinimal, extraUnknownKey: 1 },
+    { ...validMinimal, defaultEnabled: 'false' },
+    { ...validMinimal, implicitActivation: 0 },
+    { ...validMinimal, overwriteExistingFiles: null },
+    { ...validMinimal, mandatorySettings: 'bad' },
+    { ...validMinimal, mandatorySettings: ['repository', 'repository', 'repositoryId', 'pinnedFactorySha'] },
+    { ...validMinimal, mandatorySettings: ['repository', 'repositoryId', 'pinnedFactorySha'] },
+    { ...validMinimal, mandatorySettings: ['repository', 'repositoryId', 'pinnedFactorySha', 'stackProfile', 'stricterCoverageThresholds'] },
+    { ...validMinimal, mandatorySettings: ['repository', 'repositoryId', 'pinnedFactorySha', 'stackProfile', 'unknownSetting'] },
+    { repositoryId: 1, pinnedFactorySha: reviewedWorkflowSha, stackProfile: 'baseline-95-90' },
+    { ...validMinimal, repository: 'invalid-slug' },
+    { ...validMinimal, repository: '../escape' },
+    { ...validMinimal, repository: 'owner/..' },
+    { ...validMinimal, repositoryId: 0 },
+    { ...validMinimal, pinnedFactorySha: 123 },
+    { ...validMinimal, pinnedCheckoutSha: 123 },
+    { ...validMinimal, observedCheckoutRef: 123 },
+    { ...validMinimal, stackProfile: '' },
+    { ...validMinimal, mode: 'live' },
+    { ...validMinimal, visibility: 'world-writable' },
+    { ...validMinimal, unsupportedResources: 'bad' },
+    { ...validMinimal, unsupportedResources: [''] },
+    { ...validMinimal, unsupportedResources: ['dup', 'dup'] },
+    { ...validMinimal, stricterCoverageThresholds: new Proxy({ line: 96, branch: 92 }, trapHandler) },
+    { ...validMinimal, stricterCoverageThresholds: { line: 96 } },
+    { ...validMinimal, stricterCoverageThresholds: { line: 101, branch: 90 } },
+    { ...validMinimal, stricterCoverageThresholds: { line: 96, branch: -1 } },
+    {
+      ...validMinimal,
+      mode: 'existing-repository',
+      existingFiles: ['src/a.ts'],
+      discoveredRepository: { ...completeDiscovered, existingFiles: ['src/b.ts'] }
+    },
+    {
+      ...validMinimal,
+      mode: 'existing-repository',
+      visibility: 'public',
+      discoveredRepository: { ...completeDiscovered, visibility: 'private' }
+    }
+  ]) {
+    assert.equal(buildReadOnlyOnboardingPlan(badInput).reason, 'DISCOVERY_INPUT_INVALID');
+  }
+
+  // Polluted Object.prototype.value + Object.prototype.enumerable still rejects enumerable accessors without running getters
+  const getterArray = ['src/a.ts'];
+  Object.defineProperty(getterArray, 0, { enumerable: true, get: failTrap });
+  try {
+    Object.defineProperty(Object.prototype, 'value', { value: 'polluted', configurable: true });
+    Object.defineProperty(Object.prototype, 'enumerable', { value: true, configurable: true });
+    assert.equal(buildReadOnlyOnboardingPlan(getterInput).reason, 'DISCOVERY_INPUT_INVALID');
+    assert.equal(
+      buildReadOnlyOnboardingPlan({ ...validMinimal, existingFiles: getterArray }).reason,
+      'EXISTING_FILES_INVALID'
+    );
+    assert.equal(verifyWorkflowPin(getterInput).reason, 'PIN_SCHEMA_INVALID');
+  } finally {
+    delete Object.prototype.value;
+    delete Object.prototype.enumerable;
+  }
+
+  // Polluted inherited toJSON hooks on Object/Array/String/Number/Boolean prototypes never execute during serialization
+  const toJsonTargets = [
+    Object.prototype,
+    Array.prototype,
+    String.prototype,
+    Number.prototype,
+    Boolean.prototype
+  ];
+  try {
+    for (const proto of toJsonTargets) {
+      Object.defineProperty(proto, 'toJSON', { get: failTrap, configurable: true });
+    }
+    for (const protoProp of [
+      'mode',
+      'visibility',
+      'discoveredRepository',
+      'stricterCoverageThresholds',
+      'existingFiles',
+      'pinnedCheckoutSha',
+      'observedCheckoutRef',
+      'mandatorySettings',
+      'unsupportedResources'
+    ]) {
+      Object.defineProperty(Object.prototype, protoProp, { get: failTrap, configurable: true });
+    }
+    const cleanUnderPollution = buildReadOnlyOnboardingPlan(validMinimal);
+    assert.equal(cleanUnderPollution.valid, true);
+    const bootstrapUnderPollution = planConsumerBootstrap({
+      repository: 'example/bootstrap-polluted',
+      repositoryId: 900777,
+      workflowPin: familyTreePkg.workflowPin,
+      checks: [{ name: 'ci-gate', appId: 45678 }],
+      owners: [{ prefix: 'src/', owner: 'synthetic-owner' }],
+      reviewers: ['synthetic-reviewer'],
+      existingState: {
+        defaultBranch: 'main',
+        mergeMethod: 'squash',
+        lineCoverageGate: 95,
+        branchCoverageGate: 90,
+        maxConcurrency: 1,
+        existingFiles: []
+      }
+    });
+    assert.equal(bootstrapUnderPollution.valid, true);
+  } finally {
+    for (const proto of toJsonTargets) {
+      delete proto.toJSON;
+    }
+    for (const protoProp of [
+      'mode',
+      'visibility',
+      'discoveredRepository',
+      'stricterCoverageThresholds',
+      'existingFiles',
+      'pinnedCheckoutSha',
+      'observedCheckoutRef',
+      'mandatorySettings',
+      'unsupportedResources'
+    ]) {
+      delete Object.prototype[protoProp];
+    }
+  }
+
+  // Factory self-enrollment, mutable SHA refs, unknown stack profiles, mode mismatch, and unsupported resources
+  assert.equal(
+    buildReadOnlyOnboardingPlan({ ...validMinimal, repository: 'jamula/softwarefactory' }).reason,
+    'INVALID_CONSUMER_POLICY'
+  );
+  assert.equal(
+    buildReadOnlyOnboardingPlan({ ...validMinimal, repositoryId: FACTORY_REPOSITORY_ID }).reason,
+    'INVALID_CONSUMER_POLICY'
+  );
+  assert.equal(
+    buildReadOnlyOnboardingPlan({ ...validMinimal, pinnedFactorySha: 'main' }).reason,
+    'PIN_REF_NOT_IMMUTABLE_SHA'
+  );
+  assert.equal(
+    buildReadOnlyOnboardingPlan({ ...validMinimal, pinnedCheckoutSha: 'v1.0.0' }).reason,
+    'PIN_REF_NOT_IMMUTABLE_SHA'
+  );
+  assert.equal(
+    buildReadOnlyOnboardingPlan({ ...validMinimal, observedCheckoutRef: 'HEAD' }).reason,
+    'PIN_REF_NOT_IMMUTABLE_SHA'
+  );
+  assert.equal(
+    buildReadOnlyOnboardingPlan({ ...validMinimal, stackProfile: 'unknown-custom-stack' }).reason,
+    'UNSUPPORTED_STACK_PROFILE'
+  );
+  assert.equal(
+    buildReadOnlyOnboardingPlan({
+      ...validMinimal,
+      mode: 'greenfield',
+      discoveredRepository: completeDiscovered
+    }).reason,
+    'DISCOVERY_MODE_MISMATCH'
+  );
+  const resourceBlocked = buildReadOnlyOnboardingPlan({
+    ...validMinimal,
+    unsupportedResources: ['shared-admin-token', 'external-paid-service']
+  });
+  assert.equal(resourceBlocked.reason, 'UNSUPPORTED_RESOURCE_BLOCKED');
+  assert.deepEqual(resourceBlocked.blockers, ['shared-admin-token', 'external-paid-service']);
+
+  // Coverage floor and stricter gate preservation
+  assert.equal(
+    buildReadOnlyOnboardingPlan({
+      ...validMinimal,
+      stricterCoverageThresholds: { line: 94, branch: 90 }
+    }).reason,
+    'BASELINE_COVERAGE_BELOW_MINIMUM'
+  );
+  assert.equal(
+    buildReadOnlyOnboardingPlan({
+      ...validMinimal,
+      stricterCoverageThresholds: { line: 95, branch: 89 }
+    }).reason,
+    'BASELINE_COVERAGE_BELOW_MINIMUM'
+  );
+  assert.equal(
+    buildReadOnlyOnboardingPlan({
+      ...validMinimal,
+      stackProfile: 'ios-webkit-97-90',
+      stricterCoverageThresholds: { line: 96, branch: 90 }
+    }).reason,
+    'LOCAL_GATE_WEAKENED'
+  );
+  assert.equal(
+    buildReadOnlyOnboardingPlan({
+      ...validMinimal,
+      mode: 'existing-repository',
+      discoveredRepository: { ...completeDiscovered, coverage: { line: 97, branch: 93 } },
+      stricterCoverageThresholds: { line: 97, branch: 92 }
+    }).reason,
+    'LOCAL_GATE_WEAKENED'
+  );
+  assert.equal(
+    buildReadOnlyOnboardingPlan({
+      ...validMinimal,
+      mode: 'existing-repository',
+      discoveredRepository: { ...completeDiscovered, migrationFreezeClear: false }
+    }).reason,
+    'ENROLLMENT_NOT_AUTHORIZED'
+  );
+  for (const weakenedGate of [
+    { requireExplicitApproval: false },
+    { requireStrictUpToDate: false },
+    { allowCommentedBotApproval: true }
+  ]) {
+    assert.equal(
+      buildReadOnlyOnboardingPlan({
+        ...validMinimal,
+        mode: 'existing-repository',
+        discoveredRepository: { ...completeDiscovered, ...weakenedGate }
+      }).reason,
+      'LOCAL_GATE_WEAKENED'
+    );
+  }
+
+  // Named consumer profiles reject conflicting defaultBranch/mergeMethod or fewer required checks than profile floor
+  assert.equal(
+    buildReadOnlyOnboardingPlan({
+      ...validMinimal,
+      stackProfile: 'strict-up-to-date-migration-gated',
+      mode: 'existing-repository',
+      discoveredRepository: { ...completeDiscovered, defaultBranch: 'main', mergeMethod: 'squash' }
+    }).reason,
+    'LOCAL_GATE_WEAKENED'
+  );
+  assert.equal(
+    buildReadOnlyOnboardingPlan({
+      ...validMinimal,
+      stackProfile: 'strict-up-to-date-migration-gated',
+      mode: 'existing-repository',
+      discoveredRepository: { ...completeDiscovered, defaultBranch: 'trunk', mergeMethod: 'squash' }
+    }).reason,
+    'LOCAL_GATE_WEAKENED'
+  );
+  assert.equal(
+    buildReadOnlyOnboardingPlan({
+      ...validMinimal,
+      stackProfile: 'ios-webkit-97-90',
+      mode: 'existing-repository',
+      discoveredRepository: { ...completeDiscovered, checks: [{ name: 'only-one-gate', appId: 34567 }] }
+    }).reason,
+    'LOCAL_GATE_WEAKENED'
+  );
+
+  // Discovered repository and existing files structural validation
+  const getterDiscovered = { ...completeDiscovered };
+  Object.defineProperty(getterDiscovered, 'defaultBranch', { enumerable: true, get: failTrap });
+  for (const badDiscovered of [
+    null,
+    new Proxy({ ...completeDiscovered }, trapHandler),
+    getterDiscovered,
+    { ...completeDiscovered, unknownField: true },
+    { ...completeDiscovered, migrationFreezeClear: 'yes' },
+    { ...completeDiscovered, requireExplicitApproval: 1 },
+    { ...completeDiscovered, requireStrictUpToDate: null },
+    { ...completeDiscovered, allowCommentedBotApproval: 'no' },
+    { ...completeDiscovered, coverage: { line: 95 } },
+    { ...completeDiscovered, coverage: { line: -1, branch: 90 } },
+    { ...completeDiscovered, coverage: { line: 95, branch: 105 } },
+    { ...completeDiscovered, maxConcurrency: 0 },
+    { ...completeDiscovered, maxConcurrency: 13 },
+    { ...completeDiscovered, visibility: 'invalid' },
+    { ...completeDiscovered, defaultBranch: 'bad..branch' },
+    { ...completeDiscovered, defaultBranch: 'bad//branch' },
+    { ...completeDiscovered, defaultBranch: 'bad/' },
+    { ...completeDiscovered, mergeMethod: 'fast-forward' },
+    { ...completeDiscovered, checks: [] },
+    { ...completeDiscovered, reviewers: [] },
+    { ...completeDiscovered, owners: [{ prefix: 'src//nested', owner: 'synthetic-owner' }] },
+    { ...completeDiscovered, owners: [{ prefix: '  ', owner: 'synthetic-owner' }] }
+  ]) {
+    assert.equal(
+      buildReadOnlyOnboardingPlan({
+        ...validMinimal,
+        mode: 'existing-repository',
+        discoveredRepository: badDiscovered
+      }).reason,
+      'DISCOVERED_REPOSITORY_INVALID'
+    );
+  }
+
+  for (const badFiles of [
+    'not-an-array',
+    revokedArr.proxy,
+    new Proxy(['src/a.ts'], trapHandler),
+    [''],
+    ['/abs/path.ts'],
+    ['../escape.ts'],
+    [123],
+    [{ path: 'src/a.ts' }],
+    [{ path: '../bad.ts', content: 'x' }],
+    ['src/dup.ts', 'SRC/DUP.TS']
+  ]) {
+    assert.equal(
+      buildReadOnlyOnboardingPlan({ ...validMinimal, existingFiles: badFiles }).reason,
+      'EXISTING_FILES_INVALID'
+    );
+  }
+
+  assert.equal(traps, 0);
 });
