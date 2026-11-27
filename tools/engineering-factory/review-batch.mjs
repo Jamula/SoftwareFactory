@@ -3,7 +3,33 @@
 // No output authorizes review, merge, dispatch or a change to repository policy.
 const sha=v=>typeof v==='string'&&/^[a-f0-9]{40}$/.test(v);
 const token=v=>typeof v==='string'&&/^[A-Za-z0-9_-]{1,80}$/.test(v);
+const positive=v=>Number.isSafeInteger(v)&&v>0;
 const unknown=reason=>({state:'unknown',reason,repairIds:[]});
+const uncertainSummary=()=>({summaryDisposition:'uncertain',findings:[]});
+
+export function classifyReviewSummary(reviewId,body){
+  if(!positive(reviewId)||typeof body!=='string'||body.length===0||body.length>65536||body.includes('\u0000'))
+    return uncertainSummary();
+  const detailsIndex=body.search(/<details>\s*<summary><strong>What changed in this PR<\/strong><\/summary>/);
+  const overview=(detailsIndex>=0?body.slice(0,detailsIndex):body).trimStart();
+  if(!overview.startsWith('<!-- ccr-overview-v2 -->'))return uncertainSummary();
+  const clearHeading=/^### (?:🟢 )?Approval recommended\s*$/m.test(overview);
+  const noOpenIssues=/^\*\*No open issues\*\*(?: 🎉)?\s*$/m.test(overview);
+  const changesHeading=/^### (?:🟡 |🔴 )?Changes (?:recommended|requested)\s*$/m.test(overview);
+  const countMatch=/<summary><strong>(\d{1,3}) open issues?<\/strong><\/summary>/.exec(overview);
+  if((clearHeading||noOpenIssues)&&(changesHeading||countMatch!==null))return uncertainSummary();
+  if(clearHeading&&noOpenIssues)return {summaryDisposition:'clear',findings:[]};
+  if(!changesHeading&&countMatch===null)return uncertainSummary();
+  const count=countMatch===null?1:Number(countMatch[1]);
+  if(count<1||count>64)return uncertainSummary();
+  return {
+    summaryDisposition:'actionable',
+    findings:Array.from({length:count},(_,index)=>({
+      id:`summary-${reviewId}-${index+1}`,state:'actionable',source:'summary'
+    }))
+  };
+}
+
 export function planReviewBatch(candidate,inventory){
   if(!sha(candidate)||!inventory||inventory.head!==candidate||inventory.complete!==true||inventory.independent!==true)
     return unknown('REVIEW_EVIDENCE_UNKNOWN');

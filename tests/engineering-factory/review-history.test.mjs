@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {normalizeReviewHistory as normalize} from '../../tools/engineering-factory/review-history.mjs';
+import {buildCandidateReviewEvidence, normalizeReviewHistory as normalize} from '../../tools/engineering-factory/review-history.mjs';
 const head='a'.repeat(40), stale='b'.repeat(40);
 const r=(sequence,state,commit=head,reviewer='Reviewer')=>({sequence,state,head:commit,reviewer});
 test('current approval normalizes identity',()=>assert.deepEqual(normalize(head,[r(1,'APPROVED')]).reviews,[{reviewer:'reviewer',head,state:'APPROVED'}]));
@@ -65,5 +65,69 @@ test('stale reviews never remove a current-head non-clear summary when another r
  for(const summaryDisposition of [undefined,'uncertain','actionable'])for(const state of ['COMMENTED','APPROVED']){
   const result=normalize(head,[{...r(1,'COMMENTED',head,bot),summaryDisposition},r(2,'APPROVED',head,'Other'),r(3,state,stale,bot)],repo);
   assert.equal(result.reviews.length,2);assert.equal(result.reviews.find(v=>v.reviewer===bot).state,'COMMENTED');assert.notEqual(result.reviews.find(v=>v.reviewer===bot).summaryDisposition,'clear');
+ }
+});
+
+test('builds candidate review evidence enforcing independence, pending blocks and summary-only findings',()=>{
+ const bot='copilot-pull-request-reviewer[bot]';
+ const baseOpts={reviewers:[bot,'reviewer','author','agent'],author:'author',agent:'agent'};
+
+ const clear=buildCandidateReviewEvidence(head,[
+  {sequence:1,reviewer:bot,head,state:'COMMENTED',summaryDisposition:'clear',summaryFindings:[]}
+ ],baseOpts);
+ assert.equal(clear.ok,true);
+ assert.equal(clear.independentFavorable,true);
+ assert.equal(clear.batch.state,'no-repair');
+
+ const summaryOnly=buildCandidateReviewEvidence(head,[
+  {sequence:1,reviewer:bot,head,state:'COMMENTED',summaryDisposition:'actionable',
+   summaryFindings:[{id:'summary-10-1',state:'actionable',source:'summary'}]}
+ ],baseOpts);
+ assert.equal(summaryOnly.ok,true);
+ assert.equal(summaryOnly.independentFavorable,false);
+ assert.deepEqual(summaryOnly.batch,{state:'repair',reason:'BATCH_ALL_CURRENT_FINDINGS',repairIds:['summary-10-1']});
+
+ const uncertain=buildCandidateReviewEvidence(head,[
+  {sequence:1,reviewer:bot,head,state:'COMMENTED'}
+ ],baseOpts);
+ assert.equal(uncertain.independentFavorable,false);
+ assert.equal(uncertain.platformReview.summaryDisposition,'uncertain');
+
+ for(const actor of ['author','agent']){
+  const selfApproved=buildCandidateReviewEvidence(head,[r(1,'APPROVED',head,actor)],baseOpts);
+  assert.equal(selfApproved.independentFavorable,false);
+  assert.equal(selfApproved.platformReview.independent,false);
+ }
+
+ const consumerApproved=buildCandidateReviewEvidence(head,[r(1,'APPROVED',head,'reviewer')],
+  {...baseOpts,repository:'Jamula/Spellbook',inlineFindings:[{id:'inline-1',state:'resolved',source:'inline'}]});
+ assert.equal(consumerApproved.independentFavorable,true);
+ assert.equal(consumerApproved.platformReview.summaryDisposition,'clear');
+
+ const withActionableInline=buildCandidateReviewEvidence(head,[r(1,'APPROVED',head,'reviewer')],
+  {...baseOpts,repository:'Jamula/Spellbook',inlineFindings:[{id:'inline-1',state:'actionable',source:'inline'}]});
+ assert.equal(withActionableInline.independentFavorable,false);
+ assert.equal(withActionableInline.platformReview.summaryDisposition,'actionable');
+
+ assert.equal(buildCandidateReviewEvidence(head,[{...r(1,'APPROVED'),state:'PENDING'}],baseOpts).reason,'REVIEW_PENDING');
+
+ for(const [h,hist,opts] of [
+  ['bad',[],baseOpts],
+  [head,null,baseOpts],
+  [head,[],null],
+  [head,[],{...baseOpts,reviewers:[]}],
+  [head,[],{...baseOpts,repository:''}],
+  [head,[],{...baseOpts,inlineFindings:[{id:'x',state:'actionable',source:'summary'}]}],
+  [head,[null],baseOpts],
+  [head,[{sequence:1,reviewer:bot,head,state:'COMMENTED',summaryFindings:[{id:'x',state:'actionable',source:'inline'}]}],baseOpts],
+  [head,[r(2,'APPROVED'),r(1,'APPROVED')],baseOpts],
+  [head,[{sequence:1,reviewer:bot,head,state:'COMMENTED',summaryDisposition:'actionable',
+   summaryFindings:Array.from({length:10},(_,i)=>({id:`s-${i}`,state:'actionable',source:'summary'}))}
+  ],{...baseOpts,inlineFindings:Array.from({length:250},(_,i)=>({id:`i-${i}`,state:'resolved',source:'inline'}))}],
+  [head,[{sequence:1,reviewer:bot,head,state:'COMMENTED',summaryDisposition:'actionable',
+   summaryFindings:[{id:'dup',state:'actionable',source:'summary'}]}
+  ],{...baseOpts,inlineFindings:[{id:'dup',state:'resolved',source:'inline'}]}]
+ ]) {
+  assert.equal(buildCandidateReviewEvidence(h,hist,opts).ok,false);
  }
 });

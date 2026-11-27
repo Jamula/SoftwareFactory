@@ -1,6 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createShadowSquashController, guardedSquashEvidence} from '../../tools/engineering-factory/protected-squash.mjs';
+import {
+  DEFAULT_FACTORY_SCOPE,
+  createGitHubShadowTransport,
+  createShadowSquashController,
+  guardedSquashEvidence,
+  readProtectedSquashCandidate
+} from '../../tools/engineering-factory/protected-squash.mjs';
 
 const scope = {repository: 'Jamula/SoftwareFactory', repositoryId: 1471342715, branch: 'main'};
 const head = 'a'.repeat(40);
@@ -191,4 +197,479 @@ test('never retries simulation after an uncertain receipt or unhealthy main', as
   const ambiguous = createShadowSquashController(mock({simulateSquash: async () => ({...receipt, head: base})}));
   assert.equal((await ambiguous.run(intent)).reason, 'MERGE_RECEIPT_UNKNOWN');
   assert.equal((await ambiguous.run(intent)).reason, 'SERIALIZED_OR_RECOVERY_REQUIRED');
+});
+
+test('parameterizes consumer scopes while preserving consumer formal-approval and >=95/90+ coverage gates', async () => {
+  assert.equal(DEFAULT_FACTORY_SCOPE.repositoryId, 1471342715);
+  assert.equal(guardedSquashEvidence(intent, evidence(),
+    {repository: 'Jamula/SoftwareFactory', repositoryId: 1471342715}).reason, 'SHADOW_SQUASH_ELIGIBLE');
+  const consumerScope = {
+    repository: 'Jamula/Spellbook',
+    repositoryId: 987654321,
+    branch: 'main',
+    requiredChecks: ['spellbook-ci', 'spellbook-security']
+  };
+  const consumerChecks = consumerScope.requiredChecks.map((name, i) => ({name, appId: i + 10}));
+  const consumerIntent = {
+    repository: consumerScope.repository,
+    repositoryId: consumerScope.repositoryId,
+    branch: 'main',
+    number: 88,
+    expectedHead: head,
+    expectedBase: base
+  };
+  const consumerEvidence = () => ({
+    repository: consumerScope.repository,
+    repositoryId: consumerScope.repositoryId,
+    branch: 'main',
+    number: 88,
+    head,
+    base,
+    open: true,
+    draft: false,
+    stop: false,
+    scopeVerified: true,
+    nativeQueue: false,
+    protection: {
+      repository: consumerScope.repository,
+      repositoryId: consumerScope.repositoryId,
+      branch: 'main',
+      base,
+      verified: true,
+      protected: true,
+      bypass: false,
+      method: 'squash',
+      upToDate: true,
+      review: true,
+      requiredApprovingReviewCount: 1,
+      hostedReviewGate: false,
+      threads: true,
+      security: true,
+      requiredChecks: consumerChecks
+    },
+    policy: {
+      version: 1,
+      repository: consumerScope.repository,
+      defaultBranch: 'main',
+      mergeMethod: 'squash',
+      mode: 'shadow',
+      killSwitch: false,
+      checks: consumerChecks,
+      reviewers: ['spellbook-maintainer'],
+      coverage: {line: 97, branch: 92},
+      owners: [{prefix: 'src', owner: 'spellbook-owner'}],
+      maxActive: 1,
+      creditLimit: 5,
+      riskClasses: ['low']
+    },
+    snapshot: {
+      repository: consumerScope.repository,
+      policySource: 'trusted-default-branch',
+      pr: 88,
+      issue: 5,
+      head,
+      base,
+      observedHead: head,
+      observedBase: base,
+      baseBranch: 'main',
+      rateLimited: false,
+      remainingCredits: 1,
+      activeCount: 0,
+      providerReady: true,
+      risk: 'low',
+      priority: 1,
+      paths: ['src/spell.mjs'],
+      dependencies: [],
+      acceptanceComplete: true,
+      baseCompatible: true,
+      mainHealthy: true,
+      author: 'spellbook-author',
+      agent: 'spellbook-agent',
+      checks: consumerChecks.map(c => ({...c, head, status: 'completed', conclusion: 'success'}))
+    },
+    reviewHistory: [{sequence: 1, reviewer: 'spellbook-maintainer', head, state: 'APPROVED'}],
+    coverageReports: [{component: 'spell', head, lines: 97, lineTotal: 100, branches: 92, branchTotal: 100}],
+    expectedComponents: ['spell'],
+    threads: {head, resolved: true},
+    security: {head, clear: true},
+    platformReview: {head, complete: true, independent: true, summaryDisposition: 'clear', findings: []}
+  });
+
+  assert.deepEqual(guardedSquashEvidence(consumerIntent, consumerEvidence(), consumerScope),
+    {shadow: true, liveMerge: false, dependentWorkAllowed: false, reason: 'SHADOW_SQUASH_ELIGIBLE'});
+
+  const inferredChecksScope = {repository: consumerScope.repository, repositoryId: consumerScope.repositoryId};
+  assert.equal(guardedSquashEvidence(consumerIntent, consumerEvidence(), inferredChecksScope).reason,
+    'SHADOW_SQUASH_ELIGIBLE');
+
+  const zeroNativeReview = consumerEvidence();
+  zeroNativeReview.protection = {...zeroNativeReview.protection, review: false, requiredApprovingReviewCount: 0, hostedReviewGate: true};
+  assert.equal(guardedSquashEvidence(consumerIntent, zeroNativeReview, consumerScope).reason,
+    'PROTECTIONS_UNVERIFIED');
+
+  const belowConsumerTarget = consumerEvidence();
+  belowConsumerTarget.coverageReports = [{component: 'spell', head, lines: 96, lineTotal: 100, branches: 92, branchTotal: 100}];
+  assert.equal(guardedSquashEvidence(consumerIntent, belowConsumerTarget, consumerScope).reason,
+    'COVERAGE_UNVERIFIED');
+
+  const invalidConsumerInventory = consumerEvidence();
+  invalidConsumerInventory.expectedComponents = [];
+  assert.equal(guardedSquashEvidence(consumerIntent, invalidConsumerInventory, consumerScope).reason,
+    'COVERAGE_UNVERIFIED');
+
+  const duplicateConsumerReport = consumerEvidence();
+  duplicateConsumerReport.expectedComponents = ['spell', 'rune'];
+  duplicateConsumerReport.coverageReports = [
+    {component: 'spell', head, lines: 98, lineTotal: 100, branches: 95, branchTotal: 100},
+    {component: 'spell', head, lines: 98, lineTotal: 100, branches: 95, branchTotal: 100}
+  ];
+  assert.equal(guardedSquashEvidence(consumerIntent, duplicateConsumerReport, consumerScope).reason,
+    'COVERAGE_UNVERIFIED');
+
+  for (const badScope of [
+    null,
+    {repository: '../bad', repositoryId: 1},
+    {repository: 'Jamula/Spellbook', repositoryId: 987654321, branch: '/bad'},
+    {repository: 'Jamula/Spellbook', repositoryId: 987654321, requiredChecks: []}
+  ]) {
+    assert.equal(guardedSquashEvidence(consumerIntent, consumerEvidence(), badScope).reason,
+      'PROTECTIONS_UNVERIFIED');
+  }
+  assert.equal(guardedSquashEvidence(consumerIntent, {...consumerEvidence(), policy: null},
+    {repository: 'Jamula/Spellbook', repositoryId: 987654321}).reason, 'PROTECTIONS_UNVERIFIED');
+  assert.throws(() => createShadowSquashController(mock(), {repository: '../bad', repositoryId: 1}),
+    /INVALID_SHADOW_SQUASH_SCOPE/);
+
+  const consumerReceipt = {
+    repository: consumerScope.repository,
+    repositoryId: consumerScope.repositoryId,
+    branch: 'main',
+    number: 88,
+    head,
+    base,
+    method: 'squash',
+    mergeCommit,
+    merged: true
+  };
+  const consumerMain = {
+    repository: consumerScope.repository,
+    repositoryId: consumerScope.repositoryId,
+    branch: 'main',
+    head: mergeCommit,
+    healthy: true,
+    stop: false
+  };
+  const scopedController = createShadowSquashController({
+    mode: 'shadow',
+    scope: consumerScope,
+    readCandidate: async () => consumerEvidence(),
+    simulateSquash: async () => consumerReceipt,
+    readMergeReceipt: async () => consumerReceipt,
+    readMain: async () => consumerMain
+  });
+  assert.deepEqual(await scopedController.run(consumerIntent), {
+    shadow: true,
+    liveMerge: false,
+    dependentWorkAllowed: true,
+    reason: 'SHADOW_MAIN_VERIFIED',
+    mergeCommit
+  });
+});
+
+test('aggregates read-only GitHub API metadata for required_approving_review_count: 0 and blocks stale, dismissed, summary-only, self/agent, race and unhealthy-main cases', async () => {
+  const staleHead = 'd'.repeat(40);
+  const movedBase = 'e'.repeat(40);
+  const policyChecks = [
+    {name: 'build-test', appId: 15368},
+    {name: 'upload-coverage-javascript', appId: 15368},
+    {name: 'windows-aspire-runtime', appId: 15368},
+    {name: 'CodeQL', appId: 29110}
+  ];
+  const policy = {
+    version: 1,
+    repository: scope.repository,
+    defaultBranch: 'main',
+    mergeMethod: 'squash',
+    mode: 'shadow',
+    killSwitch: false,
+    checks: policyChecks,
+    reviewers: [reviewer, 'human-reviewer', 'pr-author', 'coding-agent'],
+    coverage: {line: 98, branch: 95},
+    owners: [{prefix: 'src', owner: 'factory-owner'}],
+    maxActive: 1,
+    creditLimit: 5,
+    riskClasses: ['low']
+  };
+  const response = value => new Response(JSON.stringify(value));
+  const checkRow = (id, name, shaValue, conclusion = 'success') => ({
+    id,
+    name,
+    head_sha: shaValue,
+    status: 'completed',
+    conclusion,
+    completed_at: '2026-11-26T20:00:00Z',
+    app: {
+      id: name === 'CodeQL' ? 29110 : 15368,
+      slug: name === 'CodeQL' ? 'github-code-scanning' : 'github-actions'
+    }
+  });
+  const checkSuite = (shaValue, overrides = {}) => {
+    const rows = policyChecks.map((c, idx) =>
+      checkRow(idx + 1, c.name, shaValue, overrides[c.name] ?? 'success'));
+    return {total_count: rows.length, check_runs: rows};
+  };
+  const clearOverview = '<!-- ccr-overview-v2 -->\n\n### 🟢 Approval recommended\n\n**No open issues** 🎉';
+  const summaryFindingOverview = '<!-- ccr-overview-v2 -->\n\n### 🟡 Changes recommended\n\n<details open>\n<summary><strong>1 open issue</strong></summary>\n- summary-only defect\n</details>';
+
+  function createGitHubApi(state = {}) {
+    const repoObj = {id: scope.repositoryId, full_name: scope.repository};
+    const currentPull = () => ({
+      number: 12,
+      state: 'open',
+      draft: false,
+      user: {login: state.author ?? 'pr-author', id: 55},
+      base: {repo: repoObj, ref: 'main', sha: state.pullBase ?? base},
+      head: {repo: repoObj, sha: state.pullHead ?? head},
+      mergeable: true,
+      mergeable_state: 'clean'
+    });
+    const rules = state.rules ?? [
+      {
+        type: 'pull_request',
+        parameters: {
+          required_approving_review_count: 0,
+          required_review_thread_resolution: true,
+          allowed_merge_methods: ['squash']
+        }
+      },
+      {
+        type: 'required_status_checks',
+        parameters: {
+          strict_required_status_checks_policy: true,
+          required_status_checks: [
+            {context: 'build-test', integration_id: 15368},
+            {context: 'upload-coverage-javascript', integration_id: 15368},
+            {context: 'windows-aspire-runtime', integration_id: 15368}
+          ]
+        }
+      },
+      {
+        type: 'code_scanning',
+        parameters: {
+          code_scanning_tools: [{
+            tool: 'CodeQL',
+            security_alerts_threshold: 'medium_or_higher',
+            alerts_threshold: 'errors_and_warnings'
+          }]
+        }
+      }
+    ];
+    let pullReads = 0;
+    return async (url, options) => {
+      assert.equal(options.method, 'GET');
+      assert.equal(options.redirect, 'error');
+      assert.equal(options.signal instanceof AbortSignal, true);
+      assert.equal(options.headers.authorization, undefined);
+      if (url.endsWith('/pulls/12')) {
+        pullReads++;
+        if (state.mutateOnReread && pullReads === 2) {
+          return response({...currentPull(), head: {repo: repoObj, sha: staleHead}});
+        }
+        return response(currentPull());
+      }
+      if (url.endsWith('/rules/branches/main')) return response(rules);
+      if (url.endsWith('/branches/main')) {
+        return response({name: 'main', protected: true, commit: {sha: state.mainHead ?? base}});
+      }
+      if (url.includes('/files?')) return response([{filename: 'src/component.mjs'}]);
+      if (url.includes('/reviews?')) {
+        return response(state.reviews ?? [{
+          id: 500,
+          user: {login: reviewer, id: 175728472},
+          state: 'COMMENTED',
+          commit_id: head,
+          submitted_at: '2026-11-26T20:01:00Z',
+          body: clearOverview
+        }]);
+      }
+      if (url.includes(`/commits/${head}/check-runs`)) return response(checkSuite(head, state.headCheckOverrides));
+      if (url.includes(`/commits/${base}/check-runs`)) return response(checkSuite(base, state.baseCheckOverrides));
+      if (url.includes(`/commits/${mergeCommit}/check-runs`)) {
+        return response(checkSuite(mergeCommit, state.mergedMainCheckOverrides));
+      }
+      throw Error('unexpected endpoint ' + url);
+    };
+  }
+
+  const baseTransportOptions = apiState => ({
+    request: createGitHubApi(apiState),
+    policy,
+    issue: 8,
+    agent: 'coding-agent',
+    coverageReports: [{component: 'component', head, lines: 99, lineTotal: 100, branches: 96, branchTotal: 100}],
+    expectedComponents: ['component'],
+    threads: {head, resolved: true},
+    simulateSquash: async target => {
+      apiState.mainHead = mergeCommit;
+      return {...scope, number: target.number, head: target.expectedHead, base: target.expectedBase,
+        method: 'squash', mergeCommit, merged: true};
+    },
+    readMergeReceipt: async target => ({
+      ...scope, number: target.number, head: target.expectedHead, base: target.expectedBase,
+      method: 'squash', mergeCommit, merged: true
+    })
+  });
+
+  // 1. Happy path: required_approving_review_count: 0 + clean Copilot COMMENTED review -> shadow verified
+  const happyState = {};
+  const happyController = createShadowSquashController(createGitHubShadowTransport(baseTransportOptions(happyState)));
+  assert.deepEqual(await happyController.run(intent), {
+    shadow: true,
+    liveMerge: false,
+    dependentWorkAllowed: true,
+    reason: 'SHADOW_MAIN_VERIFIED',
+    mergeCommit
+  });
+  // Subsequent intent using old base is blocked as moved base
+  assert.equal((await happyController.run(intent)).reason, 'BASE_MOVED_SINCE_VERIFICATION');
+
+  // 2. Stale head blocks (both stale Copilot review SHA and moved PR head on GitHub)
+  const staleReviewController = createShadowSquashController(createGitHubShadowTransport(baseTransportOptions({
+    reviews: [{
+      id: 501, user: {login: reviewer, id: 175728472}, state: 'COMMENTED',
+      commit_id: staleHead, submitted_at: '2026-11-26T20:01:00Z', body: clearOverview
+    }]
+  })));
+  assert.deepEqual(await staleReviewController.run(intent), {
+    shadow: true, liveMerge: false, dependentWorkAllowed: false, reason: 'REVIEW_MISSING'
+  });
+
+  const movedHeadController = createShadowSquashController(createGitHubShadowTransport(baseTransportOptions({
+    pullHead: staleHead
+  })));
+  assert.equal((await movedHeadController.run(intent)).reason, 'SCOPE_OR_HEAD_CHANGED');
+
+  // 3. Dismissed review blocks
+  const dismissedController = createShadowSquashController(createGitHubShadowTransport(baseTransportOptions({
+    reviews: [
+      {id: 510, user: {login: 'human-reviewer', id: 77}, state: 'APPROVED', commit_id: head, submitted_at: '2026-11-26T20:01:00Z'},
+      {id: 511, user: {login: 'human-reviewer', id: 77}, state: 'DISMISSED', commit_id: head, submitted_at: '2026-11-26T20:02:00Z'}
+    ]
+  })));
+  assert.equal((await dismissedController.run(intent)).reason, 'REVIEW_MISSING');
+
+  // 4. Summary-only unresolved finding blocks even when required_approving_review_count: 0 and inline threads are resolved
+  const summaryFindingState = {
+    reviews: [{
+      id: 520, user: {login: reviewer, id: 175728472}, state: 'COMMENTED',
+      commit_id: head, submitted_at: '2026-11-26T20:01:00Z', body: summaryFindingOverview
+    }]
+  };
+  const summaryBlockedCandidate = await readProtectedSquashCandidate(intent, baseTransportOptions(summaryFindingState));
+  assert.deepEqual(summaryBlockedCandidate.platformReview.findings, [
+    {id: 'summary-520-1', state: 'actionable', source: 'summary'}
+  ]);
+  const summaryFindingController = createShadowSquashController(
+    createGitHubShadowTransport(baseTransportOptions(summaryFindingState)));
+  assert.equal((await summaryFindingController.run(intent)).reason, 'REVIEW_MISSING');
+
+  // Also blocks when human APPROVED exists alongside an unresolved summary/inline finding in platformReview
+  const inlineWithApproval = createShadowSquashController(createGitHubShadowTransport({
+    ...baseTransportOptions({
+      reviews: [{id: 521, user: {login: 'human-reviewer', id: 77}, state: 'APPROVED',
+        commit_id: head, submitted_at: '2026-11-26T20:01:00Z'}]
+    }),
+    inlineFindings: [{id: 'inline-thread-1', state: 'actionable', source: 'inline'}]
+  }));
+  assert.equal((await inlineWithApproval.run(intent)).reason, 'REVIEW_INCOMPLETE');
+
+  // 5. Self-authored and agent-authored reviews block even when listed in policy.reviewers
+  for (const selfActor of ['pr-author', 'coding-agent']) {
+    const selfController = createShadowSquashController(createGitHubShadowTransport(baseTransportOptions({
+      reviews: [{
+        id: 530, user: {login: selfActor, id: 55}, state: 'APPROVED',
+        commit_id: head, submitted_at: '2026-11-26T20:01:00Z'
+      }]
+    })));
+    assert.equal((await selfController.run(intent)).reason, 'REVIEW_MISSING');
+  }
+  const botAgentController = createShadowSquashController(createGitHubShadowTransport(baseTransportOptions({
+    reviews: [{
+      id: 531, user: {login: 'copilot-swe-agent[bot]', id: 99}, state: 'APPROVED',
+      commit_id: head, submitted_at: '2026-11-26T20:01:00Z'
+    }]
+  })));
+  assert.equal((await botAgentController.run(intent)).reason, 'REVIEW_UNVERIFIED');
+
+  // 6. Race / moved-base blocks (moved main before merge & TOCTOU PR mutation mid-read)
+  const movedMainController = createShadowSquashController(createGitHubShadowTransport(baseTransportOptions({
+    mainHead: movedBase
+  })));
+  assert.equal((await movedMainController.run(intent)).reason, 'SCOPE_OR_HEAD_CHANGED');
+
+  const toctouController = createShadowSquashController(createGitHubShadowTransport(baseTransportOptions({
+    mutateOnReread: true
+  })));
+  assert.equal((await toctouController.run(intent)).reason, 'SCOPE_OR_HEAD_CHANGED');
+
+  // 7. Unhealthy main blocks both pre-merge and post-merge (holding dependents until main recovers)
+  const unhealthyBaseController = createShadowSquashController(createGitHubShadowTransport(baseTransportOptions({
+    baseCheckOverrides: {'windows-aspire-runtime': 'failure'}
+  })));
+  assert.equal((await unhealthyBaseController.run(intent)).reason, 'BASE_OR_MAIN_UNHEALTHY');
+
+  const postMergeState = {mergedMainCheckOverrides: {CodeQL: 'failure'}};
+  let stopFlag = false;
+  const postMergeController = createShadowSquashController(createGitHubShadowTransport({
+    ...baseTransportOptions(postMergeState),
+    readStop: () => stopFlag
+  }));
+  const held = await postMergeController.run(intent);
+  assert.deepEqual(held, {
+    shadow: true,
+    liveMerge: false,
+    dependentWorkAllowed: false,
+    reason: 'MAIN_VERIFICATION_REQUIRED',
+    mergeCommit
+  });
+  assert.equal((await postMergeController.run({...intent, expectedBase: mergeCommit})).reason,
+    'SERIALIZED_OR_RECOVERY_REQUIRED');
+  postMergeState.mergedMainCheckOverrides = {};
+  stopFlag = true;
+  assert.equal((await postMergeController.reconcile()).reason, 'MAIN_VERIFICATION_REQUIRED');
+  stopFlag = false;
+  assert.deepEqual(await postMergeController.reconcile(), {
+    shadow: true,
+    liveMerge: false,
+    dependentWorkAllowed: true,
+    reason: 'SHADOW_MAIN_VERIFIED',
+    mergeCommit
+  });
+
+  // Explicit security alert failure and transport/candidate option validation fail closed
+  const explicitSecurityAlert = await readProtectedSquashCandidate(intent, {
+    ...baseTransportOptions({}),
+    security: {head, clear: false}
+  });
+  assert.equal(guardedSquashEvidence(intent, explicitSecurityAlert).reason, 'THREADS_OR_SECURITY_UNKNOWN');
+  assert.equal((await readProtectedSquashCandidate(intent, null)).reason, 'POLICY_UNKNOWN');
+  assert.equal((await readProtectedSquashCandidate(intent, {
+    ...baseTransportOptions({}),
+    scope: {repository: '../bad', repositoryId: 1}
+  })).reason, 'PROTECTIONS_UNVERIFIED');
+  for (const invalidOpts of [
+    null,
+    {...baseTransportOptions({}), policy: null},
+    {...baseTransportOptions({}), simulateSquash: null},
+    {...baseTransportOptions({}), request: 'not-fn'}
+  ]) {
+    assert.throws(() => createGitHubShadowTransport(invalidOpts), /INVALID_SHADOW_SQUASH_TRANSPORT/);
+  }
+  for (const invalidScope of [
+    {repository: '../bad', repositoryId: 1},
+    {repository: scope.repository, repositoryId: scope.repositoryId, requiredChecks: ['missing-in-policy']}
+  ]) {
+    assert.throws(() => createGitHubShadowTransport({...baseTransportOptions({}), scope: invalidScope}),
+      /INVALID_SHADOW_SQUASH_SCOPE/);
+  }
 });

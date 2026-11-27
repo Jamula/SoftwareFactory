@@ -29,3 +29,25 @@ test('nested review accessors and proxies cannot execute or modify validated gat
  const c=evidence();c.review.findings=[{id:'x',state:'resolved',source:'summary'}];Object.defineProperty(c.review.findings[0],'state',{get:poison});assert.equal(platformMergeGates(head,policy(),c).reason,'REVIEW_INCOMPLETE');
  const d=evidence();d.review.findings=[{id:'x',state:'resolved',source:'summary'}];Object.defineProperty(d.review.findings,0,{get:poison});assert.equal(platformMergeGates(head,policy(),d).reason,'REVIEW_INCOMPLETE');
 });
+
+test('parameterizes trusted repositoryId and required check lists while failing closed on invalid scopes',()=>{
+ const consumerScope={repositoryId:9001,requiredChecks:['consumer-linux','consumer-codeql']};
+ const consumerPolicy={repositoryId:9001,trusted:true,required:[{name:'consumer-linux',appId:10},{name:'consumer-codeql',appId:20}]};
+ const consumerEvidence={
+  ...evidence(),
+  checks:consumerPolicy.required.map(c=>({...c,head,status:'completed',conclusion:'success'}))
+ };
+ assert.deepEqual(platformMergeGates(head,consumerPolicy,consumerEvidence,consumerScope),
+  {shadow:true,eligible:true,liveMerge:false,reason:'SHADOW_PLATFORM_GATES_ONLY'});
+ assert.equal(platformMergeGates(head,{...consumerPolicy,repositoryId:1471342715},consumerEvidence,consumerScope).reason,'POLICY_UNKNOWN');
+ assert.equal(platformMergeGates(head,{...consumerPolicy,required:[consumerPolicy.required[0]]},consumerEvidence,consumerScope).reason,'PLATFORM_POLICY_INCOMPLETE');
+ for(const badScope of [
+  null,
+  {repositoryId:0,requiredChecks:['a']},
+  {repositoryId:9001,requiredChecks:[]},
+  {repositoryId:9001,requiredChecks:['']},
+  {repositoryId:9001,requiredChecks:['dup','dup']}
+ ]) {
+  assert.equal(platformMergeGates(head,consumerPolicy,consumerEvidence,badScope).reason,'POLICY_UNKNOWN');
+ }
+});
