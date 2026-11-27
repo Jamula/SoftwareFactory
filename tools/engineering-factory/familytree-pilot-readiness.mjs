@@ -249,8 +249,8 @@ const validLocalGates = (policy, gates) =>
   exact(gates, LOCAL_GATES_KEYS) &&
   pct(gates.minLineCoverage) &&
   pct(gates.minBranchCoverage) &&
-  posInt(gates.maxConcurrency) &&
-  policy.maxActive <= gates.maxConcurrency &&
+  gates.maxConcurrency === 1 &&
+  policy.maxActive === 1 &&
   gates.requireExplicitApproval === true &&
   gates.requireStrictUpToDate === true &&
   dense(gates.requiredChecks) &&
@@ -351,10 +351,10 @@ const isStaleReviewCandidate = (baseCand, cand) =>
   singleMutation(baseCand, cand, 'snapshot') &&
   singleMutation(baseCand.snapshot, cand.snapshot, 'reviews') &&
   dense(cand.snapshot.reviews) &&
-  cand.snapshot.reviews.length > 0 &&
-  cand.snapshot.reviews.every(r =>
+  cand.snapshot.reviews.length === baseCand.snapshot.reviews.length &&
+  cand.snapshot.reviews.every((r, i) =>
     exact(r, ['reviewer', 'head', 'state']) &&
-    text(r.reviewer) &&
+    r.reviewer === baseCand.snapshot.reviews[i].reviewer &&
     r.state === 'APPROVED' &&
     sha40(r.head) &&
     r.head !== baseCand.snapshot.head);
@@ -363,10 +363,10 @@ const isDismissedReviewCandidate = (baseCand, cand) =>
   singleMutation(baseCand, cand, 'snapshot') &&
   singleMutation(baseCand.snapshot, cand.snapshot, 'reviews') &&
   dense(cand.snapshot.reviews) &&
-  cand.snapshot.reviews.length > 0 &&
-  cand.snapshot.reviews.every(r =>
+  cand.snapshot.reviews.length === baseCand.snapshot.reviews.length &&
+  cand.snapshot.reviews.every((r, i) =>
     exact(r, ['reviewer', 'head', 'state']) &&
-    text(r.reviewer) &&
+    r.reviewer === baseCand.snapshot.reviews[i].reviewer &&
     r.head === baseCand.snapshot.head &&
     r.state === 'DISMISSED');
 
@@ -504,11 +504,30 @@ export function proveFamilyTreeShadowDenials(suite) {
     seenDeliveryIds: []
   };
 
+  const botReviewer = d.commentedBotReview.snapshot.reviews[0].reviewer;
+  const hasAllowlistedBot = baseConfig.policy.reviewers.some(
+    r => identity(r) === identity(botReviewer)
+  );
+  const botConfig = {
+    ...baseConfig,
+    policy: hasAllowlistedBot
+      ? baseConfig.policy
+      : { ...baseConfig.policy, reviewers: [...baseConfig.policy.reviewers, botReviewer] }
+  };
+  const botApprovedControl = {
+    ...baseCand,
+    snapshot: {
+      ...baseCand.snapshot,
+      reviews: [{ reviewer: botReviewer, head: baseCand.snapshot.head, state: 'APPROVED' }]
+    }
+  };
+
   const shadowChecks = [
     [baseConfig, baseCand, 'SHADOW_ELIGIBLE'],
+    [botConfig, botApprovedControl, 'SHADOW_ELIGIBLE'],
     [baseConfig, d.staleReview, 'REVIEW_MISSING'],
     [baseConfig, d.dismissedReview, 'REVIEW_MISSING'],
-    [baseConfig, d.commentedBotReview, 'REVIEW_MISSING'],
+    [botConfig, d.commentedBotReview, 'REVIEW_MISSING'],
     [baseConfig, d.wrongRepositoryId, 'WRONG_REPOSITORY_ID'],
     [baseConfig, d.wrongRepositorySlug, 'UNTRUSTED_POLICY'],
     [baseConfig, d.missingAiCreditQuota, 'AI_CREDIT_QUOTA_MISSING_OR_ESTIMATED'],

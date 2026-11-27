@@ -433,6 +433,12 @@ test('evaluateFamilyTreeShadowCandidate enforces config, schema, stop, repoId, d
     { ...baseConfig, localGates: { ...baseConfig.localGates, minLineCoverage: -1 } },
     { ...baseConfig, localGates: { ...baseConfig.localGates, minBranchCoverage: 101 } },
     { ...baseConfig, localGates: { ...baseConfig.localGates, maxConcurrency: 0 } },
+    { ...baseConfig, localGates: { ...baseConfig.localGates, maxConcurrency: 2 } },
+    {
+      ...baseConfig,
+      policy: { ...baseConfig.policy, maxActive: 2 },
+      localGates: { ...baseConfig.localGates, maxConcurrency: 2 }
+    },
     { ...baseConfig, policy: { ...baseConfig.policy, maxActive: 2 } },
     { ...baseConfig, localGates: { ...baseConfig.localGates, requireExplicitApproval: false } },
     { ...baseConfig, localGates: { ...baseConfig.localGates, requireStrictUpToDate: false } },
@@ -616,9 +622,10 @@ test('proveFamilyTreeShadowDenials verifies all 11 negative shadow scenarios, st
   };
   assert.equal(proveFamilyTreeShadowDenials(zeroQuotaAndBareBotSuite).valid, true);
 
-  // Stricter local gate FamilyTree suite (97% line / 93% branch)
+  // Stricter local gate FamilyTree suite (97% line / 93% branch) with pre-allowlisted bot reviewer
   const stricterPolicy = {
     ...byRepo('example/family-tree'),
+    reviewers: ['synthetic-reviewer', 'copilot-pull-request-reviewer[bot]'],
     coverage: { line: 97, branch: 93 }
   };
   const stricterPkg = makeOnboardingPackage(stricterPolicy, {
@@ -790,7 +797,10 @@ test('proveFamilyTreeShadowDenials rejects invalid suite shapes, broken scenario
       ...suite,
       denials: {
         ...d,
-        staleReview: { ...cand, snapshot: { ...snap, reviews: [{ reviewer: '', head: base, state: 'APPROVED' }] } }
+        staleReview: {
+          ...cand,
+          snapshot: { ...snap, reviews: [{ reviewer: 'untrusted-reviewer', head: base, state: 'APPROVED' }] }
+        }
       }
     },
     {
@@ -821,7 +831,7 @@ test('proveFamilyTreeShadowDenials rejects invalid suite shapes, broken scenario
         ...d,
         dismissedReview: {
           ...cand,
-          snapshot: { ...snap, reviews: [{ reviewer: '', head, state: 'DISMISSED' }] }
+          snapshot: { ...snap, reviews: [{ reviewer: 'untrusted-reviewer', head, state: 'DISMISSED' }] }
         }
       }
     },
@@ -978,6 +988,20 @@ test('proveFamilyTreeShadowDenials rejects invalid suite shapes, broken scenario
     assert.equal(proveFamilyTreeShadowDenials(badScenarioSuite).reason, 'SHADOW_DENIAL_SCENARIO_INVALID');
   }
   assert.equal(getterInvocations, 0);
+
+  // Bot reviewer non-independent from candidate author fails positive control
+  const nonIndependentBotCand = {
+    ...cand,
+    snapshot: { ...snap, author: 'copilot-pull-request-reviewer[bot]' }
+  };
+  assert.equal(
+    proveFamilyTreeShadowDenials({
+      ...suite,
+      eligibleCandidate: nonIndependentBotCand,
+      denials: makeDenialsFromCandidate(nonIndependentBotCand)
+    }).reason,
+    'SHADOW_DENIAL_NOT_PROVEN'
+  );
 
   // Structurally valid candidate + derived denials that fails shadow eligibility (mainHealthy: false)
   const unhealthyCand = {
