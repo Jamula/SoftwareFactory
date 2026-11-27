@@ -480,6 +480,22 @@ test('orchestrates pull, review, check, main, issue and manual triggers through 
   clock: () => 100, request, deferUnknown: 'invalid'
  })).reason, 'RUNTIME_UNKNOWN');
 
+ // A read finishing after 120s fails closed as STALE_EVENT without completing the delivery, even when leaseMs is 3600000.
+ const slowSamples = [100, 100, 121100];
+ const staleRes = await reconcileEventTrigger(
+  {...actions, GITHUB_EVENT_NAME: 'push', GITHUB_REF: 'refs/heads/main', GITHUB_RUN_ID: 'slow-121s'},
+  {leaseMs: 3600000, clock: () => slowSamples.shift(), request}
+ );
+ assert.equal(staleRes.reconciled, false);
+ assert.equal(staleRes.reason, 'STALE_EVENT');
+ assert.equal(staleRes.snapshot.entries[0].completed, false);
+ const recoveredAfterStale = await reconcileEventTrigger(
+  {...actions, GITHUB_EVENT_NAME: 'push', GITHUB_REF: 'refs/heads/main', GITHUB_RUN_ID: 'slow-121s'},
+  {leaseMs: 3600000, clock: () => 3700000, request, snapshot: JSON.parse(JSON.stringify(staleRes.snapshot))}
+ );
+ assert.equal(recoveredAfterStale.reconciled, true);
+ assert.equal(recoveredAfterStale.reason, 'SHADOW_RECONCILED');
+
  // Moved PR head on review trigger supersedes the hint without granting authority.
  currentPullHead = 'c'.repeat(40);
  const superseded = await reconcileEventTrigger(

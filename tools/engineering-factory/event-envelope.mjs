@@ -593,7 +593,7 @@ export async function reconcileEventTrigger(env, options = {}) {
   const store = journal ?? ownedJournal;
   try {
     if (snapshot !== undefined) {
-      const imported = importJournalSnapshot(store, snapshot);
+      const imported = importJournalSnapshot(store, snapshot, {now});
       if (!imported.imported) return blocked(imported.reason);
     }
     if (!store || typeof store.enqueue !== 'function' || typeof store.claim !== 'function' ||
@@ -619,14 +619,22 @@ export async function reconcileEventTrigger(env, options = {}) {
     }
 
     let claimedDeliveryId = null;
+    let staleCompletion = false;
     const trackedStore = {
       claim(...args) {
         const ticket = store.claim(...args);
         claimedDeliveryId = ticket?.deliveryId ?? null;
         return ticket;
       },
-      complete(...args) {
-        return store.complete(...args);
+      complete(ticket, finished) {
+        if (!eventEnvelope({
+          repositoryId: resolved.repositoryId, workflowSha, kind, head: observed.head,
+          deliveryId: observed.deliveryId, receivedMs: now
+        }, trust, finished).accepted) {
+          staleCompletion = true;
+          return false;
+        }
+        return store.complete(ticket, finished);
       }
     };
     const read = createScopedJournalReader(explicitScope, {
@@ -638,22 +646,23 @@ export async function reconcileEventTrigger(env, options = {}) {
       journal: trackedStore, repositoryId: resolved.repositoryId, owner, leaseMs,
       clock, read, stop: false, deferUnknown
     });
+    const effectiveReason = staleCompletion ? 'STALE_EVENT' : outcome.reason;
     const exported = exportJournalSnapshot(store, {repositoryId: resolved.repositoryId});
     const extra = exported.exported ? {snapshot: exported} : {};
     if (claimedDeliveryId !== observed.deliveryId) {
       const pendingReason = claimedDeliveryId === null
-        ? (outcome.reason === 'NO_CLAIM' ? 'CLAIM_PENDING' : outcome.reason)
+        ? (effectiveReason === 'NO_CLAIM' ? 'CLAIM_PENDING' : effectiveReason)
         : 'QUEUED';
       return blocked(pendingReason, {
         repositoryId: resolved.repositoryId, kind, subject, head: observed.head,
         workflowSha, runId: observed.deliveryId,
-        ...(claimedDeliveryId !== null ? {recoveredDeliveryId: claimedDeliveryId, recoveryReason: outcome.reason} : {}),
+        ...(claimedDeliveryId !== null ? {recoveredDeliveryId: claimedDeliveryId, recoveryReason: effectiveReason} : {}),
         ...extra
       });
     }
     return {
-      shadow: true, evidenceComplete: false, reconciled: outcome.reason === 'SHADOW_RECONCILED',
-      liveDispatch: false, liveMerge: false, reason: outcome.reason,
+      shadow: true, evidenceComplete: false, reconciled: effectiveReason === 'SHADOW_RECONCILED',
+      liveDispatch: false, liveMerge: false, reason: effectiveReason,
       repositoryId: resolved.repositoryId, kind, subject, head: observed.head,
       workflowSha, runId: observed.deliveryId, ...extra
     };

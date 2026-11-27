@@ -145,6 +145,22 @@ export function openEventJournal(filename) {
     const clearDeferral = db.prepare(`
       DELETE FROM coordinator_event_deferrals WHERE event_id = ?
     `);
+    const activeLeaseConflict = db.prepare(`
+      SELECT 1 FROM coordinator_events
+      WHERE completed = 0 AND expires > ?
+      GROUP BY repository_id
+      HAVING count(*) > 1
+      LIMIT 1
+    `);
+    const fenceExpiredLeases = db.prepare(`
+      UPDATE coordinator_events SET expires = 0
+      WHERE completed = 0 AND expires > 0 AND expires <= ?
+        AND EXISTS (
+          SELECT 1 FROM coordinator_events AS active
+          WHERE active.repository_id = coordinator_events.repository_id
+            AND active.completed = 0 AND active.expires > ?
+        )
+    `);
 
     const journal = Object.freeze({
       enqueue(event) {
@@ -224,7 +240,7 @@ export function openEventJournal(filename) {
           return {shadow: true, exported: false, reason: 'JOURNAL_UNAVAILABLE'};
         }
       },
-      importSnapshot(entries) {
+      importSnapshot(entries, now) {
         try {
           db.exec('BEGIN IMMEDIATE');
           let importedCount = 0;
@@ -265,6 +281,11 @@ export function openEventJournal(filename) {
             }
             importedCount++;
           }
+          if (activeLeaseConflict.get(now)) {
+            db.exec('ROLLBACK');
+            return {shadow: true, imported: false, reason: 'LEASE_CONFLICT'};
+          }
+          fenceExpiredLeases.run(now, now);
           db.exec('COMMIT');
           return {shadow: true, imported: true, reason: 'SNAPSHOT_IMPORTED', importedCount, duplicateCount};
         } catch {
@@ -326,8 +347,16 @@ export function exportJournalSnapshot(journal, options = {}) {
   return handle.exportSnapshot(repositoryId);
 }
 
-export function importJournalSnapshot(journal, snapshot) {
+export function importJournalSnapshot(journal, snapshot, options = {}) {
   const denied = reason => ({shadow: true, imported: false, reason});
+  if (!isPlain(options)) return denied('CLOCK_UNKNOWN');
+  const optionKeys = Reflect.ownKeys(options);
+  if (optionKeys.some(key => key !== 'now' ||
+      !Object.hasOwn(Object.getOwnPropertyDescriptor(options, key) ?? {}, 'value'))) {
+    return denied('CLOCK_UNKNOWN');
+  }
+  const now = options.now ?? 0;
+  if (!isTime(now)) return denied('CLOCK_UNKNOWN');
   const handle = journalHandles.get(journal);
   if (!handle) return denied('JOURNAL_UNAVAILABLE');
   if (!hasOwnValues(snapshot, ['schemaVersion', 'shadow', 'entries'])) return denied('INVALID_SNAPSHOT');
@@ -346,5 +375,5 @@ export function importJournalSnapshot(journal, snapshot) {
     if (seen.has(key)) return denied('INVALID_SNAPSHOT');
     seen.add(key);
   }
-  return handle.importSnapshot(snapshot.entries);
+  return handle.importSnapshot(snapshot.entries, now);
 }

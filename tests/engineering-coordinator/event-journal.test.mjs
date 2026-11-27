@@ -387,6 +387,50 @@ test('snapshot import merges monotonically and rolls back atomically on conflict
     target.close();
   }
 
+  // Populated-target lease exclusivity: reject concurrent active leases and fence expired ones.
+  const leaseStore = openEventJournal(':memory:');
+  try {
+    leaseStore.enqueue({repositoryId: 1, deliveryId: 'expired-b', kind: 'pull', subject: 2, head});
+    const expiredTicket = leaseStore.claim(1, 'w1', 0, 1000);
+    assert.equal(leaseStore.defer(expiredTicket, 10, 60000), true);
+    leaseStore.enqueue({repositoryId: 1, deliveryId: 'active-a', kind: 'pull', subject: 1, head});
+    const activeTicket = leaseStore.claim(1, 'w1', 1500, 3500);
+    assert.equal(activeTicket.deliveryId, 'active-a');
+
+    // Importing a new leased delivery C while 'active-a' (expires: 5000) is unexpired at now=2000 rolls back.
+    assert.equal(importJournalSnapshot(leaseStore, {
+      schemaVersion: 1,
+      shadow: true,
+      entries: [
+        {repositoryId: 1, deliveryId: 'leased-c', kind: 'check', subject: 9, head, owner: 'w2', generation: 1, expires: 6000, completed: false, retryAfter: null}
+      ]
+    }, {now: 2000}).reason, 'LEASE_CONFLICT');
+    assert.equal(leaseStore.complete({repositoryId: 1, deliveryId: 'leased-c', owner: 'w2', generation: 1}, 2001), false);
+
+    // Advancing 'expired-b' to an unexpired lease while 'active-a' is still active also rolls back.
+    assert.equal(importJournalSnapshot(leaseStore, {
+      schemaVersion: 1,
+      shadow: true,
+      entries: [
+        {repositoryId: 1, deliveryId: 'expired-b', kind: 'pull', subject: 2, head, owner: 'w2', generation: 2, expires: 6000, completed: false, retryAfter: null}
+      ]
+    }, {now: 2000}).reason, 'LEASE_CONFLICT');
+    assert.equal(leaseStore.complete(activeTicket, 2001), true);
+
+    // Once no active lease exists at now=2001, importing 'leased-c' (expires: 6000) succeeds and fences 'expired-b' (expires -> 0).
+    assert.equal(importJournalSnapshot(leaseStore, {
+      schemaVersion: 1,
+      shadow: true,
+      entries: [
+        {repositoryId: 1, deliveryId: 'leased-c', kind: 'check', subject: 9, head, owner: 'w2', generation: 1, expires: 6000, completed: false, retryAfter: null}
+      ]
+    }, {now: 2001}).imported, true);
+    assert.equal(leaseStore.complete(expiredTicket, 500), false);
+    assert.equal(leaseStore.complete({repositoryId: 1, deliveryId: 'leased-c', owner: 'w2', generation: 1}, 2002), true);
+  } finally {
+    leaseStore.close();
+  }
+
   const dir = mkdtempSync(join(tmpdir(), 'factory-snap-full-'));
   const path = join(dir, 'events.sqlite');
   const fullStore = openEventJournal(path);
@@ -437,6 +481,12 @@ test('snapshot export and import reject malformed scopes, payloads, proxies and 
       {get repositoryId() { return 1; }}
     ]) {
       assert.equal(exportJournalSnapshot(store, badOptions).reason, 'INVALID_SCOPE');
+    }
+    for (const badImportOpts of [
+      null, [], Object.create({}), {extra: 1}, {now: -1},
+      {get now() { return 1; }}
+    ]) {
+      assert.equal(importJournalSnapshot(store, {schemaVersion: 1, shadow: true, entries: []}, badImportOpts).reason, 'CLOCK_UNKNOWN');
     }
 
     const sparse = [];
