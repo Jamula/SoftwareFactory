@@ -351,7 +351,6 @@ test('isolates red main (both initial and post-merge) and per-repo kill switches
       }),
       // Repo 4: healthy SoftwareFactory -> unaffected by all 3 peer stops/failures!
       factoryRepo({
-        mergeQueueOverrides: {mode: 'serialized-protected-squash'},
         candidates: [makeTrainCandidate(61, {simulatedSquashSha: SQUASH_1})]
       })
     ],
@@ -391,7 +390,7 @@ test('isolates red main (both initial and post-merge) and per-repo kill switches
 
   const sf = byRepo.get(SOFTWARE_FACTORY_REPOSITORY);
   assert.equal(sf.train.trainStatus, 'TRAIN_DRAINED');
-  assert.equal(sf.train.mergeQueueMode, 'serialized-protected-squash');
+  assert.equal(sf.train.mergeQueueMode, 'native-merge-queue');
   assert.deepEqual(sf.train.mergedPrs, [61]);
 
   const deferredMap = new Map(result.deferredWorkItems.map(d => [d.repository, d.reason]));
@@ -408,6 +407,7 @@ test('simulates fair round-robin consumer allocation and isolates non-eligible t
     minLinePercent: 95,
     minBranchPercent: 90,
     credentialId: 'cred-alpha',
+    mergeQueueOverrides: {mode: 'serialized-protected-squash'},
     candidates: [
       // Isolated: head changed
       makeTrainCandidate(1, {observedHead: HEAD_2, simulatedSquashSha: sha('3')}),
@@ -464,9 +464,41 @@ test('simulates fair round-robin consumer allocation and isolates non-eligible t
     result.allocatedWorkItems.map(w => `${w.repository}#${w.issue}`),
     ['example/alpha#10', 'example/beta#20', 'example/alpha#11']
   );
+  assert.equal(result.nextConsumerCursorRepositoryId, 300001);
+
+  // Cross-evaluation single-slot round-robin: passing lastServedConsumerRepositoryId prevents starvation
+  const singleSlotCycle1 = allocatePortfolioCapacityAndSimulateTrains({
+    stop: false,
+    budget: baseBudget({active: 0, maxActive: 1}),
+    repositories: [consumerA, consumerB],
+    workItems: [makeWorkItem(300001, 10, 1, ['src/a0']), makeWorkItem(300002, 20, 1, ['src/b0'])]
+  });
+  assert.deepEqual(singleSlotCycle1.allocatedWorkItems.map(w => w.repository), ['example/alpha']);
+  assert.equal(singleSlotCycle1.nextConsumerCursorRepositoryId, 300001);
+
+  const singleSlotCycle2 = allocatePortfolioCapacityAndSimulateTrains({
+    stop: false,
+    lastServedConsumerRepositoryId: singleSlotCycle1.nextConsumerCursorRepositoryId,
+    budget: baseBudget({active: 0, maxActive: 1}),
+    repositories: [consumerA, consumerB],
+    workItems: [makeWorkItem(300001, 11, 1, ['src/a1']), makeWorkItem(300002, 20, 1, ['src/b0'])]
+  });
+  assert.deepEqual(singleSlotCycle2.allocatedWorkItems.map(w => w.repository), ['example/beta']);
+  assert.equal(singleSlotCycle2.nextConsumerCursorRepositoryId, 300002);
+
+  const singleSlotCycle3 = allocatePortfolioCapacityAndSimulateTrains({
+    stop: false,
+    lastServedConsumerRepositoryId: singleSlotCycle2.nextConsumerCursorRepositoryId,
+    budget: baseBudget({active: 0, maxActive: 1}),
+    repositories: [consumerA, consumerB],
+    workItems: [makeWorkItem(300001, 11, 1, ['src/a1']), makeWorkItem(300002, 22, 1, ['src/b2'])]
+  });
+  assert.deepEqual(singleSlotCycle3.allocatedWorkItems.map(w => w.repository), ['example/alpha']);
+  assert.equal(singleSlotCycle3.nextConsumerCursorRepositoryId, 300001);
 
   const alphaTrain = result.repositoryResults[0].train;
   assert.equal(alphaTrain.trainStatus, 'TRAIN_DRAINED');
+  assert.equal(alphaTrain.mergeQueueMode, 'serialized-protected-squash');
   assert.deepEqual(alphaTrain.mergedPrs, [5]);
   assert.equal(alphaTrain.verifiedMainMs, 130000);
   assert.equal(alphaTrain.withinTwoMinuteStretchTarget, false);
@@ -747,11 +779,29 @@ test('portfolio allocator fails closed on shared admin tokens, spoofing, cap bre
     'SPEND_UNKNOWN_OR_EXCEEDED'
   );
   assert.equal(
+    allocatePortfolioCapacityAndSimulateTrains({...validInput, lastServedConsumerRepositoryId: 0}).reason,
+    'INPUT_UNKNOWN'
+  );
+  assert.equal(
     allocatePortfolioCapacityAndSimulateTrains({
       ...validInput,
       repositories: [factoryRepo({mergeQueueOverrides: {supported: false}})]
     }).reason,
     'UNVERIFIED_MERGE_QUEUE'
+  );
+  assert.equal(
+    allocatePortfolioCapacityAndSimulateTrains({
+      ...validInput,
+      repositories: [factoryRepo({mergeQueueOverrides: {mode: 'serialized-protected-squash'}})]
+    }).reason,
+    'SOFTWARE_FACTORY_MERGE_QUEUE_REQUIRED'
+  );
+  assert.equal(
+    allocatePortfolioCapacityAndSimulateTrains({
+      ...validInput,
+      repositories: [factoryRepo({defaultBranch: 'trunk'})]
+    }).reason,
+    'SOFTWARE_FACTORY_MERGE_QUEUE_REQUIRED'
   );
   assert.equal(
     allocatePortfolioCapacityAndSimulateTrains({
@@ -947,6 +997,9 @@ test('records Node 26.13.1 baseline across 12/50/100 logical lanes and marks unm
   assert.equal(baselineOnly.nodeBaseline.netEndToEndMs, 70000);
   assert.equal(baselineOnly.cohorts.status, 'UNMEASURED_BASELINE_REQUIRED');
   assert.equal(baselineOnly.cohorts.keepStretchOpen, true);
+  assert.equal(baselineOnly.cohorts.comparableAcceptedUnits, 0);
+  assert.equal(baselineOnly.cohorts.baseline, null);
+  assert.equal(baselineOnly.cohorts.candidate, null);
   assert.deepEqual(
     baselineOnly.cohorts.checkpoints.map(c => c.multiplier),
     [...THROUGHPUT_COHORT_MULTIPLIERS]
@@ -964,6 +1017,27 @@ test('approves single-runtime .NET 10 MAF 1.28.0 consolidation only when CI-incl
   assert.deepEqual(tenX.tierComparisons.map(t => t.logicalLanes), [12, 50, 100]);
   assert.equal(tenX.cohorts.highestCheckpoint, '10x');
   assert.equal(tenX.cohorts.keepStretchOpen, true);
+  assert.equal(tenX.cohorts.comparableAcceptedUnits, 5);
+  assert.deepEqual(tenX.cohorts.baseline, {
+    accepted: 5,
+    censored: 0,
+    windowMs: 86400000,
+    acceptedPerDay: 5,
+    rework: 2,
+    humanInterventions: 1,
+    incrementalSpendMicros: 0,
+    coverage: {coveredLines: 990, totalLines: 1000, coveredBranches: 970, totalBranches: 1000}
+  });
+  assert.deepEqual(tenX.cohorts.candidate, {
+    accepted: 50,
+    censored: 0,
+    windowMs: 86400000,
+    acceptedPerDay: 50,
+    rework: 1,
+    humanInterventions: 0,
+    incrementalSpendMicros: 0,
+    coverage: {coveredLines: 995, totalLines: 1000, coveredBranches: 980, totalBranches: 1000}
+  });
 
   // Verified 25x closes stretch
   const twentyFiveX = evaluateDotnetConsolidationBenchmark(benchmarkInput({

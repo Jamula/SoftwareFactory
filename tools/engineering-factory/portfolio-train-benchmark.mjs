@@ -21,6 +21,7 @@ const DAY_MS = 86400000;
 const YEAR_MS = 31536000000;
 
 const PORTFOLIO_INPUT_KEYS = ['stop', 'budget', 'repositories', 'workItems'];
+const PORTFOLIO_OPTIONAL_KEYS = ['lastServedConsumerRepositoryId'];
 const BUDGET_REQUIRED_KEYS = [
   'stop', 'includedOnly', 'overageDisabled', 'authorityVerified',
   'nowMs', 'observedMs', 'remaining', 'reserved', 'active', 'maxActive', 'unitsPerRun'
@@ -186,6 +187,7 @@ function portfolioDenied(reason) {
     logicalLanesAreConcurrentAgentAuthorization: false,
     authorizedConcurrentWorkers: 0,
     cancelledInFlightLeases: 0,
+    nextConsumerCursorRepositoryId: null,
     preservedInFlightLeases: Object.freeze([]),
     allocatedWorkItems: Object.freeze([]),
     deferredWorkItems: Object.freeze([]),
@@ -414,8 +416,26 @@ function drainRemainingStateItems(state, deferredOut) {
   }
 }
 
+function consumerRotationDistance(state, orderedStates, cursorRepoId) {
+  let startIndex = 0;
+  if (cursorRepoId !== null) {
+    const afterIndex = orderedStates.findIndex(s => s.repo.repositoryId > cursorRepoId);
+    if (afterIndex !== -1) startIndex = afterIndex;
+  }
+  const len = orderedStates.length;
+  return (state.consumerOrder - startIndex + len) % len;
+}
+
 export function allocatePortfolioCapacityAndSimulateTrains(input) {
-  if (!exactRecord(input, PORTFOLIO_INPUT_KEYS)) return portfolioDenied('INPUT_UNKNOWN');
+  if (!exactRecord(input, PORTFOLIO_INPUT_KEYS, PORTFOLIO_OPTIONAL_KEYS)) {
+    return portfolioDenied('INPUT_UNKNOWN');
+  }
+  const initialCursor = Object.hasOwn(input, 'lastServedConsumerRepositoryId')
+    ? input.lastServedConsumerRepositoryId
+    : null;
+  if (initialCursor !== null && !positiveInt(initialCursor)) {
+    return portfolioDenied('INPUT_UNKNOWN');
+  }
   if (input.stop !== false) return portfolioDenied('STOPPED');
   if (!exactRecord(input.budget, BUDGET_REQUIRED_KEYS, BUDGET_OPTIONAL_KEYS)) {
     return portfolioDenied('BUDGET_UNKNOWN');
@@ -550,6 +570,9 @@ export function allocatePortfolioCapacityAndSimulateTrains(input) {
     if (!mq.supported || !mq.ownerApproved) {
       return portfolioDenied('UNVERIFIED_MERGE_QUEUE');
     }
+    if (isFactoryId && (train.defaultBranch !== 'main' || mq.mode !== 'native-merge-queue')) {
+      return portfolioDenied('SOFTWARE_FACTORY_MERGE_QUEUE_REQUIRED');
+    }
 
     const seenPrs = new Set();
     const seenSquashShas = new Set();
@@ -659,7 +682,13 @@ export function allocatePortfolioCapacityAndSimulateTrains(input) {
   }
 
   // Tier 2: Enrolled consumer repositories share remaining slots via critical-path
-  // priority with fair round-robin tie-breaking under strict per-repo local caps.
+  // priority with fair round-robin tie-breaking across evaluations under strict local caps.
+  consumerStates.sort((a, b) => a.repo.repositoryId - b.repo.repositoryId);
+  for (let i = 0; i < consumerStates.length; i++) {
+    consumerStates[i].consumerOrder = i;
+  }
+  let consumerCursorRepoId = initialCursor;
+
   while (remainingSlots > 0) {
     const readyConsumers = [];
     for (let i = 0; i < consumerStates.length; i++) {
@@ -671,13 +700,15 @@ export function allocatePortfolioCapacityAndSimulateTrains(input) {
     readyConsumers.sort((left, right) =>
       (left.nextItem.criticalPathRank - right.nextItem.criticalPathRank) ||
       (left.state.allocatedThisCycle - right.state.allocatedThisCycle) ||
-      (left.state.repo.repositoryId - right.state.repo.repositoryId)
+      (consumerRotationDistance(left.state, consumerStates, consumerCursorRepoId) -
+        consumerRotationDistance(right.state, consumerStates, consumerCursorRepoId))
     );
     const winner = readyConsumers[0];
     winner.state.cursor += 1;
     winner.state.activeCount += 1;
     winner.state.allocatedThisCycle += 1;
     winner.state.activePaths.push(...winner.nextItem.ownedPaths);
+    consumerCursorRepoId = winner.state.repo.repositoryId;
     remainingSlots -= 1;
     allocatedWorkItems.push(Object.freeze({
       repositoryId: winner.nextItem.repositoryId,
@@ -735,6 +766,7 @@ export function allocatePortfolioCapacityAndSimulateTrains(input) {
     logicalLanesAreConcurrentAgentAuthorization: false,
     authorizedConcurrentWorkers: 0,
     cancelledInFlightLeases: 0,
+    nextConsumerCursorRepositoryId: consumerCursorRepoId,
     crossRepoMainFailureSpillover: false,
     isolatedUnhealthyMainRepositories: Object.freeze(redMainRepos),
     unaffectedHealthyRepositories: Object.freeze(healthyTrainRepos),
@@ -868,6 +900,24 @@ function cohortGatesClear(sample) {
     sample.duplicateDispatches === 0 && sample.unauthorizedWrites === 0;
 }
 
+function summarizeCohortArm(sample) {
+  return Object.freeze({
+    accepted: sample.accepted,
+    censored: sample.censored,
+    windowMs: sample.windowMs,
+    acceptedPerDay: (sample.accepted * DAY_MS) / sample.windowMs,
+    rework: sample.rework,
+    humanInterventions: sample.humanInterventions,
+    incrementalSpendMicros: sample.incrementalSpendMicros,
+    coverage: Object.freeze({
+      coveredLines: sample.coveredLines,
+      totalLines: sample.totalLines,
+      coveredBranches: sample.coveredBranches,
+      totalBranches: sample.totalBranches
+    })
+  });
+}
+
 function createUnmeasuredCohortSummary() {
   const checkpoints = THROUGHPUT_COHORT_MULTIPLIERS.map(multiplier => Object.freeze({
     checkpoint: `${multiplier}x`,
@@ -882,6 +932,9 @@ function createUnmeasuredCohortSummary() {
     throughputRatio: null,
     highestCheckpoint: null,
     keepStretchOpen: true,
+    comparableAcceptedUnits: 0,
+    baseline: null,
+    candidate: null,
     checkpoints: Object.freeze(checkpoints)
   });
 }
@@ -971,8 +1024,11 @@ function evaluateMatchedCohorts(cohorts, expectedWorkload) {
       throughputRatio: (candidate.accepted * baseline.windowMs) / (baseline.accepted * candidate.windowMs),
       highestCheckpoint,
       keepStretchOpen: !(cohorts.source === 'verified' && highestCheckpoint === '25x'),
+      comparableAcceptedUnits: Math.min(baseline.accepted, candidate.accepted),
       baselineAcceptedPerDay: (baseline.accepted * DAY_MS) / baseline.windowMs,
       candidateAcceptedPerDay: (candidate.accepted * DAY_MS) / candidate.windowMs,
+      baseline: summarizeCohortArm(baseline),
+      candidate: summarizeCohortArm(candidate),
       checkpoints: Object.freeze(checkpoints)
     })
   };
