@@ -231,7 +231,8 @@ test('verifies Windows 11, macOS, Linux, and WSL2 workstations and strips home-d
     assert.ok(Object.isFrozen(receipt));
     assert.ok(Object.isFrozen(receipt.caCertificate));
     assert.ok(Object.isFrozen(receipt.strippedPrivateCategories));
-    assert.ok(Object.isFrozen(receipt.sanitizedNotes));
+    assert.equal(Object.hasOwn(receipt, 'sanitizedNotes'), false);
+    assert.equal(receipt.diagnosticNoteCount, 1);
     assert.equal(receipt.shadow, true);
     assert.equal(receipt.compatible, true);
     assert.equal(receipt.state, 'compatible');
@@ -256,9 +257,6 @@ test('verifies Windows 11, macOS, Linux, and WSL2 workstations and strips home-d
       pathRedacted: true,
       homeDirectoryStripped: scenario.expectHomeStripped
     });
-    assert.deepEqual(receipt.sanitizedNotes, [
-      'Verified loopback 127.0.0.1 and [::1] using <redacted-home>/.cache/aspire-dev.pem'
-    ]);
 
     const serialized = JSON.stringify(receipt);
     for (const forbiddenSubstring of [
@@ -267,6 +265,7 @@ test('verifies Windows 11, macOS, Linux, and WSL2 workstations and strips home-d
       'syntheticCarol',
       '1000',
       'sf-workstation',
+      'aspire-dev.pem',
       'aspire-dev.crt',
       'BEGIN CERTIFICATE'
     ]) {
@@ -716,6 +715,8 @@ test('rejects and strips private workstation identifiers, tokens, MACs, and non-
     { diagnosticNotes: ['{"GITHUB_TOKEN":"synthetic-private-token-value"}'] },
     { diagnosticNotes: ['{\\"GITHUB_TOKEN\\":\\"synthetic-private-token-value\\"}'] },
     { diagnosticNotes: ['{"x-api-key":"secret_json_header"}'] },
+    { diagnosticNotes: ['{"x-api-key":"SyntheticCanary\\\\secret_suffix"}'] },
+    { diagnosticNotes: ['https://localhost:18888/login?t="secret_quoted_tok"'] },
     { diagnosticNotes: ['X-API-Key: secret_header_val'] },
     { diagnosticNotes: ['npm_1234567890abcdef1234567890abcdef'] },
     {
@@ -762,7 +763,8 @@ test('rejects and strips private workstation identifiers, tokens, MACs, and non-
     { diagnosticNotes: ['Connected to 2001:db8::1.'] },
     { diagnosticNotes: ['addr:2001:db8::1'] },
     { diagnosticNotes: ['2001:db8::1: connection refused'] },
-    { diagnosticNotes: ['Profile: C:\\Users\\Jane Doe 192.168.1.50'] }
+    { diagnosticNotes: ['Profile: C:\\Users\\Jane Doe 192.168.1.50'] },
+    { diagnosticNotes: ['Dashboard https://synthetic-workstation.local:18888 observed'] }
   ]) {
     const res = evaluateWorkstationCompatibilityPreflight(buildValidObservation(badIpScenario));
     assert.equal(res.compatible, false);
@@ -819,6 +821,12 @@ test('rejects and strips private workstation identifiers, tokens, MACs, and non-
     stripPrivateWorkstationIdentifiers('C:\\Users\\Jane Doe').sanitizedText,
     '<redacted-home>'
   );
+  const apostropheAndEscaped = stripPrivateWorkstationIdentifiers(
+    'escaped=C:\\\\Users\\\\Jane Doe\\\\certs\\\\a.pem apos=C:\\Users\\O\'Connor\\certs\\a.pem mac=/Users/O\'Connor/certs/a.pem json={"x-api-key":"SyntheticCanary\\\\suffix"} q=https://localhost:18888/login?t="QuotedTok" url=https://synthetic-workstation.local:18888'
+  );
+  for (const leaked of ['Jane', 'Doe', 'Connor', 'SyntheticCanary', 'suffix', 'QuotedTok', 'synthetic-workstation']) {
+    assert.equal(apostropheAndEscaped.sanitizedText.includes(leaked), false);
+  }
   assert.equal(stripPrivateWorkstationIdentifiers(null), null);
   assert.equal(stripPrivateWorkstationIdentifiers('bad\u0007text'), null);
 

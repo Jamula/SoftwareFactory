@@ -184,41 +184,45 @@ const PRIVATE_KEY_SUFFIXES = ['PRIVATE KEY BLOCK-----', 'PRIVATE KEY-----'];
 const PEM_CERT_BEGIN = '-----BEGIN CERTIFICATE-----';
 const PEM_CERT_END = '-----END CERTIFICATE-----';
 
-const QUERY_TOKEN_RE = /([?&](?:t|token|access_token|api_key|apikey|key|secret)=)([^&\s#"'\\]{1,512})/gi;
+const QUERY_TOKEN_RE =
+  /([?&](?:t|token|access_token|api_key|apikey|key|secret)=)(?:\\?"(?:\\.|[^"\\\r\n]){1,512}\\?"|\\?'(?:\\.|[^'\\\r\n]){1,512}\\?'|[^&\s#"'\\]{1,512})/gi;
 const ENV_SECRET_ASSIGNMENT_RE =
-  /\b(DASHBOARD__API__[A-Z0-9_]*APIKEY|DASHBOARD__FRONTEND__BROWSERTOKEN|ASPIRE_DASHBOARD_FRONTEND_BROWSERTOKEN|GITHUB_TOKEN|GH_TOKEN|COPILOT_GITHUB_TOKEN|OPENAI_API_KEY|ANTHROPIC_API_KEY|AZURE_CLIENT_SECRET|AWS_SECRET_ACCESS_KEY|NPM_TOKEN|NUGET_API_KEY|OTEL_EXPORTER_OTLP_(?:[A-Z0-9_]+_)?HEADERS)(?:\\?["'])?\s*[:=]\s*(?:\\?"[^"\\\r\n]{1,512}\\?"|\\?'[^'\\\r\n]{1,512}\\?'|[^\s"',;}\]]{1,512})/gi;
+  /\b(DASHBOARD__API__[A-Z0-9_]*APIKEY|DASHBOARD__FRONTEND__BROWSERTOKEN|ASPIRE_DASHBOARD_FRONTEND_BROWSERTOKEN|GITHUB_TOKEN|GH_TOKEN|COPILOT_GITHUB_TOKEN|OPENAI_API_KEY|ANTHROPIC_API_KEY|AZURE_CLIENT_SECRET|AWS_SECRET_ACCESS_KEY|NPM_TOKEN|NUGET_API_KEY|OTEL_EXPORTER_OTLP_(?:[A-Z0-9_]+_)?HEADERS)(?:\\?["'])?\s*[:=]\s*(?:\\?"(?:\\.|[^"\\\r\n]){1,512}\\?"|\\?'(?:\\.|[^'\\\r\n]){1,512}\\?'|[^\s"',;}\]]{1,512})/gi;
 const API_HEADER_SECRET_RE =
-  /\b(x-api-key|x-otlp-api-key|access_token|refresh_token|client_secret|api_key|apikey|password|passwd)(?:\\?["'])?\s*[:=]\s*(?:\\?"[^"\\\r\n]{1,512}\\?"|\\?'[^'\\\r\n]{1,512}\\?'|[^\s"',;}\]]{1,512})/gi;
+  /\b(x-api-key|x-otlp-api-key|access_token|refresh_token|client_secret|api_key|apikey|password|passwd)(?:\\?["'])?\s*[:=]\s*(?:\\?"(?:\\.|[^"\\\r\n]){1,512}\\?"|\\?'(?:\\.|[^'\\\r\n]){1,512}\\?'|[^\s"',;}\]]{1,512})/gi;
 const AUTH_SCHEME_SECRET_RE =
   /\b(?:Bearer|Basic)[ \t]+[A-Za-z0-9._~+/=-]{4,512}/gi;
 const CREDENTIAL_TOKEN_RE =
   /(?<![A-Za-z0-9])(?:gh[pousr]_[A-Za-z0-9_]{4,255}|github_pat_[A-Za-z0-9_]{4,255}|npm_[A-Za-z0-9]{8,255}|sk-ant-[A-Za-z0-9_-]{4,255}|sk-[A-Za-z0-9_-]{8,255})/gi;
 
 const WSL_HOME_SUBDIR_RE =
-  /(?:\\\\|\/\/)(?:wsl\$|wsl\.localhost)[\\/][^\\/\s"':]{1,128}[\\/]home[\\/][^\\/\r\n"':]{1,128}(?=[\\/])/gi;
+  /(?:\\{2,4}|\/\/)(?:wsl\$|wsl\.localhost)(?:\\{1,2}|\/)[^\\/\s"':]{1,128}(?:\\{1,2}|\/)home(?:\\{1,2}|\/)[^\\/\r\n":]{1,128}(?=(?:\\{1,2}|\/))/gi;
 const WSL_HOME_BARE_RE =
-  /(?:\\\\|\/\/)(?:wsl\$|wsl\.localhost)[\\/][^\\/\s"':]{1,128}[\\/]home[\\/][^\\/\r\n"':,;|()[\]{}]{1,128}/gi;
+  /(?:\\{2,4}|\/\/)(?:wsl\$|wsl\.localhost)(?:\\{1,2}|\/)[^\\/\s"':]{1,128}(?:\\{1,2}|\/)home(?:\\{1,2}|\/)[^\\/\r\n":,;|()[\]{}]{1,128}/gi;
 const WSL_MOUNT_WIN_HOME_SUBDIR_RE =
-  /(?<![A-Za-z0-9_.-])\/mnt\/[a-zA-Z]\/Users\/[^\\/\r\n"':]{1,128}(?=\/)/gi;
+  /(?<![A-Za-z0-9_.-])\/mnt\/[a-zA-Z]\/Users\/[^\\/\r\n":]{1,128}(?=\/)/gi;
 const WSL_MOUNT_WIN_HOME_BARE_RE =
-  /(?<![A-Za-z0-9_.-])\/mnt\/[a-zA-Z]\/Users\/[^/\r\n"':,;|()[\]{}]{1,128}/gi;
-const WINDOWS_HOME_SUBDIR_RE = /\b[A-Za-z]:[\\/]Users[\\/][^\\/\r\n"':]{1,128}(?=[\\/])/gi;
-const WINDOWS_HOME_BARE_RE = /\b[A-Za-z]:[\\/]Users[\\/][^\\/\r\n"':,;|()[\]{}]{1,128}/gi;
+  /(?<![A-Za-z0-9_.-])\/mnt\/[a-zA-Z]\/Users\/[^/\r\n":,;|()[\]{}]{1,128}/gi;
+const WINDOWS_HOME_SUBDIR_RE =
+  /\b[A-Za-z]:(?:\\{1,2}|\/)Users(?:\\{1,2}|\/)[^\\/\r\n":]{1,128}(?=(?:\\{1,2}|\/))/gi;
+const WINDOWS_HOME_BARE_RE =
+  /\b[A-Za-z]:(?:\\{1,2}|\/)Users(?:\\{1,2}|\/)[^\\/\r\n":,;|()[\]{}]{1,128}/gi;
 const MACOS_HOME_SUBDIR_RE =
-  /(?<![A-Za-z0-9_.-])(?:\/System\/Volumes\/Data)?\/Users\/[^/\r\n"':]{1,128}(?=\/)/gi;
+  /(?<![A-Za-z0-9_.-])(?:\/System\/Volumes\/Data)?\/Users\/[^/\r\n":]{1,128}(?=\/)/gi;
 const MACOS_HOME_BARE_RE =
-  /(?<![A-Za-z0-9_.-])(?:\/System\/Volumes\/Data)?\/Users\/[^/\r\n"':,;|()[\]{}]{1,128}/gi;
-const LINUX_HOME_SUBDIR_RE = /(?<![A-Za-z0-9_.-])(?:\/var)?\/home\/[^/\r\n"':]{1,128}(?=\/)/g;
+  /(?<![A-Za-z0-9_.-])(?:\/System\/Volumes\/Data)?\/Users\/[^/\r\n":,;|()[\]{}]{1,128}/gi;
+const LINUX_HOME_SUBDIR_RE = /(?<![A-Za-z0-9_.-])(?:\/var)?\/home\/[^/\r\n":]{1,128}(?=\/)/g;
 const LINUX_HOME_BARE_RE =
-  /(?<![A-Za-z0-9_.-])(?:\/var)?\/home\/[^/\r\n"':,;|()[\]{}]{1,128}/g;
+  /(?<![A-Za-z0-9_.-])(?:\/var)?\/home\/[^/\r\n":,;|()[\]{}]{1,128}/g;
 const XDG_RUNTIME_UID_RE = /(?<![A-Za-z0-9_.-])\/run\/user\/[0-9]{1,12}/g;
 const DARWIN_USER_TMP_RE =
   /(?<![A-Za-z0-9_.-])(?:\/private)?\/var\/folders\/[^/\s"':]{1,64}\/[^/\s"':]{1,128}/g;
 
 const URL_USERINFO_RE = /(https?:\/\/)([^\s/?#@]{1,128}@)/gi;
+const URL_HOST_AUTHORITY_RE = /\b(https?:\/\/)(\[[^\]]{1,64}\]|[^[\s/?#:@"']{1,255})/gi;
 const EMAIL_CANDIDATE_RE = /\b[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+\b/g;
 const IDENTITY_ASSIGNMENT_RE =
-  /(?<![A-Za-z0-9_.-])(user(?:name)?|logname|login|hostname|computer[-_]?name|userdomain|machine[-_]?name|machine[-_]?id|serial[-_]?number|userprofile|home(?:dir|directory|path)?)(?:\\?["'])?\s*[:=]\s*(?:\\?"[^"\\\r\n]{1,128}\\?"|\\?'[^'\\\r\n]{1,128}\\?'|[^\s"',;}\]]{1,128})/gi;
+  /(?<![A-Za-z0-9_.-])(user(?:name)?|logname|login|hostname|computer[-_]?name|userdomain|machine[-_]?name|machine[-_]?id|serial[-_]?number|userprofile|home(?:dir|directory|path)?)(?:\\?["'])?\s*[:=]\s*(?:\\?"(?:\\.|[^"\\\r\n]){1,128}\\?"|\\?'(?:\\.|[^'\\\r\n]){1,128}\\?'|[^\s"',;}\]]{1,128})/gi;
 
 const MAC_COLON_RE =
   /(?<![0-9A-Fa-f]{2}:)(?<![0-9A-Fa-f])(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}(?![0-9A-Fa-f])(?![:][0-9A-Fa-f]{2})/g;
@@ -504,6 +508,21 @@ export function stripPrivateWorkstationIdentifiers(rawText) {
     }
     stripped.add('non-loopback-ip');
     return '[REDACTED_IP]';
+  });
+
+  text = text.replace(URL_HOST_AUTHORITY_RE, (full, scheme, host) => {
+    const lowerHost = host.toLowerCase();
+    if (
+      lowerHost === 'localhost' ||
+      lowerHost === '127.0.0.1' ||
+      lowerHost === '[::1]' ||
+      lowerHost === '[redacted_ip]' ||
+      lowerHost === '[redacted_user]'
+    ) {
+      return full;
+    }
+    stripped.add('non-loopback-ip');
+    return `${scheme}[REDACTED_HOST]`;
   });
 
   replaceTracking(WSL_HOME_SUBDIR_RE, '<redacted-home>', 'home-directory');
@@ -967,8 +986,9 @@ export function evaluateWorkstationCompatibilityPreflight(observation) {
   }
 
   const strippedSet = new Set();
-  const sanitizedNotes = [];
+  let diagnosticNoteCount = 0;
   if (Object.hasOwn(observation, 'diagnosticNotes')) {
+    diagnosticNoteCount = observation.diagnosticNotes.length;
     for (const note of observation.diagnosticNotes) {
       const sanitized = stripPrivateWorkstationIdentifiers(note);
       if (sanitized.strippedCategories.includes('token')) {
@@ -986,7 +1006,6 @@ export function evaluateWorkstationCompatibilityPreflight(observation) {
       for (const category of sanitized.strippedCategories) {
         strippedSet.add(category);
       }
-      sanitizedNotes.push(sanitized.sanitizedText);
     }
   }
 
@@ -1122,7 +1141,7 @@ export function evaluateWorkstationCompatibilityPreflight(observation) {
       homeDirectoryStripped: caPathCheck.homeStripped
     }),
     strippedPrivateCategories: Object.freeze([...strippedSet].sort()),
-    sanitizedNotes: Object.freeze(sanitizedNotes),
+    diagnosticNoteCount,
     headSha
   });
 }
