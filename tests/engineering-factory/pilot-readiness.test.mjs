@@ -1,4 +1,4 @@
-import test from 'node:test';import assert from 'node:assert/strict';import {pilotReadiness as check,evaluateSelfPilotCycles as evaluate,verifyM01AutonomousExit as verifyExit,M01_STRUCTURAL_PREREQUISITES} from '../../tools/engineering-factory/pilot-readiness.mjs';
+import test from 'node:test';import assert from 'node:assert/strict';import {readFileSync} from 'node:fs';import {pilotReadiness as check,evaluateSelfPilotCycles as evaluate,verifyM01AutonomousExit as verifyExit,evaluateCustomerOnePilotReadinessDossier as evaluateDossier,M01_STRUCTURAL_PREREQUISITES,M01_CUSTOMER_ONE_PREREQUISITES,M01_CUSTOMER_ONE_SLOS} from '../../tools/engineering-factory/pilot-readiness.mjs';
 const p={repositoryId:1,pin:'a'.repeat(40),lineMin:97,branchMin:90,firstPilot:false};
 const e={repositoryId:1,pin:p.pin,enrolled:true,stop:false,upstreamAccepted:true,review:true,coverageLine:97,coverageBranch:90,requiredChecks:true,quotaVerified:true,rollbackVerified:true,securityClear:true};
 const m01Prereqs=Object.fromEntries(M01_STRUCTURAL_PREREQUISITES.map(k=>[k,true]));
@@ -175,5 +175,443 @@ test('M01 autonomous exit verifier enforces all structural prerequisites, worker
  }
  assert.equal(verifyExit(exitEvidence({cycles:[m01Cycle(1,{reviewFix:false}),m01Cycle(2),m01Cycle(3)]})).reason,'SCENARIO_MISSING');
  assert.equal(verifyExit(exitEvidence({cycles:[m01Cycle(1),m01Cycle(2,{parallelCandidate:false}),m01Cycle(3)]})).reason,'SCENARIO_MISSING');
+ assert.equal(traps,0);
+});
+
+const allCustomerOnePrereqsTrue=Object.fromEntries(M01_CUSTOMER_ONE_PREREQUISITES.map(k=>[k,true]));
+const dossierCycle=(n,extra={})=>{
+ const head=String(n).repeat(40);
+ return {
+  source:'github-hosted',
+  repositoryId:1471342715,
+  issue:n,
+  pr:200+n,
+  head,
+  reviewedHead:head,
+  reviewIndependent:true,
+  checksPassed:true,
+  securityClear:true,
+  threadsResolved:true,
+  coverageReports:reports(head),
+  mainVerified:true,
+  costVerified:true,
+  acceptanceVerified:true,
+  laptopOfflineVerified:true,
+  extraCost:0,
+  humanInterventions:0,
+  unauthorizedWrites:0,
+  duplicateDispatches:0,
+  gateBypasses:0,
+  issueReadyAt:1_000,
+  prCreatedAt:1_000+n*60_000,
+  eligibleAt:1_000+n*120_000,
+  prMergedAt:1_000+n*120_000+n*10_000,
+  mainVerifiedAt:1_000+n*120_000+n*10_000+5_000,
+  acceptanceVerifiedAt:1_000+n*120_000+n*20_000,
+  automatedCiMs:20_000+n*5_000,
+  reviewFix:n===1,
+  parallelCandidate:n===2,
+  ...extra
+ };
+};
+const dossierInput=(extra={})=>({
+ repositoryId:1471342715,
+ pin:'cec2745b7b8a21e77ad9f2839d4255d42305d419',
+ enrolled:true,
+ stop:false,
+ lineMin:98,
+ branchMin:95,
+ actualWorkerMax:4,
+ workerShortfallFrom12:8,
+ prerequisites:{...allCustomerOnePrereqsTrue},
+ expectedComponents:inventory,
+ cycles:[dossierCycle(1),dossierCycle(2),dossierCycle(3)],
+ ...extra
+});
+
+test('Customer One readiness audit JSON matches deterministic dossier evaluation on cec2745b7b8a21e77ad9f2839d4255d42305d419',()=>{
+ const audit=JSON.parse(readFileSync(new URL('../../docs/evidence/m01-08-readiness-audit.json',import.meta.url),'utf8'));
+ assert.equal(audit.evaluatedCommit,'cec2745b7b8a21e77ad9f2839d4255d42305d419');
+ assert.equal(audit.repositoryId,1471342715);
+ assert.equal(audit.issueNumber,10);
+ assert.equal(audit.summary.pilotEntryReady,false);
+ assert.equal(audit.summary.m01ExitEvidenceReady,false);
+ assert.equal(audit.summary.liveActivation,false);
+ assert.equal(audit.summary.accepted,false);
+ assert.equal(audit.summary.deliveredLiveUnattendedCycles,0);
+ assert.deepEqual(
+  audit.deliveredEngineeringFoundations.map(f=>f.prerequisite),
+  ['noPythonVerified','ghAwLockVerified','workQueueCasVerified','unifiedCliVerified','antiRogueCircuitBreakersVerified','crossOsAspireRuntimeVerified']
+ );
+ assert.deepEqual(
+  audit.liveOperationalBlockers.filter(b=>b.prerequisite!==null).map(b=>b.prerequisite),
+  ['mainCodeqlHealthy','hardStopBillingVerified','nativeCloudSmokeVerified','repoScopedLiveAuthVerified']
+ );
+ const actual=evaluateDossier(audit.dossierInput);
+ assert.deepEqual(actual,audit.dossierEvaluation);
+});
+
+test('Customer One dossier evaluates 10-prerequisite matrix, 3-cycle timestamp SLOs, and never counts synthetic cycles as delivered work',()=>{
+ assert.deepEqual(M01_CUSTOMER_ONE_PREREQUISITES,[
+  'noPythonVerified',
+  'mainCodeqlHealthy',
+  'ghAwLockVerified',
+  'workQueueCasVerified',
+  'unifiedCliVerified',
+  'antiRogueCircuitBreakersVerified',
+  'crossOsAspireRuntimeVerified',
+  'hardStopBillingVerified',
+  'nativeCloudSmokeVerified',
+  'repoScopedLiveAuthVerified'
+ ]);
+ assert.equal(M01_CUSTOMER_ONE_SLOS.batchDrainMaxMs,120_000);
+ assert.equal(M01_CUSTOMER_ONE_SLOS.automatedCiP50InitialExclusiveMaxMs,75_000);
+ assert.equal(M01_CUSTOMER_ONE_SLOS.maxHumanInterventions,0);
+
+ const liveReady=evaluateDossier(dossierInput());
+ assert.equal(liveReady.shadow,true);
+ assert.equal(liveReady.liveActivation,false);
+ assert.equal(liveReady.accepted,false);
+ assert.equal(liveReady.pilotEntryReady,true);
+ assert.equal(liveReady.m01ExitEvidenceReady,true);
+ assert.equal(liveReady.reason,'CUSTOMER_ONE_EXIT_EVIDENCE_READY_ONLY');
+ assert.deepEqual(liveReady.verifiedPrerequisites,M01_CUSTOMER_ONE_PREREQUISITES);
+ assert.deepEqual(liveReady.blockingPrerequisites,[]);
+ assert.equal(liveReady.cycleSource,'github-hosted');
+ assert.equal(liveReady.sampleCount,3);
+ assert.equal(liveReady.deliveredCycleCount,3);
+ assert.equal(liveReady.syntheticCycleCount,0);
+ assert.equal(liveReady.deliveredCyclesShortfallFrom3,0);
+ assert.equal(liveReady.automatedCiP50Ms,30_000);
+ assert.equal(liveReady.automatedCiP95Ms,35_000);
+ assert.equal(liveReady.batchDrainMs,30_000);
+ assert.equal(liveReady.humanInterventions,0);
+ assert.deepEqual(liveReady.issueReadyToPrMs,{
+  p50Ms:120_000,
+  p95Ms:180_000,
+  initialMaxMs:600_000,
+  stretchMaxMs:120_000,
+  p50MeetsInitial:true,
+  p95MeetsInitial:true,
+  p50MeetsStretch:true,
+  p95MeetsStretch:false
+ });
+ assert.deepEqual(liveReady.prToCompleteMs,{
+  p50Ms:160_000,
+  p95Ms:240_000,
+  initialMaxMs:900_000,
+  stretchMaxMs:300_000,
+  p50MeetsInitial:true,
+  p95MeetsInitial:true,
+  p50MeetsStretch:true,
+  p95MeetsStretch:true
+ });
+ assert.deepEqual(liveReady.issueReadyToOutcomeMs,{
+  p50Ms:280_000,
+  p95Ms:420_000,
+  initialMaxMs:1_500_000,
+  stretchMaxMs:420_000,
+  outlierOver25mCount:0,
+  p50MeetsInitial:true,
+  p95MeetsInitial:true,
+  p50MeetsStretch:true,
+  p95MeetsStretch:true
+ });
+ assert.deepEqual(liveReady.sloChecks,{
+  evaluable:true,
+  issueReadyToPrP50Met:true,
+  issueReadyToPrP95Met:true,
+  prToCompleteP50Met:true,
+  prToCompleteP95Met:true,
+  issueReadyToOutcomeP50Met:true,
+  issueReadyToOutcomeP95Met:true,
+  automatedCiP50Met:true,
+  automatedCiStretchMet:true,
+  batchDrainMet:true,
+  batchDrainStretchMet:true,
+  humanInterventionsMet:true,
+  allInitialSlosMet:true
+ });
+ assert.equal(liveReady.cycleMetrics.every(m=>m.countedAsDeliveredWork===true),true);
+
+ const syntheticCohort=evaluateDossier(dossierInput({
+  cycles:[1,2,3].map(n=>dossierCycle(n,{source:'synthetic'}))
+ }));
+ assert.equal(syntheticCohort.pilotEntryReady,true);
+ assert.equal(syntheticCohort.m01ExitEvidenceReady,false);
+ assert.equal(syntheticCohort.accepted,false);
+ assert.equal(syntheticCohort.liveActivation,false);
+ assert.equal(syntheticCohort.reason,'SYNTHETIC_CYCLES_NOT_DELIVERED_WORK');
+ assert.equal(syntheticCohort.sampleCount,3);
+ assert.equal(syntheticCohort.deliveredCycleCount,0);
+ assert.equal(syntheticCohort.syntheticCycleCount,3);
+ assert.equal(syntheticCohort.deliveredCyclesShortfallFrom3,3);
+ assert.equal(syntheticCohort.sloChecks.evaluable,true);
+ assert.equal(syntheticCohort.cycleMetrics.every(m=>m.countedAsDeliveredWork===false),true);
+
+ for(const key of M01_CUSTOMER_ONE_PREREQUISITES){
+  const singleBlocked=evaluateDossier(dossierInput({
+   prerequisites:{...allCustomerOnePrereqsTrue,[key]:false}
+  }));
+  assert.equal(singleBlocked.pilotEntryReady,false);
+  assert.equal(singleBlocked.m01ExitEvidenceReady,false);
+  assert.equal(singleBlocked.reason,'PILOT_ENTRY_BLOCKED');
+  assert.deepEqual(singleBlocked.blockingPrerequisites,[key]);
+  assert.equal(singleBlocked.verifiedPrerequisites.length,M01_CUSTOMER_ONE_PREREQUISITES.length-1);
+ }
+
+ assert.equal(evaluateDossier(dossierInput({stop:true})).reason,'STOPPED');
+ assert.equal(evaluateDossier(dossierInput({enrolled:false})).reason,'STOPPED');
+ assert.equal(evaluateDossier(dossierInput({actualWorkerMax:0,workerShortfallFrom12:12,cycles:[]})).reason,'WORKER_CAPACITY_UNVERIFIED');
+
+ const pendingLive=evaluateDossier(dossierInput({cycles:[dossierCycle(1),dossierCycle(2)]}));
+ assert.equal(pendingLive.pilotEntryReady,true);
+ assert.equal(pendingLive.m01ExitEvidenceReady,false);
+ assert.equal(pendingLive.reason,'LIVE_CYCLES_PENDING');
+ assert.equal(pendingLive.deliveredCycleCount,2);
+ assert.equal(pendingLive.deliveredCyclesShortfallFrom3,1);
+ assert.equal(pendingLive.humanInterventions,0);
+ assert.equal(pendingLive.sloChecks.evaluable,false);
+
+ assert.equal(evaluateDossier(dossierInput({
+  cycles:[dossierCycle(1,{reviewFix:false}),dossierCycle(2),dossierCycle(3)]
+ })).reason,'SCENARIO_MISSING');
+ assert.equal(evaluateDossier(dossierInput({
+  cycles:[dossierCycle(1),dossierCycle(2,{parallelCandidate:false}),dossierCycle(3)]
+ })).reason,'SCENARIO_MISSING');
+
+ const humanTouched=evaluateDossier(dossierInput({
+  cycles:[dossierCycle(1,{humanInterventions:1}),dossierCycle(2),dossierCycle(3)]
+ }));
+ assert.equal(humanTouched.m01ExitEvidenceReady,false);
+ assert.equal(humanTouched.reason,'HUMAN_INTERVENTION_NONZERO');
+ assert.equal(humanTouched.deliveredCycleCount,2);
+ assert.equal(humanTouched.deliveredCyclesShortfallFrom3,1);
+ assert.equal(humanTouched.humanInterventions,1);
+ assert.equal(humanTouched.sloChecks.humanInterventionsMet,false);
+ assert.equal(humanTouched.sloChecks.allInitialSlosMet,false);
+ assert.equal(humanTouched.cycleMetrics[0].countedAsDeliveredWork,false);
+ assert.equal(humanTouched.cycleMetrics[1].countedAsDeliveredWork,true);
+
+ const exactDrainBoundary=evaluateDossier(dossierInput({
+  cycles:[
+   dossierCycle(1,{eligibleAt:200_000,prMergedAt:320_000,mainVerifiedAt:325_000,acceptanceVerifiedAt:330_000,automatedCiMs:74_999}),
+   dossierCycle(2,{eligibleAt:300_000,prMergedAt:420_000,mainVerifiedAt:425_000,acceptanceVerifiedAt:430_000,automatedCiMs:74_999}),
+   dossierCycle(3,{eligibleAt:400_000,prMergedAt:520_000,mainVerifiedAt:525_000,acceptanceVerifiedAt:530_000,automatedCiMs:74_999})
+  ]
+ }));
+ assert.equal(exactDrainBoundary.m01ExitEvidenceReady,true);
+ assert.equal(exactDrainBoundary.batchDrainMs,120_000);
+ assert.equal(exactDrainBoundary.automatedCiP50Ms,74_999);
+ assert.equal(exactDrainBoundary.sloChecks.batchDrainMet,true);
+ assert.equal(exactDrainBoundary.sloChecks.batchDrainStretchMet,false);
+ assert.equal(exactDrainBoundary.sloChecks.automatedCiP50Met,true);
+ assert.equal(exactDrainBoundary.sloChecks.automatedCiStretchMet,false);
+ assert.equal(exactDrainBoundary.sloChecks.allInitialSlosMet,true);
+
+ const exceededDrainAndOutlier=evaluateDossier(dossierInput({
+  cycles:[
+   dossierCycle(1,{issueReadyAt:0,prCreatedAt:600_001,eligibleAt:700_000,prMergedAt:820_001,mainVerifiedAt:900_000,acceptanceVerifiedAt:1_500_002,automatedCiMs:75_000}),
+   dossierCycle(2,{issueReadyAt:0,prCreatedAt:600_001,eligibleAt:700_000,prMergedAt:750_000,mainVerifiedAt:900_000,acceptanceVerifiedAt:1_500_002,automatedCiMs:75_000}),
+   dossierCycle(3,{issueReadyAt:0,prCreatedAt:600_001,eligibleAt:700_000,prMergedAt:760_000,mainVerifiedAt:900_000,acceptanceVerifiedAt:1_500_002,automatedCiMs:75_000})
+  ]
+ }));
+ assert.equal(exceededDrainAndOutlier.m01ExitEvidenceReady,false);
+ assert.equal(exceededDrainAndOutlier.reason,'BATCH_DRAIN_EXCEEDED');
+ assert.equal(exceededDrainAndOutlier.batchDrainMs,120_001);
+ assert.equal(exceededDrainAndOutlier.automatedCiP50Ms,75_000);
+ assert.equal(exceededDrainAndOutlier.issueReadyToOutcomeMs.outlierOver25mCount,3);
+ assert.equal(exceededDrainAndOutlier.sloChecks.issueReadyToPrP50Met,false);
+ assert.equal(exceededDrainAndOutlier.sloChecks.prToCompleteP50Met,false);
+ assert.equal(exceededDrainAndOutlier.sloChecks.issueReadyToOutcomeP50Met,false);
+ assert.equal(exceededDrainAndOutlier.sloChecks.automatedCiP50Met,false);
+ assert.equal(exceededDrainAndOutlier.sloChecks.batchDrainMet,false);
+ assert.equal(exceededDrainAndOutlier.sloChecks.allInitialSlosMet,false);
+
+ const slowLatencyButValidDrain=evaluateDossier(dossierInput({
+  cycles:[
+   dossierCycle(1,{issueReadyAt:0,prCreatedAt:700_000,eligibleAt:800_000,prMergedAt:850_000,mainVerifiedAt:900_000,acceptanceVerifiedAt:1_700_000,automatedCiMs:75_000}),
+   dossierCycle(2,{issueReadyAt:0,prCreatedAt:700_000,eligibleAt:800_000,prMergedAt:850_000,mainVerifiedAt:900_000,acceptanceVerifiedAt:1_700_000,automatedCiMs:75_000}),
+   dossierCycle(3,{issueReadyAt:0,prCreatedAt:700_000,eligibleAt:800_000,prMergedAt:850_000,mainVerifiedAt:900_000,acceptanceVerifiedAt:1_700_000,automatedCiMs:75_000})
+  ]
+ }));
+ assert.equal(slowLatencyButValidDrain.m01ExitEvidenceReady,true);
+ assert.equal(slowLatencyButValidDrain.sloChecks.allInitialSlosMet,false);
+
+ const prToCompleteMissOnly=evaluateDossier(dossierInput({
+  cycles:[
+   dossierCycle(1,{issueReadyAt:0,prCreatedAt:100_000,eligibleAt:200_000,prMergedAt:250_000,mainVerifiedAt:300_000,acceptanceVerifiedAt:1_050_000,automatedCiMs:40_000}),
+   dossierCycle(2,{issueReadyAt:0,prCreatedAt:100_000,eligibleAt:200_000,prMergedAt:250_000,mainVerifiedAt:300_000,acceptanceVerifiedAt:1_050_000,automatedCiMs:40_000}),
+   dossierCycle(3,{issueReadyAt:0,prCreatedAt:100_000,eligibleAt:200_000,prMergedAt:250_000,mainVerifiedAt:300_000,acceptanceVerifiedAt:1_050_000,automatedCiMs:40_000})
+  ]
+ }));
+ assert.equal(prToCompleteMissOnly.sloChecks.issueReadyToPrP50Met,true);
+ assert.equal(prToCompleteMissOnly.sloChecks.prToCompleteP50Met,false);
+ assert.equal(prToCompleteMissOnly.sloChecks.allInitialSlosMet,false);
+
+ const outcomeMissOnly=evaluateDossier(dossierInput({
+  cycles:[
+   dossierCycle(1,{issueReadyAt:0,prCreatedAt:600_000,eligibleAt:700_000,prMergedAt:750_000,mainVerifiedAt:800_000,acceptanceVerifiedAt:1_500_001,automatedCiMs:40_000}),
+   dossierCycle(2,{issueReadyAt:0,prCreatedAt:600_001,eligibleAt:700_000,prMergedAt:750_000,mainVerifiedAt:800_000,acceptanceVerifiedAt:1_500_001,automatedCiMs:40_000}),
+   dossierCycle(3,{issueReadyAt:0,prCreatedAt:100_000,eligibleAt:120_000,prMergedAt:150_000,mainVerifiedAt:180_000,acceptanceVerifiedAt:200_000,automatedCiMs:40_000})
+  ]
+ }));
+ assert.equal(outcomeMissOnly.sloChecks.issueReadyToPrP50Met,true);
+ assert.equal(outcomeMissOnly.sloChecks.prToCompleteP50Met,true);
+ assert.equal(outcomeMissOnly.sloChecks.issueReadyToOutcomeP50Met,false);
+ assert.equal(outcomeMissOnly.sloChecks.allInitialSlosMet,false);
+
+ const ciMissOnly=evaluateDossier(dossierInput({
+  cycles:[
+   dossierCycle(1,{automatedCiMs:75_000}),
+   dossierCycle(2,{automatedCiMs:75_000}),
+   dossierCycle(3,{automatedCiMs:75_000})
+  ]
+ }));
+ assert.equal(ciMissOnly.sloChecks.issueReadyToOutcomeP50Met,true);
+ assert.equal(ciMissOnly.sloChecks.automatedCiP50Met,false);
+ assert.equal(ciMissOnly.sloChecks.allInitialSlosMet,false);
+});
+
+test('Customer One dossier fails closed on proxies, getters, custom prototypes, mixed provenance, and invalid inputs without executing traps',()=>{
+ let traps=0;
+ const trap=()=>{traps++;throw Error('unexpected dossier trap');};
+
+ const inputProxy=new Proxy(dossierInput(),{get:trap,getOwnPropertyDescriptor:trap,ownKeys:trap,getPrototypeOf:trap});
+ const revokedInput=Proxy.revocable(dossierInput(),{});revokedInput.revoke();
+ const getterInput=dossierInput();Object.defineProperty(getterInput,'pin',{get:trap,enumerable:true});
+ const nonEnumInput=dossierInput();Object.defineProperty(nonEnumInput,'pin',{value:'a'.repeat(40),enumerable:false});
+ const extraKeyInput={...dossierInput(),extra:true};
+ const missingKeyInput=dossierInput();delete missingKeyInput.pin;
+ const symbolKeyInput=dossierInput();symbolKeyInput[Symbol('tag')]=1;
+
+ for(const bad of [null,'bad',123,[],Object.create(dossierInput()),inputProxy,revokedInput.proxy,getterInput,nonEnumInput,extraKeyInput,missingKeyInput,symbolKeyInput]){
+  const res=evaluateDossier(bad);
+  assert.equal(res.pilotEntryReady,false);
+  assert.equal(res.m01ExitEvidenceReady,false);
+  assert.equal(res.liveActivation,false);
+  assert.equal(res.accepted,false);
+  assert.equal(res.reason,'EVIDENCE_UNKNOWN');
+  assert.deepEqual(res.verifiedPrerequisites,[]);
+  assert.deepEqual(res.blockingPrerequisites,M01_CUSTOMER_ONE_PREREQUISITES);
+ }
+
+ for(const badPolicy of [
+  {repositoryId:0},
+  {repositoryId:-1},
+  {pin:'bad'},
+  {enrolled:'true'},
+  {stop:'false'},
+  {lineMin:Number.NaN},
+  {lineMin:97},
+  {lineMin:101},
+  {branchMin:Number.NaN},
+  {branchMin:94},
+  {branchMin:101}
+ ])assert.equal(evaluateDossier(dossierInput(badPolicy)).reason,'POLICY_UNKNOWN');
+
+ assert.equal(evaluateDossier(dossierInput({repositoryId:2})).reason,'IDENTITY_OR_PIN');
+
+ for(const badWorker of [
+  {actualWorkerMax:null,workerShortfallFrom12:12},
+  {actualWorkerMax:-1,workerShortfallFrom12:13},
+  {actualWorkerMax:1001,workerShortfallFrom12:0},
+  {actualWorkerMax:4,workerShortfallFrom12:null},
+  {actualWorkerMax:4,workerShortfallFrom12:7},
+  {actualWorkerMax:16,workerShortfallFrom12:1}
+ ])assert.equal(evaluateDossier(dossierInput(badWorker)).reason,'WORKER_CAPACITY_UNKNOWN');
+ assert.equal(evaluateDossier(dossierInput({actualWorkerMax:16,workerShortfallFrom12:0})).m01ExitEvidenceReady,true);
+
+ const prereqProxy=new Proxy({...allCustomerOnePrereqsTrue},{get:trap,getOwnPropertyDescriptor:trap});
+ const prereqGetter={...allCustomerOnePrereqsTrue};Object.defineProperty(prereqGetter,'noPythonVerified',{get:trap,enumerable:true});
+ const prereqMissing={...allCustomerOnePrereqsTrue};delete prereqMissing.noPythonVerified;
+ for(const badPrereq of [null,[],prereqProxy,prereqGetter,prereqMissing,{...allCustomerOnePrereqsTrue,extra:true},{...allCustomerOnePrereqsTrue,noPythonVerified:'true'},{...allCustomerOnePrereqsTrue,mainCodeqlHealthy:null}])
+  assert.equal(evaluateDossier(dossierInput({prerequisites:badPrereq})).reason,'PREREQUISITES_UNKNOWN');
+
+ const compProxy=new Proxy(inventory,{get:trap,getOwnPropertyDescriptor:trap});
+ const compGetter=[...inventory];Object.defineProperty(compGetter,0,{get:trap,enumerable:true});
+ for(const badComp of [null,'core',compProxy,compGetter,new Array(2),[],['BAD NAME'],['core','core']])
+  assert.equal(evaluateDossier(dossierInput({expectedComponents:badComp})).reason,'INVENTORY_UNKNOWN');
+
+ const cyclesProxy=new Proxy([dossierCycle(1)],{get:trap,getOwnPropertyDescriptor:trap});
+ const revokedCycles=Proxy.revocable([dossierCycle(1)],{});revokedCycles.revoke();
+ const cyclesGetter=[dossierCycle(1)];Object.defineProperty(cyclesGetter,0,{get:trap,enumerable:true});
+ const cyclesSubclass=Object.setPrototypeOf([dossierCycle(1)],Object.create(Array.prototype));
+ const rowProxy=new Proxy(dossierCycle(1),{get:trap,getOwnPropertyDescriptor:trap});
+ const rowGetter=dossierCycle(1);Object.defineProperty(rowGetter,'head',{get:trap,enumerable:true});
+ const rowMissing=dossierCycle(1);delete rowMissing.automatedCiMs;
+ for(const badCycles of [
+  null,
+  {},
+  cyclesProxy,
+  revokedCycles.proxy,
+  cyclesGetter,
+  cyclesSubclass,
+  new Array(3),
+  Array(51).fill(dossierCycle(1)),
+  [null],
+  [rowProxy],
+  [rowGetter],
+  [rowMissing],
+  [{...dossierCycle(1),extra:1}]
+ ])assert.equal(evaluateDossier(dossierInput({cycles:badCycles})).reason,'CYCLE_INVENTORY_UNKNOWN');
+
+ for(const badSource of ['historical-github-proxy','manual',null])
+  assert.equal(evaluateDossier(dossierInput({cycles:[dossierCycle(1,{source:badSource})]})).reason,'SOURCE_UNKNOWN');
+
+ assert.equal(evaluateDossier(dossierInput({
+  cycles:[dossierCycle(1,{source:'synthetic'}),dossierCycle(2,{source:'github-hosted'}),dossierCycle(3,{source:'github-hosted'})]
+ })).reason,'PROVENANCE_ISOLATION_VIOLATION');
+
+ for(const badId of [
+  {repositoryId:2},
+  {issue:0},
+  {pr:0},
+  {head:'bad'},
+  {reviewedHead:'b'.repeat(40)}
+ ])assert.equal(evaluateDossier(dossierInput({cycles:[dossierCycle(1,badId),dossierCycle(2),dossierCycle(3)]})).reason,'IDENTITY_OR_REVIEW_UNKNOWN');
+
+ for(const dup of [
+  {issue:2},
+  {pr:202},
+  {head:'2'.repeat(40),reviewedHead:'2'.repeat(40),coverageReports:reports('2'.repeat(40))}
+ ])assert.equal(evaluateDossier(dossierInput({cycles:[dossierCycle(1,dup),dossierCycle(2),dossierCycle(3)]})).reason,'DUPLICATE_CYCLE');
+
+ for(const badSafety of [
+  {reviewIndependent:false},
+  {checksPassed:false},
+  {securityClear:false},
+  {threadsResolved:false},
+  {mainVerified:false},
+  {costVerified:false},
+  {acceptanceVerified:false},
+  {laptopOfflineVerified:false},
+  {extraCost:1},
+  {unauthorizedWrites:1},
+  {duplicateDispatches:1},
+  {gateBypasses:1},
+  {humanInterventions:-1},
+  {humanInterventions:-0},
+  {humanInterventions:null}
+ ])assert.equal(evaluateDossier(dossierInput({cycles:[dossierCycle(1,badSafety),dossierCycle(2),dossierCycle(3)]})).reason,'SAFETY_OR_COST_UNKNOWN');
+
+ const badCovReports=inventory.map(component=>({component,head:'1'.repeat(40),lines:97,lineTotal:100,branches:19,branchTotal:20}));
+ assert.equal(evaluateDossier(dossierInput({
+  cycles:[dossierCycle(1,{coverageReports:badCovReports}),dossierCycle(2),dossierCycle(3)]
+ })).reason,'COVERAGE');
+ assert.equal(evaluateDossier(dossierInput({lineMin:99})).reason,'COVERAGE');
+
+ for(const badTiming of [
+  {issueReadyAt:-1},
+  {automatedCiMs:-1},
+  {issueReadyAt:200_000},
+  {prCreatedAt:300_000},
+  {eligibleAt:400_000},
+  {prMergedAt:500_000},
+  {mainVerifiedAt:600_000},
+  {reviewFix:'true'},
+  {parallelCandidate:null}
+ ])assert.equal(evaluateDossier(dossierInput({cycles:[dossierCycle(1,badTiming),dossierCycle(2),dossierCycle(3)]})).reason,'TIMING_OR_SCENARIO_UNKNOWN');
+
  assert.equal(traps,0);
 });

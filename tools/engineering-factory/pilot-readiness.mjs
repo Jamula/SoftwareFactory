@@ -103,3 +103,371 @@ export function verifyM01AutonomousExit(e){
   sampleCount:repeatability.sampleCount,p50Ms:repeatability.p50Ms,p95Ms:repeatability.p95Ms,
   actualWorkerMax:e.actualWorkerMax,workerShortfallFrom12:e.workerShortfallFrom12};
 }
+
+export const M01_CUSTOMER_ONE_PREREQUISITES=Object.freeze([
+ 'noPythonVerified',
+ 'mainCodeqlHealthy',
+ 'ghAwLockVerified',
+ 'workQueueCasVerified',
+ 'unifiedCliVerified',
+ 'antiRogueCircuitBreakersVerified',
+ 'crossOsAspireRuntimeVerified',
+ 'hardStopBillingVerified',
+ 'nativeCloudSmokeVerified',
+ 'repoScopedLiveAuthVerified'
+]);
+
+export const M01_CUSTOMER_ONE_SLOS=Object.freeze({
+ issueReadyToPrInitialMaxMs:600_000,
+ issueReadyToPrStretchMaxMs:120_000,
+ prToCompleteInitialMaxMs:900_000,
+ prToCompleteStretchMaxMs:300_000,
+ issueReadyToOutcomeInitialMaxMs:1_500_000,
+ issueReadyToOutcomeStretchMaxMs:420_000,
+ outlierOutcomeThresholdMs:1_500_000,
+ automatedCiP50InitialExclusiveMaxMs:75_000,
+ automatedCiP50StretchMaxMs:30_000,
+ batchDrainMaxMs:120_000,
+ batchDrainStretchMaxMs:30_000,
+ maxHumanInterventions:0,
+ minAcceptedCycles:3,
+ workerGoalMax:12
+});
+
+const dossierInputKeys=[
+ 'repositoryId',
+ 'pin',
+ 'enrolled',
+ 'stop',
+ 'lineMin',
+ 'branchMin',
+ 'actualWorkerMax',
+ 'workerShortfallFrom12',
+ 'prerequisites',
+ 'expectedComponents',
+ 'cycles'
+];
+
+const dossierCycleKeys=[
+ 'source',
+ 'repositoryId',
+ 'issue',
+ 'pr',
+ 'head',
+ 'reviewedHead',
+ 'reviewIndependent',
+ 'checksPassed',
+ 'securityClear',
+ 'threadsResolved',
+ 'coverageReports',
+ 'mainVerified',
+ 'costVerified',
+ 'acceptanceVerified',
+ 'laptopOfflineVerified',
+ 'extraCost',
+ 'humanInterventions',
+ 'unauthorizedWrites',
+ 'duplicateDispatches',
+ 'gateBypasses',
+ 'issueReadyAt',
+ 'prCreatedAt',
+ 'eligibleAt',
+ 'prMergedAt',
+ 'mainVerifiedAt',
+ 'acceptanceVerifiedAt',
+ 'automatedCiMs',
+ 'reviewFix',
+ 'parallelCandidate'
+];
+
+const ms=x=>Number.isSafeInteger(x)&&x>=0&&!Object.is(x,-0);
+const componentName=x=>typeof x==='string'&&/^[a-z0-9][a-z0-9._-]{0,79}$/.test(x);
+const ownEnumerableData=(x,p)=>{
+ const d=Object.getOwnPropertyDescriptor(x,p);
+ return d!==undefined&&d.enumerable===true&&Object.hasOwn(d,'value');
+};
+const exactPlain=(x,keys)=>
+ x!==null&&
+ typeof x==='object'&&
+ !types.isProxy(x)&&
+ !Array.isArray(x)&&
+ Object.getPrototypeOf(x)===Object.prototype&&
+ Reflect.ownKeys(x).length===keys.length&&
+ keys.every(k=>ownEnumerableData(x,k));
+const denseDataArray=(x,maxLen)=>
+ !types.isProxy(x)&&
+ Array.isArray(x)&&
+ Object.getPrototypeOf(x)===Array.prototype&&
+ x.length<=maxLen&&
+ Reflect.ownKeys(x).length===x.length+1&&
+ Array.from({length:x.length},(_,i)=>ownEnumerableData(x,i)).every(Boolean);
+
+const EMPTY_SLO_CHECKS=Object.freeze({
+ evaluable:false,
+ issueReadyToPrP50Met:null,
+ issueReadyToPrP95Met:null,
+ prToCompleteP50Met:null,
+ prToCompleteP95Met:null,
+ issueReadyToOutcomeP50Met:null,
+ issueReadyToOutcomeP95Met:null,
+ automatedCiP50Met:null,
+ automatedCiStretchMet:null,
+ batchDrainMet:null,
+ batchDrainStretchMet:null,
+ humanInterventionsMet:null,
+ allInitialSlosMet:false
+});
+
+const percentile=(sorted,p)=>sorted[Math.ceil(sorted.length*p)-1];
+
+const summarizeLatencySlo=(values,initialMaxMs,stretchMaxMs)=>{
+ const sorted=[...values].sort((a,b)=>a-b);
+ const p50Ms=percentile(sorted,0.5);
+ const p95Ms=percentile(sorted,0.95);
+ return Object.freeze({
+  p50Ms,
+  p95Ms,
+  initialMaxMs,
+  stretchMaxMs,
+  p50MeetsInitial:p50Ms<=initialMaxMs,
+  p95MeetsInitial:p95Ms<=initialMaxMs,
+  p50MeetsStretch:p50Ms<=stretchMaxMs,
+  p95MeetsStretch:p95Ms<=stretchMaxMs
+ });
+};
+
+const dossierDeny=(reason,verifiedPrerequisites,blockingPrerequisites)=>Object.freeze({
+ shadow:true,
+ liveActivation:false,
+ accepted:false,
+ pilotEntryReady:false,
+ m01ExitEvidenceReady:false,
+ reason,
+ verifiedPrerequisites:Object.freeze(verifiedPrerequisites),
+ blockingPrerequisites:Object.freeze(blockingPrerequisites),
+ actualWorkerMax:null,
+ workerShortfallFrom12:null,
+ cycleSource:null,
+ sampleCount:0,
+ deliveredCycleCount:0,
+ syntheticCycleCount:0,
+ deliveredCyclesShortfallFrom3:M01_CUSTOMER_ONE_SLOS.minAcceptedCycles,
+ issueReadyToPrMs:null,
+ prToCompleteMs:null,
+ issueReadyToOutcomeMs:null,
+ automatedCiP50Ms:null,
+ automatedCiP95Ms:null,
+ batchDrainMs:null,
+ humanInterventions:null,
+ sloChecks:EMPTY_SLO_CHECKS,
+ cycleMetrics:Object.freeze([])
+});
+
+// Post-retarget M01 Customer One readiness and canonical #10 3-cycle SLO dossier evaluator.
+// Read-only, deterministic, fail-closed; synthetic cycles are never counted as delivered work.
+export function evaluateCustomerOnePilotReadinessDossier(input){
+ const allPrereqs=[...M01_CUSTOMER_ONE_PREREQUISITES];
+ if(!exactPlain(input,dossierInputKeys))return dossierDeny('EVIDENCE_UNKNOWN',[],allPrereqs);
+ if(!id(input.repositoryId)||!sha(input.pin)||typeof input.enrolled!=='boolean'||typeof input.stop!=='boolean'||
+    !Number.isFinite(input.lineMin)||input.lineMin<98||input.lineMin>100||
+    !Number.isFinite(input.branchMin)||input.branchMin<95||input.branchMin>100)
+  return dossierDeny('POLICY_UNKNOWN',[],allPrereqs);
+ if(input.repositoryId!==SOFTWARE_FACTORY_REPO_ID)return dossierDeny('IDENTITY_OR_PIN',[],allPrereqs);
+ if(!Number.isSafeInteger(input.actualWorkerMax)||input.actualWorkerMax<0||input.actualWorkerMax>1000||
+    !Number.isSafeInteger(input.workerShortfallFrom12)||
+    input.workerShortfallFrom12!==Math.max(0,M01_CUSTOMER_ONE_SLOS.workerGoalMax-input.actualWorkerMax))
+  return dossierDeny('WORKER_CAPACITY_UNKNOWN',[],allPrereqs);
+ if(!exactPlain(input.prerequisites,M01_CUSTOMER_ONE_PREREQUISITES)||
+    M01_CUSTOMER_ONE_PREREQUISITES.some(k=>typeof input.prerequisites[k]!=='boolean'))
+  return dossierDeny('PREREQUISITES_UNKNOWN',[],allPrereqs);
+
+ const verifiedPrerequisites=M01_CUSTOMER_ONE_PREREQUISITES.filter(k=>input.prerequisites[k]);
+ const blockingPrerequisites=M01_CUSTOMER_ONE_PREREQUISITES.filter(k=>!input.prerequisites[k]);
+
+ if(!denseDataArray(input.expectedComponents,250)||input.expectedComponents.length===0||
+    !input.expectedComponents.every(componentName)||
+    new Set(input.expectedComponents).size!==input.expectedComponents.length)
+  return dossierDeny('INVENTORY_UNKNOWN',verifiedPrerequisites,blockingPrerequisites);
+ if(!denseDataArray(input.cycles,50))
+  return dossierDeny('CYCLE_INVENTORY_UNKNOWN',verifiedPrerequisites,blockingPrerequisites);
+
+ const coveragePolicy={repository:'Jamula/SoftwareFactory',lineMin:input.lineMin,branchMin:input.branchMin};
+ const issues=new Set(),prs=new Set(),heads=new Set();
+ const readyToPrList=[],prToCompleteList=[],readyToOutcomeList=[],ciList=[],eligibleToMergeList=[],cycleMetrics=[];
+ let cycleSource=null,reviewFix=false,parallelCandidate=false;
+ let totalHumanInterventions=0,deliveredCycleCount=0,syntheticCycleCount=0;
+
+ for(let i=0;i<input.cycles.length;i++){
+  const c=input.cycles[i];
+  if(!exactPlain(c,dossierCycleKeys))
+   return dossierDeny('CYCLE_INVENTORY_UNKNOWN',verifiedPrerequisites,blockingPrerequisites);
+  if(c.source!=='synthetic'&&c.source!=='github-hosted')
+   return dossierDeny('SOURCE_UNKNOWN',verifiedPrerequisites,blockingPrerequisites);
+  if(cycleSource===null)cycleSource=c.source;
+  else if(c.source!==cycleSource)
+   return dossierDeny('PROVENANCE_ISOLATION_VIOLATION',verifiedPrerequisites,blockingPrerequisites);
+  if(c.repositoryId!==SOFTWARE_FACTORY_REPO_ID||!id(c.issue)||!id(c.pr)||!sha(c.head)||c.reviewedHead!==c.head)
+   return dossierDeny('IDENTITY_OR_REVIEW_UNKNOWN',verifiedPrerequisites,blockingPrerequisites);
+  if(issues.has(c.issue)||prs.has(c.pr)||heads.has(c.head))
+   return dossierDeny('DUPLICATE_CYCLE',verifiedPrerequisites,blockingPrerequisites);
+  issues.add(c.issue);prs.add(c.pr);heads.add(c.head);
+  if([c.reviewIndependent,c.checksPassed,c.securityClear,c.threadsResolved,c.mainVerified,c.costVerified,c.acceptanceVerified,c.laptopOfflineVerified].some(v=>v!==true)||
+     c.extraCost!==0||c.unauthorizedWrites!==0||c.duplicateDispatches!==0||c.gateBypasses!==0||
+     !ms(c.humanInterventions))
+   return dossierDeny('SAFETY_OR_COST_UNKNOWN',verifiedPrerequisites,blockingPrerequisites);
+  if(!coverageEvidence(c.head,input.expectedComponents,c.coverageReports,coveragePolicy).valid)
+   return dossierDeny('COVERAGE',verifiedPrerequisites,blockingPrerequisites);
+  if(![c.issueReadyAt,c.prCreatedAt,c.eligibleAt,c.prMergedAt,c.mainVerifiedAt,c.acceptanceVerifiedAt,c.automatedCiMs].every(ms)||
+     c.issueReadyAt>c.prCreatedAt||c.prCreatedAt>c.eligibleAt||c.eligibleAt>c.prMergedAt||
+     c.prMergedAt>c.mainVerifiedAt||c.mainVerifiedAt>c.acceptanceVerifiedAt||
+     typeof c.reviewFix!=='boolean'||typeof c.parallelCandidate!=='boolean')
+   return dossierDeny('TIMING_OR_SCENARIO_UNKNOWN',verifiedPrerequisites,blockingPrerequisites);
+
+  reviewFix ||= c.reviewFix;
+  parallelCandidate ||= c.parallelCandidate;
+  totalHumanInterventions+=c.humanInterventions;
+  const countedAsDeliveredWork=c.source==='github-hosted'&&c.humanInterventions===0;
+  if(c.source==='synthetic')syntheticCycleCount++;
+  else if(countedAsDeliveredWork)deliveredCycleCount++;
+
+  const cycleReadyToPrMs=c.prCreatedAt-c.issueReadyAt;
+  const cyclePrCreatedToMergeMs=c.prMergedAt-c.prCreatedAt;
+  const cycleEligibleToMergeMs=c.prMergedAt-c.eligibleAt;
+  const cycleMergeToMainVerifiedMs=c.mainVerifiedAt-c.prMergedAt;
+  const cyclePrToCompleteMs=c.acceptanceVerifiedAt-c.prCreatedAt;
+  const cycleReadyToOutcomeMs=c.acceptanceVerifiedAt-c.issueReadyAt;
+  readyToPrList.push(cycleReadyToPrMs);
+  prToCompleteList.push(cyclePrToCompleteMs);
+  readyToOutcomeList.push(cycleReadyToOutcomeMs);
+  ciList.push(c.automatedCiMs);
+  eligibleToMergeList.push(cycleEligibleToMergeMs);
+  cycleMetrics.push(Object.freeze({
+   issue:c.issue,
+   pr:c.pr,
+   head:c.head,
+   source:c.source,
+   countedAsDeliveredWork,
+   issueReadyToPrMs:cycleReadyToPrMs,
+   prCreatedToMergeMs:cyclePrCreatedToMergeMs,
+   eligibleToMergeMs:cycleEligibleToMergeMs,
+   mergeToMainVerifiedMs:cycleMergeToMainVerifiedMs,
+   prToCompleteMs:cyclePrToCompleteMs,
+   issueReadyToOutcomeMs:cycleReadyToOutcomeMs,
+   automatedCiMs:c.automatedCiMs,
+   humanInterventions:c.humanInterventions
+  }));
+ }
+
+ const stoppedOrUnenrolled=input.stop!==false||input.enrolled!==true;
+ const pilotEntryReady=!stoppedOrUnenrolled&&blockingPrerequisites.length===0;
+ const hasMinCycles=input.cycles.length>=M01_CUSTOMER_ONE_SLOS.minAcceptedCycles;
+
+ let issueReadyToPrMs=null,prToCompleteMs=null,issueReadyToOutcomeMs=null;
+ let automatedCiP50Ms=null,automatedCiP95Ms=null,batchDrainMs=null;
+ let sloChecks=EMPTY_SLO_CHECKS;
+ const humanInterventions=input.cycles.length===0?null:totalHumanInterventions;
+
+ if(hasMinCycles){
+  issueReadyToPrMs=summarizeLatencySlo(
+   readyToPrList,
+   M01_CUSTOMER_ONE_SLOS.issueReadyToPrInitialMaxMs,
+   M01_CUSTOMER_ONE_SLOS.issueReadyToPrStretchMaxMs
+  );
+  prToCompleteMs=summarizeLatencySlo(
+   prToCompleteList,
+   M01_CUSTOMER_ONE_SLOS.prToCompleteInitialMaxMs,
+   M01_CUSTOMER_ONE_SLOS.prToCompleteStretchMaxMs
+  );
+  const outcomeSummary=summarizeLatencySlo(
+   readyToOutcomeList,
+   M01_CUSTOMER_ONE_SLOS.issueReadyToOutcomeInitialMaxMs,
+   M01_CUSTOMER_ONE_SLOS.issueReadyToOutcomeStretchMaxMs
+  );
+  issueReadyToOutcomeMs=Object.freeze({
+   ...outcomeSummary,
+   outlierOver25mCount:readyToOutcomeList.filter(v=>v>M01_CUSTOMER_ONE_SLOS.outlierOutcomeThresholdMs).length
+  });
+  const sortedCi=[...ciList].sort((a,b)=>a-b);
+  automatedCiP50Ms=percentile(sortedCi,0.5);
+  automatedCiP95Ms=percentile(sortedCi,0.95);
+  const sortedDrain=[...eligibleToMergeList].sort((a,b)=>a-b);
+  batchDrainMs=percentile(sortedDrain,0.95);
+
+  const automatedCiP50Met=automatedCiP50Ms<M01_CUSTOMER_ONE_SLOS.automatedCiP50InitialExclusiveMaxMs;
+  const automatedCiStretchMet=automatedCiP50Ms<=M01_CUSTOMER_ONE_SLOS.automatedCiP50StretchMaxMs;
+  const batchDrainMet=batchDrainMs<=M01_CUSTOMER_ONE_SLOS.batchDrainMaxMs;
+  const batchDrainStretchMet=batchDrainMs<=M01_CUSTOMER_ONE_SLOS.batchDrainStretchMaxMs;
+  const humanInterventionsMet=humanInterventions===M01_CUSTOMER_ONE_SLOS.maxHumanInterventions;
+  sloChecks=Object.freeze({
+   evaluable:true,
+   issueReadyToPrP50Met:issueReadyToPrMs.p50MeetsInitial,
+   issueReadyToPrP95Met:issueReadyToPrMs.p95MeetsInitial,
+   prToCompleteP50Met:prToCompleteMs.p50MeetsInitial,
+   prToCompleteP95Met:prToCompleteMs.p95MeetsInitial,
+   issueReadyToOutcomeP50Met:issueReadyToOutcomeMs.p50MeetsInitial,
+   issueReadyToOutcomeP95Met:issueReadyToOutcomeMs.p95MeetsInitial,
+   automatedCiP50Met,
+   automatedCiStretchMet,
+   batchDrainMet,
+   batchDrainStretchMet,
+   humanInterventionsMet,
+   allInitialSlosMet:
+    issueReadyToPrMs.p50MeetsInitial&&
+    prToCompleteMs.p50MeetsInitial&&
+    issueReadyToOutcomeMs.p50MeetsInitial&&
+    automatedCiP50Met&&
+    batchDrainMet&&
+    humanInterventionsMet
+  });
+ }
+
+ let reason;
+ let m01ExitEvidenceReady=false;
+ if(stoppedOrUnenrolled){
+  reason='STOPPED';
+ }else if(!pilotEntryReady){
+  reason='PILOT_ENTRY_BLOCKED';
+ }else if(input.actualWorkerMax===0){
+  reason='WORKER_CAPACITY_UNVERIFIED';
+ }else if(cycleSource==='synthetic'){
+  reason='SYNTHETIC_CYCLES_NOT_DELIVERED_WORK';
+ }else if(!hasMinCycles){
+  reason='LIVE_CYCLES_PENDING';
+ }else if(totalHumanInterventions!==M01_CUSTOMER_ONE_SLOS.maxHumanInterventions){
+  reason='HUMAN_INTERVENTION_NONZERO';
+ }else if(!reviewFix||!parallelCandidate){
+  reason='SCENARIO_MISSING';
+ }else if(batchDrainMs>M01_CUSTOMER_ONE_SLOS.batchDrainMaxMs){
+  reason='BATCH_DRAIN_EXCEEDED';
+ }else{
+  reason='CUSTOMER_ONE_EXIT_EVIDENCE_READY_ONLY';
+  m01ExitEvidenceReady=true;
+ }
+
+ return Object.freeze({
+  shadow:true,
+  liveActivation:false,
+  accepted:false,
+  pilotEntryReady,
+  m01ExitEvidenceReady,
+  reason,
+  verifiedPrerequisites:Object.freeze(verifiedPrerequisites),
+  blockingPrerequisites:Object.freeze(blockingPrerequisites),
+  actualWorkerMax:input.actualWorkerMax,
+  workerShortfallFrom12:input.workerShortfallFrom12,
+  cycleSource,
+  sampleCount:input.cycles.length,
+  deliveredCycleCount,
+  syntheticCycleCount,
+  deliveredCyclesShortfallFrom3:Math.max(0,M01_CUSTOMER_ONE_SLOS.minAcceptedCycles-deliveredCycleCount),
+  issueReadyToPrMs,
+  prToCompleteMs,
+  issueReadyToOutcomeMs,
+  automatedCiP50Ms,
+  automatedCiP95Ms,
+  batchDrainMs,
+  humanInterventions,
+  sloChecks,
+  cycleMetrics:Object.freeze(cycleMetrics)
+ });
+}
