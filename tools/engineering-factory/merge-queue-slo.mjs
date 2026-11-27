@@ -672,6 +672,7 @@ function summarizeLifecycleMetric(metricKey, evaluatedSamples, cohortComplete) {
   const durations = [];
   let censoredCount = 0;
   let closedUnmergedCount = 0;
+  let unknownCount = 0;
   let unreachedCount = 0;
   let targetMissCount = 0;
   let stretchMissCount = 0;
@@ -691,6 +692,8 @@ function summarizeLifecycleMetric(metricKey, evaluatedSamples, cohortComplete) {
       censoredCount++;
       if (openAge > spec.targetMs) overdueOpenCount++;
       if (openAge > spec.stretchMs) stretchOverdueOpenCount++;
+    } else if (!row.censored) {
+      unknownCount++;
     } else {
       unreachedCount++;
     }
@@ -698,7 +701,7 @@ function summarizeLifecycleMetric(metricKey, evaluatedSamples, cohortComplete) {
 
   const sampleCount = durations.length;
   const {p50Ms, p95Ms} = nearestRankPercentiles(durations);
-  const evaluable = cohortComplete && p50Ms !== null;
+  const evaluable = cohortComplete && unknownCount === 0 && p50Ms !== null;
   const p50MeetsTarget = evaluable ? p50Ms <= spec.targetMs : null;
   const p95MeetsTarget = evaluable ? p95Ms <= spec.targetMs : null;
   const p50MeetsStretch = evaluable ? p50Ms <= spec.stretchMs : null;
@@ -714,6 +717,7 @@ function summarizeLifecycleMetric(metricKey, evaluatedSamples, cohortComplete) {
     sampleCount,
     censoredCount,
     closedUnmergedCount,
+    unknownCount,
     unreachedCount,
     p50Ms,
     p95Ms,

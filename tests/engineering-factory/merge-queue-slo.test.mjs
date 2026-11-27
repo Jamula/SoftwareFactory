@@ -721,11 +721,34 @@ test('distinguishes routine human interventions from documented governance excep
     completeCohortOptions()
   );
   assert.equal(manualCohort.valid, true);
+  assert.equal(manualCohort.metrics.eligibleToMergeMs.unknownCount, 1);
+  assert.equal(manualCohort.metrics.eligibleToMergeMs.meetsTarget, null);
   assert.equal(manualCohort.sloMet, false);
   assert.equal(manualCohort.reason, 'SLO_MISSED');
   assert.equal(manualCohort.routineHumanTouchesCount, 1);
   assert.equal(manualCohort.zeroRoutineHumanTouchesMet, false);
   assert.equal(manualCohort.counts.unattendedMergedCount, 1);
+
+  const missingEligibilityNoBreach = evaluatePullMergeLatencySlo([
+    withApprovedException,
+    baseDraftSample({
+      prNumber: 506,
+      eligibilityTimestamps: [],
+      enqueuedAt: null,
+      stages: {
+        ...baseDraftSample().stages,
+        eligibilityToEnqueueMs: null
+      }
+    })
+  ], completeCohortOptions());
+  assert.equal(missingEligibilityNoBreach.metrics.eligibleToMergeMs.sampleCount, 1);
+  assert.equal(missingEligibilityNoBreach.metrics.eligibleToMergeMs.unknownCount, 1);
+  assert.equal(missingEligibilityNoBreach.metrics.eligibleToMergeMs.p95MeetsTarget, null);
+  assert.equal(missingEligibilityNoBreach.metrics.eligibleToMergeMs.meetsTarget, null);
+  assert.equal(missingEligibilityNoBreach.metrics.eligibleToMergeMs.meetsStretch, null);
+  assert.equal(missingEligibilityNoBreach.sloMet, null);
+  assert.equal(missingEligibilityNoBreach.stretchMet, null);
+  assert.equal(missingEligibilityNoBreach.reason, 'SLO_INCOMPLETE');
 
   const p95BreachSamples = Array.from({length: 18}, (_, index) => baseDraftSample({
     prNumber: 600 + index,
