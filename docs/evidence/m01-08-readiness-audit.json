@@ -188,7 +188,7 @@
       "checklistState": "[ ]",
       "category": "live-exit-evidence",
       "issue": 10,
-      "requiredAction": "Execute at least 3 real independently accepted unattended issues on Jamula/SoftwareFactory via github/gh-aw + Copilot Cloud Agent through healthy protected main (including parallel non-overlapping candidates and review-fix remediation, laptop/chat offline restart/stop proof, humanInterventions === 0, batchDrainMs <= 120000, $0 incremental spend, >=98% line and >=95% branch coverage, and recorded actualWorkerMax / workerShortfallFrom12; synthetic cycles never count as delivered work)."
+      "requiredAction": "Execute at least 3 real independently accepted unattended issues on Jamula/SoftwareFactory via github/gh-aw + Copilot Cloud Agent through healthy protected main (including parallel non-overlapping candidates and review-fix remediation, laptop/chat offline restart/stop proof, humanInterventions === 0, $0 incremental spend, >=98% line and >=95% branch coverage, and recorded actualWorkerMax / workerShortfallFrom12, while separately reporting canonical #10 velocity and batchDrainMs <= 120000 performance SLOs; synthetic cycles never count as delivered work)."
     }
   ],
   "dossierInput": {
@@ -304,9 +304,11 @@
     "issueReadyToPrMs": null,
     "prToCompleteMs": null,
     "issueReadyToOutcomeMs": null,
+    "eligibleToMergeMs": null,
     "automatedCiP50Ms": null,
     "automatedCiP95Ms": null,
     "batchDrainMs": null,
+    "batchDrains": [],
     "humanInterventions": null,
     "sloChecks": {
       "evaluable": false,
@@ -316,6 +318,8 @@
       "prToCompleteP95Met": null,
       "issueReadyToOutcomeP50Met": null,
       "issueReadyToOutcomeP95Met": null,
+      "eligibleToMergeP50Met": null,
+      "eligibleToMergeP95Met": null,
       "automatedCiP50Met": null,
       "automatedCiStretchMet": null,
       "batchDrainMet": null,

@@ -180,7 +180,8 @@ test('M01 autonomous exit verifier enforces all structural prerequisites, worker
 
 const allCustomerOnePrereqsTrue=Object.fromEntries(M01_CUSTOMER_ONE_PREREQUISITES.map(k=>[k,true]));
 const dossierCycle=(n,extra={})=>{
- const head=String(n).repeat(40);
+ const head=n.toString(16).padStart(40,'0');
+ const eligibleAt=extra.eligibleAt??(1_000+n*120_000);
  return {
   source:'github-hosted',
   repositoryId:1471342715,
@@ -188,6 +189,8 @@ const dossierCycle=(n,extra={})=>{
   pr:200+n,
   head,
   reviewedHead:head,
+  batchId:`batch-${n}`,
+  batchStartedAt:eligibleAt,
   reviewIndependent:true,
   checksPassed:true,
   securityClear:true,
@@ -204,7 +207,7 @@ const dossierCycle=(n,extra={})=>{
   gateBypasses:0,
   issueReadyAt:1_000,
   prCreatedAt:1_000+n*60_000,
-  eligibleAt:1_000+n*120_000,
+  eligibleAt,
   prMergedAt:1_000+n*120_000+n*10_000,
   mainVerifiedAt:1_000+n*120_000+n*10_000+5_000,
   acceptanceVerifiedAt:1_000+n*120_000+n*20_000,
@@ -251,7 +254,7 @@ test('Customer One readiness audit JSON matches deterministic dossier evaluation
  assert.deepEqual(actual,audit.dossierEvaluation);
 });
 
-test('Customer One dossier evaluates 10-prerequisite matrix, 3-cycle timestamp SLOs, and never counts synthetic cycles as delivered work',()=>{
+test('Customer One dossier evaluates 10-prerequisite matrix, batch drain vs eligible-to-merge, verified-main PR completion, and never counts synthetic cycles as delivered work',()=>{
  assert.deepEqual(M01_CUSTOMER_ONE_PREREQUISITES,[
   'noPythonVerified',
   'mainCodeqlHealthy',
@@ -265,6 +268,7 @@ test('Customer One dossier evaluates 10-prerequisite matrix, 3-cycle timestamp S
   'repoScopedLiveAuthVerified'
  ]);
  assert.equal(M01_CUSTOMER_ONE_SLOS.batchDrainMaxMs,120_000);
+ assert.equal(M01_CUSTOMER_ONE_SLOS.eligibleToMergeInitialMaxMs,120_000);
  assert.equal(M01_CUSTOMER_ONE_SLOS.automatedCiP50InitialExclusiveMaxMs,75_000);
  assert.equal(M01_CUSTOMER_ONE_SLOS.maxHumanInterventions,0);
 
@@ -285,6 +289,7 @@ test('Customer One dossier evaluates 10-prerequisite matrix, 3-cycle timestamp S
  assert.equal(liveReady.automatedCiP50Ms,30_000);
  assert.equal(liveReady.automatedCiP95Ms,35_000);
  assert.equal(liveReady.batchDrainMs,30_000);
+ assert.equal(liveReady.batchDrains.length,3);
  assert.equal(liveReady.humanInterventions,0);
  assert.deepEqual(liveReady.issueReadyToPrMs,{
   p50Ms:120_000,
@@ -297,8 +302,8 @@ test('Customer One dossier evaluates 10-prerequisite matrix, 3-cycle timestamp S
   p95MeetsStretch:false
  });
  assert.deepEqual(liveReady.prToCompleteMs,{
-  p50Ms:160_000,
-  p95Ms:240_000,
+  p50Ms:145_000,
+  p95Ms:215_000,
   initialMaxMs:900_000,
   stretchMaxMs:300_000,
   p50MeetsInitial:true,
@@ -317,6 +322,16 @@ test('Customer One dossier evaluates 10-prerequisite matrix, 3-cycle timestamp S
   p50MeetsStretch:true,
   p95MeetsStretch:true
  });
+ assert.deepEqual(liveReady.eligibleToMergeMs,{
+  p50Ms:20_000,
+  p95Ms:30_000,
+  initialMaxMs:120_000,
+  stretchMaxMs:30_000,
+  p50MeetsInitial:true,
+  p95MeetsInitial:true,
+  p50MeetsStretch:true,
+  p95MeetsStretch:true
+ });
  assert.deepEqual(liveReady.sloChecks,{
   evaluable:true,
   issueReadyToPrP50Met:true,
@@ -325,6 +340,8 @@ test('Customer One dossier evaluates 10-prerequisite matrix, 3-cycle timestamp S
   prToCompleteP95Met:true,
   issueReadyToOutcomeP50Met:true,
   issueReadyToOutcomeP95Met:true,
+  eligibleToMergeP50Met:true,
+  eligibleToMergeP95Met:true,
   automatedCiP50Met:true,
   automatedCiStretchMet:true,
   batchDrainMet:true,
@@ -333,6 +350,54 @@ test('Customer One dossier evaluates 10-prerequisite matrix, 3-cycle timestamp S
   allInitialSlosMet:true
  });
  assert.equal(liveReady.cycleMetrics.every(m=>m.countedAsDeliveredWork===true),true);
+
+ // 20 concurrent candidates in one batch: 19 merge after 60s, 20th merges after 180s.
+ // Per-PR eligibleToMergeMs p95 is 60s, but true elapsed batchDrainMs is 180s (reported as SLO miss without blocking M01 exit evidence).
+ const twentyCycles=Array.from({length:20},(_,idx)=>{
+  const n=idx+1;
+  const mergeOffset=n===20?180_000:60_000;
+  return dossierCycle(n,{
+   batchId:'shared-batch-1',
+   batchStartedAt:100_000,
+   issueReadyAt:10_000,
+   prCreatedAt:50_000,
+   eligibleAt:100_000,
+   prMergedAt:100_000+mergeOffset,
+   mainVerifiedAt:100_000+mergeOffset+5_000,
+   acceptanceVerifiedAt:100_000+mergeOffset+10_000,
+   automatedCiMs:30_000,
+   reviewFix:n===1,
+   parallelCandidate:n>=2
+  });
+ });
+ const slowTailBatch=evaluateDossier(dossierInput({cycles:twentyCycles}));
+ assert.equal(slowTailBatch.m01ExitEvidenceReady,true);
+ assert.equal(slowTailBatch.reason,'CUSTOMER_ONE_EXIT_EVIDENCE_READY_ONLY');
+ assert.equal(slowTailBatch.eligibleToMergeMs.p50Ms,60_000);
+ assert.equal(slowTailBatch.eligibleToMergeMs.p95Ms,60_000);
+ assert.equal(slowTailBatch.sloChecks.eligibleToMergeP95Met,true);
+ assert.equal(slowTailBatch.batchDrainMs,180_000);
+ assert.deepEqual(slowTailBatch.batchDrains,[{
+  batchId:'shared-batch-1',
+  cycleCount:20,
+  batchStartedAt:100_000,
+  finalMergedAt:280_000,
+  drainMs:180_000
+ }]);
+ assert.equal(slowTailBatch.sloChecks.batchDrainMet,false);
+ assert.equal(slowTailBatch.sloChecks.allInitialSlosMet,false);
+
+ // Staggered parallel batch + separate sequential batch
+ const multiBatch=evaluateDossier(dossierInput({
+  cycles:[
+   dossierCycle(1,{batchId:'wave-1',batchStartedAt:121_000,eligibleAt:121_000,prMergedAt:141_000,mainVerifiedAt:146_000,acceptanceVerifiedAt:150_000}),
+   dossierCycle(2,{batchId:'wave-2',batchStartedAt:250_000,eligibleAt:255_000,prMergedAt:340_000,mainVerifiedAt:345_000,acceptanceVerifiedAt:350_000,parallelCandidate:true}),
+   dossierCycle(3,{batchId:'wave-2',batchStartedAt:250_000,eligibleAt:245_000,prMergedAt:310_000,mainVerifiedAt:315_000,acceptanceVerifiedAt:320_000,parallelCandidate:true})
+  ]
+ }));
+ assert.equal(multiBatch.m01ExitEvidenceReady,true);
+ assert.equal(multiBatch.batchDrainMs,90_000);
+ assert.equal(multiBatch.batchDrains.length,2);
 
  const syntheticCohort=evaluateDossier(dossierInput({
   cycles:[1,2,3].map(n=>dossierCycle(n,{source:'synthetic'}))
@@ -411,13 +476,13 @@ test('Customer One dossier evaluates 10-prerequisite matrix, 3-cycle timestamp S
 
  const exceededDrainAndOutlier=evaluateDossier(dossierInput({
   cycles:[
-   dossierCycle(1,{issueReadyAt:0,prCreatedAt:600_001,eligibleAt:700_000,prMergedAt:820_001,mainVerifiedAt:900_000,acceptanceVerifiedAt:1_500_002,automatedCiMs:75_000}),
-   dossierCycle(2,{issueReadyAt:0,prCreatedAt:600_001,eligibleAt:700_000,prMergedAt:750_000,mainVerifiedAt:900_000,acceptanceVerifiedAt:1_500_002,automatedCiMs:75_000}),
-   dossierCycle(3,{issueReadyAt:0,prCreatedAt:600_001,eligibleAt:700_000,prMergedAt:760_000,mainVerifiedAt:900_000,acceptanceVerifiedAt:1_500_002,automatedCiMs:75_000})
+   dossierCycle(1,{issueReadyAt:0,prCreatedAt:600_001,eligibleAt:700_000,prMergedAt:820_001,mainVerifiedAt:1_500_002,acceptanceVerifiedAt:1_500_005,automatedCiMs:75_000}),
+   dossierCycle(2,{issueReadyAt:0,prCreatedAt:600_001,eligibleAt:700_000,prMergedAt:750_000,mainVerifiedAt:1_500_002,acceptanceVerifiedAt:1_500_005,automatedCiMs:75_000}),
+   dossierCycle(3,{issueReadyAt:0,prCreatedAt:600_001,eligibleAt:700_000,prMergedAt:760_000,mainVerifiedAt:1_500_002,acceptanceVerifiedAt:1_500_005,automatedCiMs:75_000})
   ]
  }));
- assert.equal(exceededDrainAndOutlier.m01ExitEvidenceReady,false);
- assert.equal(exceededDrainAndOutlier.reason,'BATCH_DRAIN_EXCEEDED');
+ assert.equal(exceededDrainAndOutlier.m01ExitEvidenceReady,true);
+ assert.equal(exceededDrainAndOutlier.reason,'CUSTOMER_ONE_EXIT_EVIDENCE_READY_ONLY');
  assert.equal(exceededDrainAndOutlier.batchDrainMs,120_001);
  assert.equal(exceededDrainAndOutlier.automatedCiP50Ms,75_000);
  assert.equal(exceededDrainAndOutlier.issueReadyToOutcomeMs.outlierOver25mCount,3);
@@ -428,38 +493,43 @@ test('Customer One dossier evaluates 10-prerequisite matrix, 3-cycle timestamp S
  assert.equal(exceededDrainAndOutlier.sloChecks.batchDrainMet,false);
  assert.equal(exceededDrainAndOutlier.sloChecks.allInitialSlosMet,false);
 
- const slowLatencyButValidDrain=evaluateDossier(dossierInput({
+ // PR-to-complete ends at verified main, so slow post-main issue acceptance does not falsely fail prToCompleteMs.
+ const acceptanceDelayAfterFastMain=evaluateDossier(dossierInput({
   cycles:[
-   dossierCycle(1,{issueReadyAt:0,prCreatedAt:700_000,eligibleAt:800_000,prMergedAt:850_000,mainVerifiedAt:900_000,acceptanceVerifiedAt:1_700_000,automatedCiMs:75_000}),
-   dossierCycle(2,{issueReadyAt:0,prCreatedAt:700_000,eligibleAt:800_000,prMergedAt:850_000,mainVerifiedAt:900_000,acceptanceVerifiedAt:1_700_000,automatedCiMs:75_000}),
-   dossierCycle(3,{issueReadyAt:0,prCreatedAt:700_000,eligibleAt:800_000,prMergedAt:850_000,mainVerifiedAt:900_000,acceptanceVerifiedAt:1_700_000,automatedCiMs:75_000})
+   dossierCycle(1,{issueReadyAt:0,prCreatedAt:100_000,eligibleAt:200_000,prMergedAt:250_000,mainVerifiedAt:300_000,acceptanceVerifiedAt:1_500_001,automatedCiMs:40_000}),
+   dossierCycle(2,{issueReadyAt:0,prCreatedAt:100_000,eligibleAt:200_000,prMergedAt:250_000,mainVerifiedAt:300_000,acceptanceVerifiedAt:1_500_001,automatedCiMs:40_000}),
+   dossierCycle(3,{issueReadyAt:0,prCreatedAt:100_000,eligibleAt:200_000,prMergedAt:250_000,mainVerifiedAt:300_000,acceptanceVerifiedAt:1_500_001,automatedCiMs:40_000})
   ]
  }));
- assert.equal(slowLatencyButValidDrain.m01ExitEvidenceReady,true);
- assert.equal(slowLatencyButValidDrain.sloChecks.allInitialSlosMet,false);
+ assert.equal(acceptanceDelayAfterFastMain.prToCompleteMs.p50Ms,200_000);
+ assert.equal(acceptanceDelayAfterFastMain.sloChecks.issueReadyToPrP50Met,true);
+ assert.equal(acceptanceDelayAfterFastMain.sloChecks.prToCompleteP50Met,true);
+ assert.equal(acceptanceDelayAfterFastMain.sloChecks.issueReadyToOutcomeP50Met,false);
+ assert.equal(acceptanceDelayAfterFastMain.sloChecks.allInitialSlosMet,false);
 
  const prToCompleteMissOnly=evaluateDossier(dossierInput({
   cycles:[
-   dossierCycle(1,{issueReadyAt:0,prCreatedAt:100_000,eligibleAt:200_000,prMergedAt:250_000,mainVerifiedAt:300_000,acceptanceVerifiedAt:1_050_000,automatedCiMs:40_000}),
-   dossierCycle(2,{issueReadyAt:0,prCreatedAt:100_000,eligibleAt:200_000,prMergedAt:250_000,mainVerifiedAt:300_000,acceptanceVerifiedAt:1_050_000,automatedCiMs:40_000}),
-   dossierCycle(3,{issueReadyAt:0,prCreatedAt:100_000,eligibleAt:200_000,prMergedAt:250_000,mainVerifiedAt:300_000,acceptanceVerifiedAt:1_050_000,automatedCiMs:40_000})
+   dossierCycle(1,{issueReadyAt:0,prCreatedAt:100_000,eligibleAt:900_000,prMergedAt:950_000,mainVerifiedAt:1_000_001,acceptanceVerifiedAt:1_100_000,automatedCiMs:40_000}),
+   dossierCycle(2,{issueReadyAt:0,prCreatedAt:100_000,eligibleAt:900_000,prMergedAt:950_000,mainVerifiedAt:1_000_001,acceptanceVerifiedAt:1_100_000,automatedCiMs:40_000}),
+   dossierCycle(3,{issueReadyAt:0,prCreatedAt:100_000,eligibleAt:900_000,prMergedAt:950_000,mainVerifiedAt:1_000_001,acceptanceVerifiedAt:1_100_000,automatedCiMs:40_000})
   ]
  }));
+ assert.equal(prToCompleteMissOnly.prToCompleteMs.p50Ms,900_001);
  assert.equal(prToCompleteMissOnly.sloChecks.issueReadyToPrP50Met,true);
  assert.equal(prToCompleteMissOnly.sloChecks.prToCompleteP50Met,false);
+ assert.equal(prToCompleteMissOnly.sloChecks.issueReadyToOutcomeP50Met,true);
  assert.equal(prToCompleteMissOnly.sloChecks.allInitialSlosMet,false);
 
- const outcomeMissOnly=evaluateDossier(dossierInput({
+ const eligibleToMergeP95MissOnly=evaluateDossier(dossierInput({
   cycles:[
-   dossierCycle(1,{issueReadyAt:0,prCreatedAt:600_000,eligibleAt:700_000,prMergedAt:750_000,mainVerifiedAt:800_000,acceptanceVerifiedAt:1_500_001,automatedCiMs:40_000}),
-   dossierCycle(2,{issueReadyAt:0,prCreatedAt:600_001,eligibleAt:700_000,prMergedAt:750_000,mainVerifiedAt:800_000,acceptanceVerifiedAt:1_500_001,automatedCiMs:40_000}),
-   dossierCycle(3,{issueReadyAt:0,prCreatedAt:100_000,eligibleAt:120_000,prMergedAt:150_000,mainVerifiedAt:180_000,acceptanceVerifiedAt:200_000,automatedCiMs:40_000})
+   dossierCycle(1,{issueReadyAt:0,prCreatedAt:50_000,eligibleAt:100_000,prMergedAt:220_001,mainVerifiedAt:230_000,acceptanceVerifiedAt:240_000,automatedCiMs:40_000}),
+   dossierCycle(2,{issueReadyAt:0,prCreatedAt:50_000,eligibleAt:300_000,prMergedAt:320_000,mainVerifiedAt:330_000,acceptanceVerifiedAt:340_000,automatedCiMs:40_000}),
+   dossierCycle(3,{issueReadyAt:0,prCreatedAt:50_000,eligibleAt:400_000,prMergedAt:420_000,mainVerifiedAt:430_000,acceptanceVerifiedAt:440_000,automatedCiMs:40_000})
   ]
  }));
- assert.equal(outcomeMissOnly.sloChecks.issueReadyToPrP50Met,true);
- assert.equal(outcomeMissOnly.sloChecks.prToCompleteP50Met,true);
- assert.equal(outcomeMissOnly.sloChecks.issueReadyToOutcomeP50Met,false);
- assert.equal(outcomeMissOnly.sloChecks.allInitialSlosMet,false);
+ assert.equal(eligibleToMergeP95MissOnly.sloChecks.issueReadyToOutcomeP50Met,true);
+ assert.equal(eligibleToMergeP95MissOnly.sloChecks.eligibleToMergeP95Met,false);
+ assert.equal(eligibleToMergeP95MissOnly.sloChecks.allInitialSlosMet,false);
 
  const ciMissOnly=evaluateDossier(dossierInput({
   cycles:[
@@ -468,7 +538,7 @@ test('Customer One dossier evaluates 10-prerequisite matrix, 3-cycle timestamp S
    dossierCycle(3,{automatedCiMs:75_000})
   ]
  }));
- assert.equal(ciMissOnly.sloChecks.issueReadyToOutcomeP50Met,true);
+ assert.equal(ciMissOnly.sloChecks.eligibleToMergeP95Met,true);
  assert.equal(ciMissOnly.sloChecks.automatedCiP50Met,false);
  assert.equal(ciMissOnly.sloChecks.allInitialSlosMet,false);
 });
@@ -571,10 +641,11 @@ test('Customer One dossier fails closed on proxies, getters, custom prototypes, 
   {reviewedHead:'b'.repeat(40)}
  ])assert.equal(evaluateDossier(dossierInput({cycles:[dossierCycle(1,badId),dossierCycle(2),dossierCycle(3)]})).reason,'IDENTITY_OR_REVIEW_UNKNOWN');
 
+ const dupHead=(2).toString(16).padStart(40,'0');
  for(const dup of [
   {issue:2},
   {pr:202},
-  {head:'2'.repeat(40),reviewedHead:'2'.repeat(40),coverageReports:reports('2'.repeat(40))}
+  {head:dupHead,reviewedHead:dupHead,coverageReports:reports(dupHead)}
  ])assert.equal(evaluateDossier(dossierInput({cycles:[dossierCycle(1,dup),dossierCycle(2),dossierCycle(3)]})).reason,'DUPLICATE_CYCLE');
 
  for(const badSafety of [
@@ -595,13 +666,18 @@ test('Customer One dossier fails closed on proxies, getters, custom prototypes, 
   {humanInterventions:null}
  ])assert.equal(evaluateDossier(dossierInput({cycles:[dossierCycle(1,badSafety),dossierCycle(2),dossierCycle(3)]})).reason,'SAFETY_OR_COST_UNKNOWN');
 
- const badCovReports=inventory.map(component=>({component,head:'1'.repeat(40),lines:97,lineTotal:100,branches:19,branchTotal:20}));
+ const firstHead=(1).toString(16).padStart(40,'0');
+ const badCovReports=inventory.map(component=>({component,head:firstHead,lines:97,lineTotal:100,branches:19,branchTotal:20}));
  assert.equal(evaluateDossier(dossierInput({
   cycles:[dossierCycle(1,{coverageReports:badCovReports}),dossierCycle(2),dossierCycle(3)]
  })).reason,'COVERAGE');
  assert.equal(evaluateDossier(dossierInput({lineMin:99})).reason,'COVERAGE');
 
  for(const badTiming of [
+  {batchId:null},
+  {batchId:''},
+  {batchId:'bad space'},
+  {batchStartedAt:-1},
   {issueReadyAt:-1},
   {automatedCiMs:-1},
   {issueReadyAt:200_000},
@@ -612,6 +688,36 @@ test('Customer One dossier fails closed on proxies, getters, custom prototypes, 
   {reviewFix:'true'},
   {parallelCandidate:null}
  ])assert.equal(evaluateDossier(dossierInput({cycles:[dossierCycle(1,badTiming),dossierCycle(2),dossierCycle(3)]})).reason,'TIMING_OR_SCENARIO_UNKNOWN');
+
+ // Mismatched batchStartedAt, batchStartedAt outside [minEligibleAt, minMergedAt], or disjoint waves reusing one batchId fail closed.
+ assert.equal(evaluateDossier(dossierInput({
+  cycles:[
+   dossierCycle(1,{batchId:'shared',batchStartedAt:121_000}),
+   dossierCycle(2,{batchId:'shared',batchStartedAt:122_000}),
+   dossierCycle(3)
+  ]
+ })).reason,'BATCH_BOUNDARY_UNKNOWN');
+ assert.equal(evaluateDossier(dossierInput({
+  cycles:[
+   dossierCycle(1,{batchId:'b1',batchStartedAt:120_999,eligibleAt:121_000}),
+   dossierCycle(2),
+   dossierCycle(3)
+  ]
+ })).reason,'BATCH_BOUNDARY_UNKNOWN');
+ assert.equal(evaluateDossier(dossierInput({
+  cycles:[
+   dossierCycle(1,{batchId:'b1',batchStartedAt:131_001,eligibleAt:121_000,prMergedAt:131_000}),
+   dossierCycle(2),
+   dossierCycle(3)
+  ]
+ })).reason,'BATCH_BOUNDARY_UNKNOWN');
+ assert.equal(evaluateDossier(dossierInput({
+  cycles:[
+   dossierCycle(1,{batchId:'disjoint',batchStartedAt:121_000,eligibleAt:121_000,prMergedAt:131_000}),
+   dossierCycle(2,{batchId:'disjoint',batchStartedAt:121_000,eligibleAt:241_000,prMergedAt:261_000}),
+   dossierCycle(3)
+  ]
+ })).reason,'BATCH_BOUNDARY_UNKNOWN');
 
  assert.equal(traps,0);
 });

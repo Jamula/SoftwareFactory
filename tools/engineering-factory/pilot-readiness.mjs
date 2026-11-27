@@ -125,6 +125,8 @@ export const M01_CUSTOMER_ONE_SLOS=Object.freeze({
  issueReadyToOutcomeInitialMaxMs:1_500_000,
  issueReadyToOutcomeStretchMaxMs:420_000,
  outlierOutcomeThresholdMs:1_500_000,
+ eligibleToMergeInitialMaxMs:120_000,
+ eligibleToMergeStretchMaxMs:30_000,
  automatedCiP50InitialExclusiveMaxMs:75_000,
  automatedCiP50StretchMaxMs:30_000,
  batchDrainMaxMs:120_000,
@@ -155,6 +157,8 @@ const dossierCycleKeys=[
  'pr',
  'head',
  'reviewedHead',
+ 'batchId',
+ 'batchStartedAt',
  'reviewIndependent',
  'checksPassed',
  'securityClear',
@@ -182,6 +186,7 @@ const dossierCycleKeys=[
 
 const ms=x=>Number.isSafeInteger(x)&&x>=0&&!Object.is(x,-0);
 const componentName=x=>typeof x==='string'&&/^[a-z0-9][a-z0-9._-]{0,79}$/.test(x);
+const batchToken=x=>typeof x==='string'&&/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,63}$/.test(x);
 const ownEnumerableData=(x,p)=>{
  const d=Object.getOwnPropertyDescriptor(x,p);
  return d!==undefined&&d.enumerable===true&&Object.hasOwn(d,'value');
@@ -210,6 +215,8 @@ const EMPTY_SLO_CHECKS=Object.freeze({
  prToCompleteP95Met:null,
  issueReadyToOutcomeP50Met:null,
  issueReadyToOutcomeP95Met:null,
+ eligibleToMergeP50Met:null,
+ eligibleToMergeP95Met:null,
  automatedCiP50Met:null,
  automatedCiStretchMet:null,
  batchDrainMet:null,
@@ -255,9 +262,11 @@ const dossierDeny=(reason,verifiedPrerequisites,blockingPrerequisites)=>Object.f
  issueReadyToPrMs:null,
  prToCompleteMs:null,
  issueReadyToOutcomeMs:null,
+ eligibleToMergeMs:null,
  automatedCiP50Ms:null,
  automatedCiP95Ms:null,
  batchDrainMs:null,
+ batchDrains:Object.freeze([]),
  humanInterventions:null,
  sloChecks:EMPTY_SLO_CHECKS,
  cycleMetrics:Object.freeze([])
@@ -292,7 +301,7 @@ export function evaluateCustomerOnePilotReadinessDossier(input){
   return dossierDeny('CYCLE_INVENTORY_UNKNOWN',verifiedPrerequisites,blockingPrerequisites);
 
  const coveragePolicy={repository:'Jamula/SoftwareFactory',lineMin:input.lineMin,branchMin:input.branchMin};
- const issues=new Set(),prs=new Set(),heads=new Set();
+ const issues=new Set(),prs=new Set(),heads=new Set(),batches=new Map();
  const readyToPrList=[],prToCompleteList=[],readyToOutcomeList=[],ciList=[],eligibleToMergeList=[],cycleMetrics=[];
  let cycleSource=null,reviewFix=false,parallelCandidate=false;
  let totalHumanInterventions=0,deliveredCycleCount=0,syntheticCycleCount=0;
@@ -317,11 +326,25 @@ export function evaluateCustomerOnePilotReadinessDossier(input){
    return dossierDeny('SAFETY_OR_COST_UNKNOWN',verifiedPrerequisites,blockingPrerequisites);
   if(!coverageEvidence(c.head,input.expectedComponents,c.coverageReports,coveragePolicy).valid)
    return dossierDeny('COVERAGE',verifiedPrerequisites,blockingPrerequisites);
-  if(![c.issueReadyAt,c.prCreatedAt,c.eligibleAt,c.prMergedAt,c.mainVerifiedAt,c.acceptanceVerifiedAt,c.automatedCiMs].every(ms)||
+  if(!batchToken(c.batchId)||
+     ![c.batchStartedAt,c.issueReadyAt,c.prCreatedAt,c.eligibleAt,c.prMergedAt,c.mainVerifiedAt,c.acceptanceVerifiedAt,c.automatedCiMs].every(ms)||
      c.issueReadyAt>c.prCreatedAt||c.prCreatedAt>c.eligibleAt||c.eligibleAt>c.prMergedAt||
      c.prMergedAt>c.mainVerifiedAt||c.mainVerifiedAt>c.acceptanceVerifiedAt||
      typeof c.reviewFix!=='boolean'||typeof c.parallelCandidate!=='boolean')
    return dossierDeny('TIMING_OR_SCENARIO_UNKNOWN',verifiedPrerequisites,blockingPrerequisites);
+
+  const existingBatch=batches.get(c.batchId);
+  if(existingBatch===undefined){
+   batches.set(c.batchId,{
+    batchId:c.batchId,
+    batchStartedAt:c.batchStartedAt,
+    members:[{eligibleAt:c.eligibleAt,prMergedAt:c.prMergedAt}]
+   });
+  }else{
+   if(existingBatch.batchStartedAt!==c.batchStartedAt)
+    return dossierDeny('BATCH_BOUNDARY_UNKNOWN',verifiedPrerequisites,blockingPrerequisites);
+   existingBatch.members.push({eligibleAt:c.eligibleAt,prMergedAt:c.prMergedAt});
+  }
 
   reviewFix ||= c.reviewFix;
   parallelCandidate ||= c.parallelCandidate;
@@ -334,7 +357,7 @@ export function evaluateCustomerOnePilotReadinessDossier(input){
   const cyclePrCreatedToMergeMs=c.prMergedAt-c.prCreatedAt;
   const cycleEligibleToMergeMs=c.prMergedAt-c.eligibleAt;
   const cycleMergeToMainVerifiedMs=c.mainVerifiedAt-c.prMergedAt;
-  const cyclePrToCompleteMs=c.acceptanceVerifiedAt-c.prCreatedAt;
+  const cyclePrToCompleteMs=c.mainVerifiedAt-c.prCreatedAt;
   const cycleReadyToOutcomeMs=c.acceptanceVerifiedAt-c.issueReadyAt;
   readyToPrList.push(cycleReadyToPrMs);
   prToCompleteList.push(cyclePrToCompleteMs);
@@ -345,6 +368,8 @@ export function evaluateCustomerOnePilotReadinessDossier(input){
    issue:c.issue,
    pr:c.pr,
    head:c.head,
+   batchId:c.batchId,
+   batchStartedAt:c.batchStartedAt,
    source:c.source,
    countedAsDeliveredWork,
    issueReadyToPrMs:cycleReadyToPrMs,
@@ -358,11 +383,34 @@ export function evaluateCustomerOnePilotReadinessDossier(input){
   }));
  }
 
+ const batchDrains=[];
+ for(const batch of batches.values()){
+  const ordered=[...batch.members].sort((a,b)=>a.eligibleAt-b.eligibleAt||a.prMergedAt-b.prMergedAt);
+  const minEligibleAt=ordered[0].eligibleAt;
+  let minMergedAt=ordered[0].prMergedAt;
+  let finalMergedAt=ordered[0].prMergedAt;
+  for(let i=1;i<ordered.length;i++){
+   if(ordered[i].eligibleAt>finalMergedAt)
+    return dossierDeny('BATCH_BOUNDARY_UNKNOWN',verifiedPrerequisites,blockingPrerequisites);
+   minMergedAt=Math.min(minMergedAt,ordered[i].prMergedAt);
+   finalMergedAt=Math.max(finalMergedAt,ordered[i].prMergedAt);
+  }
+  if(batch.batchStartedAt<minEligibleAt||batch.batchStartedAt>minMergedAt)
+   return dossierDeny('BATCH_BOUNDARY_UNKNOWN',verifiedPrerequisites,blockingPrerequisites);
+  batchDrains.push(Object.freeze({
+   batchId:batch.batchId,
+   cycleCount:ordered.length,
+   batchStartedAt:batch.batchStartedAt,
+   finalMergedAt,
+   drainMs:finalMergedAt-batch.batchStartedAt
+  }));
+ }
+
  const stoppedOrUnenrolled=input.stop!==false||input.enrolled!==true;
  const pilotEntryReady=!stoppedOrUnenrolled&&blockingPrerequisites.length===0;
  const hasMinCycles=input.cycles.length>=M01_CUSTOMER_ONE_SLOS.minAcceptedCycles;
 
- let issueReadyToPrMs=null,prToCompleteMs=null,issueReadyToOutcomeMs=null;
+ let issueReadyToPrMs=null,prToCompleteMs=null,issueReadyToOutcomeMs=null,eligibleToMergeMs=null;
  let automatedCiP50Ms=null,automatedCiP95Ms=null,batchDrainMs=null;
  let sloChecks=EMPTY_SLO_CHECKS;
  const humanInterventions=input.cycles.length===0?null:totalHumanInterventions;
@@ -387,11 +435,15 @@ export function evaluateCustomerOnePilotReadinessDossier(input){
    ...outcomeSummary,
    outlierOver25mCount:readyToOutcomeList.filter(v=>v>M01_CUSTOMER_ONE_SLOS.outlierOutcomeThresholdMs).length
   });
+  eligibleToMergeMs=summarizeLatencySlo(
+   eligibleToMergeList,
+   M01_CUSTOMER_ONE_SLOS.eligibleToMergeInitialMaxMs,
+   M01_CUSTOMER_ONE_SLOS.eligibleToMergeStretchMaxMs
+  );
   const sortedCi=[...ciList].sort((a,b)=>a-b);
   automatedCiP50Ms=percentile(sortedCi,0.5);
   automatedCiP95Ms=percentile(sortedCi,0.95);
-  const sortedDrain=[...eligibleToMergeList].sort((a,b)=>a-b);
-  batchDrainMs=percentile(sortedDrain,0.95);
+  batchDrainMs=Math.max(...batchDrains.map(b=>b.drainMs));
 
   const automatedCiP50Met=automatedCiP50Ms<M01_CUSTOMER_ONE_SLOS.automatedCiP50InitialExclusiveMaxMs;
   const automatedCiStretchMet=automatedCiP50Ms<=M01_CUSTOMER_ONE_SLOS.automatedCiP50StretchMaxMs;
@@ -406,6 +458,8 @@ export function evaluateCustomerOnePilotReadinessDossier(input){
    prToCompleteP95Met:prToCompleteMs.p95MeetsInitial,
    issueReadyToOutcomeP50Met:issueReadyToOutcomeMs.p50MeetsInitial,
    issueReadyToOutcomeP95Met:issueReadyToOutcomeMs.p95MeetsInitial,
+   eligibleToMergeP50Met:eligibleToMergeMs.p50MeetsInitial,
+   eligibleToMergeP95Met:eligibleToMergeMs.p95MeetsInitial,
    automatedCiP50Met,
    automatedCiStretchMet,
    batchDrainMet,
@@ -415,6 +469,7 @@ export function evaluateCustomerOnePilotReadinessDossier(input){
     issueReadyToPrMs.p50MeetsInitial&&
     prToCompleteMs.p50MeetsInitial&&
     issueReadyToOutcomeMs.p50MeetsInitial&&
+    eligibleToMergeMs.p95MeetsInitial&&
     automatedCiP50Met&&
     batchDrainMet&&
     humanInterventionsMet
@@ -437,8 +492,6 @@ export function evaluateCustomerOnePilotReadinessDossier(input){
   reason='HUMAN_INTERVENTION_NONZERO';
  }else if(!reviewFix||!parallelCandidate){
   reason='SCENARIO_MISSING';
- }else if(batchDrainMs>M01_CUSTOMER_ONE_SLOS.batchDrainMaxMs){
-  reason='BATCH_DRAIN_EXCEEDED';
  }else{
   reason='CUSTOMER_ONE_EXIT_EVIDENCE_READY_ONLY';
   m01ExitEvidenceReady=true;
@@ -463,9 +516,11 @@ export function evaluateCustomerOnePilotReadinessDossier(input){
   issueReadyToPrMs,
   prToCompleteMs,
   issueReadyToOutcomeMs,
+  eligibleToMergeMs,
   automatedCiP50Ms,
   automatedCiP95Ms,
   batchDrainMs,
+  batchDrains:Object.freeze(batchDrains),
   humanInterventions,
   sloChecks,
   cycleMetrics:Object.freeze(cycleMetrics)
