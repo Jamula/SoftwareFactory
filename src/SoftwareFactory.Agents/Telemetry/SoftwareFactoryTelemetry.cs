@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using System.Diagnostics.Metrics;
+using Microsoft.Extensions.Logging;
 using SoftwareFactory.Agents.Contracts;
 
 namespace SoftwareFactory.Agents.Telemetry;
@@ -11,6 +13,15 @@ public static class SoftwareFactoryTelemetry
 
     public static readonly ActivitySource WorkflowsActivitySource = new(WorkflowsSourceName, TelemetryVersion);
     public static readonly ActivitySource AgentsActivitySource = new(AgentsSourceName, TelemetryVersion);
+    public static readonly Meter AgentsMeter = new(AgentsSourceName, TelemetryVersion);
+
+    private static readonly Counter<long> StageCounter = AgentsMeter.CreateCounter<long>("sf.agent.stage.count");
+    private static readonly Histogram<double> StageDurationHistogram = AgentsMeter.CreateHistogram<double>("sf.agent.stage.duration", unit: "ms");
+    private static readonly EventId StageCompletedEventId = new(1001, "sf.agent.stage.completed");
+    private static ILogger? s_stageLogger;
+
+    internal static void AttachStageLogger(ILogger? logger) =>
+        Volatile.Write(ref s_stageLogger, logger);
 
     private static readonly HashSet<string> AllowedStages = new(StringComparer.Ordinal)
     {
@@ -63,15 +74,44 @@ public static class SoftwareFactoryTelemetry
 
     public static void SetStageResult(Activity? activity, string outcome, string reason)
     {
+        string sanitizedOutcome = SanitizeOutcome(outcome);
+        string sanitizedReason = SanitizeReasonCode(reason);
+        string stage = activity?.GetTagItem("sf.stage") as string ?? "unknown";
+
+        var metricTags = new TagList
+        {
+            { "stage", stage },
+            { "outcome", sanitizedOutcome },
+            { "reason", sanitizedReason }
+        };
+        StageCounter.Add(1L, metricTags);
+
         if (activity is null)
         {
             return;
         }
 
-        string sanitizedOutcome = SanitizeOutcome(outcome);
         activity.SetTag("sf.outcome", sanitizedOutcome);
-        activity.SetTag("sf.reason", SanitizeReasonCode(reason));
+        activity.SetTag("sf.reason", sanitizedReason);
         activity.SetStatus(sanitizedOutcome == "blocked" ? ActivityStatusCode.Error : ActivityStatusCode.Ok);
+        StageDurationHistogram.Record(Math.Max(0.0, activity.Duration.TotalMilliseconds), metricTags);
+
+        ILogger? logger = Volatile.Read(ref s_stageLogger);
+        if (logger is not null)
+        {
+            var structuredState = new KeyValuePair<string, object?>[]
+            {
+                new("stage", stage),
+                new("outcome", sanitizedOutcome),
+                new("reason", sanitizedReason)
+            };
+            logger.Log(
+                LogLevel.Information,
+                StageCompletedEventId,
+                structuredState,
+                exception: null,
+                static (_, _) => "sf.agent.stage.completed");
+        }
     }
 
     public static string SanitizeStage(string? stage) =>

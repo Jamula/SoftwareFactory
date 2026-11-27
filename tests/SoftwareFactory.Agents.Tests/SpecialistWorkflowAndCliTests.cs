@@ -96,7 +96,7 @@ public sealed class SpecialistWorkflowAndCliTests
         Assert.Equal(0, nullContractReceipt.Invocations.CoderInvocations);
 
         // Planner returns an out-of-lane path:
-        using var roguePlannerClient = new CustomStubChatClient("{\"Role\":\"planner\",\"CandidateRepositoryId\":1471342715,\"ProposedPaths\":[\"docs/escape.md\"],\"LineCoveragePct\":99,\"BranchCoveragePct\":98,\"TestsPassed\":true,\"SecurityClear\":true,\"ReviewClear\":true,\"Repairable\":false,\"ReasonCode\":\"STAGE_OK\"}");
+        using var roguePlannerClient = new CustomOfflineStubChatClient("{\"Role\":\"planner\",\"CandidateRepositoryId\":1471342715,\"ProposedPaths\":[\"docs/escape.md\"],\"LineCoveragePct\":99,\"BranchCoveragePct\":98,\"TestsPassed\":true,\"SecurityClear\":true,\"ReviewClear\":true,\"Repairable\":false,\"ReasonCode\":\"STAGE_OK\"}");
         WorkItemContract contract = ContractAndOwnershipTests.ValidFactoryContract();
         WorkflowExecutionReceipt roguePlan = await SpecialistWorkflowEngine.ExecuteAsync(
             new WorkItemEnvelope { Contract = contract, TrustedRepositoryId = contract.RepositoryId },
@@ -106,7 +106,7 @@ public sealed class SpecialistWorkflowAndCliTests
         Assert.Equal(0, roguePlan.Invocations.CoderInvocations);
 
         // Null literal specialist JSON fails closed:
-        using var nullReplyClient = new CustomStubChatClient("null");
+        using var nullReplyClient = new CustomOfflineStubChatClient("null");
         await Assert.ThrowsAsync<InvalidOperationException>(async () =>
             await SpecialistWorkflowEngine.ExecuteAsync(
                 new WorkItemEnvelope { Contract = contract, TrustedRepositoryId = contract.RepositoryId },
@@ -130,6 +130,17 @@ public sealed class SpecialistWorkflowAndCliTests
             var writeStore = new IntegrityVerifiedJsonCheckpointStore(checkpointDir, binding, contract.LaneId);
             using var initialClient = new DeterministicSyntheticChatClient(SyntheticScenario.CleanPassOnFirstIteration);
 
+            WorkItemContract staleContract = ContractAndOwnershipTests.ValidFactoryContract(
+                headSha: "1111111111111111111111111111111111111111");
+            Assert.Equal(
+                "CHECKPOINT_CONTRACT_BINDING_MISMATCH",
+                (await Assert.ThrowsAsync<CheckpointIntegrityException>(async () =>
+                    await SpecialistWorkflowEngine.ExecuteAsync(
+                        new WorkItemEnvelope { Contract = staleContract, TrustedRepositoryId = staleContract.RepositoryId },
+                        initialClient,
+                        writeStore,
+                        sessionId: "stale-attempt"))).ReasonCode);
+
             WorkflowExecutionReceipt fullReceipt = await SpecialistWorkflowEngine.ExecuteAsync(
                 new WorkItemEnvelope { Contract = contract, TrustedRepositoryId = contract.RepositoryId },
                 initialClient,
@@ -141,7 +152,6 @@ public sealed class SpecialistWorkflowAndCliTests
             CheckpointInfo[] checkpoints = (await readStore.RetrieveIndexAsync("resume-session")).ToArray();
             Assert.True(checkpoints.Length >= 3);
 
-            // Resume from checkpoint[1] (after Planner + Coder completed) in a fresh workflow instance:
             using var resumeClient = new DeterministicSyntheticChatClient(SyntheticScenario.CleanPassOnFirstIteration);
             WorkflowExecutionReceipt resumed = await SpecialistWorkflowEngine.ResumeFromCheckpointAsync(
                 checkpoints[1],
@@ -154,7 +164,18 @@ public sealed class SpecialistWorkflowAndCliTests
             Assert.Equal(1, resumed.Invocations.TestAndCoverageInvocations);
             Assert.Equal(1, resumed.Invocations.SecurityAndReviewInvocations);
 
-            // Tampering with checkpoint[1] blocks resumption fail-closed:
+            Assert.Equal(
+                "CHECKPOINT_CONTRACT_BINDING_MISMATCH",
+                Assert.Throws<CheckpointIntegrityException>(() =>
+                    SpecialistWorkflowEngine.VerifyDecisionMatchesBinding(
+                        resumed.Decision,
+                        new CheckpointBinding
+                        {
+                            RepositoryId = contract.RepositoryId,
+                            IssueNumber = 999,
+                            HeadSha = contract.HeadSha
+                        })).ReasonCode);
+
             string cpFile = Path.Combine(checkpointDir, "resume-session", $"{checkpoints[1].CheckpointId}.checkpoint.json");
             string raw = await File.ReadAllTextAsync(cpFile, Encoding.UTF8);
             await File.WriteAllTextAsync(cpFile, raw.Replace("\"Sequence\":2", "\"Sequence\":99", StringComparison.Ordinal), Encoding.UTF8);
@@ -182,6 +203,13 @@ public sealed class SpecialistWorkflowAndCliTests
         await Assert.ThrowsAsync<ArgumentOutOfRangeException>(async () =>
             await ThroughputBenchmarkRunner.SimulateLogicalLanesAsync(12, 13));
 
+        LogicalLaneSimulationResult sim25 = await ThroughputBenchmarkRunner.SimulateLogicalLanesAsync(25, 8);
+        Assert.Equal(25, sim25.LogicalLanes);
+        Assert.Equal(8, sim25.ConfiguredWorkerCap);
+        Assert.InRange(sim25.ObservedPeakConcurrency, 1, 8);
+        Assert.Equal(4, sim25.ExecutedBatches);
+        Assert.Equal(25, sim25.AcceptedLogicalUnits);
+
         var validCohort = new CohortSampleInput
         {
             TargetMultiplier = 10,
@@ -199,7 +227,12 @@ public sealed class SpecialistWorkflowAndCliTests
             IncrementalUnapprovedSpendUsd = 0.0
         };
 
-        Assert.Equal("COHORT_IMPROVEMENT_VERIFIED", ThroughputBenchmarkRunner.EvaluateCohortComparison(validCohort).ReasonCode);
+        BenchmarkSuiteReport measuredReport = await ThroughputBenchmarkRunner.RunStandardBenchmarkAsync([validCohort]);
+        Assert.Single(measuredReport.MatchedCohorts);
+        Assert.True(measuredReport.MatchedCohorts[0].Verified);
+        Assert.False(measuredReport.MatchedCohorts[0].SyntheticIllustrativeOnly);
+        Assert.Equal("COHORT_IMPROVEMENT_VERIFIED", measuredReport.MatchedCohorts[0].ReasonCode);
+
         Assert.Equal("INVALID_COHORT_INPUT", ThroughputBenchmarkRunner.EvaluateCohortComparison(null).ReasonCode);
         Assert.Equal(
             "INVALID_COHORT_INPUT",
@@ -210,6 +243,18 @@ public sealed class SpecialistWorkflowAndCliTests
         Assert.Equal(
             "INVALID_COHORT_INPUT",
             ThroughputBenchmarkRunner.EvaluateCohortComparison(CloneCohort(validCohort, candidateAcceptedPerDay: -1.0)).ReasonCode);
+        Assert.Equal(
+            "INVALID_COHORT_INPUT",
+            ThroughputBenchmarkRunner.EvaluateCohortComparison(CloneCohort(validCohort, candidateLinePct: double.NaN)).ReasonCode);
+        Assert.Equal(
+            "INVALID_COHORT_INPUT",
+            ThroughputBenchmarkRunner.EvaluateCohortComparison(CloneCohort(validCohort, incrementalSpendUsd: double.NaN)).ReasonCode);
+        Assert.Equal(
+            "INVALID_COHORT_INPUT",
+            ThroughputBenchmarkRunner.EvaluateCohortComparison(CloneCohort(
+                validCohort,
+                baselineAcceptedPerDay: double.Epsilon,
+                candidateAcceptedPerDay: double.MaxValue)).ReasonCode);
         Assert.Equal(
             "MIN_COMPARABLE_UNITS_REQUIRED",
             ThroughputBenchmarkRunner.EvaluateCohortComparison(CloneCohort(validCohort, candidateComparableUnits: 4)).ReasonCode);
@@ -239,14 +284,15 @@ public sealed class SpecialistWorkflowAndCliTests
             CloneCohort(validCohort, candidateAcceptedPerDay: 10.0));
         Assert.True(belowStretch.Eligible);
         Assert.False(belowStretch.TargetAchieved);
+        Assert.False(belowStretch.Verified);
         Assert.Equal("TARGET_MULTIPLIER_NOT_REACHED", belowStretch.ReasonCode);
     }
 
     [Fact]
     public async Task CliAndProgramEntryPoint_ExecuteSmokeBenchmarkAndRejectInvalidFlags()
     {
-        var smokeOut = new StringWriter();
-        var smokeErr = new StringWriter();
+        using var smokeOut = new StringWriter();
+        using var smokeErr = new StringWriter();
         int smokeExit = await MafCli.RunAsync(["--smoke"], smokeOut, smokeErr);
         Assert.Equal(0, smokeExit);
         using JsonDocument smokeJson = JsonDocument.Parse(smokeOut.ToString());
@@ -254,20 +300,26 @@ public sealed class SpecialistWorkflowAndCliTests
         Assert.Equal("eligible", smokeJson.RootElement.GetProperty("outcome").GetString());
         Assert.Equal(0, smokeJson.RootElement.GetProperty("priorSuperstepsRepeated").GetInt32());
 
-        var benchOut = new StringWriter();
-        var benchErr = new StringWriter();
+        using var benchOut = new StringWriter();
+        using var benchErr = new StringWriter();
         int benchExit = await MafCli.RunAsync(["--benchmark"], benchOut, benchErr);
         Assert.Equal(0, benchExit);
         using JsonDocument benchJson = JsonDocument.Parse(benchOut.ToString());
         Assert.Equal(3, benchJson.RootElement.GetProperty("logicalLaneSimulations").GetArrayLength());
-        Assert.Equal(6, benchJson.RootElement.GetProperty("matchedCohorts").GetArrayLength());
+        JsonElement cohorts = benchJson.RootElement.GetProperty("matchedCohorts");
+        Assert.Equal(6, cohorts.GetArrayLength());
+        foreach (JsonElement cohort in cohorts.EnumerateArray())
+        {
+            Assert.Equal("UNMEASURED_BASELINE_REQUIRED", cohort.GetProperty("reasonCode").GetString());
+            Assert.False(cohort.GetProperty("verified").GetBoolean());
+            Assert.True(cohort.GetProperty("syntheticIllustrativeOnly").GetBoolean());
+        }
 
-        Assert.Equal(2, await MafCli.RunAsync(null, new StringWriter(), new StringWriter()));
-        Assert.Equal(2, await MafCli.RunAsync([], new StringWriter(), new StringWriter()));
-        Assert.Equal(2, await MafCli.RunAsync(["--smoke", "--benchmark"], new StringWriter(), new StringWriter()));
-        Assert.Equal(2, await MafCli.RunAsync(["--invalid"], new StringWriter(), new StringWriter()));
+        Assert.Equal(2, await RunCliCaptureExitAsync(null));
+        Assert.Equal(2, await RunCliCaptureExitAsync([]));
+        Assert.Equal(2, await RunCliCaptureExitAsync(["--smoke", "--benchmark"]));
+        Assert.Equal(2, await RunCliCaptureExitAsync(["--invalid"]));
 
-        // Exercise Program.cs entry point directly:
         var entryPoint = typeof(MafCli).Assembly.EntryPoint!;
         TextWriter originalErr = Console.Error;
         try
@@ -280,6 +332,13 @@ public sealed class SpecialistWorkflowAndCliTests
         {
             Console.SetError(originalErr);
         }
+    }
+
+    private static async Task<int> RunCliCaptureExitAsync(string[]? args)
+    {
+        using var stdout = new StringWriter();
+        using var stderr = new StringWriter();
+        return await MafCli.RunAsync(args, stdout, stderr);
     }
 
     private static CohortSampleInput CloneCohort(
@@ -312,7 +371,7 @@ public sealed class SpecialistWorkflowAndCliTests
             IncrementalUnapprovedSpendUsd = incrementalSpendUsd ?? source.IncrementalUnapprovedSpendUsd
         };
 
-    private sealed class CustomStubChatClient(string responseText) : IChatClient
+    private sealed class CustomOfflineStubChatClient(string responseText) : IOfflineSyntheticChatClient
     {
         public Task<ChatResponse> GetResponseAsync(
             IEnumerable<ChatMessage> messages,

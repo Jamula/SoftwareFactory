@@ -232,6 +232,52 @@ public sealed class ContractAndOwnershipTests
             "PROTECTED_CONTROL_PLANE_PATH_REJECTED",
             PathOwnershipGuard.ValidateCandidatePaths(contract, contract.RepositoryId, [".github/workflows/validate.yml"]).ReasonCode);
         Assert.Equal(
+            "PROTECTED_CONTROL_PLANE_PATH_REJECTED",
+            PathOwnershipGuard.ValidateCandidatePaths(contract, contract.RepositoryId, [".github/aw/reconcile.lock.yml"]).ReasonCode);
+
+        // Even when a lane explicitly owns .github/workflows or config, control-plane edits stay blocked without human sign-off:
+        WorkItemContract workflowsOwnedUnsigned = ValidFactoryContract(ownedPaths: [".github/workflows", "config"]);
+        Assert.Equal(
+            "PROTECTED_CONTROL_PLANE_PATH_REJECTED",
+            PathOwnershipGuard.ValidateCandidatePaths(
+                workflowsOwnedUnsigned,
+                workflowsOwnedUnsigned.RepositoryId,
+                [".github/workflows/validate.yml"]).ReasonCode);
+        Assert.Equal(
+            "PROTECTED_CONTROL_PLANE_PATH_REJECTED",
+            PathOwnershipGuard.ValidateCandidatePaths(
+                workflowsOwnedUnsigned,
+                workflowsOwnedUnsigned.RepositoryId,
+                ["config/examples/softwarefactory.json"]).ReasonCode);
+
+        // With explicit HumanOwnerSignOffVerified == true, owned protected paths pass while unowned paths still fail closed:
+        var workflowsOwnedSigned = new WorkItemContract
+        {
+            RepositoryId = WorkItemContract.SoftwareFactoryRepositoryId,
+            RepositorySlug = WorkItemContract.SoftwareFactoryRepositorySlug,
+            HeadSha = "c77612ec77612ec77612ec77612ec77612ec7761",
+            IssueNumber = 14,
+            LaneId = "workflows",
+            SpecialistRole = "security",
+            OwnedPaths = [".github/workflows"],
+            LineCoverageMin = 98.0,
+            BranchCoverageMin = 95.0,
+            MaxRepairIterations = 1,
+            TraceParent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+            HumanOwnerSignOffVerified = true
+        };
+        Assert.True(PathOwnershipGuard.ValidateCandidatePaths(
+            workflowsOwnedSigned,
+            workflowsOwnedSigned.RepositoryId,
+            [".github/workflows/validate.yml"]).IsValid);
+        Assert.Equal(
+            "OUT_OF_LANE_PATH_REJECTED",
+            PathOwnershipGuard.ValidateCandidatePaths(
+                workflowsOwnedSigned,
+                workflowsOwnedSigned.RepositoryId,
+                ["config/examples/softwarefactory.json"]).ReasonCode);
+
+        Assert.Equal(
             "OUT_OF_LANE_PATH_REJECTED",
             PathOwnershipGuard.ValidateCandidatePaths(contract, contract.RepositoryId, ["docs/ROADMAP.md"]).ReasonCode);
 

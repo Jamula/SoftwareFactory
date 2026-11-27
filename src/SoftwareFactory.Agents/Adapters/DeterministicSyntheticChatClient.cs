@@ -39,6 +39,10 @@ public sealed class SpecialistPromptRequest
     public required IReadOnlyList<string> OwnedPaths { get; init; }
 }
 
+public interface IOfflineSyntheticChatClient : IChatClient
+{
+}
+
 public sealed class CopilotAdapterOptions
 {
     public bool LiveExecutionAuthorized { get; init; }
@@ -71,6 +75,11 @@ public static class CopilotSpecialistAgentFactory
             throw new InvalidOperationException("SYNTHETIC_CHAT_CLIENT_REQUIRED");
         }
 
+        if (syntheticChatClient is not IOfflineSyntheticChatClient)
+        {
+            throw new InvalidOperationException("LIVE_PROVIDER_CLIENT_FORBIDDEN_IN_SHADOW");
+        }
+
         return new ChatClientAgent(
             syntheticChatClient,
             instructions: $"SoftwareFactory shadow specialist: {specialistName}",
@@ -79,7 +88,7 @@ public static class CopilotSpecialistAgentFactory
     }
 }
 
-public sealed class DeterministicSyntheticChatClient : IChatClient
+public sealed class DeterministicSyntheticChatClient : IOfflineSyntheticChatClient
 {
     private readonly SyntheticScenario _scenario;
     private readonly ChatClientMetadata _metadata;

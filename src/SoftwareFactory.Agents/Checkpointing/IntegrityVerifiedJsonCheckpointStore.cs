@@ -82,14 +82,17 @@ public sealed class IntegrityVerifiedJsonCheckpointStore : ICheckpointStore<Json
         Directory.CreateDirectory(_rootDirectory);
     }
 
+    public CheckpointBinding ExpectedBinding => _expectedBinding;
+
     public ValueTask<CheckpointInfo> CreateCheckpointAsync(string sessionId, JsonElement value, CheckpointInfo? parent = null)
     {
         ValidateToken(sessionId, "INVALID_SESSION_ID");
+        VerifyEmbeddedContractsMatchBinding(value, _expectedBinding);
 
         lock (_sync)
         {
             string sessionDir = GetVerifiedSessionDirectory(sessionId, createIfMissing: true);
-            long nextSequence = Directory.GetFiles(sessionDir, "*.checkpoint.json").Length + 1L;
+            long nextSequence = GetMaxExistingSequence(sessionDir) + 1L;
             string checkpointId = $"cp-{nextSequence:D6}";
             var info = new CheckpointInfo(sessionId, checkpointId);
 
@@ -123,7 +126,7 @@ public sealed class IntegrityVerifiedJsonCheckpointStore : ICheckpointStore<Json
             string tempFile = ResolveSafeFilePath(sessionDir, $"{checkpointId}.{Guid.NewGuid():N}.tmp");
             string serialized = JsonSerializer.Serialize(envelope);
             File.WriteAllText(tempFile, serialized, Encoding.UTF8);
-            File.Move(tempFile, targetFile, overwrite: true);
+            CommitCheckpointAtomicallyWithoutOverwrite(tempFile, targetFile);
 
             using var activity = SoftwareFactoryTelemetry.StartStageActivity(
                 stage: "checkpoint",
@@ -269,7 +272,106 @@ public sealed class IntegrityVerifiedJsonCheckpointStore : ICheckpointStore<Json
             throw new CheckpointIntegrityException("CHECKPOINT_DIGEST_MISMATCH", "Checkpoint SHA-256 integrity verification failed.");
         }
 
+        VerifyEmbeddedContractsMatchBinding(envelope.Payload, _expectedBinding);
         return envelope;
+    }
+
+    public static void VerifyContractMatchesBinding(
+        WorkItemContract? contract,
+        long trustedRepositoryId,
+        CheckpointBinding expectedBinding)
+    {
+        ArgumentNullException.ThrowIfNull(expectedBinding);
+        if (contract is null
+            || trustedRepositoryId != expectedBinding.RepositoryId
+            || contract.RepositoryId != expectedBinding.RepositoryId
+            || contract.IssueNumber != expectedBinding.IssueNumber
+            || !string.Equals(contract.HeadSha, expectedBinding.HeadSha, StringComparison.Ordinal))
+        {
+            throw new CheckpointIntegrityException(
+                "CHECKPOINT_CONTRACT_BINDING_MISMATCH",
+                "WorkItemContract identity does not match checkpoint store binding.");
+        }
+    }
+
+    public static void CommitCheckpointAtomicallyWithoutOverwrite(string tempFile, string targetFile)
+    {
+        try
+        {
+            File.Move(tempFile, targetFile, overwrite: false);
+        }
+        catch (IOException)
+        {
+            if (File.Exists(tempFile))
+            {
+                File.Delete(tempFile);
+            }
+
+            throw new CheckpointIntegrityException(
+                "CHECKPOINT_COLLISION_DETECTED",
+                "Committed checkpoint file already exists and is immutable.");
+        }
+    }
+
+    private static long GetMaxExistingSequence(string sessionDir)
+    {
+        long maxSequence = 0L;
+        foreach (string file in Directory.GetFiles(sessionDir, "*.checkpoint.json"))
+        {
+            string fileName = Path.GetFileName(file);
+            string stem = fileName[..^".checkpoint.json".Length];
+            if (!stem.StartsWith("cp-", StringComparison.Ordinal)
+                || !long.TryParse(stem.AsSpan(3), System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out long parsed)
+                || parsed <= 0L)
+            {
+                throw new CheckpointIntegrityException("MALFORMED_CHECKPOINT_FILENAME", "Existing checkpoint file name is invalid.");
+            }
+
+            if (parsed > maxSequence)
+            {
+                maxSequence = parsed;
+            }
+        }
+
+        return maxSequence;
+    }
+
+    private static void VerifyEmbeddedContractsMatchBinding(JsonElement element, CheckpointBinding expected)
+    {
+        if (element.ValueKind == JsonValueKind.Object)
+        {
+            if (element.TryGetProperty("RepositoryId", out JsonElement repoProp)
+                && element.TryGetProperty("IssueNumber", out JsonElement issueProp)
+                && element.TryGetProperty("HeadSha", out JsonElement headProp)
+                && repoProp.ValueKind == JsonValueKind.Number
+                && issueProp.ValueKind == JsonValueKind.Number
+                && headProp.ValueKind == JsonValueKind.String)
+            {
+                long repoId = repoProp.GetInt64();
+                int issueNumber = issueProp.GetInt32();
+                string? headSha = headProp.GetString();
+                if (repoId != expected.RepositoryId
+                    || issueNumber != expected.IssueNumber
+                    || !string.Equals(headSha, expected.HeadSha, StringComparison.Ordinal))
+                {
+                    throw new CheckpointIntegrityException(
+                        "CHECKPOINT_CONTRACT_BINDING_MISMATCH",
+                        "Serialized payload contract identity does not match checkpoint binding.");
+                }
+            }
+
+            foreach (JsonProperty prop in element.EnumerateObject())
+            {
+                VerifyEmbeddedContractsMatchBinding(prop.Value, expected);
+            }
+        }
+        else if (element.ValueKind == JsonValueKind.Array)
+        {
+            foreach (JsonElement item in element.EnumerateArray())
+            {
+                VerifyEmbeddedContractsMatchBinding(item, expected);
+            }
+        }
     }
 
     private string GetVerifiedSessionDirectory(string sessionId, bool createIfMissing)
@@ -320,13 +422,13 @@ public sealed class IntegrityVerifiedJsonCheckpointStore : ICheckpointStore<Json
 
     private static string CanonicalizeJson(JsonElement element)
     {
-        var buffer = new ArrayBufferWriterWrapper();
-        using (var writer = new Utf8JsonWriter(buffer.Stream, new JsonWriterOptions { Indented = false }))
+        using var stream = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(stream, new JsonWriterOptions { Indented = false }))
         {
             WriteCanonicalElement(writer, element);
         }
 
-        return Encoding.UTF8.GetString(buffer.Stream.ToArray());
+        return Encoding.UTF8.GetString(stream.ToArray());
     }
 
     private static void WriteCanonicalElement(Utf8JsonWriter writer, JsonElement element)
@@ -382,10 +484,5 @@ public sealed class IntegrityVerifiedJsonCheckpointStore : ICheckpointStore<Json
             $"v{schemaVersion}|seq={sequence}|session={sessionId}|cp={checkpointId}|ps={parentSessionId ?? ""}|pcp={parentCheckpointId ?? ""}|repo={binding.RepositoryId}|issue={binding.IssueNumber}|head={binding.HeadSha}|payload={canonicalPayload}");
         byte[] hash = SHA256.HashData(Encoding.UTF8.GetBytes(material));
         return Convert.ToHexStringLower(hash);
-    }
-
-    private sealed class ArrayBufferWriterWrapper
-    {
-        public MemoryStream Stream { get; } = new();
     }
 }

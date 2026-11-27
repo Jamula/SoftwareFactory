@@ -16,6 +16,7 @@ public sealed class WorkItemContract
     public required double BranchCoverageMin { get; init; }
     public required int MaxRepairIterations { get; init; }
     public required string TraceParent { get; init; }
+    public bool HumanOwnerSignOffVerified { get; init; }
 }
 
 public sealed class ContractValidationResult
@@ -41,8 +42,14 @@ public static class PathOwnershipGuard
     [
         ".github/workflows",
         "config",
+        "SECURITY.md",
+        "docs/POLICY.md",
+        "docs/ENGINEERING-STANDARDS.md",
         "tools/engineering-factory/core.mjs",
-        "tools/engineering-factory/protected-squash.mjs"
+        "tools/engineering-factory/protected-squash.mjs",
+        "tools/engineering-factory/platform-merge-gates.mjs",
+        "tools/engineering-factory/coverage-evidence.mjs",
+        "tools/engineering-factory/budget.mjs"
     ];
 
     public static ContractValidationResult ValidateContract(WorkItemContract? contract, long trustedRepositoryId)
@@ -152,11 +159,14 @@ public static class PathOwnershipGuard
                 return ContractValidationResult.Deny("DUPLICATE_CANDIDATE_PATH");
             }
 
+            if (IsProtectedControlPlanePath(candidate) && !contract.HumanOwnerSignOffVerified)
+            {
+                return ContractValidationResult.Deny("PROTECTED_CONTROL_PLANE_PATH_REJECTED");
+            }
+
             if (!IsOwnedByAny(candidate, contract.OwnedPaths))
             {
-                return IsProtectedControlPlanePath(candidate)
-                    ? ContractValidationResult.Deny("PROTECTED_CONTROL_PLANE_PATH_REJECTED")
-                    : ContractValidationResult.Deny("OUT_OF_LANE_PATH_REJECTED");
+                return ContractValidationResult.Deny("OUT_OF_LANE_PATH_REJECTED");
             }
         }
 
@@ -296,6 +306,11 @@ public static class PathOwnershipGuard
 
     private static bool IsProtectedControlPlanePath(string candidate)
     {
+        if (candidate.EndsWith(".lock.yml", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
         foreach (string prefix in ProtectedPrefixes)
         {
             if (PathsOverlap(candidate, prefix))

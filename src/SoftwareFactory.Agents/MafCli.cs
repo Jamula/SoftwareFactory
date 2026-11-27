@@ -4,6 +4,7 @@ using SoftwareFactory.Agents.Adapters;
 using SoftwareFactory.Agents.Benchmarks;
 using SoftwareFactory.Agents.Checkpointing;
 using SoftwareFactory.Agents.Contracts;
+using SoftwareFactory.Agents.Telemetry;
 using SoftwareFactory.Agents.Workflows;
 
 namespace SoftwareFactory.Agents;
@@ -36,10 +37,18 @@ public static class MafCli
         WriteIndented = false
     };
 
+    public static Task<int> RunAsync(
+        string[]? args,
+        TextWriter stdout,
+        TextWriter stderr,
+        CancellationToken cancellationToken = default) =>
+        RunAsync(args, stdout, stderr, environment: null, cancellationToken);
+
     public static async Task<int> RunAsync(
         string[]? args,
         TextWriter stdout,
         TextWriter stderr,
+        IReadOnlyDictionary<string, string?>? environment,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(stdout);
@@ -51,22 +60,40 @@ public static class MafCli
             return 2;
         }
 
-        if (string.Equals(args[0], "--smoke", StringComparison.Ordinal))
+        bool isSmoke = string.Equals(args[0], "--smoke", StringComparison.Ordinal);
+        bool isBenchmark = string.Equals(args[0], "--benchmark", StringComparison.Ordinal);
+        if (!isSmoke && !isBenchmark)
         {
-            SmokeReceipt receipt = await ExecuteSyntheticSmokeAsync(cancellationToken).ConfigureAwait(false);
-            await stdout.WriteLineAsync(JsonSerializer.Serialize(receipt, OutputJsonOptions)).ConfigureAwait(false);
-            return 0;
+            await stderr.WriteLineAsync("{\"error\":\"UNKNOWN_CLI_FLAG\",\"expected\":\"--smoke|--benchmark\"}").ConfigureAwait(false);
+            return 2;
         }
 
-        if (string.Equals(args[0], "--benchmark", StringComparison.Ordinal))
+        LocalOtlpRuntime telemetry;
+        try
         {
-            BenchmarkSuiteReport report = await ThroughputBenchmarkRunner.RunStandardBenchmarkAsync(cancellationToken).ConfigureAwait(false);
+            telemetry = LocalOtlpBootstrap.StartFromEnvironment(environment);
+        }
+        catch (LocalOtlpConfigurationException ex)
+        {
+            await stderr.WriteLineAsync($"{{\"error\":\"INVALID_LOCAL_OTLP_CONFIG\",\"reason\":\"{ex.ReasonCode}\"}}").ConfigureAwait(false);
+            return 2;
+        }
+
+        using (telemetry)
+        {
+            if (isSmoke)
+            {
+                SmokeReceipt receipt = await ExecuteSyntheticSmokeAsync(cancellationToken).ConfigureAwait(false);
+                await stdout.WriteLineAsync(JsonSerializer.Serialize(receipt, OutputJsonOptions)).ConfigureAwait(false);
+                return 0;
+            }
+
+            BenchmarkSuiteReport report = await ThroughputBenchmarkRunner.RunStandardBenchmarkAsync(
+                measuredCohortInputs: null,
+                cancellationToken: cancellationToken).ConfigureAwait(false);
             await stdout.WriteLineAsync(JsonSerializer.Serialize(report, OutputJsonOptions)).ConfigureAwait(false);
             return 0;
         }
-
-        await stderr.WriteLineAsync("{\"error\":\"UNKNOWN_CLI_FLAG\",\"expected\":\"--smoke|--benchmark\"}").ConfigureAwait(false);
-        return 2;
     }
 
     public static async Task<SmokeReceipt> ExecuteSyntheticSmokeAsync(CancellationToken cancellationToken = default)

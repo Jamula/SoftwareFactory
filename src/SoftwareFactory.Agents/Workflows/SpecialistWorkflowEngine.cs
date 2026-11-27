@@ -71,6 +71,14 @@ public static class SpecialistWorkflowEngine
         ArgumentNullException.ThrowIfNull(envelope);
         ArgumentNullException.ThrowIfNull(chatClient);
 
+        if (checkpointStore is not null)
+        {
+            IntegrityVerifiedJsonCheckpointStore.VerifyContractMatchesBinding(
+                envelope.Contract,
+                envelope.TrustedRepositoryId,
+                checkpointStore.ExpectedBinding);
+        }
+
         (Workflow workflow, ExecutorInvocationCounts counts) = BuildSpecialistWorkflow(chatClient, adapterOptions);
         JsonSerializerOptions serializerOptions = CopilotSpecialistAgentFactory.CreateCheckpointSerializerOptions();
 
@@ -110,7 +118,21 @@ public static class SpecialistWorkflowEngine
             checkpointManager,
             cancellationToken).ConfigureAwait(false);
 
-        return await ConsumeRunAsync(run, counts, cancellationToken).ConfigureAwait(false);
+        WorkflowExecutionReceipt receipt = await ConsumeRunAsync(run, counts, cancellationToken).ConfigureAwait(false);
+        VerifyDecisionMatchesBinding(receipt.Decision, checkpointStore.ExpectedBinding);
+        return receipt;
+    }
+
+    public static void VerifyDecisionMatchesBinding(WorkflowGateDecision decision, CheckpointBinding expectedBinding)
+    {
+        if (decision.RepositoryId != expectedBinding.RepositoryId
+            || decision.IssueNumber != expectedBinding.IssueNumber
+            || !string.Equals(decision.HeadSha, expectedBinding.HeadSha, StringComparison.Ordinal))
+        {
+            throw new CheckpointIntegrityException(
+                "CHECKPOINT_CONTRACT_BINDING_MISMATCH",
+                "Resumed workflow decision identity does not match checkpoint binding.");
+        }
     }
 
     private static async Task<WorkflowExecutionReceipt> ConsumeRunAsync(

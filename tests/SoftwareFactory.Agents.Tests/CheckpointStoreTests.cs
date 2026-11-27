@@ -54,6 +54,12 @@ public sealed class CheckpointStoreTests
             JsonElement restored = await reloadedStore.RetrieveCheckpointAsync("session-1", cp1);
             Assert.Equal(2, restored.GetProperty("b").GetInt32());
             Assert.Equal(3, restored.GetProperty("a").GetArrayLength());
+
+            // Deleting an earlier checkpoint never reuses existing sequence IDs; next sequence advances monotonically to cp-000003:
+            File.Delete(Path.Combine(tempDir, "session-1", $"{cp1.CheckpointId}.checkpoint.json"));
+            using JsonDocument doc3 = JsonDocument.Parse("{\"step\":3}");
+            CheckpointInfo cp3 = await reloadedStore.CreateCheckpointAsync("session-1", doc3.RootElement, parent: cp2);
+            Assert.Equal("cp-000003", cp3.CheckpointId);
         }
         finally
         {
@@ -169,6 +175,35 @@ public sealed class CheckpointStoreTests
             Assert.Equal(
                 "MALFORMED_CHECKPOINT_JSON",
                 (await Assert.ThrowsAsync<CheckpointIntegrityException>(async () => await store.RetrieveIndexAsync("session-ok"))).ReasonCode);
+
+            // Embedded contract mismatch inside payload on save:
+            using JsonDocument badEmbeddedDoc = JsonDocument.Parse(
+                "{\"nested\":[{\"RepositoryId\":999,\"IssueNumber\":16,\"HeadSha\":\"c77612ec77612ec77612ec77612ec77612ec7761\"}]}");
+            Assert.Equal(
+                "CHECKPOINT_CONTRACT_BINDING_MISMATCH",
+                (await Assert.ThrowsAsync<CheckpointIntegrityException>(async () =>
+                    await store.CreateCheckpointAsync("session-embed", badEmbeddedDoc.RootElement))).ReasonCode);
+
+            // Non-overwriting commit rejects collisions without modifying existing committed file:
+            string collisionExisting = Path.Combine(tempDir, "immutable.checkpoint.json");
+            string collisionTemp = Path.Combine(tempDir, "candidate.tmp");
+            await File.WriteAllTextAsync(collisionExisting, "committed-state", Encoding.UTF8);
+            await File.WriteAllTextAsync(collisionTemp, "rogue-overwrite", Encoding.UTF8);
+            Assert.Equal(
+                "CHECKPOINT_COLLISION_DETECTED",
+                Assert.Throws<CheckpointIntegrityException>(() =>
+                    IntegrityVerifiedJsonCheckpointStore.CommitCheckpointAtomicallyWithoutOverwrite(collisionTemp, collisionExisting)).ReasonCode);
+            Assert.Equal("committed-state", await File.ReadAllTextAsync(collisionExisting, Encoding.UTF8));
+            Assert.False(File.Exists(collisionTemp));
+
+            // Malformed checkpoint filename in session directory fails closed:
+            string badNameDir = Path.Combine(tempDir, "session-bad-file");
+            Directory.CreateDirectory(badNameDir);
+            await File.WriteAllTextAsync(Path.Combine(badNameDir, "rogue.checkpoint.json"), "{}", Encoding.UTF8);
+            Assert.Equal(
+                "MALFORMED_CHECKPOINT_FILENAME",
+                (await Assert.ThrowsAsync<CheckpointIntegrityException>(async () =>
+                    await store.CreateCheckpointAsync("session-bad-file", doc.RootElement))).ReasonCode);
         }
         finally
         {

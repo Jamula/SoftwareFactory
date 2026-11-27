@@ -6,64 +6,14 @@ using SoftwareFactory.Agents.Workflows;
 
 namespace SoftwareFactory.Agents.Benchmarks;
 
-public sealed class LogicalLaneSimulationResult
-{
-    public required int LogicalLanes { get; init; }
-    public required int MaxActiveConcurrentWorkers { get; init; }
-    public required int ScheduledBatches { get; init; }
-    public required int TotalSupersteps { get; init; }
-    public required int AcceptedLogicalUnits { get; init; }
-    public required int DuplicatePathLeases { get; init; }
-    public required int CrossRepoLeaks { get; init; }
-    public required double ElapsedMs { get; init; }
-}
-
-public sealed class CohortSampleInput
-{
-    public required int TargetMultiplier { get; init; }
-    public required int BaselineComparableUnits { get; init; }
-    public required int CandidateComparableUnits { get; init; }
-    public required double BaselineAcceptedPerDay { get; init; }
-    public required double CandidateAcceptedPerDay { get; init; }
-    public required double BaselineLineCoveragePct { get; init; }
-    public required double CandidateLineCoveragePct { get; init; }
-    public required double BaselineBranchCoveragePct { get; init; }
-    public required double CandidateBranchCoveragePct { get; init; }
-    public required double BaselineCostCreditsPerUnit { get; init; }
-    public required double CandidateCostCreditsPerUnit { get; init; }
-    public required int CandidateUnresolvedFindings { get; init; }
-    public required double IncrementalUnapprovedSpendUsd { get; init; }
-}
-
-public sealed class CohortComparisonResult
-{
-    public required int TargetMultiplier { get; init; }
-    public required bool Eligible { get; init; }
-    public required bool TargetAchieved { get; init; }
-    public required string Status { get; init; }
-    public required string ReasonCode { get; init; }
-    public required double MeasuredSpeedupRatio { get; init; }
-    public required int ComparableAcceptedUnits { get; init; }
-}
-
-public sealed class BenchmarkSuiteReport
-{
-    public string Mode { get; init; } = "maf-benchmark";
-    public string Framework { get; init; } = "Microsoft.Agents.AI.Workflows";
-    public string Version { get; init; } = "1.28.0";
-    public bool Shadow { get; init; } = true;
-    public bool LiveDispatch { get; init; }
-    public bool LiveMerge { get; init; }
-    public required IReadOnlyList<LogicalLaneSimulationResult> LogicalLaneSimulations { get; init; }
-    public required IReadOnlyList<CohortComparisonResult> MatchedCohorts { get; init; }
-}
-
 public static class ThroughputBenchmarkRunner
 {
     public static readonly IReadOnlyList<int> StandardLogicalLaneScales = [12, 50, 100];
     public static readonly IReadOnlyList<int> StandardCohortMultipliers = [2, 5, 10, 15, 20, 25];
 
-    public static async Task<BenchmarkSuiteReport> RunStandardBenchmarkAsync(CancellationToken cancellationToken = default)
+    public static async Task<BenchmarkSuiteReport> RunStandardBenchmarkAsync(
+        IReadOnlyList<CohortSampleInput>? measuredCohortInputs = null,
+        CancellationToken cancellationToken = default)
     {
         using var activity = SoftwareFactoryTelemetry.StartStageActivity(
             "benchmark",
@@ -83,26 +33,19 @@ public static class ThroughputBenchmarkRunner
         }
 
         var cohortResults = new List<CohortComparisonResult>(StandardCohortMultipliers.Count);
-        foreach (int multiplier in StandardCohortMultipliers)
+        if (measuredCohortInputs is null)
         {
-            var sample = new CohortSampleInput
+            foreach (int multiplier in StandardCohortMultipliers)
             {
-                TargetMultiplier = multiplier,
-                BaselineComparableUnits = 6,
-                CandidateComparableUnits = 6,
-                BaselineAcceptedPerDay = 2.0,
-                CandidateAcceptedPerDay = 2.0 * multiplier,
-                BaselineLineCoveragePct = 99.0,
-                CandidateLineCoveragePct = 99.4,
-                BaselineBranchCoveragePct = 96.5,
-                CandidateBranchCoveragePct = 97.8,
-                BaselineCostCreditsPerUnit = 4.0,
-                CandidateCostCreditsPerUnit = 3.5,
-                CandidateUnresolvedFindings = 0,
-                IncrementalUnapprovedSpendUsd = 0.0
-            };
-
-            cohortResults.Add(EvaluateCohortComparison(sample));
+                cohortResults.Add(CreateUnmeasuredCohortPlaceholder(multiplier));
+            }
+        }
+        else
+        {
+            foreach (CohortSampleInput sample in measuredCohortInputs)
+            {
+                cohortResults.Add(EvaluateCohortComparison(sample));
+            }
         }
 
         SoftwareFactoryTelemetry.SetStageResult(activity, "verified", "BENCHMARK_COMPLETED");
@@ -129,10 +72,6 @@ public static class ThroughputBenchmarkRunner
 
         var assignedPaths = new List<string>(logicalLanes);
         int duplicatePathLeases = 0;
-        int totalSupersteps = 0;
-        int acceptedUnits = 0;
-        int batches = (logicalLanes + maxActiveWorkers - 1) / maxActiveWorkers;
-
         for (int index = 0; index < logicalLanes; index++)
         {
             string lanePath = $"src/lane-{index:D3}";
@@ -145,37 +84,82 @@ public static class ThroughputBenchmarkRunner
             }
 
             assignedPaths.Add(lanePath);
+        }
 
-            var contract = new WorkItemContract
+        var concurrencySync = new Lock();
+        int activeNow = 0;
+        int observedPeakConcurrency = 0;
+        int executedBatches = 0;
+        int totalSupersteps = 0;
+        int acceptedUnits = 0;
+
+        for (int batchStart = 0; batchStart < logicalLanes; batchStart += maxActiveWorkers)
+        {
+            executedBatches++;
+            int batchSize = Math.Min(maxActiveWorkers, logicalLanes - batchStart);
+            var batchTasks = new Task<WorkflowExecutionReceipt>[batchSize];
+
+            for (int offset = 0; offset < batchSize; offset++)
             {
-                RepositoryId = WorkItemContract.SoftwareFactoryRepositoryId,
-                RepositorySlug = WorkItemContract.SoftwareFactoryRepositorySlug,
-                HeadSha = "a77612ec77612ec77612ec77612ec77612ec7761",
-                IssueNumber = 1000 + index,
-                LaneId = $"lane-{index:D3}",
-                SpecialistRole = "api",
-                OwnedPaths = [lanePath],
-                LineCoverageMin = 98.0,
-                BranchCoverageMin = 95.0,
-                MaxRepairIterations = 1,
-                TraceParent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
-            };
-
-            WorkflowExecutionReceipt receipt = await SpecialistWorkflowEngine.ExecuteAsync(
-                new WorkItemEnvelope
+                int laneIndex = batchStart + offset;
+                string lanePath = assignedPaths[laneIndex];
+                batchTasks[offset] = Task.Run(async () =>
                 {
-                    Contract = contract,
-                    TrustedRepositoryId = WorkItemContract.SoftwareFactoryRepositoryId
-                },
-                chatClient,
-                checkpointStore: null,
-                sessionId: $"bench-{logicalLanes}-{index:D3}",
-                cancellationToken: cancellationToken).ConfigureAwait(false);
+                    lock (concurrencySync)
+                    {
+                        activeNow++;
+                        if (activeNow > observedPeakConcurrency)
+                        {
+                            observedPeakConcurrency = activeNow;
+                        }
+                    }
 
-            totalSupersteps += receipt.SuperstepsCompleted;
-            if (receipt.Decision.Outcome == "eligible")
+                    try
+                    {
+                        var contract = new WorkItemContract
+                        {
+                            RepositoryId = WorkItemContract.SoftwareFactoryRepositoryId,
+                            RepositorySlug = WorkItemContract.SoftwareFactoryRepositorySlug,
+                            HeadSha = "a77612ec77612ec77612ec77612ec77612ec7761",
+                            IssueNumber = 1000 + laneIndex,
+                            LaneId = $"lane-{laneIndex:D3}",
+                            SpecialistRole = "api",
+                            OwnedPaths = [lanePath],
+                            LineCoverageMin = 98.0,
+                            BranchCoverageMin = 95.0,
+                            MaxRepairIterations = 1,
+                            TraceParent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+                        };
+
+                        return await SpecialistWorkflowEngine.ExecuteAsync(
+                            new WorkItemEnvelope
+                            {
+                                Contract = contract,
+                                TrustedRepositoryId = WorkItemContract.SoftwareFactoryRepositoryId
+                            },
+                            chatClient,
+                            checkpointStore: null,
+                            sessionId: $"bench-{logicalLanes}-{laneIndex:D3}",
+                            cancellationToken: cancellationToken).ConfigureAwait(false);
+                    }
+                    finally
+                    {
+                        lock (concurrencySync)
+                        {
+                            activeNow--;
+                        }
+                    }
+                }, cancellationToken);
+            }
+
+            WorkflowExecutionReceipt[] batchReceipts = await Task.WhenAll(batchTasks).ConfigureAwait(false);
+            foreach (WorkflowExecutionReceipt receipt in batchReceipts)
             {
-                acceptedUnits++;
+                totalSupersteps += receipt.SuperstepsCompleted;
+                if (receipt.Decision.Outcome == "eligible")
+                {
+                    acceptedUnits++;
+                }
             }
         }
 
@@ -184,8 +168,9 @@ public static class ThroughputBenchmarkRunner
         return new LogicalLaneSimulationResult
         {
             LogicalLanes = logicalLanes,
-            MaxActiveConcurrentWorkers = Math.Min(logicalLanes, maxActiveWorkers),
-            ScheduledBatches = batches,
+            ConfiguredWorkerCap = Math.Min(logicalLanes, maxActiveWorkers),
+            ObservedPeakConcurrency = observedPeakConcurrency,
+            ExecutedBatches = executedBatches,
             TotalSupersteps = totalSupersteps,
             AcceptedLogicalUnits = acceptedUnits,
             DuplicatePathLeases = duplicatePathLeases,
@@ -196,13 +181,19 @@ public static class ThroughputBenchmarkRunner
 
     public static CohortComparisonResult EvaluateCohortComparison(CohortSampleInput? input)
     {
-        if (input is null || input.TargetMultiplier <= 0 || input.BaselineAcceptedPerDay <= 0.0 || input.CandidateAcceptedPerDay < 0.0)
+        if (!HasValidFiniteNumbers(input))
         {
             return DenyCohort(input?.TargetMultiplier ?? 0, "INVALID_COHORT_INPUT", 0.0, 0);
         }
 
+        double rawRatio = input!.CandidateAcceptedPerDay / input.BaselineAcceptedPerDay;
+        if (!double.IsFinite(rawRatio))
+        {
+            return DenyCohort(input.TargetMultiplier, "INVALID_COHORT_INPUT", 0.0, 0);
+        }
+
         int comparableUnits = Math.Min(input.BaselineComparableUnits, input.CandidateComparableUnits);
-        double ratio = Math.Round(input.CandidateAcceptedPerDay / input.BaselineAcceptedPerDay, 4);
+        double ratio = Math.Round(rawRatio, 4);
 
         if (comparableUnits < 5)
         {
@@ -235,12 +226,49 @@ public static class ThroughputBenchmarkRunner
             TargetMultiplier = input.TargetMultiplier,
             Eligible = true,
             TargetAchieved = achieved,
-            Status = achieved ? "shadow-cohort-verified" : "shadow-cohort-below-stretch",
+            Verified = achieved,
+            SyntheticIllustrativeOnly = false,
+            Status = achieved ? "measured-cohort-verified" : "measured-cohort-below-stretch",
             ReasonCode = achieved ? "COHORT_IMPROVEMENT_VERIFIED" : "TARGET_MULTIPLIER_NOT_REACHED",
             MeasuredSpeedupRatio = ratio,
             ComparableAcceptedUnits = comparableUnits
         };
     }
+
+    private static bool HasValidFiniteNumbers(CohortSampleInput? input) =>
+        input is not null
+        && input.TargetMultiplier > 0
+        && input.BaselineComparableUnits >= 0
+        && input.CandidateComparableUnits >= 0
+        && double.IsFinite(input.BaselineAcceptedPerDay)
+        && input.BaselineAcceptedPerDay > 0.0
+        && double.IsFinite(input.CandidateAcceptedPerDay)
+        && input.CandidateAcceptedPerDay >= 0.0
+        && double.IsFinite(input.BaselineLineCoveragePct)
+        && double.IsFinite(input.CandidateLineCoveragePct)
+        && double.IsFinite(input.BaselineBranchCoveragePct)
+        && double.IsFinite(input.CandidateBranchCoveragePct)
+        && double.IsFinite(input.BaselineCostCreditsPerUnit)
+        && input.BaselineCostCreditsPerUnit >= 0.0
+        && double.IsFinite(input.CandidateCostCreditsPerUnit)
+        && input.CandidateCostCreditsPerUnit >= 0.0
+        && double.IsFinite(input.IncrementalUnapprovedSpendUsd)
+        && input.IncrementalUnapprovedSpendUsd >= 0.0
+        && input.CandidateUnresolvedFindings >= 0;
+
+    private static CohortComparisonResult CreateUnmeasuredCohortPlaceholder(int multiplier) =>
+        new()
+        {
+            TargetMultiplier = multiplier,
+            Eligible = false,
+            TargetAchieved = false,
+            Verified = false,
+            SyntheticIllustrativeOnly = true,
+            Status = "UNMEASURED_BASELINE_REQUIRED",
+            ReasonCode = "UNMEASURED_BASELINE_REQUIRED",
+            MeasuredSpeedupRatio = 0.0,
+            ComparableAcceptedUnits = 0
+        };
 
     private static CohortComparisonResult DenyCohort(int multiplier, string reason, double ratio, int comparableUnits) =>
         new()
@@ -248,6 +276,8 @@ public static class ThroughputBenchmarkRunner
             TargetMultiplier = multiplier,
             Eligible = false,
             TargetAchieved = false,
+            Verified = false,
+            SyntheticIllustrativeOnly = false,
             Status = "blocked",
             ReasonCode = reason,
             MeasuredSpeedupRatio = ratio,
