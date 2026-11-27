@@ -8,6 +8,12 @@ SoftwareFactory is an Apache-2.0, policy-driven foundation for an event-driven a
 
 ![Target architecture: one shared versioned core with independently pinned consumer adapters, project policy and CI](docs/images/github-orchestration-v2.svg)
 
+## Product direction
+
+SoftwareFactory is a lightweight, cloud-native, AI-first engineering framework, not a hosted service. Bring your own AI and authorized compute; GitHub Issues, PRs and trusted events remain the authoritative engineering workflow. No mandatory SoftwareFactory-operated service, separate issue tracker, database, dashboard or workstation. Use the smallest supported, verifiable execution path and reuse existing repository gates.
+
+Customer One is SoftwareFactory itself, then FamilyTree, Spellbook and FamilyHub. New and existing repositories should be onboardable from one natural-language request through a small, reviewable, independently pinned integration PR. Bootstrap discovers existing CI, protection, provider entitlement and constraints; it never silently enables execution, spends money or changes security settings. See [consumer onboarding](docs/CONSUMER-ONBOARDING.md) for proposed product acceptance criteria.
+
 ## Start here
 
 | I want to… | Read |
