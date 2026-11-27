@@ -42,7 +42,7 @@ rm -f coverage-evidence.json cobertura-coverage.xml
 
 ### Scoped `Aspire.Cli 17.0.0` installation
 
-Install `Aspire.Cli` into a disposable local directory rather than mutating global tool state, keeping telemetry opt-outs exported in the shell before every `.NET` and Aspire command, then restore and build the file-based `apphost.cs` in `Release` configuration:
+Install `Aspire.Cli` into a disposable user-local directory (`$HOME/.local/share/softwarefactory-aspire-tools`, or `Join-Path $HOME '.local\share\softwarefactory-aspire-tools'` on PowerShell) rather than mutating global tool state, keeping telemetry opt-outs exported in the shell before every `.NET` and Aspire command, then restore and build the file-based `apphost.cs` in `Release` configuration:
 
 ```bash
 set -euo pipefail
@@ -51,7 +51,7 @@ export ASPIRE_CLI_TELEMETRY_OPTOUT=true
 export ASPIRE_DASHBOARD_TELEMETRY_OPTOUT=true
 
 dotnet tool install Aspire.Cli --version 17.0.0 \
-  --tool-path "<temp-root>/sf-aspire-tools" \
+  --tool-path "$HOME/.local/share/softwarefactory-aspire-tools" \
   --source https://api.nuget.org/v3/index.json
 
 dotnet restore apphost.cs --source https://api.nuget.org/v3/index.json
@@ -153,27 +153,27 @@ Use `aspire start --apphost apphost.cs --isolated` inside a subshell with an `EX
   export ASPIRE_DASHBOARD_DATA_DIRECTORY="$work_dir/dashboard-data"
   export ASPIRE_DASHBOARD_OTLP_HTTP_ENDPOINT_URL="https://127.0.0.1:18890"
   export ASPIRE_HOME="$work_dir/aspire-home"
-  export PATH="<temp-root>/sf-aspire-tools:$PATH"
+  export PATH="$HOME/.local/share/softwarefactory-aspire-tools:$PATH"
   mkdir -p "$ASPIRE_DASHBOARD_DATA_DIRECTORY"
 
   apphost_started=0
   cleanup() {
-    local status=$?
+    local exit_code=$?
     set +e
     local stop_ok=1
     if [ "$apphost_started" -eq 1 ]; then
       if ! aspire stop --apphost apphost.cs --non-interactive >/dev/null 2>&1; then
         stop_ok=0
         printf 'WARN: aspire stop failed; retaining work_dir for manual recovery\n' >&2
-        if [ "$status" -eq 0 ]; then
-          status=1
+        if [ "$exit_code" -eq 0 ]; then
+          exit_code=1
         fi
       fi
     fi
     if [ "$stop_ok" -eq 1 ]; then
       rm -rf -- "$work_dir"
     fi
-    exit "$status"
+    exit "$exit_code"
   }
   trap cleanup EXIT
 
@@ -211,6 +211,8 @@ $env:ASPIRE_DASHBOARD_PERSISTENCE_MODE = 'Run'
 $env:ASPIRE_DASHBOARD_DATA_DIRECTORY = Join-Path $workDir 'dashboard-data'
 $env:ASPIRE_DASHBOARD_OTLP_HTTP_ENDPOINT_URL = 'https://127.0.0.1:18890'
 $env:ASPIRE_HOME = Join-Path $workDir 'aspire-home'
+$toolDir = Join-Path $HOME '.local\share\softwarefactory-aspire-tools'
+$env:PATH = "$toolDir$([IO.Path]::PathSeparator)$env:PATH"
 New-Item -ItemType Directory -Path $env:ASPIRE_DASHBOARD_DATA_DIRECTORY -Force | Out-Null
 
 $appHostStarted = $false
