@@ -16,8 +16,11 @@ import {
 
 const examples = JSON.parse(await readFile(new URL('../../tools/engineering-factory/example-policies.json', import.meta.url)));
 const shadowWorkflowSource = await readFile(new URL('../../.github/workflows/shadow-tests.yml', import.meta.url), 'utf8');
+const checkoutRefMatch = shadowWorkflowSource.match(/^\s*ref:\s*(\S+)\s*$/m);
+assert.ok(checkoutRefMatch, 'shadow-tests.yml must declare an explicit checkout ref');
 const reviewedWorkflowSha = 'afc3d223f287b029db32672908097efc67a259c9';
-const reviewedCheckoutSha = shadowWorkflowSource.match(/^\s*ref:\s*([0-9a-f]{40})\s*$/m)?.[1] ?? '1'.repeat(40);
+const reviewedCheckoutSha = checkoutRefMatch[1];
+assert.match(reviewedCheckoutSha, /^[0-9a-f]{40}$/);
 const altSha = '2'.repeat(40);
 const head = 'a'.repeat(40);
 const base = 'b'.repeat(40);
@@ -324,14 +327,25 @@ test('rejects malformed envelopes, array tricks, unauthorized enrollment and mig
 });
 
 test('enforces valid non-factory disabled policy, 95/90 baseline floor and stricter local gates', () => {
-  assert.equal(verifyConsumerOnboardingPackage({ ...familyTreePkg, policy: null }).reason, 'INVALID_CONSUMER_POLICY');
-  assert.equal(
-    verifyConsumerOnboardingPackage({
-      ...familyTreePkg,
-      policy: { ...familyTreePkg.policy, repository: FACTORY_REPOSITORY, coverage: { line: 98, branch: 95 } }
-    }).reason,
-    'INVALID_CONSUMER_POLICY'
-  );
+  const withNonEnumToJson = target => {
+    const copy = Array.isArray(target) ? [...target] : { ...target };
+    Object.defineProperty(copy, 'toJSON', { value: () => [] });
+    return copy;
+  };
+  for (const badPolicy of [
+    null,
+    { ...familyTreePkg.policy, coverage: withNonEnumToJson(familyTreePkg.policy.coverage) },
+    { ...familyTreePkg.policy, checks: withNonEnumToJson(familyTreePkg.policy.checks) },
+    { ...familyTreePkg.policy, checks: [withNonEnumToJson(familyTreePkg.policy.checks[0])] },
+    { ...familyTreePkg.policy, reviewers: withNonEnumToJson(familyTreePkg.policy.reviewers) },
+    { ...familyTreePkg.policy, owners: withNonEnumToJson(familyTreePkg.policy.owners) },
+    { ...familyTreePkg.policy, owners: [withNonEnumToJson(familyTreePkg.policy.owners[0])] },
+    { ...familyTreePkg.policy, riskClasses: withNonEnumToJson(familyTreePkg.policy.riskClasses) },
+    { ...familyTreePkg.policy, checks: [] },
+    { ...familyTreePkg.policy, repository: FACTORY_REPOSITORY, coverage: { line: 98, branch: 95 } }
+  ]) {
+    assert.equal(verifyConsumerOnboardingPackage({ ...familyTreePkg, policy: badPolicy }).reason, 'INVALID_CONSUMER_POLICY');
+  }
   assert.equal(
     verifyConsumerOnboardingPackage({ ...familyTreePkg, repositoryId: FACTORY_REPOSITORY_ID }).reason,
     'INVALID_CONSUMER_POLICY'
@@ -484,21 +498,48 @@ test('requires complete exact-mutation shadow denial replay suite and rollback c
   const suite = familyTreePkg.replaySuite;
   const cand = suite.eligibleCandidate;
 
-  // Null remainingCredits is also a valid missing-quota scenario
+  // Null remainingCredits and accepted dependencies are valid in candidate/replay scenarios
+  const candWithDep = { ...cand, dependencies: [{ issue: 1, accepted: true }] };
   assert.equal(
     verifyConsumerOnboardingPackage({
       ...familyTreePkg,
       replaySuite: {
-        ...suite,
-        missingQuota: { ...cand, remainingCredits: null }
+        eligibleCandidate: candWithDep,
+        staleReview: { ...candWithDep, reviews: suite.staleReview.reviews },
+        dismissedReview: { ...candWithDep, reviews: suite.dismissedReview.reviews },
+        commentedBotReview: { ...candWithDep, reviews: suite.commentedBotReview.reviews },
+        wrongRepository: { ...candWithDep, repository: 'example/foreign-repository' },
+        missingQuota: { ...candWithDep, remainingCredits: null },
+        killSwitchPolicy: suite.killSwitchPolicy
       }
     }).valid,
     true
   );
 
+  // Structurally valid candidate that fails shadow eligibility (mainHealthy: false)
+  const unhealthyCand = { ...cand, mainHealthy: false };
+  const unhealthyDerivedSuite = {
+    eligibleCandidate: unhealthyCand,
+    staleReview: { ...unhealthyCand, reviews: suite.staleReview.reviews },
+    dismissedReview: { ...unhealthyCand, reviews: suite.dismissedReview.reviews },
+    commentedBotReview: { ...unhealthyCand, reviews: suite.commentedBotReview.reviews },
+    wrongRepository: { ...unhealthyCand, repository: 'example/foreign-repository' },
+    missingQuota: { ...unhealthyCand, remainingCredits: 0 },
+    killSwitchPolicy: suite.killSwitchPolicy
+  };
+
   for (const badSuite of [
     null,
-    { ...suite, eligibleCandidate: suite.missingQuota },
+    unhealthyDerivedSuite,
+    { ...suite, eligibleCandidate: null },
+    { ...suite, eligibleCandidate: { ...cand, coverage: null } },
+    { ...suite, eligibleCandidate: { ...cand, paths: 'bad' } },
+    { ...suite, eligibleCandidate: { ...cand, dependencies: 'bad' } },
+    { ...suite, eligibleCandidate: { ...cand, dependencies: [{}] } },
+    { ...suite, eligibleCandidate: { ...cand, checks: 'bad' } },
+    { ...suite, eligibleCandidate: { ...cand, checks: [{}] } },
+    { ...suite, eligibleCandidate: { ...cand, reviews: 'bad' } },
+    { ...suite, eligibleCandidate: { ...cand, reviews: [{}] } },
     { ...suite, killSwitchPolicy: { ...suite.killSwitchPolicy, extra: true } },
     { ...suite, killSwitchPolicy: { ...suite.killSwitchPolicy, killSwitch: false } },
     { ...suite, killSwitchPolicy: { ...familyTreePkg.policy, mode: 'disabled', killSwitch: false } },
@@ -508,6 +549,7 @@ test('requires complete exact-mutation shadow denial replay suite and rollback c
     { ...suite, staleReview: { ...cand, reviews: 'bad' } },
     { ...suite, staleReview: { ...cand, reviews: [] } },
     { ...suite, staleReview: { ...cand, reviews: [{}] } },
+    { ...suite, staleReview: { ...cand, reviews: [{ reviewer: null, head: base, state: 'APPROVED' }] } },
     { ...suite, staleReview: { ...cand, reviews: [{ reviewer: 'synthetic-reviewer', head: base, state: 'DISMISSED' }] } },
     { ...suite, staleReview: { ...cand, reviews: [{ reviewer: 'synthetic-reviewer', head: 'bad', state: 'APPROVED' }] } },
     { ...suite, staleReview: { ...cand, reviews: [{ reviewer: 'untrusted-reviewer', head, state: 'APPROVED' }] } },
@@ -516,6 +558,7 @@ test('requires complete exact-mutation shadow denial replay suite and rollback c
     { ...suite, dismissedReview: { ...cand, reviews: 'bad' } },
     { ...suite, dismissedReview: { ...cand, reviews: [] } },
     { ...suite, dismissedReview: { ...cand, reviews: [{}] } },
+    { ...suite, dismissedReview: { ...cand, reviews: [{ reviewer: 123, head, state: 'DISMISSED' }] } },
     { ...suite, dismissedReview: { ...cand, reviews: [{ reviewer: 'synthetic-reviewer', head: base, state: 'DISMISSED' }] } },
     { ...suite, dismissedReview: { ...cand, reviews: [{ reviewer: 'untrusted-reviewer', head, state: 'APPROVED' }] } },
     { ...suite, commentedBotReview: cand },
@@ -523,6 +566,8 @@ test('requires complete exact-mutation shadow denial replay suite and rollback c
     { ...suite, commentedBotReview: { ...cand, reviews: 'bad' } },
     { ...suite, commentedBotReview: { ...cand, reviews: [] } },
     { ...suite, commentedBotReview: { ...cand, reviews: [{ reviewer: 'copilot-pull-request-reviewer[bot]', head, state: 'COMMENTED' }] } },
+    { ...suite, commentedBotReview: { ...cand, reviews: [{ reviewer: null, head, state: 'COMMENTED', summaryDisposition: 'clear' }] } },
+    { ...suite, commentedBotReview: { ...cand, reviews: [{ reviewer: 123, head, state: 'COMMENTED', summaryDisposition: 'clear' }] } },
     { ...suite, commentedBotReview: { ...cand, reviews: [{ reviewer: 'human-reviewer', head, state: 'COMMENTED', summaryDisposition: 'clear' }] } },
     { ...suite, commentedBotReview: { ...cand, reviews: [{ reviewer: 'copilot-pull-request-reviewer[bot]', head: base, state: 'COMMENTED', summaryDisposition: 'clear' }] } },
     { ...suite, commentedBotReview: { ...cand, reviews: [{ reviewer: 'copilot-pull-request-reviewer[bot]', head, state: 'DISMISSED', summaryDisposition: 'clear' }] } },
@@ -705,6 +750,44 @@ test('planConsumerBootstrap creates dry-run pinned plans, preserves stricter gat
   assert.equal(caseConflictPlan.valid, false);
   assert.equal(caseConflictPlan.reason, 'EXISTING_FILE_CONFLICT');
 
+  // Descendant collision: planned file path is already a directory in existingFiles
+  const descendantConflictPlan = planConsumerBootstrap({
+    ...baseRequest,
+    existingState: {
+      ...baseRequest.existingState,
+      existingFiles: [{ path: '.github/softwarefactory-policy.json/README.md', content: '# dir\n' }]
+    }
+  });
+  assert.equal(descendantConflictPlan.valid, false);
+  assert.equal(descendantConflictPlan.reason, 'EXISTING_FILE_CONFLICT');
+  assert.deepEqual(descendantConflictPlan.conflicts, ['.github/softwarefactory-policy.json']);
+
+  // Multiple sibling descendants under planned file path also collide cleanly
+  const multiDescendantPlan = planConsumerBootstrap({
+    ...baseRequest,
+    existingState: {
+      ...baseRequest.existingState,
+      existingFiles: [
+        { path: '.github/softwarefactory-policy.json/a.md', content: 'a' },
+        { path: '.github/softwarefactory-policy.json/b.md', content: 'b' }
+      ]
+    }
+  });
+  assert.equal(multiDescendantPlan.valid, false);
+  assert.equal(multiDescendantPlan.reason, 'EXISTING_FILE_CONFLICT');
+
+  // Ancestor collision: an existing file blocks creating a parent directory for the workflow
+  const ancestorConflictPlan = planConsumerBootstrap({
+    ...baseRequest,
+    existingState: {
+      ...baseRequest.existingState,
+      existingFiles: [{ path: '.github/workflows', content: 'regular-file\n' }]
+    }
+  });
+  assert.equal(ancestorConflictPlan.valid, false);
+  assert.equal(ancestorConflictPlan.reason, 'EXISTING_FILE_CONFLICT');
+  assert.deepEqual(ancestorConflictPlan.conflicts, ['.github/workflows/softwarefactory-shadow-replay.yml']);
+
   // Matching record followed by divergent duplicate path fails closed instead of IDEMPOTENT_NOOP
   const duplicatePathPlan = planConsumerBootstrap({
     ...baseRequest,
@@ -738,6 +821,10 @@ test('planConsumerBootstrap creates dry-run pinned plans, preserves stricter gat
     { ...baseRequest.existingState, maxConcurrency: 0 },
     { ...baseRequest.existingState, existingFiles: 'bad' },
     { ...baseRequest.existingState, existingFiles: [{ path: '', content: 'x' }] },
+    { ...baseRequest.existingState, existingFiles: [{ path: '/abs/file.yml', content: 'x' }] },
+    { ...baseRequest.existingState, existingFiles: [{ path: 'dir\\file.yml', content: 'x' }] },
+    { ...baseRequest.existingState, existingFiles: [{ path: 'dir/../file.yml', content: 'x' }] },
+    { ...baseRequest.existingState, existingFiles: [{ path: 'dir//file.yml', content: 'x' }] },
     { ...baseRequest.existingState, existingFiles: [{ path: 'a.yml', content: 123 }] },
     { ...baseRequest.existingState, existingFiles: [{ path: 'a.yml' }] },
     { ...baseRequest.existingState, existingFiles: [{ path: 'a.yml', content: '1' }, { path: 'A.YML', content: '2' }] }
@@ -745,8 +832,22 @@ test('planConsumerBootstrap creates dry-run pinned plans, preserves stricter gat
     assert.equal(planConsumerBootstrap({ ...baseRequest, existingState: badState }).reason, 'EXISTING_STATE_INVALID');
   }
 
-  assert.equal(
-    planConsumerBootstrap({ ...baseRequest, checks: [] }).reason,
-    'BOOTSTRAP_POLICY_INVALID'
-  );
+  // Rejects non-enumerable toJSON hooks on checks, owners and reviewers without invoking them
+  let hookCalls = 0;
+  const hookedChecks = [{ name: 'ci-gate', appId: 45678 }];
+  Object.defineProperty(hookedChecks, 'toJSON', { value: () => { hookCalls += 1; return []; } });
+  const hookedOwners = [{ prefix: 'src/', owner: 'synthetic-owner' }];
+  Object.defineProperty(hookedOwners, 'toJSON', { value: () => { hookCalls += 1; return []; } });
+  const hookedReviewers = ['synthetic-reviewer'];
+  Object.defineProperty(hookedReviewers, 'toJSON', { value: () => { hookCalls += 1; return []; } });
+
+  for (const badPolicyReq of [
+    { ...baseRequest, checks: [] },
+    { ...baseRequest, checks: hookedChecks },
+    { ...baseRequest, owners: hookedOwners },
+    { ...baseRequest, reviewers: hookedReviewers }
+  ]) {
+    assert.equal(planConsumerBootstrap(badPolicyReq).reason, 'BOOTSTRAP_POLICY_INVALID');
+  }
+  assert.equal(hookCalls, 0);
 });

@@ -55,11 +55,49 @@ const dense = (value, max = 64) =>
 
 const text = (value, max = 200) =>
   typeof value === 'string' && value.length > 0 && value.length <= max && value.trim() === value;
+const repoPath = value =>
+  text(value, 240) &&
+  !value.startsWith('/') &&
+  !value.includes('\\') &&
+  !value.split('/').some(part => !part || part === '.' || part === '..');
 const posInt = value => Number.isSafeInteger(value) && value > 0;
 const pct = value => Number.isFinite(value) && value >= 0 && value <= 100;
 const sha40 = value => typeof value === 'string' && /^[0-9a-f]{40}$/.test(value);
 const identity = value => value.toLowerCase();
 const unique = values => new Set(values).size === values.length;
+
+const strictPolicyShape = p =>
+  exact(p, [
+    'version', 'repository', 'defaultBranch', 'mergeMethod', 'mode',
+    'killSwitch', 'checks', 'reviewers', 'coverage', 'owners', 'maxActive',
+    'creditLimit', 'riskClasses'
+  ]) &&
+  exact(p.coverage, ['line', 'branch']) &&
+  dense(p.checks) &&
+  p.checks.every(c => exact(c, ['name', 'appId'])) &&
+  dense(p.reviewers) &&
+  dense(p.owners) &&
+  p.owners.every(o => exact(o, ['prefix', 'owner'])) &&
+  dense(p.riskClasses) &&
+  validPolicy(p);
+
+const strictSnapshotShape = s =>
+  exact(s, [
+    'policySource', 'repository', 'issue', 'pr', 'head', 'observedHead',
+    'base', 'observedBase', 'baseBranch', 'rateLimited', 'remainingCredits',
+    'activeCount', 'providerReady', 'risk', 'priority', 'paths',
+    'dependencies', 'acceptanceComplete', 'baseCompatible', 'mainHealthy',
+    'threadsResolved', 'securityClear', 'coverage', 'checks', 'author',
+    'agent', 'reviews'
+  ]) &&
+  exact(s.coverage, ['head', 'line', 'branch', 'complete']) &&
+  dense(s.paths) &&
+  dense(s.dependencies) &&
+  s.dependencies.every(d => exact(d, ['issue', 'accepted'])) &&
+  dense(s.checks) &&
+  s.checks.every(c => exact(c, ['name', 'head', 'appId', 'status', 'conclusion'])) &&
+  dense(s.reviews) &&
+  s.reviews.every(r => exact(r, ['reviewer', 'head', 'state']));
 
 const singleMutation = (baseSnap, candidate, field) => {
   const keys = Object.keys(baseSnap);
@@ -73,6 +111,7 @@ const isStaleReviewScenario = (baseSnap, candidate) =>
   candidate.reviews.length > 0 &&
   candidate.reviews.every(r =>
     exact(r, ['reviewer', 'head', 'state']) &&
+    text(r.reviewer) &&
     r.state === 'APPROVED' &&
     sha40(r.head) &&
     r.head !== baseSnap.head);
@@ -83,6 +122,7 @@ const isDismissedReviewScenario = (baseSnap, candidate) =>
   candidate.reviews.length > 0 &&
   candidate.reviews.every(r =>
     exact(r, ['reviewer', 'head', 'state']) &&
+    text(r.reviewer) &&
     r.head === baseSnap.head &&
     r.state === 'DISMISSED');
 
@@ -91,6 +131,7 @@ const isCommentedBotScenario = (baseSnap, candidate) =>
   dense(candidate.reviews) &&
   candidate.reviews.length === 1 &&
   exact(candidate.reviews[0], ['reviewer', 'head', 'state', 'summaryDisposition']) &&
+  text(candidate.reviews[0].reviewer) &&
   ['copilot-pull-request-reviewer', 'copilot-pull-request-reviewer[bot]'].includes(
     identity(candidate.reviews[0].reviewer)
   ) &&
@@ -176,7 +217,7 @@ export function verifyConsumerOnboardingPackage(pkg, registry = []) {
   const pinCheck = verifyWorkflowPin(pkg.workflowPin);
   if (!pinCheck.valid) return denyOnboarding(pinCheck.reason);
 
-  if (!validPolicy(pkg.policy) ||
+  if (!strictPolicyShape(pkg.policy) ||
       identity(pkg.policy.repository) === identity(FACTORY_REPOSITORY) ||
       pkg.repositoryId === FACTORY_REPOSITORY_ID) {
     return denyOnboarding('INVALID_CONSUMER_POLICY');
@@ -249,20 +290,27 @@ export function verifyConsumerOnboardingPackage(pkg, registry = []) {
   }
 
   const shadowPolicy = { ...pkg.policy, mode: 'shadow', killSwitch: false };
-  if (evaluate(shadowPolicy, suite.eligibleCandidate).reason !== 'SHADOW_ELIGIBLE' ||
-      !validPolicy(suite.killSwitchPolicy) ||
-      evaluate(suite.killSwitchPolicy, suite.eligibleCandidate).reason !== 'STOPPED' ||
+  if (!strictSnapshotShape(suite.eligibleCandidate) ||
+      !strictPolicyShape(suite.killSwitchPolicy) ||
       !isDeepStrictEqual(suite.killSwitchPolicy, { ...shadowPolicy, killSwitch: true }) ||
-      evaluate(shadowPolicy, suite.staleReview).reason !== 'REVIEW_MISSING' ||
       !isStaleReviewScenario(suite.eligibleCandidate, suite.staleReview) ||
-      evaluate(shadowPolicy, suite.dismissedReview).reason !== 'REVIEW_MISSING' ||
       !isDismissedReviewScenario(suite.eligibleCandidate, suite.dismissedReview) ||
-      evaluate(shadowPolicy, suite.commentedBotReview).reason !== 'REVIEW_MISSING' ||
       !isCommentedBotScenario(suite.eligibleCandidate, suite.commentedBotReview) ||
-      evaluate(shadowPolicy, suite.wrongRepository).reason !== 'UNTRUSTED_POLICY' ||
       !isWrongRepoScenario(suite.eligibleCandidate, suite.wrongRepository) ||
-      evaluate(shadowPolicy, suite.missingQuota).reason !== 'BUDGET_OR_CONCURRENCY' ||
       !isMissingQuotaScenario(suite.eligibleCandidate, suite.missingQuota)) {
+    return denyOnboarding('SHADOW_REPLAY_INCOMPLETE');
+  }
+
+  const replayChecks = [
+    [shadowPolicy, suite.eligibleCandidate, 'SHADOW_ELIGIBLE'],
+    [suite.killSwitchPolicy, suite.eligibleCandidate, 'STOPPED'],
+    [shadowPolicy, suite.staleReview, 'REVIEW_MISSING'],
+    [shadowPolicy, suite.dismissedReview, 'REVIEW_MISSING'],
+    [shadowPolicy, suite.commentedBotReview, 'REVIEW_MISSING'],
+    [shadowPolicy, suite.wrongRepository, 'UNTRUSTED_POLICY'],
+    [shadowPolicy, suite.missingQuota, 'BUDGET_OR_CONCURRENCY']
+   ];
+  if (!replayChecks.every(([pol, snap, expected]) => evaluate(pol, snap).reason === expected)) {
     return denyOnboarding('SHADOW_REPLAY_INCOMPLETE');
   }
 
@@ -324,7 +372,7 @@ export function verifyIndependentRollback(targetRepository, rollbackReceipt, pac
     return denyRollback('ROLLBACK_TARGET_UNKNOWN');
   }
 
-  if (!validPolicy(rollbackReceipt.postPolicy) ||
+  if (!strictPolicyShape(rollbackReceipt.postPolicy) ||
       rollbackReceipt.postPolicy.repository !== targetPkg.policy.repository ||
       rollbackReceipt.postPolicy.mode !== 'disabled' ||
       rollbackReceipt.postPolicy.killSwitch !== true ||
@@ -383,7 +431,7 @@ export function planConsumerBootstrap(request) {
       !pct(state.branchCoverageGate) ||
       !posInt(state.maxConcurrency) ||
       !dense(state.existingFiles) ||
-      !state.existingFiles.every(f => exact(f, ['path', 'content']) && text(f.path) && typeof f.content === 'string') ||
+      !state.existingFiles.every(f => exact(f, ['path', 'content']) && repoPath(f.path) && typeof f.content === 'string') ||
       !unique(state.existingFiles.map(f => identity(f.path)))) {
     return denyPlan('EXISTING_STATE_INVALID');
   }
@@ -407,7 +455,7 @@ export function planConsumerBootstrap(request) {
     riskClasses: ['low', 'high']
   };
 
-  if (!validPolicy(policy)) {
+  if (!strictPolicyShape(policy)) {
     return denyPlan('BOOTSTRAP_POLICY_INVALID');
   }
 
@@ -435,9 +483,15 @@ export function planConsumerBootstrap(request) {
   const conflicts = [];
   let matchedCount = 0;
   for (const planned of plannedFiles) {
-    const found = state.existingFiles.find(f => identity(f.path) === identity(planned.path));
-    if (!found) continue;
-    if (found.path === planned.path && found.content === planned.content) {
+    const pp = identity(planned.path);
+    const colliding = state.existingFiles.filter(f => {
+      const ep = identity(f.path);
+      return ep === pp || pp.startsWith(`${ep}/`) || ep.startsWith(`${pp}/`);
+    });
+    if (colliding.length === 0) continue;
+    if (colliding.length === 1 &&
+        colliding[0].path === planned.path &&
+        colliding[0].content === planned.content) {
       matchedCount += 1;
     } else {
       conflicts.push(planned.path);
@@ -465,6 +519,6 @@ export function planConsumerBootstrap(request) {
     pinnedWorkflowSha: pinCheck.pinnedWorkflowSha,
     pinnedCheckoutSha: pinCheck.pinnedCheckoutSha,
     policy,
-    filesToWrite: Object.freeze(plannedFiles.filter(p => !state.existingFiles.some(f => identity(f.path) === identity(p.path))))
+    filesToWrite: Object.freeze(plannedFiles.filter(p => !state.existingFiles.some(f => f.path === p.path)))
   });
 }
