@@ -316,6 +316,7 @@ function auditRuleset(ruleset) {
 
   const codeqlRule = scannerMap.get('CodeQL');
   const codeqlProtected =
+    scannerMap.size === 1 &&
     codeqlRule !== undefined &&
     (codeqlRule.securityAlertsThreshold === 'medium_or_higher' ||
       codeqlRule.securityAlertsThreshold === 'all') &&

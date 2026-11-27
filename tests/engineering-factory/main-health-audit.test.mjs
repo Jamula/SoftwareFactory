@@ -1091,6 +1091,20 @@ test('enforces ruleset completeness, scope matching, and strict types.isProxy / 
     {
       codeScanningTools: [
         {
+          tool: 'CodeQL',
+          securityAlertsThreshold: 'medium_or_higher',
+          alertsThreshold: 'errors_and_warnings'
+        },
+        {
+          tool: 'DependencyGraph',
+          securityAlertsThreshold: 'high_or_higher',
+          alertsThreshold: 'errors'
+        }
+      ]
+    },
+    {
+      codeScanningTools: [
+        {
           tool: 'OtherScanner',
           securityAlertsThreshold: 'medium_or_higher',
           alertsThreshold: 'errors_and_warnings'
