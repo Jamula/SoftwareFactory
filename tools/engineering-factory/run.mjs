@@ -74,13 +74,13 @@ function ownEnumerableData(obj,key) {
   return d!==undefined&&d.enumerable===true&&Object.hasOwn(d,'value');
 }
 
-function plainJsonValue(value,budget={remaining:10000},depth=0) {
+function plainJsonValue(value,budget={remaining:50000},depth=0) {
   if(--budget.remaining<0||depth>12||types.isProxy(value)) return false;
   if(value===null||typeof value==='string'||typeof value==='boolean') return true;
   if(typeof value==='number') return Number.isFinite(value);
   if(typeof value!=='object') return false;
   if(Array.isArray(value)) {
-    if(Object.getPrototypeOf(value)!==Array.prototype||value.length>1000||
+    if(Object.getPrototypeOf(value)!==Array.prototype||value.length>10000||
        Reflect.ownKeys(value).length!==value.length+1) return false;
     for(let i=0;i<value.length;i++) {
       if(!ownEnumerableData(value,i)||!plainJsonValue(value[i],budget,depth+1)) return false;
@@ -187,52 +187,49 @@ function resolveRepositoryBinding(options,env,spec) {
   };
 }
 
-function resolveReconcileScope(repoBinding,env,inputObj) {
-  let inputScope=null;
-  if(inputObj!==undefined&&Object.hasOwn(inputObj,'scope')) {
-    if(!plainJsonObject(inputObj.scope)||!Object.keys(inputObj.scope).every(k=>SCOPE_KEYS.has(k))) {
-      return {ok:false,reason:'TRUST_UNKNOWN'};
-    }
-    inputScope=inputObj.scope;
-  }
-  const repoMerge=mergeConsistentString([repoBinding.repository??undefined,inputObj?.repository,inputScope?.repository]);
-  if(!repoMerge.ok) return {ok:false,reason:'PROVENANCE_MISMATCH'};
-  const branchMerge=mergeConsistentString([repoBinding.branch??undefined,inputObj?.branch,inputScope?.branch]);
-  const workflowMerge=mergeConsistentString([repoBinding.workflowPath??undefined,inputObj?.workflowPath,inputScope?.workflowPath]);
-  if(!branchMerge.ok||!workflowMerge.ok) return {ok:false,reason:'TRUST_UNKNOWN'};
-
+function resolveReconcileScope(repoBinding,inputObj) {
+  let trustedCandidate;
   if(repoBinding.repositoryId===DEFAULT_REPOSITORY_ID) {
-    const scopeCandidate={
+    trustedCandidate={
       repository:DEFAULT_REPOSITORY,
       repositoryId:DEFAULT_REPOSITORY_ID,
-      branch:branchMerge.value??DEFAULT_BRANCH,
-      workflowPath:workflowMerge.value??DEFAULT_WORKFLOW_PATH
+      branch:repoBinding.branch??DEFAULT_BRANCH,
+      workflowPath:repoBinding.workflowPath??DEFAULT_WORKFLOW_PATH
     };
-    const verified=resolveTrustedScope(scopeCandidate);
-    if(!verified) return {ok:false,reason:'TRUST_UNKNOWN'};
-    return {
-      ok:true,
-      isDefaultUnscoped:!repoBinding.explicitScope&&inputObj===undefined,
-      scope:scopeCandidate
+  } else {
+    if(repoBinding.repository===null||repoBinding.branch===null||repoBinding.workflowPath===null) {
+      return {ok:false,reason:'TRUST_UNKNOWN'};
+    }
+    trustedCandidate={
+      repository:repoBinding.repository,
+      repositoryId:repoBinding.repositoryId,
+      branch:repoBinding.branch,
+      workflowPath:repoBinding.workflowPath
     };
   }
-
-  if(repoMerge.value===null||repoMerge.value.toLowerCase()===DEFAULT_REPOSITORY.toLowerCase()||
-     branchMerge.value===null||workflowMerge.value===null) {
-    return {ok:false,reason:'TRUST_UNKNOWN'};
+  if(!resolveTrustedScope(trustedCandidate)) return {ok:false,reason:'TRUST_UNKNOWN'};
+  if(inputObj!==undefined) {
+    let inputScope=null;
+    if(Object.hasOwn(inputObj,'scope')) {
+      if(!plainJsonObject(inputObj.scope)||!Object.keys(inputObj.scope).every(k=>SCOPE_KEYS.has(k))) {
+        return {ok:false,reason:'TRUST_UNKNOWN'};
+      }
+      inputScope=inputObj.scope;
+    }
+    if(hasMismatchedStringField(inputObj,'repository',trustedCandidate.repository)||
+       hasMismatchedStringField(inputScope,'repository',trustedCandidate.repository)||
+       hasMismatchedStringField(inputObj,'branch',trustedCandidate.branch)||
+       hasMismatchedStringField(inputScope,'branch',trustedCandidate.branch)||
+       hasMismatchedStringField(inputObj,'workflowPath',trustedCandidate.workflowPath)||
+       hasMismatchedStringField(inputScope,'workflowPath',trustedCandidate.workflowPath)) {
+      return {ok:false,reason:'PROVENANCE_MISMATCH'};
+    }
   }
-  const ghRepo=readEnvValue(env,'GITHUB_REPOSITORY');
-  if(ghRepo.value!==undefined&&(env?.GITHUB_ACTIONS==='true'||ghRepo.value!=='')&&ghRepo.value!==repoMerge.value) {
-    return {ok:false,reason:'PROVENANCE_MISMATCH'};
-  }
-  const scopeCandidate={
-    repository:repoMerge.value,
-    repositoryId:repoBinding.repositoryId,
-    branch:branchMerge.value,
-    workflowPath:workflowMerge.value
+  return {
+    ok:true,
+    isDefaultUnscoped:repoBinding.repositoryId===DEFAULT_REPOSITORY_ID&&!repoBinding.explicitScope&&inputObj===undefined,
+    scope:trustedCandidate
   };
-  if(!resolveTrustedScope(scopeCandidate)) return {ok:false,reason:'TRUST_UNKNOWN'};
-  return {ok:true,isDefaultUnscoped:false,scope:scopeCandidate};
 }
 
 function parseBoundedInput(injectedInput,env) {
@@ -432,7 +429,34 @@ export function evaluateProtectedSquash(input,bindingOrRepoId=DEFAULT_REPOSITORY
   return evaluator(input.intent,input.evidence,scope);
 }
 
+function projectPlanTelemetry(result) {
+  const scheduledCount=result.scheduled.length;
+  const rawBlocked=Array.isArray(result.blockedTasks)?result.blockedTasks:[];
+  const seenReasons=new Set();
+  const blockedTasks=[];
+  for(let i=0;i<rawBlocked.length&&blockedTasks.length<32;i++) {
+    const item=rawBlocked[i];
+    const itemReason=plainJsonObject(item)&&typeof item.reason==='string'?item.reason:'OTHER';
+    if(!seenReasons.has(itemReason)) {
+      seenReasons.add(itemReason);
+      blockedTasks.push({reason:itemReason});
+    }
+  }
+  return {
+    shadow:true,
+    liveDispatch:false,
+    reason:result.reason,
+    scheduledCount,
+    blockedCount:rawBlocked.length,
+    scheduled:scheduledCount>0?[1]:[],
+    ...(blockedTasks.length>0?{blockedTasks}:{})
+  };
+}
+
 function telemetryResultFor(command,result) {
+  if(command==='--plan-lanes') {
+    return projectPlanTelemetry(result);
+  }
   if(command==='--reconcile-event'&&plainJsonObject(result)&&typeof result.reason==='string') {
     const mapped=EVENT_TELEMETRY_REASON_MAP.get(result.reason);
     return mapped?{...result,reason:mapped}:result;
@@ -606,14 +630,14 @@ export async function run(args,options={}) {
         return inv;
       },
       '--reconcile-pull':async()=>{
-        const scopeCheck=resolveReconcileScope(repoBinding,env,undefined);
+        const scopeCheck=resolveReconcileScope(repoBinding,undefined);
         if(!scopeCheck.ok) return blockedReconcile(scopeCheck.reason);
         return scopeCheck.isDefaultUnscoped&&options.request===undefined
           ?reconcile(env)
           :reconcile(env,reconcileRuntimeOpts(scopeCheck.scope));
       },
       '--reconcile-issue':async()=>{
-        const scopeCheck=resolveReconcileScope(repoBinding,env,undefined);
+        const scopeCheck=resolveReconcileScope(repoBinding,undefined);
         if(!scopeCheck.ok) return blockedReconcile(scopeCheck.reason);
         return scopeCheck.isDefaultUnscoped&&options.request===undefined
           ?reconcileIssue(env)
@@ -629,7 +653,7 @@ export async function run(args,options={}) {
             return blockedReconcile('PROVENANCE_MISMATCH');
           }
         }
-        const scopeCheck=resolveReconcileScope(repoBinding,env,parsedInput);
+        const scopeCheck=resolveReconcileScope(repoBinding,parsedInput);
         if(!scopeCheck.ok) return blockedReconcile(scopeCheck.reason);
         if(scopeCheck.isDefaultUnscoped&&options.request===undefined) {
           return sanitizeEventResult(await reconcileEvent(env));

@@ -448,6 +448,42 @@ test('unified subcommands, parameterized repositoryId, and bounded JSON input en
  assert.equal(planReceiptOut[0].outcome,'eligible');
  assert.equal(planReceiptOut[0].reason,'NONE');
 
+ // Large valid plan with 501 owned/scheduled paths succeeds on both stdout and --receipt
+ const paths501=Array.from({length:501},(_,i)=>`tools/engineering-factory/mod-${i}.mjs`);
+ const largePlanInput={
+  config:{
+   ...validConfig,
+   lanes:[{id:'admission',owners:paths501,prompt:'prompts/factory.md'}]
+  },
+  tasks:[{id:7,lane:'admission',state:'approved',priority:0,dependencies:[],paths:paths501}]
+ };
+ const largePlanRaw=[],largePlanReceipts=[],largeBlockedReceipts=[];
+ assert.equal(await run(['--plan-lanes'],{
+  env:{},input:largePlanInput,write:v=>largePlanRaw.push(JSON.parse(v))
+ }),0);
+ assert.equal(largePlanRaw[0].reason,'SHADOW_PLAN');
+ assert.equal(largePlanRaw[0].scheduled[0].paths.length,501);
+
+ assert.equal(await run(['--plan-lanes','--receipt'],{
+  clock,env:eventEnv,input:largePlanInput,write:v=>largePlanReceipts.push(JSON.parse(v))
+ }),0);
+ assert.equal(largePlanReceipts[0].valid,true);
+ assert.equal(largePlanReceipts[0].outcome,'eligible');
+ assert.equal(largePlanReceipts[0].reason,'NONE');
+
+ // Policy-blocked NO_READY_WORK with duplicate/unmapped blockedTasks compacts cleanly for receipts
+ assert.equal(await run(['--plan-lanes','--receipt'],{
+  clock,env:eventEnv,input:planInput,
+  plan:async()=>({
+   shadow:true,scheduled:[],reason:'NO_READY_WORK',
+   blockedTasks:[{id:1,reason:'RISK_ABOVE_CEILING'},{id:2,reason:'RISK_ABOVE_CEILING'},{id:3}]
+  }),
+  write:v=>largeBlockedReceipts.push(JSON.parse(v))
+ }),0);
+ assert.equal(largeBlockedReceipts[0].valid,true);
+ assert.equal(largeBlockedReceipts[0].outcome,'blocked');
+ assert.equal(largeBlockedReceipts[0].reason,'POLICY');
+
  for(const invalidPlanInput of [undefined,{config:validConfig},{config:validConfig,tasks:[],extra:1}]){
   assert.equal(await run(['--plan-lanes'],{
    env:{},
@@ -847,7 +883,10 @@ test('unified subcommands, parameterized repositoryId, and bounded JSON input en
  for(const badScopeInput of [
   {scope:'not-object'},
   {branch:'bad..branch'},
-  {repository:'Conflicting/Repo'}
+  {repository:'Conflicting/Repo'},
+  {workflowPath:'.github/workflows/other.yml'},
+  {scope:{...consumerScope,branch:'other'}},
+  {scope:{...consumerScope,workflowPath:'.github/workflows/other.yml'}}
  ]){
   const badEvt=[];
   assert.equal(await run(['--reconcile-event'],{
@@ -856,14 +895,33 @@ test('unified subcommands, parameterized repositoryId, and bounded JSON input en
   }),0);
   assert.equal(['TRUST_UNKNOWN','PROVENANCE_MISMATCH'].includes(badEvt[0].reason),true);
  }
- const unconfiguredGhRepoMismatch=[];
+
+ // Untrusted FACTORY_INPUT_JSON.scope must NEVER populate missing consumer scope fields
+ const untrustedInputScopeOut=[];
  assert.equal(await run(['--reconcile-event'],{
-  repositoryId:consumerRepoId,
-  env:{GITHUB_REPOSITORY:'Other/Repo'},
-  input:{scope:consumerScope},
-  write:v=>unconfiguredGhRepoMismatch.push(JSON.parse(v))
+  clock,
+  request:()=>assert.fail('must not issue network request when trusted consumer scope is incomplete'),
+  env:{
+   GITHUB_ACTIONS:'true',
+   RUNNER_ENVIRONMENT:'github-hosted',
+   GITHUB_EVENT_NAME:'push',
+   GITHUB_REPOSITORY:consumerRepoName,
+   GITHUB_REPOSITORY_ID:String(consumerRepoId),
+   FACTORY_EXPECTED_REPO_ID:String(consumerRepoId),
+   GITHUB_REF:'refs/heads/main',
+   GITHUB_WORKFLOW_REF:`${consumerRepoName}/.github/workflows/shadow-reconcile.yml@refs/heads/main`,
+   GITHUB_REF_PROTECTED:'true',
+   GITHUB_WORKFLOW_SHA:workflowSha,
+   GITHUB_SHA:workflowSha,
+   FACTORY_CHECKOUT_SHA:workflowSha,
+   FACTORY_MAIN_HEAD:workflowSha,
+   GITHUB_RUN_ID:'770099',
+   FACTORY_INPUT_JSON:JSON.stringify({scope:consumerScope})
+  },
+  write:v=>untrustedInputScopeOut.push(JSON.parse(v))
  }),0);
- assert.equal(unconfiguredGhRepoMismatch[0].reason,'PROVENANCE_MISMATCH');
+ assert.equal(untrustedInputScopeOut[0].reconciled,false);
+ assert.equal(untrustedInputScopeOut[0].reason,'TRUST_UNKNOWN');
 
  // End-to-end REAL reconcilePullTrigger, reconcileIssueTrigger, and reconcileEventTrigger for consumer 200036
  const consumerWorkflowRef=`${consumerRepoName}/.github/workflows/shadow-reconcile.yml@refs/heads/main`;
