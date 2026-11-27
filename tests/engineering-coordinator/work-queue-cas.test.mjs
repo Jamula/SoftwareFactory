@@ -2558,10 +2558,15 @@ test('simulateDurableCasLifecycle handles seeded initialState compaction, replay
   }).reason, 'INVALID_ACTIVE_LEASES');
 
   // Same-deliveryId replay after expiry rejects with DUPLICATE_DELIVERY (same runner),
-  // and same-(runId, runAttempt) replay after cold runner_restart rejects with DUPLICATE_RUN_ATTEMPT!
+  // and A -> B -> A replay under maxAttempts: 3 across direct settle('requeued'), expiry/reconcile,
+  // and cold runner_restart rejects BOTH A and B with DUPLICATE_RUN_ATTEMPT without consuming attempt 3!
+  const threeAttemptCfg = makeConfig({
+    limits: {maxConcurrentLanes: 2, leaseMs: 60000, maxAttempts: 3, baseDelayMs: 100, maxDelayMs: 1000}
+  });
   const dupDeliverySim = await simulateDurableCasLifecycle({
-    config,
+    config: threeAttemptCfg,
     steps: [
+      // Attempt 1 (Run A: 9601/1)
       {
         kind: 'replay_events',
         nowMs: 1000,
@@ -2569,44 +2574,112 @@ test('simulateDurableCasLifecycle handles seeded initialState compaction, replay
           deliveryId: 'same-webhook-1',
           eventSequence: 1,
           readyAtMs: 900,
-          candidate: makeIssueCandidate({issueNumber: 601, runId: 9601, leaseTtlMs: 500, maxExecutionMs: 5000})
+          candidate: makeIssueCandidate({issueNumber: 601, workerId: 'worker-A', runId: 9601, runAttempt: 1, maxAttempts: 3, leaseTtlMs: 500, maxExecutionMs: 5000})
         }]
       },
-      // Lease expired at 1500; replaying exact same deliveryId at 2000 on same runner MUST reject with DUPLICATE_DELIVERY
+      // Direct worker requeue on Attempt 1 -> status 'requeued'
+      {
+        kind: 'worker_action',
+        action: 'settle',
+        workId: `${REPO_ID}:issue:601`,
+        workerId: 'worker-A',
+        generation: 1,
+        outcome: 'requeued',
+        nowMs: 1200
+      },
+      // Replaying exact same deliveryId on same runner MUST reject with DUPLICATE_DELIVERY
       {
         kind: 'replay_events',
-        nowMs: 2000,
+        nowMs: 1300,
         events: [{
           deliveryId: 'same-webhook-1',
           eventSequence: 1,
           readyAtMs: 900,
-          candidate: makeIssueCandidate({issueNumber: 601, runId: 9601, leaseTtlMs: 500, maxExecutionMs: 5000})
+          candidate: makeIssueCandidate({issueNumber: 601, workerId: 'worker-A', runId: 9601, runAttempt: 1, maxAttempts: 3, leaseTtlMs: 500, maxExecutionMs: 5000})
         }]
       },
-      // Reconcile expired run -> status becomes 'requeued', then cold runner_restart wipes seenDeliveries
-      {
-        kind: 'reconcile_runs',
-        nowMs: 2100,
-        observedRuns: []
-      },
-      {kind: 'runner_restart', nowMs: 2200},
-      // Replaying with the ALREADY-USED (runId: 9601, runAttempt: 1) after cold restart MUST reject with DUPLICATE_RUN_ATTEMPT!
+      // Attempt 2 (Run B: 9602/1) claims and records Run A in priorRuns, renews once, then expires at 2500
       {
         kind: 'replay_events',
-        nowMs: 2300,
+        nowMs: 1400,
         events: [{
-          deliveryId: 'replayed-after-restart',
-          eventSequence: 1,
-          candidate: makeIssueCandidate({issueNumber: 601, runId: 9601, runAttempt: 1, leaseTtlMs: 500, maxExecutionMs: 5000})
+          deliveryId: 'webhook-attempt-b',
+          eventSequence: 2,
+          candidate: makeIssueCandidate({issueNumber: 601, workerId: 'worker-B', runId: 9602, runAttempt: 1, maxAttempts: 3, leaseTtlMs: 600, maxExecutionMs: 5000})
         }]
+      },
+      {
+        kind: 'worker_action',
+        action: 'renew',
+        workId: `${REPO_ID}:issue:601`,
+        workerId: 'worker-B',
+        generation: 2,
+        leaseTtlMs: 600,
+        nowMs: 1900
+      },
+      // Reconcile expired Run B at 2600 -> status becomes 'requeued' (attempts: 2 of 3), then cold runner_restart wipes seenDeliveries
+      {
+        kind: 'reconcile_runs',
+        nowMs: 2600,
+        observedRuns: []
+      },
+      {kind: 'runner_restart', nowMs: 2700},
+      // A -> B -> A replay after cold restart: BOTH Run A (9601/1 in priorRuns) and Run B (9602/1 current) reject with DUPLICATE_RUN_ATTEMPT!
+      {
+        kind: 'replay_events',
+        nowMs: 2800,
+        events: [
+          {
+            deliveryId: 'replayed-run-a-after-restart',
+            eventSequence: 1,
+            candidate: makeIssueCandidate({issueNumber: 601, workerId: 'worker-A', runId: 9601, runAttempt: 1, maxAttempts: 3, leaseTtlMs: 500, maxExecutionMs: 5000})
+          },
+          {
+            deliveryId: 'replayed-run-b-after-restart',
+            eventSequence: 2,
+            candidate: makeIssueCandidate({issueNumber: 601, workerId: 'worker-B', runId: 9602, runAttempt: 1, maxAttempts: 3, leaseTtlMs: 500, maxExecutionMs: 5000})
+          },
+          // Legitimate Attempt 3 (Run C: 9603/1) still has retry budget and succeeds!
+          {
+            deliveryId: 'legit-run-c-attempt-3',
+            eventSequence: 3,
+            candidate: makeIssueCandidate({issueNumber: 601, workerId: 'worker-C', runId: 9603, runAttempt: 1, maxAttempts: 3, leaseTtlMs: 500, maxExecutionMs: 5000})
+          }
+        ]
       }
     ]
   });
   assert.equal(dupDeliverySim.ok, true);
-  assert.equal(dupDeliverySim.metrics.claimsGranted, 1);
-  assert.equal(dupDeliverySim.steps[1].outcomes[0].reason, 'DUPLICATE_DELIVERY');
-  assert.equal(dupDeliverySim.steps[4].outcomes[0].reason, 'DUPLICATE_RUN_ATTEMPT');
-  assert.equal(dupDeliverySim.metrics.duplicateClaimsRejected, 2);
+  assert.equal(dupDeliverySim.metrics.claimsGranted, 3);
+  assert.equal(dupDeliverySim.steps[2].outcomes[0].reason, 'DUPLICATE_DELIVERY');
+  assert.equal(dupDeliverySim.steps[7].outcomes[0].reason, 'DUPLICATE_RUN_ATTEMPT');
+  assert.equal(dupDeliverySim.steps[7].outcomes[1].reason, 'DUPLICATE_RUN_ATTEMPT');
+  assert.equal(dupDeliverySim.steps[7].outcomes[2].ok, true);
+  assert.equal(dupDeliverySim.finalState.entries[0].attempts, 3);
+  assert.deepEqual(dupDeliverySim.finalState.entries[0].priorRuns, [
+    {runId: 9601, runAttempt: 1},
+    {runId: 9602, runAttempt: 1}
+  ]);
+  assert.equal(dupDeliverySim.metrics.duplicateClaimsRejected, 3);
+
+  // Invalid priorRuns in persisted state fail closed in freezeValidatedState
+  const validAttempt3Entry = {
+    ...dupDeliverySim.finalState.entries[0],
+    ownedPaths: [...dupDeliverySim.finalState.entries[0].ownedPaths],
+    priorRuns: dupDeliverySim.finalState.entries[0].priorRuns.map(p => ({...p}))
+  };
+  for (const badPriorRuns of [
+    [],
+    [{runId: 0, runAttempt: 1}],
+    [{runId: 9603, runAttempt: 1}],
+    [{runId: 9601, runAttempt: 1}, {runId: 9601, runAttempt: 1}],
+    [{runId: 1, runAttempt: 1}, {runId: 2, runAttempt: 1}, {runId: 3, runAttempt: 1}]
+  ]) {
+    assert.throws(() => createInMemoryWorkQueueRefStore({
+      ...dupDeliverySim.finalState,
+      entries: [{...validAttempt3Entry, priorRuns: badPriorRuns}]
+    }), /INVALID_INITIAL_WORK_QUEUE_STATE/);
+  }
 
   // claimWorkQueueLease rejects clock skew (nowMs < existing entry claimedAtMs)
   const skewStore = createInMemoryWorkQueueRefStore();

@@ -112,7 +112,37 @@ function cloneEntry(entry) {
   };
   if (entry.traceparent !== undefined) copy.traceparent = entry.traceparent;
   if (entry.lockSha256 !== undefined) copy.lockSha256 = entry.lockSha256;
+  if (entry.priorRuns !== undefined) {
+    copy.priorRuns = Object.freeze(entry.priorRuns.map(item => Object.freeze({
+      runId: item.runId,
+      runAttempt: item.runAttempt
+    })));
+  }
   return Object.freeze(copy);
+}
+
+function copyEntryWith(entry, overrides) {
+  const next = {...entry, ownedPaths: [...entry.ownedPaths], ...overrides};
+  if (entry.priorRuns !== undefined) {
+    next.priorRuns = entry.priorRuns.map(item => ({runId: item.runId, runAttempt: item.runAttempt}));
+  }
+  return next;
+}
+
+function isValidPriorRuns(priorRuns, entry) {
+  if (!isDenseArray(priorRuns, 4) || priorRuns.length === 0 || priorRuns.length >= entry.attempts) {
+    return false;
+  }
+  const seen = new Set([`${entry.runId}:${entry.runAttempt}`]);
+  for (const item of priorRuns) {
+    if (!isPlainRecord(item, ['runId', 'runAttempt']) || !positive(item.runId) || !positive(item.runAttempt)) {
+      return false;
+    }
+    const key = `${item.runId}:${item.runAttempt}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+  }
+  return true;
 }
 
 function cloneReceipt(receipt) {
@@ -145,7 +175,7 @@ function isValidQueueEntry(entry) {
     'lane', 'ownedPaths', 'status', 'generation', 'attempts', 'maxAttempts', 'workerId', 'runId', 'runAttempt',
     'claimedAtMs', 'leaseTtlMs', 'leaseExpiresAtMs', 'maxExecutionMs', 'executionDeadlineMs'
   ];
-  if (!isPlainRecord(entry, required, ['traceparent', 'lockSha256'])) return false;
+  if (!isPlainRecord(entry, required, ['traceparent', 'lockSha256', 'priorRuns'])) return false;
   if (!isRepoName(entry.repository) || !positive(entry.repositoryId) ||
       !isLaneId(entry.lane) || !isValidPathSet(entry.ownedPaths) ||
       !VALID_ENTRY_STATUSES.has(entry.status) || !positive(entry.generation) ||
@@ -169,6 +199,7 @@ function isValidQueueEntry(entry) {
   if (entry.workId !== expectedWorkId(entry)) return false;
   if (entry.traceparent !== undefined && !isTraceparent(entry.traceparent)) return false;
   if (entry.lockSha256 !== undefined && !isHex64(entry.lockSha256)) return false;
+  if (entry.priorRuns !== undefined && !isValidPriorRuns(entry.priorRuns, entry)) return false;
   return true;
 }
 
@@ -686,7 +717,11 @@ export async function claimWorkQueueLease(options) {
       if (isLeaseActive(existing, claimNowMs)) return {abort: true, result: denyMutation('DUPLICATE_ACTIVE_CLAIM')};
       if (existing.status === 'completed') return {abort: true, result: denyMutation('WORK_ALREADY_COMPLETED')};
       if (existing.status === 'cancelled') return {abort: true, result: denyMutation('WORK_CANCELLED')};
-      if (existing.runId === snapCandidate.runId && existing.runAttempt === snapCandidate.runAttempt) {
+      const matchesUsedRun = (existing.runId === snapCandidate.runId && existing.runAttempt === snapCandidate.runAttempt) ||
+        (existing.priorRuns !== undefined && existing.priorRuns.some(
+          prior => prior.runId === snapCandidate.runId && prior.runAttempt === snapCandidate.runAttempt
+        ));
+      if (matchesUsedRun) {
         return {abort: true, result: denyMutation('DUPLICATE_RUN_ATTEMPT')};
       }
       if (existing.status === 'exhausted' || existing.attempts >= effectiveMaxAttempts) {
@@ -731,14 +766,12 @@ export async function claimWorkQueueLease(options) {
           outcome: fencedOutcome,
           reclaimedAtMs: claimNowMs
         });
-        return {
-          ...item,
-          ownedPaths: [...item.ownedPaths],
+        return copyEntryWith(item, {
           status: fencedOutcome,
           generation: fencedGeneration,
           maxAttempts: boundedMaxAttempts,
           leaseExpiresAtMs: Math.min(item.leaseExpiresAtMs, claimNowMs)
-        };
+        });
       }
       return item;
     });
@@ -800,6 +833,14 @@ export async function claimWorkQueueLease(options) {
     };
     if (snapCandidate.traceparent !== undefined) nextEntry.traceparent = snapCandidate.traceparent;
     if (snapCandidate.lockSha256 !== undefined) nextEntry.lockSha256 = snapCandidate.lockSha256;
+    if (existing !== null) {
+      nextEntry.priorRuns = [
+        ...(existing.priorRuns === undefined
+          ? []
+          : existing.priorRuns.map(prior => ({runId: prior.runId, runAttempt: prior.runAttempt}))),
+        {runId: existing.runId, runAttempt: existing.runAttempt}
+      ];
+    }
 
     if (existingIndex >= 0) {
       const targetIdx = workingEntries.findIndex(item => item.workId === snapCandidate.workId);
@@ -892,12 +933,10 @@ export async function renewWorkQueueLease(options) {
     }
 
     const clampedExpiry = Math.min(entry.executionDeadlineMs, renewNowMs + leaseTtlMs);
-    const updated = {
-      ...entry,
-      ownedPaths: [...entry.ownedPaths],
+    const updated = copyEntryWith(entry, {
       leaseTtlMs: Math.min(leaseTtlMs, entry.maxExecutionMs),
       leaseExpiresAtMs: Math.max(entry.leaseExpiresAtMs, clampedExpiry)
-    };
+    });
     const nextEntries = [...state.entries];
     nextEntries[index] = updated;
     return {
@@ -963,12 +1002,10 @@ export async function settleWorkQueueLease(options) {
     const finalStatus = outcome === 'requeued' && entry.attempts >= entry.maxAttempts
       ? 'exhausted'
       : outcome;
-    const updated = {
-      ...entry,
-      ownedPaths: [...entry.ownedPaths],
+    const updated = copyEntryWith(entry, {
       status: finalStatus,
       leaseExpiresAtMs: Math.min(entry.leaseExpiresAtMs, settleNowMs)
-    };
+    });
     const nextEntries = [...state.entries];
     nextEntries[index] = updated;
     return {
@@ -1086,14 +1123,12 @@ export async function reconcileWorkQueueRunStates(options) {
             const outcome = (leaseStillActive && terminalSuccess)
               ? 'completed'
               : (entry.attempts >= retryLimit ? 'exhausted' : 'requeued');
-            nextEntries.push({
-              ...entry,
-              ownedPaths: [...entry.ownedPaths],
+            nextEntries.push(copyEntryWith(entry, {
               maxAttempts: persistedMaxAttempts,
               status: outcome,
               generation: reclaimedGeneration,
               leaseExpiresAtMs: Math.min(entry.leaseExpiresAtMs, reconcileNowMs)
-            });
+            }));
             newReceipts.push({
               workId: entry.workId,
               repositoryId: entry.repositoryId,
@@ -1118,14 +1153,12 @@ export async function reconcileWorkQueueRunStates(options) {
           (reconcileNowMs >= entry.leaseExpiresAtMs || reconcileNowMs >= entry.executionDeadlineMs)) {
         const reclaimedGeneration = nextGeneration++;
         const outcome = entry.attempts >= retryLimit ? 'exhausted' : 'requeued';
-        nextEntries.push({
-          ...entry,
-          ownedPaths: [...entry.ownedPaths],
+        nextEntries.push(copyEntryWith(entry, {
           maxAttempts: persistedMaxAttempts,
           status: outcome,
           generation: reclaimedGeneration,
           leaseExpiresAtMs: Math.min(entry.leaseExpiresAtMs, reconcileNowMs)
-        });
+        }));
         newReceipts.push({
           workId: entry.workId,
           repositoryId: entry.repositoryId,
@@ -1144,7 +1177,7 @@ export async function reconcileWorkQueueRunStates(options) {
         continue;
       }
 
-      nextEntries.push({...entry, ownedPaths: [...entry.ownedPaths]});
+      nextEntries.push(copyEntryWith(entry, {}));
     }
 
     for (const [workId, obs] of observationsByWorkId.entries()) {
