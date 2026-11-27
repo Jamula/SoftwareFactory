@@ -867,14 +867,6 @@ const ALLOWED_CHECKOUT_WITH_KEYS = new Set([
   'show-progress'
 ]);
 
-function hasCheckoutEnvOverride(envValue) {
-  return isMapObject(envValue) &&
-    Object.keys(envValue).some(key => {
-      const lower = key.toLowerCase();
-      return lower.startsWith('input_') || lower.startsWith('git_');
-    });
-}
-
 function isSafeScanEnv(envValue) {
   if (envValue === undefined) return true;
   if (!isMapObject(envValue)) return false;
@@ -1532,7 +1524,7 @@ export function verifyGhAwWorkflowLock(input) {
               return deny('PINNED_RELEASE_MISMATCH');
             }
             if (jobHasWriteScope &&
-                (hasCheckoutEnvOverride(lockDoc.env) || hasCheckoutEnvOverride(job.env) || hasCheckoutEnvOverride(step.env) ||
+                (!isSafeScanEnv(lockDoc.env) || !isSafeScanEnv(job.env) || !isSafeScanEnv(step.env) ||
                  !isTrustedControlPlaneCheckout(checkoutWith, releaseCheck.release.commit, trustedShas))) {
               return deny('UNTRUSTED_SAFE_OUTPUT_CHECKOUT');
             }
@@ -2205,7 +2197,7 @@ export function verifyEventTriggerMatrix(lockYamlSource, options) {
             if (checkoutWith === null || checkoutWith['persist-credentials'] !== false) {
               return deny('CHECKOUT_CREDENTIALS_PERSISTED');
             }
-            if (hasCheckoutEnvOverride(lockDoc.env) || hasCheckoutEnvOverride(job.env) || hasCheckoutEnvOverride(step.env)) {
+            if (!isSafeScanEnv(lockDoc.env) || !isSafeScanEnv(job.env) || !isSafeScanEnv(step.env)) {
               return deny('UNTRUSTED_PR_CHECKOUT');
             }
             let isGhAwCheckout = false;

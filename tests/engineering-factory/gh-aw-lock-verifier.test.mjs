@@ -2022,6 +2022,10 @@ test('verifies Issue #5 event trigger matrix, 10-minute default-off recovery sch
     `      - uses: actions/checkout@${checkoutSha}\n`,
     `      - uses: actions/checkout@${checkoutSha}\n        env:\n          GIT_CONFIG_COUNT: "1"\n`
   )).reason, 'UNTRUSTED_PR_CHECKOUT');
+  assert.equal(verifyEventTriggerMatrix(buildMatrixYaml().replace(
+    `      - uses: actions/checkout@${checkoutSha}\n`,
+    `      - uses: actions/checkout@${checkoutSha}\n        env: \${{ fromJSON('{"GIT_CONFIG_COUNT":"1"}') }}\n`
+  )).reason, 'UNTRUSTED_PR_CHECKOUT');
   // Pinned github/gh-aw and allowlisted trustedControlPlaneShas checkouts pass; github.workflow_sha without protected provenance fails closed!
   const allowlistedMatrixSha = 'e'.repeat(40);
   assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({
