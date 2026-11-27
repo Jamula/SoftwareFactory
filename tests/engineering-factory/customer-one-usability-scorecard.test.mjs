@@ -817,6 +817,20 @@ test('compares matched baseline windows and blocks cross-class, mismatched, stal
         ...baseline.usability,
         metrics: {
           ...baseline.usability.metrics,
+          initialPlanMs: {
+            ...baseline.usability.metrics.initialPlanMs,
+            min: 100_000,
+            p50: 100_000
+          }
+        }
+      }
+    },
+    {
+      ...baseline,
+      usability: {
+        ...baseline.usability,
+        metrics: {
+          ...baseline.usability.metrics,
           initialPlanMs: {...baseline.usability.metrics.initialPlanMs, min: 100_000}
         }
       }

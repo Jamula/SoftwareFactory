@@ -659,6 +659,7 @@ function validCompleteMetricEntry(entry, spec, observationCount) {
   const idx50 = Math.ceil(0.5 * observationCount) - 1;
   const idx95 = Math.ceil(0.95 * observationCount) - 1;
   if ((idx50 === 0 && entry.p50 !== entry.min) ||
+      (idx50 === idx95 && entry.p50 !== entry.p95) ||
       (idx95 === observationCount - 1 && entry.p95 !== entry.max)) {
     return false;
   }
