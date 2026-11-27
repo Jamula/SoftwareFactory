@@ -521,10 +521,19 @@ test('snapshot export and import reject malformed scopes, payloads, proxies and 
       {...validEntry, generation: 1, owner: null},
       {...validEntry, generation: 1, owner: 'w1', completed: true, expires: 10},
       {...validEntry, generation: 1, owner: 'w1', completed: true, retryAfter: 60000},
-      {...validEntry, generation: 1, owner: 'w1', completed: false, retryAfter: 0}
+      {...validEntry, generation: 1, owner: 'w1', completed: false, retryAfter: 0},
+      {...validEntry, generation: 1, owner: 'w1', completed: false, expires: 3600001},
+      {...validEntry, generation: 1, owner: 'w1', completed: false, retryAfter: 3600001}
     ]) {
       assert.equal(importJournalSnapshot(store, {schemaVersion: 1, shadow: true, entries: [badEntry]}).reason, 'INVALID_SNAPSHOT');
     }
+    // Real-clock leases require supplying trusted {now} and still enforce the 3,600,000 ms remaining-duration ceiling.
+    const realNow = 1795740000000;
+    const dayLease = {...validEntry, generation: 1, owner: 'w1', expires: realNow + 86400000};
+    assert.equal(importJournalSnapshot(store, {schemaVersion: 1, shadow: true, entries: [dayLease]}, {now: realNow}).reason, 'INVALID_SNAPSHOT');
+    const hourLease = {...validEntry, generation: 1, owner: 'w1', expires: realNow + 3600000};
+    assert.equal(importJournalSnapshot(store, {schemaVersion: 1, shadow: true, entries: [hourLease]}).reason, 'INVALID_SNAPSHOT');
+    assert.equal(importJournalSnapshot(store, {schemaVersion: 1, shadow: true, entries: [hourLease]}, {now: realNow}).imported, true);
   } finally {
     store.close();
   }

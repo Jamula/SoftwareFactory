@@ -23,18 +23,18 @@ const isDenseArray = value => !types.isProxy(value) && Array.isArray(value) &&
     Object.hasOwn(Object.getOwnPropertyDescriptor(value, i) ?? {}, 'value')).every(Boolean);
 const rejected = reason => ({queued: false, reason});
 
-function validSnapshotEntry(entry) {
+function validSnapshotEntry(entry, now) {
   if (!hasOwnValues(entry, snapshotEntryKeys) || Reflect.ownKeys(entry).length !== snapshotEntryKeys.length) {
     return false;
   }
   const {repositoryId, deliveryId, kind, subject, head, owner, generation, expires, completed, retryAfter} = entry;
   if (!isRepo(repositoryId) || !isToken(deliveryId) || !eventKinds.has(kind) ||
       !isTime(subject) || !isHead(head) || typeof completed !== 'boolean' ||
-      !isTime(generation) || !isTime(expires)) return false;
+      !isTime(generation) || !isTime(expires) || expires - now > 3600000) return false;
   if (generation === 0) return owner === null && expires === 0 && !completed && retryAfter === null;
   if (!isToken(owner)) return false;
   if (completed) return expires === 0 && retryAfter === null;
-  return retryAfter === null || isRepo(retryAfter);
+  return retryAfter === null || (isRepo(retryAfter) && retryAfter - now <= 3600000);
 }
 
 /**
@@ -370,7 +370,7 @@ export function importJournalSnapshot(journal, snapshot, options = {}) {
   }
   const seen = new Set();
   for (const entry of snapshot.entries) {
-    if (!validSnapshotEntry(entry)) return denied('INVALID_SNAPSHOT');
+    if (!validSnapshotEntry(entry, now)) return denied('INVALID_SNAPSHOT');
     const key = `${entry.repositoryId}:${entry.deliveryId}`;
     if (seen.has(key)) return denied('INVALID_SNAPSHOT');
     seen.add(key);
