@@ -4,6 +4,7 @@ import {readFileSync} from 'node:fs';
 import {
   ALLOWED_BLOCKED_REASONS,
   MIN_COMPARABLE_ACCEPTED_UNITS,
+  READY_TO_ACCEPTED_OBJECTIVES,
   SCORECARD_PROVENANCES,
   THROUGHPUT_CHECKPOINTS,
   VELOCITY_STAGE_OBJECTIVES,
@@ -803,6 +804,10 @@ test('compares matched >=5 unit baseline and candidate cohorts and enforces qual
   ).reason, 'ZERO_OR_UNKNOWN_BASELINE');
   assert.equal(compareVelocityScorecards(
     baseline,
+    {...candidate10, throughput: {...candidate10.throughput, acceptedOutcomesPerDay: 0}}
+  ).reason, 'ZERO_OR_UNKNOWN_BASELINE');
+  assert.equal(compareVelocityScorecards(
+    baseline,
     {...candidate10, cost: {...candidate10.cost, costPerAcceptedUsdMicros: 10, status: 'verified-spend'}}
   ).reason, 'GUARDRAIL_UNVERIFIED_OR_REGRESSED');
   assert.equal(compareVelocityScorecards(
@@ -890,9 +895,11 @@ test('fails closed across malformed scorecard inputs, incomplete outcomes, confl
   );
 
   // Rework, utilization, intervention, quality, and proxy validation errors.
+  assert.deepEqual(READY_TO_ACCEPTED_OBJECTIVES, {initialMs: 1500000, stretchMs: 420000});
   for (const badRework of [
     {},
-    {...u1.rework, candidateRounds: 2, reworkRounds: 0}
+    {...u1.rework, candidateRounds: 2, reworkRounds: 0},
+    {...u1.rework, reopenedCount: 1}
   ]) {
     assert.equal(
       buildVelocityScorecard(makeScorecardInput({units: [makeScorecardUnit(1, {rework: badRework})]}), [1]).reason,

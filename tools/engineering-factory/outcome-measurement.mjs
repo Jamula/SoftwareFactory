@@ -7,6 +7,7 @@ import {
   aggregateGithubTiming,
   aggregateScorecardStages,
   isHistoricalProxyArtifact,
+  isNonProxyProvenance,
   ownDataValue
 } from './stage-aggregate.mjs';
 export {SCORECARD_PROVENANCES, VELOCITY_STAGE_OBJECTIVES};
@@ -154,11 +155,11 @@ export function measureAcceptedCohort(entries, query, authorizedRepositoryIds) {
 
 export const MIN_COMPARABLE_ACCEPTED_UNITS = 5;
 export const THROUGHPUT_CHECKPOINTS = Object.freeze([2, 5, 10, 15, 20, 25]);
+export const READY_TO_ACCEPTED_OBJECTIVES = Object.freeze({initialMs: 1500000, stretchMs: 420000});
 export const ALLOWED_BLOCKED_REASONS = Object.freeze([
   'DEPENDENCY', 'REVIEW', 'CI', 'QUOTA', 'MERGE_QUEUE', 'POLICY', 'SECURITY', 'OTHER'
 ]);
 
-const nonProxyProvenances = new Set(['verified-autonomous-outcome', 'synthetic-fixture']);
 const blockedReasonSet = new Set(ALLOWED_BLOCKED_REASONS);
 const maxUnitCount = 1000000;
 const maxUnitDurationMs = 315360000000;
@@ -271,7 +272,7 @@ function evaluateQualityReceipt(quality, query) {
   if (quality.provenance !== query.provenance) {
     return {
       ok: false,
-      reason: nonProxyProvenances.has(quality.provenance)
+      reason: isNonProxyProvenance(quality.provenance)
         ? 'PROVENANCE_ISOLATION_VIOLATION'
         : 'INVALID_QUALITY_EVIDENCE'
     };
@@ -318,7 +319,7 @@ function evaluateQualityReceipt(quality, query) {
 
 function evaluateHistoricalProxySection(section, query, authorizedRepositoryIds) {
   if (section === null) return {ok: true, context: null};
-  if (nonProxyProvenances.has(ownDataValue(section, 'provenance'))) {
+  if (isNonProxyProvenance(ownDataValue(section, 'provenance'))) {
     return {ok: false, reason: 'PROVENANCE_ISOLATION_VIOLATION'};
   }
   if (!exactData(section, proxySectionFields) ||
@@ -362,7 +363,7 @@ function evaluateHistoricalProxySection(section, query, authorizedRepositoryIds)
 
 function validScorecardSnapshot(s) {
   return exactData(s, scorecardSnapshotFields) && typeof s.known === 'boolean' &&
-    nonProxyProvenances.has(s.provenance) && id(s.repositoryId) && label(s.cohort) &&
+    isNonProxyProvenance(s.provenance) && id(s.repositoryId) && label(s.cohort) &&
     typeof s.autonomousSpeedClaimEligible === 'boolean' &&
     ownData(s.window, ['fromMs', 'toMs']) && time(s.window.fromMs) && time(s.window.toMs) &&
     s.window.fromMs < s.window.toMs &&
@@ -403,7 +404,7 @@ export function compareVelocityScorecards(baseline, candidate) {
   if (!Number.isFinite(baseline.throughput.acceptedOutcomesPerDay) ||
       baseline.throughput.acceptedOutcomesPerDay <= 0 ||
       !Number.isFinite(candidate.throughput.acceptedOutcomesPerDay) ||
-      candidate.throughput.acceptedOutcomesPerDay < 0) {
+      candidate.throughput.acceptedOutcomesPerDay <= 0) {
     return unavailable('ZERO_OR_UNKNOWN_BASELINE');
   }
   const verifiedCost = s => ['verified-zero', 'verified-spend'].includes(s.cost.status) &&
@@ -446,7 +447,7 @@ export function buildVelocityScorecard(input, authorizedRepositoryIds) {
   if (!exactData(query, scorecardQueryFields) || !id(query.repositoryId) ||
       !dense(authorizedRepositoryIds, 32) || !authorizedRepositoryIds.every(id) ||
       !authorizedRepositoryIds.includes(query.repositoryId) || !label(query.cohort) ||
-      !nonProxyProvenances.has(query.provenance) || typeof query.complete !== 'boolean' ||
+      !isNonProxyProvenance(query.provenance) || typeof query.complete !== 'boolean' ||
       typeof query.stageSourceComplete !== 'boolean' ||
       !time(query.fromMs) || !time(query.toMs) || query.fromMs >= query.toMs) {
     return unknown('COHORT_UNKNOWN');
@@ -512,7 +513,7 @@ export function buildVelocityScorecard(input, authorizedRepositoryIds) {
     if (isHistoricalProxyArtifact(unit)) return unknown('PROVENANCE_ISOLATION_VIOLATION');
     if (!exactData(unit, unitFields)) return unknown('ENTRY_SCOPE_UNKNOWN');
     if (unit.provenance !== query.provenance) {
-      return unknown(nonProxyProvenances.has(unit.provenance)
+      return unknown(isNonProxyProvenance(unit.provenance)
         ? 'PROVENANCE_ISOLATION_VIOLATION'
         : 'ENTRY_SCOPE_UNKNOWN');
     }
@@ -546,7 +547,7 @@ export function buildVelocityScorecard(input, authorizedRepositoryIds) {
       counts.unknown++;
       continue;
     }
-    if (telemetry.rework && issue.lastReopenedAt !== null && telemetry.rework.reopenedCount === 0) {
+    if (telemetry.rework && (issue.lastReopenedAt !== null) !== (telemetry.rework.reopenedCount > 0)) {
       return unknown('INVALID_REWORK_EVIDENCE');
     }
     const cost = unit.cost !== null ? acceptedCost(unit.cost, issue, query.observedMs) : null;
@@ -562,8 +563,8 @@ export function buildVelocityScorecard(input, authorizedRepositoryIds) {
 
     counts.accepted++;
     readyToAcceptedDurations.push(outcome.elapsedMs);
-    if (outcome.elapsedMs > 1500000) readyToAcceptedInitialMisses++;
-    if (outcome.elapsedMs > 420000) readyToAcceptedStretchMisses++;
+    if (outcome.elapsedMs > READY_TO_ACCEPTED_OBJECTIVES.initialMs) readyToAcceptedInitialMisses++;
+    if (outcome.elapsedMs > READY_TO_ACCEPTED_OBJECTIVES.stretchMs) readyToAcceptedStretchMisses++;
 
     if (cost) {
       if (!Number.isSafeInteger(spendMicros + cost.amountMicros)) {
@@ -708,7 +709,7 @@ export function buildVelocityScorecard(input, authorizedRepositoryIds) {
       acceptedOutcomesPerDay: outcomeComplete ? counts.accepted * dayMs / (query.toMs - query.fromMs) : null,
       readyToAcceptedP50Ms: nearestRank(readyToAcceptedDurations, 0.5),
       readyToAcceptedP95Ms: nearestRank(readyToAcceptedDurations, 0.95),
-      readyToAcceptedObjectives: {initialMs: 1500000, stretchMs: 420000},
+      readyToAcceptedObjectives: READY_TO_ACCEPTED_OBJECTIVES,
       readyToAcceptedSlo: {
         initialMissCount: readyToAcceptedInitialMisses,
         stretchMissCount: readyToAcceptedStretchMisses

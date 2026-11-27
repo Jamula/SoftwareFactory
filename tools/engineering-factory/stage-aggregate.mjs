@@ -130,7 +130,8 @@ export const SCORECARD_PROVENANCES = Object.freeze([
   'historical-github-proxy'
 ]);
 
-const nonProxyProvenances = new Set(['verified-autonomous-outcome', 'synthetic-fixture']);
+const nonProxyProvenances = new Set(SCORECARD_PROVENANCES.filter(p => p !== 'historical-github-proxy'));
+export const isNonProxyProvenance = value => nonProxyProvenances.has(value);
 const stageQueryFields = [
   'repositoryId', 'cohort', 'provenance', 'fromMs', 'toMs', 'observedMs', 'nowMs', 'maxAgeMs', 'sourceComplete'
 ];
