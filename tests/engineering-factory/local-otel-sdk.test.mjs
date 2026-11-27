@@ -153,12 +153,15 @@ test('untrusted exporter, proxy, NO_PROXY and NODE_OPTIONS overrides fail before
  }));
 });
 
-test('NODE_EXTRA_CA_CERTS rejects symlinks, unreadable, empty, oversized or non-PEM paths before SDK loading',async()=>{
+test('NODE_EXTRA_CA_CERTS rejects symlinks, unreadable, empty, oversized or malformed/truncated PEM paths while accepting valid bundles',async()=>{
  const dir=mkdtempSync(join(tmpdir(),'sf-ca-test-'));
  try{
-  const {certPem}=createLoopbackDevCert();
+  const {certPem,keyPem}=createLoopbackDevCert();
+  const {certPem:secondCertPem}=createLoopbackDevCert();
   const validPath=join(dir,'valid.pem');
   writeFileSync(validPath,certPem);
+  const bundlePath=join(dir,'bundle.pem');
+  writeFileSync(bundlePath,certPem.replace(/\n/g,'\r\n')+'\r\n'+secondCertPem);
   const linkPath=join(dir,'symlink.pem');
   symlinkSync(validPath,linkPath);
   const emptyPath=join(dir,'empty.pem');
@@ -167,15 +170,25 @@ test('NODE_EXTRA_CA_CERTS rejects symlinks, unreadable, empty, oversized or non-
   writeFileSync(hugePath,'a'.repeat(1048577));
   const nonPemPath=join(dir,'invalid.txt');
   writeFileSync(nonPemPath,'not-a-certificate');
+  const headerOnlyPath=join(dir,'header-only.pem');
+  writeFileSync(headerOnlyPath,'-----BEGIN CERTIFICATE-----\n');
+  const truncatedCertPath=join(dir,'truncated.pem');
+  writeFileSync(truncatedCertPath,'-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n');
+  const trailingGarbagePath=join(dir,'trailing.pem');
+  writeFileSync(trailingGarbagePath,certPem+'\n-----BEGIN CERTIFICATE-----\nMIIB');
+  const mixedKeyPath=join(dir,'mixed-key.pem');
+  writeFileSync(mixedKeyPath,certPem+'\n'+keyPem);
   const unreadablePath=join(dir,'unreadable.pem');
   writeFileSync(unreadablePath,certPem);
   chmodSync(unreadablePath,0o000);
   try{
-   for(const bad of ['', '   ', validPath+'\0extra', join(dir,'missing.pem'), linkPath, dir, emptyPath, hugePath, nonPemPath, unreadablePath]){
+   for(const bad of ['', '   ', validPath+'\0extra', join(dir,'missing.pem'), linkPath, dir, emptyPath, hugePath, nonPemPath, headerOnlyPath, truncatedCertPath, trailingGarbagePath, mixedKeyPath, unreadablePath]){
     assert.equal(validateLocalOtlpEnvironment(configuration,{NODE_EXTRA_CA_CERTS:bad}),null);
    }
    assert.equal(validateLocalOtlpEnvironment(configuration,{NODE_EXTRA_CA_CERTS:123}),null);
    assert.equal(validateLocalOtlpEnvironment(configuration,{NODE_EXTRA_CA_CERTS:validPath,node_extra_ca_certs:validPath}),null);
+   assert.ok(validateLocalOtlpEnvironment(configuration,{NODE_EXTRA_CA_CERTS:validPath}));
+   assert.ok(validateLocalOtlpEnvironment(configuration,{NODE_EXTRA_CA_CERTS:bundlePath}));
    const old=process.env.NODE_EXTRA_CA_CERTS;
    process.env.NODE_EXTRA_CA_CERTS=linkPath;
    try{assert.equal(await startLocalSdk(configuration,async()=>assert.fail('must not load')),null);}
@@ -276,12 +289,12 @@ test('pinned actual SDK delivers trace, metric and correlated log protobuf to au
  }
 });
 
-test('provider forceFlush and shutdown failures and deadlines settle fail-closed and block post-shutdown observe',{timeout:10000},async()=>{
+test('provider forceFlush and shutdown failures, never-settling watchdogs, and backward wall-clock skew settle fail-closed',{timeout:15000},async()=>{
  let closed=0;
  class Dummy{constructor(options){this.options=options;}}
  class TracerProvider{
   async forceFlush(){throw [Error('span flush failed')];}
-  async shutdown(){closed++;}
+  async shutdown(){closed++;await new Promise(()=>{});}
   getTracer(){return {startSpan:()=>({end(){}})};}
  }
  class MeterProvider{
@@ -304,10 +317,43 @@ test('provider forceFlush and shutdown failures and deadlines settle fail-closed
    err.message==='LOCAL_SDK_SHUTDOWN_FAILED' &&
    err.errors.some(e=>e.message==='span flush failed') &&
    err.errors.some(e=>e.message==='LOCAL_SDK_FLUSH_TIMEOUT') &&
+   err.errors.some(e=>e.message==='LOCAL_SDK_SHUTDOWN_TIMEOUT') &&
    err.errors.some(e=>e.message==='log shutdown failed')
  );
  assert.equal(closed,3);
  assert.throws(()=>sdk.observe('evaluate',()=>assert.fail('post-failed-shutdown')),/LOCAL_SDK_STOPPED/);
+
+ // Backward wall-clock jump is bounded monotonically and still flushes/closes all providers.
+ let skewFlushed=0,skewClosed=0;
+ class CleanProvider{
+  async forceFlush(){skewFlushed++;}
+  async shutdown(){skewClosed++;}
+  getTracer(){return {startSpan:()=>({end(){}})};}
+  getMeter(){return {createCounter:()=>({add(){}}),createHistogram:()=>({record(){}})};}
+  getLogger(){return {emit(){}};}
+ }
+ const cleanApi={TracerProvider:CleanProvider,MeterProvider:CleanProvider,LoggerProvider:CleanProvider,ROOT_CONTEXT:{},trace:{setSpan:()=>({})},resourceFromAttributes:a=>a,
+  SimpleSpanProcessor:Dummy,SimpleLogRecordProcessor:Dummy,PeriodicExportingMetricReader:Dummy,
+  OTLPTraceExporter:Dummy,OTLPMetricExporter:Dummy,OTLPLogExporter:Dummy};
+ const realNow=Date.now;
+ let fakeNow=20_000;
+ Date.now=()=>fakeNow;
+ try{
+  const skewSdk=await startLocalSdk(configuration,async()=>cleanApi);
+  await skewSdk.observe('evaluate',async()=>({outcome:'blocked',reason:'POLICY'}));
+  fakeNow=10_000;
+  await assert.rejects(
+   skewSdk.shutdown(),
+   err=>err instanceof AggregateError &&
+    err.message==='LOCAL_SDK_SHUTDOWN_FAILED' &&
+    err.errors.some(e=>e.message==='LOCAL_SDK_CLOCK_TIMEOUT')
+  );
+  assert.equal(skewFlushed,3);
+  assert.equal(skewClosed,3);
+  assert.throws(()=>skewSdk.observe('evaluate',()=>assert.fail('post-clock-timeout')),/LOCAL_SDK_STOPPED/);
+ }finally{
+  Date.now=realNow;
+ }
 });
 
 test('partial provider startup failure attempts all acquired cleanup and preserves original error',async()=>{

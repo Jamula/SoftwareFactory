@@ -53,11 +53,13 @@ test('default disabled configuration fails without imports',async()=>{
  await assert.rejects(()=>runAspireTelemetry({}),/LOCAL_OTLP_CONFIGURATION_REQUIRED/);
 });
 
-test('fail-closed runtime validation rejects per-signal endpoints, proxy overrides and symlink/unreadable CA paths before start',async()=>{
+test('fail-closed runtime validation rejects per-signal endpoints, proxy overrides and symlink/unreadable/truncated CA paths before start',async()=>{
  const dir=mkdtempSync(join(tmpdir(),'sf-smoke-ca-'));
  try{
-  const realCa=join(dir,'ca.pem'),symlinkCa=join(dir,'symlink.pem');
-  writeFileSync(realCa,'-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n');
+  const {certPem}=createLoopbackDevCert();
+  const realCa=join(dir,'ca.pem'),symlinkCa=join(dir,'symlink.pem'),truncatedCa=join(dir,'truncated.pem');
+  writeFileSync(realCa,certPem);
+  writeFileSync(truncatedCa,'-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n');
   symlinkSync(realCa,symlinkCa);
   for(const badEnv of [
    {...env,OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:'https://remote.invalid'},
@@ -67,6 +69,7 @@ test('fail-closed runtime validation rejects per-signal endpoints, proxy overrid
    {...env,NODE_USE_ENV_PROXY:'1'},
    {...env,NODE_TLS_REJECT_UNAUTHORIZED:'0'},
    {...env,NODE_EXTRA_CA_CERTS:symlinkCa},
+   {...env,NODE_EXTRA_CA_CERTS:truncatedCa},
    {...env,NODE_EXTRA_CA_CERTS:join(dir,'missing.pem')}
   ]){
    await assert.rejects(

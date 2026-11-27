@@ -1,11 +1,14 @@
 // Explicit, local-only SDK bootstrap; keep the evaluator and normal headless
 // test runner independent of optional telemetry dependencies.
 import {AsyncLocalStorage} from 'node:async_hooks';
+import {X509Certificate} from 'node:crypto';
 import {closeSync,constants,fstatSync,lstatSync,openSync,readFileSync} from 'node:fs';
 import {rootCertificates} from 'node:tls';
 import {localOtlpConfiguration,createSignals} from './telemetry.mjs';
 
 const DEADLINE_MS=3000;
+const CLOCK_DEADLINE_MS=100;
+const PEM_CERT_BLOCK=/-----BEGIN CERTIFICATE-----\r?\n[\s\S]+?\r?\n-----END CERTIFICATE-----/g;
 const FORBIDDEN_ENV=/^(?:OTEL_EXPORTER_OTLP_.+|OTEL_(?:TRACES|METRICS|LOGS)_EXPORTER|(?:HTTP|HTTPS|ALL|NO)_PROXY|NODE_USE_ENV_PROXY|NODE_TLS_REJECT_UNAUTHORIZED)$/;
 
 function readTrustedCa(caPath) {
@@ -17,7 +20,10 @@ function readTrustedCa(caPath) {
       if(!stat.isFile()||stat.size<=0||stat.size>1048576||(stat.mode&0o444)===0)return null;
       const pem=readFileSync(fd,'utf8');
       if(lstatSync(caPath).isSymbolicLink())return null;
-      return pem.includes('-----BEGIN CERTIFICATE-----')?pem:null;
+      const blocks=pem.match(PEM_CERT_BLOCK);
+      if(!blocks||pem.replace(PEM_CERT_BLOCK,'').trim())return null;
+      for(const block of blocks)new X509Certificate(block);
+      return blocks.join('\n')+'\n';
     } finally {
       closeSync(fd);
     }
@@ -117,10 +123,13 @@ export async function startLocalSdk(config,load=loadPinnedSdk,env=process.env) {
     }
     closed=true;
     // Ensure cumulative OTLP collection timestamp strictly succeeds the initial
-    // observation millisecond across coarse timer boundaries before flushing.
-    while(observed&&Date.now()<=lastObservedAt){
+    // observation millisecond across coarse timer boundaries, bounded monotonically
+    // if the wall clock steps backward.
+    const clockDeadline=performance.now()+CLOCK_DEADLINE_MS;
+    while(observed&&Date.now()<=lastObservedAt&&performance.now()<clockDeadline){
       await new Promise(resolve=>setTimeout(resolve,2));
     }
+    const clockAdvanced=!observed||Date.now()>lastObservedAt;
     const flushResults=await Promise.allSettled(
       providers.filter(p=>typeof p.forceFlush==='function').map(p=>runBounded(()=>p.forceFlush({timeoutMillis:DEADLINE_MS}),'LOCAL_SDK_FLUSH_TIMEOUT'))
     );
@@ -132,6 +141,7 @@ export async function startLocalSdk(config,load=loadPinnedSdk,env=process.env) {
       .filter(r=>r.status==='rejected')
       .flatMap(r=>Array.isArray(r.reason)?r.reason:[r.reason]);
     if(!drained)failures.push(Error('LOCAL_SDK_DRAIN_TIMEOUT'));
+    if(!clockAdvanced)failures.push(Error('LOCAL_SDK_CLOCK_TIMEOUT'));
     if(failures.length)throw new AggregateError(failures,'LOCAL_SDK_SHUTDOWN_FAILED');
   })();
   try {
