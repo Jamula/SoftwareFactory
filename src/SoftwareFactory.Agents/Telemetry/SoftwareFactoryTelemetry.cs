@@ -83,7 +83,8 @@ public static class SoftwareFactoryTelemetry
         "DUPLICATE_CANDIDATE_PATH",
         "PROTECTED_CONTROL_PLANE_PATH_REJECTED",
         "OUT_OF_LANE_PATH_REJECTED",
-        "SPECIALIST_RESPONSE_MISMATCH"
+        "SPECIALIST_RESPONSE_MISMATCH",
+        "INVALID_COVERAGE_EVIDENCE"
     };
 
     public static Activity? StartStageActivity(

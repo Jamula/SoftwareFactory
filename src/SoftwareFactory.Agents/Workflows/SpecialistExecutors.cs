@@ -331,6 +331,26 @@ public sealed class TestAndCoverageExecutor : Executor<CandidatePatch, Verificat
             };
         }
 
+        if (!IsValidPercentage(result.LineCoveragePct) || !IsValidPercentage(result.BranchCoveragePct))
+        {
+            SoftwareFactoryTelemetry.SetStageResult(activity, "blocked", "INVALID_COVERAGE_EVIDENCE");
+            return new VerificationReport
+            {
+                Kind = VerificationKind.TestAndCoverage,
+                Contract = message.Contract,
+                TrustedRepositoryId = message.TrustedRepositoryId,
+                Iteration = message.Iteration,
+                TouchedPaths = [],
+                Passed = false,
+                Repairable = false,
+                ReasonCode = "INVALID_COVERAGE_EVIDENCE",
+                LineCoveragePct = 0.0,
+                BranchCoveragePct = 0.0,
+                SecurityClear = false,
+                ReviewClear = false
+            };
+        }
+
         bool coverageMet = result.TestsPassed
             && result.LineCoveragePct >= message.Contract.LineCoverageMin
             && result.BranchCoveragePct >= message.Contract.BranchCoverageMin;
@@ -354,6 +374,9 @@ public sealed class TestAndCoverageExecutor : Executor<CandidatePatch, Verificat
             ReviewClear = true
         };
     }
+
+    private static bool IsValidPercentage(double value) =>
+        double.IsFinite(value) && value is >= 0.0 and <= 100.0;
 }
 
 public sealed class SecurityAndReviewExecutor : Executor<CandidatePatch, VerificationReport>

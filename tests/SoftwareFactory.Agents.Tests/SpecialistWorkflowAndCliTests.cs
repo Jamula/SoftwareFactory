@@ -138,6 +138,25 @@ public sealed class SpecialistWorkflowAndCliTests
         Assert.Equal("blocked", secMismatch.Decision.Outcome);
         Assert.Equal("SPECIALIST_RESPONSE_MISMATCH", secMismatch.Decision.ReasonCode);
         Assert.Equal(1, secMismatch.Invocations.CoderInvocations);
+
+        // Out-of-bounds [0, 100] coverage percentages fail closed without repair:
+        using var over100LineClient = new StageSelectiveOfflineChatClient(
+            testStageOverrideJson: "{\"Role\":\"test-and-coverage\",\"CandidateRepositoryId\":1471342715,\"ProposedPaths\":[\"src/SoftwareFactory.Agents/deterministic-unit.cs\"],\"LineCoveragePct\":101.0,\"BranchCoveragePct\":98.0,\"TestsPassed\":true,\"SecurityClear\":true,\"ReviewClear\":true,\"Repairable\":true,\"ReasonCode\":\"STAGE_OK\"}");
+        WorkflowExecutionReceipt over100Line = await SpecialistWorkflowEngine.ExecuteAsync(
+            new WorkItemEnvelope { Contract = contract, TrustedRepositoryId = contract.RepositoryId },
+            over100LineClient);
+        Assert.Equal("blocked", over100Line.Decision.Outcome);
+        Assert.Equal("INVALID_COVERAGE_EVIDENCE", over100Line.Decision.ReasonCode);
+        Assert.Equal(1, over100Line.Invocations.CoderInvocations);
+
+        using var negativeBranchClient = new StageSelectiveOfflineChatClient(
+            testStageOverrideJson: "{\"Role\":\"test-and-coverage\",\"CandidateRepositoryId\":1471342715,\"ProposedPaths\":[\"src/SoftwareFactory.Agents/deterministic-unit.cs\"],\"LineCoveragePct\":99.0,\"BranchCoveragePct\":-1.0,\"TestsPassed\":true,\"SecurityClear\":true,\"ReviewClear\":true,\"Repairable\":true,\"ReasonCode\":\"STAGE_OK\"}");
+        WorkflowExecutionReceipt negativeBranch = await SpecialistWorkflowEngine.ExecuteAsync(
+            new WorkItemEnvelope { Contract = contract, TrustedRepositoryId = contract.RepositoryId },
+            negativeBranchClient);
+        Assert.Equal("blocked", negativeBranch.Decision.Outcome);
+        Assert.Equal("INVALID_COVERAGE_EVIDENCE", negativeBranch.Decision.ReasonCode);
+        Assert.Equal(1, negativeBranch.Invocations.CoderInvocations);
     }
 
     [Fact]
@@ -302,6 +321,18 @@ public sealed class SpecialistWorkflowAndCliTests
         Assert.Equal(
             "INVALID_COHORT_INPUT",
             ThroughputBenchmarkRunner.EvaluateCohortComparison(CloneCohort(validCohort, candidateLinePct: double.NaN)).ReasonCode);
+        Assert.Equal(
+            "INVALID_COHORT_INPUT",
+            ThroughputBenchmarkRunner.EvaluateCohortComparison(CloneCohort(validCohort, baselineLinePct: 101.0)).ReasonCode);
+        Assert.Equal(
+            "INVALID_COHORT_INPUT",
+            ThroughputBenchmarkRunner.EvaluateCohortComparison(CloneCohort(validCohort, candidateLinePct: 101.0)).ReasonCode);
+        Assert.Equal(
+            "INVALID_COHORT_INPUT",
+            ThroughputBenchmarkRunner.EvaluateCohortComparison(CloneCohort(validCohort, baselineBranchPct: -1.0)).ReasonCode);
+        Assert.Equal(
+            "INVALID_COHORT_INPUT",
+            ThroughputBenchmarkRunner.EvaluateCohortComparison(CloneCohort(validCohort, candidateBranchPct: 100.5)).ReasonCode);
         Assert.Equal(
             "INVALID_COHORT_INPUT",
             ThroughputBenchmarkRunner.EvaluateCohortComparison(CloneCohort(validCohort, incrementalSpendUsd: double.NaN)).ReasonCode);

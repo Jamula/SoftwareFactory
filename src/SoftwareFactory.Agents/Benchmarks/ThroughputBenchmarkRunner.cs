@@ -252,10 +252,10 @@ public static class ThroughputBenchmarkRunner
         && input.BaselineAcceptedPerDay > 0.0
         && double.IsFinite(input.CandidateAcceptedPerDay)
         && input.CandidateAcceptedPerDay >= 0.0
-        && double.IsFinite(input.BaselineLineCoveragePct)
-        && double.IsFinite(input.CandidateLineCoveragePct)
-        && double.IsFinite(input.BaselineBranchCoveragePct)
-        && double.IsFinite(input.CandidateBranchCoveragePct)
+        && IsValidPercentage(input.BaselineLineCoveragePct)
+        && IsValidPercentage(input.CandidateLineCoveragePct)
+        && IsValidPercentage(input.BaselineBranchCoveragePct)
+        && IsValidPercentage(input.CandidateBranchCoveragePct)
         && double.IsFinite(input.BaselineCostCreditsPerUnit)
         && input.BaselineCostCreditsPerUnit >= 0.0
         && double.IsFinite(input.CandidateCostCreditsPerUnit)
@@ -271,6 +271,9 @@ public static class ThroughputBenchmarkRunner
         && double.IsFinite(input.IncrementalUnapprovedSpendUsd)
         && input.IncrementalUnapprovedSpendUsd >= 0.0
         && input.CandidateUnresolvedFindings >= 0;
+
+    private static bool IsValidPercentage(double value) =>
+        double.IsFinite(value) && value is >= 0.0 and <= 100.0;
 
     private static CohortComparisonResult CreateUnmeasuredCohortPlaceholder(int multiplier) =>
         new()
