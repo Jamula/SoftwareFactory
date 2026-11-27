@@ -351,8 +351,8 @@ export function verifyCausalProvenanceChain(chain) {
         'authorIdentity', 'implementationAgentIdentity', 'authorizedReviewers', 'reviewState',
         'reviewHistoryComplete', 'outstandingChangesRequested',
         'unresolvedThreads', 'summaryFindingsResolved', 'observedMs'
-      ], ['requireFormalApproval', 'normalizedReviews']) || !token(stage.reviewId) ||
-          !hex40(stage.reviewedHeadSha) ||
+      ], ['requireFormalApproval', 'outstandingDismissedReviews', 'normalizedReviews']) ||
+          !token(stage.reviewId) || !hex40(stage.reviewedHeadSha) ||
           !identityToken(stage.reviewerIdentity) || !identityToken(stage.authorIdentity) ||
           !identityToken(stage.implementationAgentIdentity) ||
           !denseDataArray(stage.authorizedReviewers, 64) || stage.authorizedReviewers.length === 0 ||
@@ -361,6 +361,7 @@ export function verifyCausalProvenanceChain(chain) {
           !REVIEW_STATES.has(stage.reviewState) ||
           typeof stage.reviewHistoryComplete !== 'boolean' ||
           !nonnegInt(stage.outstandingChangesRequested) ||
+          (stage.outstandingDismissedReviews !== undefined && !nonnegInt(stage.outstandingDismissedReviews)) ||
           (stage.requireFormalApproval !== undefined && typeof stage.requireFormalApproval !== 'boolean') ||
           (stage.normalizedReviews !== undefined && (!denseDataArray(stage.normalizedReviews, 64) ||
             stage.normalizedReviews.length === 0 ||
@@ -381,11 +382,10 @@ export function verifyCausalProvenanceChain(chain) {
             stage.normalizedReviews.some(r => r.state === 'CHANGES_REQUESTED'))) {
         return provenanceFail('REVIEW', 'OUTSTANDING_CHANGES_REQUESTED', stageName);
       }
-      if (stage.normalizedReviews !== undefined) {
-        const selectedEntry = stage.normalizedReviews.find(r => r.reviewer.toLowerCase() === reviewerLower);
-        if (!selectedEntry || selectedEntry.head !== commitSha || selectedEntry.state !== stage.reviewState) {
-          return provenanceFail('REVIEW', 'REVIEW_HISTORY_INCONSISTENT', stageName);
-        }
+      if ((stage.outstandingDismissedReviews !== undefined && stage.outstandingDismissedReviews !== 0) ||
+          (stage.normalizedReviews !== undefined &&
+            stage.normalizedReviews.some(r => r.state === 'DISMISSED'))) {
+        return provenanceFail('REVIEW', 'OUTSTANDING_DISMISSED_REVIEW', stageName);
       }
       const authorLower = stage.authorIdentity.toLowerCase();
       const agentLower = stage.implementationAgentIdentity.toLowerCase();
@@ -400,10 +400,22 @@ export function verifyCausalProvenanceChain(chain) {
         return provenanceFail('REVIEW', 'REVIEW_FINDINGS_UNRESOLVED', stageName);
       }
       const formalRequired = repositoryId !== SOFTWARE_FACTORY_REPOSITORY_ID || stage.requireFormalApproval === true;
+      const acceptableNormalizedEntry = r => r.state === 'APPROVED' ||
+        (!formalRequired && r.state === 'COMMENTED' &&
+          COPILOT_BOT_REVIEWERS.has(r.reviewer.toLowerCase()) &&
+          allowlist.has(r.reviewer.toLowerCase()) &&
+          r.head === commitSha);
       const stateAcceptable = stage.reviewState === 'APPROVED' ||
         (!formalRequired && stage.reviewState === 'COMMENTED' && COPILOT_BOT_REVIEWERS.has(reviewerLower));
-      if (!stateAcceptable) {
+      if (!stateAcceptable ||
+          (stage.normalizedReviews !== undefined && stage.normalizedReviews.some(r => !acceptableNormalizedEntry(r)))) {
         return provenanceFail('REVIEW', 'REVIEW_NOT_ACCEPTABLE', stageName);
+      }
+      if (stage.normalizedReviews !== undefined) {
+        const selectedEntry = stage.normalizedReviews.find(r => r.reviewer.toLowerCase() === reviewerLower);
+        if (!selectedEntry || selectedEntry.head !== commitSha || selectedEntry.state !== stage.reviewState) {
+          return provenanceFail('REVIEW', 'REVIEW_HISTORY_INCONSISTENT', stageName);
+        }
       }
       if (pendingBranchless !== null && pendingBranchless.some(entry => {
         const by = entry.reviewedBy.toLowerCase();

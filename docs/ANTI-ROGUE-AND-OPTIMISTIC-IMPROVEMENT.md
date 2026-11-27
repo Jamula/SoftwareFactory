@@ -32,8 +32,9 @@ stages:
    `implementationAgentIdentity`, allowlisted in `authorizedReviewers`, acceptable
    `reviewState` (`APPROVED`, or SoftwareFactory Copilot bot `COMMENTED` when formal
    approval is not required), `reviewHistoryComplete === true`,
-   `outstandingChangesRequested === 0` (plus optional `normalizedReviews` verified free of
-   `CHANGES_REQUESTED` objections), `unresolvedThreads === 0`, and
+   `outstandingChangesRequested === 0` (plus optional `outstandingDismissedReviews === 0`
+   and `normalizedReviews` verified free of `CHANGES_REQUESTED`, `DISMISSED`, or
+   non-allowlisted `COMMENTED` entries), `unresolvedThreads === 0`, and
    `summaryFindingsResolved === true`
 8. `mergeQueueSquash` — `expectedHeadSha === commitSha`, 40-hex `squashCommitSha`
 9. `verifiedMain` — `mainCommitSha === squashCommitSha`, `mainHealthy === true`, `receiptId`

@@ -530,6 +530,29 @@ test('verifyCausalProvenanceChain fails closed across broken spans, timestamps, 
   ];
   assert.equal(verifyCausalProvenanceChain(blockingInNormalized).code, 'OUTSTANDING_CHANGES_REQUESTED');
 
+  // Second reviewer with DISMISSED state in normalizedReviews (or outstandingDismissedReviews > 0) fails closed
+  const dismissedInNormalized = buildValidChain();
+  dismissedInNormalized.stages.independentReview.normalizedReviews = [
+    {reviewer: 'copilot-pull-request-reviewer[bot]', head: COMMIT_SHA, state: 'COMMENTED'},
+    {reviewer: 'senior-maintainer', head: COMMIT_SHA, state: 'DISMISSED'}
+  ];
+  assert.equal(verifyCausalProvenanceChain(dismissedInNormalized).code, 'OUTSTANDING_DISMISSED_REVIEW');
+
+  const dismissedCountNonZero = buildValidChain();
+  dismissedCountNonZero.stages.independentReview.outstandingDismissedReviews = 1;
+  assert.equal(verifyCausalProvenanceChain(dismissedCountNonZero).code, 'OUTSTANDING_DISMISSED_REVIEW');
+
+  const nonCopilotCommentInNormalized = buildValidChain();
+  nonCopilotCommentInNormalized.stages.independentReview.normalizedReviews = [
+    {reviewer: 'copilot-pull-request-reviewer[bot]', head: COMMIT_SHA, state: 'COMMENTED'},
+    {reviewer: 'senior-maintainer', head: COMMIT_SHA, state: 'COMMENTED'}
+  ];
+  assert.equal(verifyCausalProvenanceChain(nonCopilotCommentInNormalized).code, 'REVIEW_NOT_ACCEPTABLE');
+
+  const badDismissedCount = buildValidChain();
+  badDismissedCount.stages.independentReview.outstandingDismissedReviews = -1;
+  assert.equal(verifyCausalProvenanceChain(badDismissedCount).code, 'INVALID_INDEPENDENT_REVIEW');
+
   const inconsistentNormalized = buildValidChain();
   inconsistentNormalized.stages.independentReview.normalizedReviews = [
     {reviewer: 'senior-maintainer', head: COMMIT_SHA, state: 'APPROVED'}
