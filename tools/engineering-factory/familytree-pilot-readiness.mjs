@@ -612,7 +612,7 @@ export function proveFamilyTreeShadowDenials(suite) {
     ...baseConfig,
     policy: hasAllowlistedBot
       ? baseConfig.policy
-      : { ...baseConfig.policy, reviewers: [...baseConfig.policy.reviewers, botReviewer] }
+      : { ...baseConfig.policy, reviewers: [botReviewer] }
   };
   const botApprovedControl = {
     ...baseCand,

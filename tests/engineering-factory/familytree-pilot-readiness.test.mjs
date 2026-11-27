@@ -1413,14 +1413,16 @@ test('evaluateFamilyTreeShadowReadiness enforces M01 acceptance, scoped auth, pr
     'SHADOW_SUITE_INVALID'
   );
 
-  // Maximum-size 64-check FamilyTree profile succeeds within bounded comparison budget
+  // Maximum-size 64-check + 64-reviewer FamilyTree profile succeeds within bounded comparison budget
   const checks64 = Array.from({ length: 64 }, (_, i) => ({
     name: `check-${i + 1}`,
     appId: 12000 + i + 1
   }));
+  const reviewers64 = Array.from({ length: 64 }, (_, i) => `synthetic-reviewer-${i + 1}`);
   const maxChecksPolicy = {
     ...byRepo('example/family-tree'),
-    checks: checks64
+    checks: checks64,
+    reviewers: reviewers64
   };
   const maxChecksPkg = makeOnboardingPackage(maxChecksPolicy, {
     repositoryId: 900164,
