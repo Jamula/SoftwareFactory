@@ -548,6 +548,7 @@ test('compares matched baseline windows and blocks cross-class, mismatched, stal
     comparable: true,
     reason: 'COMPARABLE_WINDOWS',
     evidenceClass: 'verified-live',
+    cohortKey: `${FACTORY_REPO_ID}:M01:onboarding:unspecified`,
     sloRegressed: false,
     deltas: {
       initialPlanP50DeltaMs: -120_000,
@@ -561,6 +562,30 @@ test('compares matched baseline windows and blocks cross-class, mismatched, stal
       attributableSpendTotalDeltaUsdCents: 0
     }
   });
+
+  // Unmatched observed cohorts (different repo, milestone, lane, scenario, or heterogeneous multi-cohort mix)
+  // return COHORT_MISMATCH even when filter allowlists match
+  for (const mismatchCandidateObs of [
+    [makeObservation(2, {observedAtMs: 45_000, repositoryId: FAMILY_TREE_REPO_ID})],
+    [makeObservation(2, {observedAtMs: 45_000, milestone: 'M03'})],
+    [makeObservation(2, {observedAtMs: 45_000, lane: 'migration'})],
+    [makeObservation(2, {observedAtMs: 45_000, scenarioKind: 'existing-repository'})],
+    [
+      makeObservation(2, {id: 'mix-1', observedAtMs: 44_000, repositoryId: FACTORY_REPO_ID}),
+      makeObservation(3, {id: 'mix-2', observedAtMs: 45_000, repositoryId: FAMILY_TREE_REPO_ID})
+    ]
+  ]) {
+    const mismatch = evaluateCustomerOneUsabilityAndPortfolio(makeInput(mismatchCandidateObs, {
+      fromMs: 30_000,
+      toMs: 50_000,
+      nowMs: 52_000,
+      maxAgeMs: 20_000,
+      baseline
+    }));
+    assert.equal(mismatch.baselineComparison.comparable, false);
+    assert.equal(mismatch.baselineComparison.reason, 'COHORT_MISMATCH');
+    assert.equal(mismatch.baselineComparison.cohortKey, null);
+  }
 
   // Regression detection when SLO fails or manual interventions / spend increase
   const regressed = evaluateCustomerOneUsabilityAndPortfolio(makeInput([
@@ -705,6 +730,8 @@ test('compares matched baseline windows and blocks cross-class, mismatched, stal
     {...baseline, evidenceClass: 'unknown-class'},
     {...baseline, valid: false},
     {...baseline, window: {...baseline.window, nowMs: 10_000}},
+    {...baseline, portfolio: {...baseline.portfolio, observedCohortKeys: []}},
+    {...baseline, portfolio: {...baseline.portfolio, observedCohortKeys: ['bad-cohort']}},
     {...baseline, usability: null},
     {
       ...baseline,

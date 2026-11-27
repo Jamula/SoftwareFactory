@@ -170,7 +170,16 @@ const positiveInt = n => Number.isSafeInteger(n) && n > 0;
 const nonnegInt = n => Number.isSafeInteger(n) && n >= 0;
 const validObservationId = s => typeof s === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$/.test(s);
 const validLane = s => typeof s === 'string' && /^[a-z0-9][a-z0-9._-]{0,63}$/.test(s);
+const validCohortKey = s => typeof s === 'string' &&
+  /^[1-9][0-9]*:M0[1-5]:[a-z0-9][a-z0-9._-]{0,63}:(blank-repository|existing-repository|customer-one-adoption|unspecified|historical-proxy)$/.test(s);
 const hasDuplicates = arr => new Set(arr).size !== arr.length;
+
+function formatObservationCohortKey(row, evidenceClass) {
+  const scenario = evidenceClass === 'historical-proxy'
+    ? 'historical-proxy'
+    : (row.scenarioKind === undefined ? 'unspecified' : row.scenarioKind);
+  return `${row.repositoryId}:${row.milestone}:${row.lane}:${scenario}`;
+}
 
 function isPlainObject(value) {
   return value !== null &&
@@ -642,7 +651,13 @@ function validBaselineSnapshot(s) {
       !exactRecord(s.filters, ['repositoryIds', 'milestones', 'lanes']) ||
       !denseDataArray(s.filters.repositoryIds, 32) ||
       !denseDataArray(s.filters.milestones, 5) ||
-      (s.filters.lanes !== null && !denseDataArray(s.filters.lanes, 64))) {
+      (s.filters.lanes !== null && !denseDataArray(s.filters.lanes, 64)) ||
+      !isPlainObject(s.portfolio) ||
+      !hasOwnEnumerableData(s.portfolio, 'observedCohortKeys') ||
+      !denseDataArray(s.portfolio.observedCohortKeys, 5000) ||
+      !s.portfolio.observedCohortKeys.every(validCohortKey) ||
+      hasDuplicates(s.portfolio.observedCohortKeys) ||
+      (s.observationCount > 0 && s.portfolio.observedCohortKeys.length === 0)) {
     return false;
   }
   if (s.evidenceClass === 'historical-proxy') {
@@ -679,6 +694,7 @@ function evaluateBaselineComparison(baseline, candidate) {
       comparable: false,
       reason,
       evidenceClass: candidate.evidenceClass,
+      cohortKey: null,
       sloRegressed: null,
       deltas: null
     }
@@ -706,6 +722,12 @@ function evaluateBaselineComparison(baseline, candidate) {
     baseline.dataCompletenessPct === 100 && candidate.dataCompletenessPct === 100;
   if (!bothReady) {
     return unavailable('INCOMPLETE_OR_STALE_EVIDENCE');
+  }
+
+  const baseCohorts = baseline.portfolio.observedCohortKeys;
+  const candCohorts = candidate.portfolio.observedCohortKeys;
+  if (baseCohorts.length !== 1 || candCohorts.length !== 1 || baseCohorts[0] !== candCohorts[0]) {
+    return unavailable('COHORT_MISMATCH');
   }
 
   const bm = baseline.usability.metrics;
@@ -741,6 +763,7 @@ function evaluateBaselineComparison(baseline, candidate) {
       comparable: true,
       reason: 'COMPARABLE_WINDOWS',
       evidenceClass: candidate.evidenceClass,
+      cohortKey: candCohorts[0],
       sloRegressed,
       deltas
     }
@@ -826,8 +849,10 @@ export function evaluateCustomerOneUsabilityAndPortfolio(input) {
   const rowsByLane = new Map(
     filtersResult.lanes === null ? [] : filtersResult.lanes.map(lane => [lane, []])
   );
+  const cohortKeySet = new Set();
 
   for (const row of matchingRows) {
+    cohortKeySet.add(formatObservationCohortKey(row, input.evidenceClass));
     rowsByRepo.get(row.repositoryId).push(row);
     rowsByMilestone.get(row.milestone).push(row);
     const laneBucket = rowsByLane.get(row.lane);
@@ -837,6 +862,7 @@ export function evaluateCustomerOneUsabilityAndPortfolio(input) {
       rowsByLane.set(row.lane, [row]);
     }
   }
+  const observedCohortKeys = [...cohortKeySet].sort();
 
   let observedRepositoryCount = 0;
   const perRepository = filtersResult.repositoryIds.map(repositoryId => {
@@ -915,6 +941,7 @@ export function evaluateCustomerOneUsabilityAndPortfolio(input) {
     portfolio: {
       authorizedRepositoryCount: filtersResult.repositoryIds.length,
       observedRepositoryCount,
+      observedCohortKeys,
       observationCount: overallSlice.observationCount,
       lastObservedAtMs: overallSlice.lastObservedAtMs,
       freshnessStatus: overallSlice.freshnessStatus,
