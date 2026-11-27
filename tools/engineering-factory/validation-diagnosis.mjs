@@ -44,3 +44,75 @@ export function planBuildReuse(build, receipt) {
   return reuse(true, 'EXACT_INPUTS_MATCH');
 }
 
+const boundedInt = (value, max) => Number.isSafeInteger(value) && value >= 0 && value <= max;
+const FAILURE_FIELDS = [
+  'head', 'complete', 'producer', 'verified', 'signal',
+  'transient', 'attempt', 'retryLimit', 'repairAttempt', 'maxRepairAttempts'
+];
+const SIGNAL_RULES = new Map([
+  ['test-failure', {category: 'test', repairAction: 'repair-code-or-test'}],
+  ['assertion-failed', {category: 'test', repairAction: 'repair-code-or-test'}],
+  ['runtime-smoke-failed', {category: 'test', repairAction: 'repair-code-or-test'}],
+  ['coverage-below-target', {category: 'coverage', repairAction: 'add-targeted-coverage-tests'}],
+  ['coverage-missing', {category: 'coverage', repairAction: 'diagnose-coverage-evidence'}],
+  ['coverage-head-mismatch', {category: 'coverage', repairAction: 'diagnose-coverage-evidence'}],
+  ['codeql-alert', {category: 'security', terminalAction: 'block-and-security-remediate', reason: 'SECURITY_GATE_BLOCKED'}],
+  ['secret-detected', {category: 'security', terminalAction: 'block-and-security-remediate', reason: 'SECURITY_GATE_BLOCKED'}],
+  ['untrusted-provenance', {category: 'security', terminalAction: 'block-and-security-remediate', reason: 'SECURITY_GATE_BLOCKED'}],
+  ['cache-poisoning', {category: 'security', terminalAction: 'block-and-security-remediate', reason: 'SECURITY_GATE_BLOCKED'}],
+  ['tls-or-certificate', {category: 'security', terminalAction: 'block-and-security-remediate', reason: 'SECURITY_GATE_BLOCKED'}],
+  ['runner-timeout', {category: 'infra', subkind: 'runner-timeout', transientAllowed: true}],
+  ['runner-lost', {category: 'infra', subkind: 'runner-infra', transientAllowed: true}],
+  ['github-api-5xx', {category: 'infra', subkind: 'runner-infra', transientAllowed: true}],
+  ['network-reset', {category: 'infra', subkind: 'runner-infra', transientAllowed: true}],
+  ['job-step-timeout', {category: 'infra', subkind: 'stage-timeout', transientAllowed: false}],
+  ['npm-lock-mismatch', {category: 'dependency-lock', repairAction: 'reconcile-locked-dependencies'}],
+  ['nuget-restore-mismatch', {category: 'dependency-lock', repairAction: 'reconcile-locked-dependencies'}],
+  ['toolchain-version-drift', {category: 'dependency-lock', repairAction: 'reconcile-locked-dependencies'}],
+  ['http-401-unauthorized', {category: 'permission', terminalAction: 'escalate-permission-review', reason: 'PERMISSION_BOUNDARY_BLOCKED'}],
+  ['http-403-forbidden', {category: 'permission', terminalAction: 'escalate-permission-review', reason: 'PERMISSION_BOUNDARY_BLOCKED'}],
+  ['missing-workflow-permission', {category: 'permission', terminalAction: 'escalate-permission-review', reason: 'PERMISSION_BOUNDARY_BLOCKED'}],
+  ['fork-restriction', {category: 'permission', terminalAction: 'escalate-permission-review', reason: 'PERMISSION_BOUNDARY_BLOCKED'}]
+]);
+
+const repairDecision = (category, signal, deterministic, allowRetry, action, reason) => ({
+  shadow: true,
+  category,
+  signal,
+  deterministic,
+  allowRetry,
+  blindRetryRejected: !allowRetry,
+  action,
+  reason,
+  fullValidationRequired: true,
+  skipRequiredChecks: false,
+  liveRetry: false
+});
+
+export function classifyValidationFailure(failure, expectedHead) {
+  if (!sha(expectedHead) || !ownData(failure, FAILURE_FIELDS) ||
+      failure.head !== expectedHead || failure.complete !== true ||
+      failure.producer !== 'trusted-ci' || failure.verified !== true ||
+      typeof failure.transient !== 'boolean' ||
+      !boundedInt(failure.attempt, 10) || !boundedInt(failure.retryLimit, 2) ||
+      !boundedInt(failure.repairAttempt, 10) || !boundedInt(failure.maxRepairAttempts, 2) ||
+      !SIGNAL_RULES.has(failure.signal))
+    return repairDecision('unknown', 'unknown', true, false, 'investigate-unknown-failure', 'EVIDENCE_INVALID_OR_STALE');
+  const rule = SIGNAL_RULES.get(failure.signal);
+  if (rule.category === 'infra') {
+    if (rule.transientAllowed && failure.transient) {
+      if (failure.attempt < failure.retryLimit)
+        return repairDecision('infra', failure.signal, false, true, 'bounded-infra-retry', 'TRANSIENT_INFRA_RETRY_ELIGIBLE');
+      return repairDecision('infra', failure.signal, false, false, 'escalate-infra-exhausted', 'INFRA_RETRY_BUDGET_EXHAUSTED');
+    }
+    if (failure.repairAttempt < failure.maxRepairAttempts)
+      return repairDecision('infra', failure.signal, true, false, 'diagnose-stage-timeout', 'DETERMINISTIC_TIMEOUT_NO_BLIND_RETRY');
+    return repairDecision('infra', failure.signal, true, false, 'escalate-repair-budget-exhausted', 'REPAIR_BUDGET_EXHAUSTED');
+  }
+  if (rule.terminalAction)
+    return repairDecision(rule.category, failure.signal, true, false, rule.terminalAction, rule.reason);
+  if (failure.repairAttempt < failure.maxRepairAttempts)
+    return repairDecision(rule.category, failure.signal, true, false, rule.repairAction, 'BOUNDED_REPAIR_ELIGIBLE');
+  return repairDecision(rule.category, failure.signal, true, false, 'escalate-repair-budget-exhausted', 'REPAIR_BUDGET_EXHAUSTED');
+}
+
