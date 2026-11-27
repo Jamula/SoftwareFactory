@@ -10,19 +10,19 @@ const FORBIDDEN_ENV=/^(?:OTEL_EXPORTER_OTLP_.+|OTEL_(?:TRACES|METRICS|LOGS)_EXPO
 
 function readTrustedCa(caPath) {
   if(typeof caPath!=='string'||!caPath.trim()||caPath.includes('\0'))return null;
-  let fd;
   try {
-    const lstat=lstatSync(caPath);
-    if(lstat.isSymbolicLink()||!lstat.isFile()||(lstat.mode&0o444)===0)return null;
-    fd=openSync(caPath,constants.O_RDONLY|constants.O_NOFOLLOW);
-    const stat=fstatSync(fd);
-    if(stat.size<=0||stat.size>1048576)return null;
-    const pem=readFileSync(fd,'utf8');
-    return pem.includes('-----BEGIN CERTIFICATE-----')?pem:null;
+    const fd=openSync(caPath,constants.O_RDONLY|constants.O_NOFOLLOW);
+    try {
+      const stat=fstatSync(fd);
+      if(!stat.isFile()||stat.size<=0||stat.size>1048576||(stat.mode&0o444)===0)return null;
+      const pem=readFileSync(fd,'utf8');
+      if(lstatSync(caPath).isSymbolicLink())return null;
+      return pem.includes('-----BEGIN CERTIFICATE-----')?pem:null;
+    } finally {
+      closeSync(fd);
+    }
   } catch {
     return null;
-  } finally {
-    if(fd!==undefined)closeSync(fd);
   }
 }
 
