@@ -580,6 +580,49 @@ test('T01 & T04: strictly separates historical proxies from all 5 verified auton
   assert.equal(carryoverReport.throughput.otelVerifiedAcceptedOutcomesInWindow, 5);
   assert.equal(carryoverReport.autonomousOtel.autonomousClaimEligible, true);
 
+  // Open unfinished issue with accounted governance touch on a separate trace does not falsely conflict!
+  const openTrace = '3'.repeat(32);
+  const openSpan = '4'.repeat(16);
+  const withOpenIssueTouch = buildHistoricalAndOtelEvidenceReport({
+    query: baseQuery(),
+    authorizedRepositories: baseAuth(),
+    issues: [
+      ...issues,
+      makeIssue(6, {
+        state: 'open',
+        createdAt: 8_600_000,
+        readyAt: 8_610_000,
+        closedAt: null,
+        acceptedAt: null,
+        acceptanceVerified: false,
+        requiredPullNumbers: null
+      })
+    ],
+    pulls,
+    links,
+    otel: {
+      provenance: 'verified-autonomous-otel',
+      complete: true,
+      receipts: [
+        ...receipts,
+        makeHostedReceipt('gh-6-review-touch', 'review', {
+          observedMs: 8_620_000,
+          humanTouches: {verified: true, count: 1},
+          correlation: {traceId: openTrace, spanId: openSpan}
+        })
+      ],
+      ciRuns,
+      interventions: [
+        ...interventions,
+        makeIntervention(6, {verified: true, routineCount: 0, governanceCount: 1})
+      ],
+      outcomeBindings,
+      guardrails: makeGuardrails(prNums)
+    }
+  });
+  assert.equal(withOpenIssueTouch.valid, true);
+  assert.equal(withOpenIssueTouch.autonomousOtel.autonomousClaimEligible, true);
+
   // Receipt humanTouches exceeding verified per-issue or cohort interventions fail closed
   for (const contradictoryReceipts of [
     receipts.map(r =>
@@ -592,9 +635,17 @@ test('T01 & T04: strictly separates historical proxies from all 5 verified auton
     ),
     [
       ...receipts,
-      makeHostedReceipt('gh-extra-touches', 'reconcile', {
+      makeHostedReceipt('gh-extra-touches-same-trace', 'reconcile', {
         observedMs: 8_550_000,
         humanTouches: {verified: true, count: 5}
+      })
+    ],
+    [
+      ...receipts,
+      makeHostedReceipt('gh-extra-touches-other-trace', 'reconcile', {
+        observedMs: 8_550_000,
+        humanTouches: {verified: true, count: 5},
+        correlation: {traceId: openTrace, spanId: openSpan}
       })
     ]
   ]) {

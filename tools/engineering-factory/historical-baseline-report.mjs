@@ -1475,6 +1475,7 @@ function parseOutcomeBindings(
   preCutoffReceiptsById,
   inWindowReceiptsById,
   completedPullHeadRuns,
+  issues,
   otelAcceptedInWindow,
   interventionsByIssue,
   interventionsSummary,
@@ -1540,7 +1541,8 @@ function parseOutcomeBindings(
   }
 
   let verifiedCount = 0;
-  const distinctBoundReceipts = new Map();
+  const acceptedTraceReceipts = new Map();
+  const acceptedTraceIds = new Set();
   for (const {issue} of otelAcceptedInWindow) {
     const entry = byIssue.get(issue.number);
     if (entry === undefined) continue;
@@ -1551,8 +1553,9 @@ function parseOutcomeBindings(
         resolvedReceipts.some(r => r.humanTouches.state !== 'verified')) {
       continue;
     }
+    acceptedTraceIds.add(binding.traceId);
     for (const rec of resolvedReceipts) {
-      distinctBoundReceipts.set(rec.receiptId, rec);
+      acceptedTraceReceipts.set(rec.receiptId, rec);
     }
     const reqPulls = issue.requiredPullNumbers !== null
       ? issue.requiredPullNumbers.map(num => pullsByNumber.get(num))
@@ -1571,14 +1574,34 @@ function parseOutcomeBindings(
   }
 
   if (interventionsSummary.status === 'measured') {
+    for (const rec of preCutoffReceiptsById.values()) {
+      if (rec.correlation.traceId !== null && acceptedTraceIds.has(rec.correlation.traceId)) {
+        acceptedTraceReceipts.set(rec.receiptId, rec);
+      }
+    }
     const allowedCohortTouches = interventionsSummary.totalRoutineCount +
       interventionsSummary.totalGovernanceCount;
-    let boundTouchSum = 0;
-    for (const rec of distinctBoundReceipts.values()) {
-      boundTouchSum += rec.humanTouches.count;
+    let acceptedTouchSum = 0;
+    for (const rec of acceptedTraceReceipts.values()) {
+      if (rec.humanTouches.state === 'verified') {
+        acceptedTouchSum += rec.humanTouches.count;
+      }
     }
-    if (boundTouchSum > allowedCohortTouches || inWindowHumanTouchSum > allowedCohortTouches) {
+    if (acceptedTouchSum > allowedCohortTouches) {
       return {ok: false, reason: 'CONFLICTING_INTERVENTION_EVIDENCE'};
+    }
+    const everyIssueVerified = issues.length > 0 && issues.every(iss => {
+      const row = interventionsByIssue.get(iss.number);
+      return row !== undefined && row.verified;
+    });
+    if (everyIssueVerified) {
+      const allIssuesAllowedTouches = issues.reduce((sum, iss) => {
+        const row = interventionsByIssue.get(iss.number);
+        return sum + row.routineCount + row.governanceCount;
+      }, 0);
+      if (inWindowHumanTouchSum > allIssuesAllowedTouches) {
+        return {ok: false, reason: 'CONFLICTING_INTERVENTION_EVIDENCE'};
+      }
     }
   }
 
@@ -2043,6 +2066,7 @@ function buildAutonomousOtelSection(rawOtel, issues, pulls, linkGraph, correlati
     receiptResult.preCutoffReceiptsById,
     receiptResult.inWindowReceiptsById,
     ciResult.completedPullHeadRuns,
+    issues,
     otelAcceptedInWindow,
     interventionsResult.byIssue,
     interventionsResult.summary,
