@@ -529,6 +529,13 @@ test('T01 & T04: strictly separates historical proxies from all 5 verified auton
         ...receipts,
         makeHostedReceipt('gh-unknown-cost', 'dispatch', {cost: {verified: false}})
       ]
+    },
+    {
+      // Unknown receipt humanTouches leaves autonomousClaimEligible false
+      receipts: [
+        ...receipts,
+        makeHostedReceipt('gh-unknown-touches', 'dispatch', {humanTouches: {verified: false}})
+      ]
     }
   ]) {
     const blockedClaim = buildHistoricalAndOtelEvidenceReport({
@@ -550,6 +557,65 @@ test('T01 & T04: strictly separates historical proxies from all 5 verified auton
     });
     assert.equal(blockedClaim.valid, true);
     assert.equal(blockedClaim.autonomousOtel.autonomousClaimEligible, false);
+  }
+
+  // Carryover work started/validated before query.fromMs and accepted inside [fromMs, toMs) remains eligible!
+  const carryoverReport = buildHistoricalAndOtelEvidenceReport({
+    query: baseQuery({fromMs: 8_550_000}),
+    authorizedRepositories: baseAuth(),
+    issues,
+    pulls,
+    links,
+    otel: {
+      provenance: 'verified-autonomous-otel',
+      complete: true,
+      receipts,
+      ciRuns,
+      interventions,
+      outcomeBindings,
+      guardrails: makeGuardrails(prNums)
+    }
+  });
+  assert.equal(carryoverReport.valid, true);
+  assert.equal(carryoverReport.throughput.otelVerifiedAcceptedOutcomesInWindow, 5);
+  assert.equal(carryoverReport.autonomousOtel.autonomousClaimEligible, true);
+
+  // Receipt humanTouches exceeding verified per-issue or cohort interventions fail closed
+  for (const contradictoryReceipts of [
+    receipts.map(r =>
+      r.receiptId === 'gh-2-accept'
+        ? makeHostedReceipt('gh-2-accept', 'acceptance', {
+            observedMs: r.observedMs,
+            humanTouches: {verified: true, count: 3}
+          })
+        : r
+    ),
+    [
+      ...receipts,
+      makeHostedReceipt('gh-extra-touches', 'reconcile', {
+        observedMs: 8_550_000,
+        humanTouches: {verified: true, count: 5}
+      })
+    ]
+  ]) {
+    const conflictRes = buildHistoricalAndOtelEvidenceReport({
+      query: baseQuery(),
+      authorizedRepositories: baseAuth(),
+      issues,
+      pulls,
+      links,
+      otel: {
+        provenance: 'verified-autonomous-otel',
+        complete: true,
+        receipts: contradictoryReceipts,
+        ciRuns,
+        interventions,
+        outcomeBindings,
+        guardrails: makeGuardrails(prNums)
+      }
+    });
+    assert.equal(conflictRes.valid, false);
+    assert.equal(conflictRes.reason, 'CONFLICTING_INTERVENTION_EVIDENCE');
   }
 
   // Blocked receipts, reused acceptance receipts, or chronologically out-of-order stage receipts fail closed

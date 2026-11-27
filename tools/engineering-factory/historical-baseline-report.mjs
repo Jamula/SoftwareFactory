@@ -1197,6 +1197,7 @@ function parseOtelReceipts(rawReceipts, rawTraceparents, expectedSource, query) 
   }
 
   const receiptsById = new Map();
+  const preCutoffReceiptsById = new Map();
   const inWindowReceiptsById = new Map();
   const stageRows = [];
   const outcomeCounts = {eligible: 0, blocked: 0, failed: 0, unknown: 0};
@@ -1226,6 +1227,9 @@ function parseOtelReceipts(rawReceipts, rawTraceparents, expectedSource, query) 
   let unknownQuotaCount = 0;
   let verifiedZeroCostCount = 0;
   let unknownCostCount = 0;
+  let verifiedTouchesReceiptCount = 0;
+  let unknownTouchesReceiptCount = 0;
+  let inWindowHumanTouchSum = 0;
 
   for (const receipt of rawReceipts) {
     if (isHistoricalProxyObject(receipt)) {
@@ -1247,7 +1251,9 @@ function parseOtelReceipts(rawReceipts, rawTraceparents, expectedSource, query) 
     }
     receiptsById.set(receipt.receiptId, receipt);
 
-    if (receipt.observedMs < query.fromMs || receipt.observedMs >= query.toMs) continue;
+    if (receipt.observedMs >= query.toMs) continue;
+    preCutoffReceiptsById.set(receipt.receiptId, receipt);
+    if (receipt.observedMs < query.fromMs) continue;
     inWindowReceiptsById.set(receipt.receiptId, receipt);
 
     stageRows.push(...projected.rows);
@@ -1272,6 +1278,13 @@ function parseOtelReceipts(rawReceipts, rawTraceparents, expectedSource, query) 
 
     if (receipt.cost.state === 'verified-zero') verifiedZeroCostCount++;
     else unknownCostCount++;
+
+    if (receipt.humanTouches.state === 'verified') {
+      verifiedTouchesReceiptCount++;
+      inWindowHumanTouchSum += receipt.humanTouches.count;
+    } else {
+      unknownTouchesReceiptCount++;
+    }
   }
 
   let verifiedTraceparentCount = 0;
@@ -1297,6 +1310,7 @@ function parseOtelReceipts(rawReceipts, rawTraceparents, expectedSource, query) 
 
   return {
     ok: true,
+    preCutoffReceiptsById,
     inWindowReceiptsById,
     receiptEvidence: {
       schemaVersion: EXECUTION_RECEIPT_SCHEMA_VERSION,
@@ -1318,6 +1332,11 @@ function parseOtelReceipts(rawReceipts, rawTraceparents, expectedSource, query) 
       cost: {
         verifiedZeroCount: verifiedZeroCostCount,
         unknownCount: unknownCostCount
+      },
+      humanTouches: {
+        verifiedReceiptCount: verifiedTouchesReceiptCount,
+        unknownReceiptCount: unknownTouchesReceiptCount,
+        totalCount: inWindowHumanTouchSum
       },
       stageRows
     }
@@ -1382,7 +1401,30 @@ function parseCiRuns(rawCiRuns, query) {
       counts.unknown++;
       continue;
     }
-    if (run.candidateEventAt < query.fromMs || run.candidateEventAt >= query.toMs) continue;
+    if (run.candidateEventAt >= query.toMs) continue;
+    if (run.candidateEventAt < query.fromMs) {
+      // Carryover pre-window CI runs are excluded from in-window stage stats
+      // while remaining available for causal lineage of in-window acceptances.
+      if (run.state === 'completed' &&
+          run.startedAt !== null &&
+          run.completedAt !== null &&
+          run.startedAt >= run.candidateEventAt &&
+          run.completedAt >= run.startedAt &&
+          run.completedAt < query.toMs) {
+        const headKey = `${run.pullNumber}:${run.headSha}`;
+        let headRuns = completedPullHeadRuns.get(headKey);
+        if (headRuns === undefined) {
+          headRuns = [];
+          completedPullHeadRuns.set(headKey, headRuns);
+        }
+        headRuns.push({
+          traceId: parsedTrace !== null ? parsedTrace.traceId : null,
+          candidateEventAt: run.candidateEventAt,
+          completedAt: run.completedAt
+        });
+      }
+      continue;
+    }
 
     counts.cohort++;
     if (run.state === 'unknown' ||
@@ -1430,9 +1472,13 @@ function parseCiRuns(rawCiRuns, query) {
 
 function parseOutcomeBindings(
   rawBindings,
+  preCutoffReceiptsById,
   inWindowReceiptsById,
   completedPullHeadRuns,
   otelAcceptedInWindow,
+  interventionsByIssue,
+  interventionsSummary,
+  inWindowHumanTouchSum,
   pullsByNumber,
   linkGraph
 ) {
@@ -1463,7 +1509,7 @@ function parseOutcomeBindings(
     ];
     const resolvedReceipts = [];
     for (const [expectedStage, receiptId] of stagePairs) {
-      const receipt = inWindowReceiptsById.get(receiptId);
+      const receipt = preCutoffReceiptsById.get(receiptId);
       if (receipt === undefined ||
           receipt.stage !== expectedStage ||
           receipt.outcome !== 'eligible' ||
@@ -1480,17 +1526,33 @@ function parseOutcomeBindings(
         mainRec.observedMs > acceptRec.observedMs) {
       return {ok: false, reason: 'INVALID_OUTCOME_BINDING'};
     }
+    const interRow = interventionsByIssue.get(binding.issueNumber);
+    if (interRow !== undefined && interRow.verified) {
+      const maxIssueTouches = interRow.routineCount + interRow.governanceCount;
+      if (resolvedReceipts.some(
+        r => r.humanTouches.state === 'verified' && r.humanTouches.count > maxIssueTouches
+      )) {
+        return {ok: false, reason: 'CONFLICTING_INTERVENTION_EVIDENCE'};
+      }
+    }
     seenAcceptanceReceipts.add(binding.acceptanceReceiptId);
-    byIssue.set(binding.issueNumber, {binding, dispatchRec, ciRec, mainRec, acceptRec});
+    byIssue.set(binding.issueNumber, {binding, dispatchRec, ciRec, mainRec, acceptRec, resolvedReceipts});
   }
 
   let verifiedCount = 0;
+  const distinctBoundReceipts = new Map();
   for (const {issue} of otelAcceptedInWindow) {
     const entry = byIssue.get(issue.number);
     if (entry === undefined) continue;
-    const {binding, dispatchRec, ciRec, mainRec, acceptRec} = entry;
-    if (dispatchRec.observedMs < issue.readyAt || acceptRec.observedMs < issue.acceptedAt) {
+    const {binding, dispatchRec, ciRec, mainRec, acceptRec, resolvedReceipts} = entry;
+    if (!inWindowReceiptsById.has(acceptRec.receiptId) ||
+        dispatchRec.observedMs < issue.readyAt ||
+        acceptRec.observedMs < issue.acceptedAt ||
+        resolvedReceipts.some(r => r.humanTouches.state !== 'verified')) {
       continue;
+    }
+    for (const rec of resolvedReceipts) {
+      distinctBoundReceipts.set(rec.receiptId, rec);
     }
     const reqPulls = issue.requiredPullNumbers !== null
       ? issue.requiredPullNumbers.map(num => pullsByNumber.get(num))
@@ -1506,6 +1568,18 @@ function parseOutcomeBindings(
       );
     });
     if (ciAndMainReceiptsVerified) verifiedCount++;
+  }
+
+  if (interventionsSummary.status === 'measured') {
+    const allowedCohortTouches = interventionsSummary.totalRoutineCount +
+      interventionsSummary.totalGovernanceCount;
+    let boundTouchSum = 0;
+    for (const rec of distinctBoundReceipts.values()) {
+      boundTouchSum += rec.humanTouches.count;
+    }
+    if (boundTouchSum > allowedCohortTouches || inWindowHumanTouchSum > allowedCohortTouches) {
+      return {ok: false, reason: 'CONFLICTING_INTERVENTION_EVIDENCE'};
+    }
   }
 
   const allAcceptedBound = otelAcceptedInWindow.length > 0 &&
@@ -1742,6 +1816,7 @@ function parseInterventions(rawInterventions, acceptedInWindowIssues, otelComple
   if (acceptedCount === 0) {
     return {
       ok: true,
+      byIssue,
       summary: {
         status: 'no-accepted-units',
         objective: AUTONOMOUS_OTEL_OBJECTIVES.routineHumanInterventions.initialMax,
@@ -1778,6 +1853,7 @@ function parseInterventions(rawInterventions, acceptedInWindowIssues, otelComple
   const allMeasured = otelComplete && missingIssueCount === 0;
   return {
     ok: true,
+    byIssue,
     summary: {
       status: allMeasured ? 'measured' : knownIssueCount > 0 ? 'partial' : 'unknown',
       objective: AUTONOMOUS_OTEL_OBJECTIVES.routineHumanInterventions.initialMax,
@@ -1953,12 +2029,24 @@ function buildAutonomousOtelSection(rawOtel, issues, pulls, linkGraph, correlati
   }
 
   const pullsByNumber = new Map(pulls.map(p => [p.number, p]));
+  const interventionsResult = parseInterventions(
+    rawOtel.interventions,
+    correlationResult.acceptedInWindowIssues,
+    rawOtel.complete,
+    query
+  );
+  if (!interventionsResult.ok) return interventionsResult;
+
   const rawOutcomeBindings = ownOption(rawOtel, 'outcomeBindings', null);
   const outcomeBindingResult = parseOutcomeBindings(
     rawOutcomeBindings,
+    receiptResult.preCutoffReceiptsById,
     receiptResult.inWindowReceiptsById,
     ciResult.completedPullHeadRuns,
     otelAcceptedInWindow,
+    interventionsResult.byIssue,
+    interventionsResult.summary,
+    receiptResult.receiptEvidence.humanTouches.totalCount,
     pullsByNumber,
     linkGraph
   );
@@ -1976,14 +2064,6 @@ function buildAutonomousOtelSection(rawOtel, issues, pulls, linkGraph, correlati
     query
   );
   if (!guardrailResult.ok) return guardrailResult;
-
-  const interventionsResult = parseInterventions(
-    rawOtel.interventions,
-    correlationResult.acceptedInWindowIssues,
-    rawOtel.complete,
-    query
-  );
-  if (!interventionsResult.ok) return interventionsResult;
 
   const issueReadyToFirstPrMs = finalizeOtelTimingMetric(
     'issueReadyToFirstPrMs',
@@ -2032,15 +2112,13 @@ function buildAutonomousOtelSection(rawOtel, issues, pulls, linkGraph, correlati
 
   const ev = receiptResult.receiptEvidence;
   const affirmativeReceipts = ev.inWindowReceiptCount >= otelAcceptedInWindow.length &&
-    ev.eligibleStageEventCounts.dispatch > 0 &&
-    ev.eligibleStageEventCounts.ci > 0 &&
-    ev.eligibleStageEventCounts.verifyMain > 0 &&
     ev.eligibleStageEventCounts.acceptance >= otelAcceptedInWindow.length &&
     ev.uncorrelatedReceiptCount === 0 &&
     ev.outcomeCounts.failed === 0 &&
     ev.outcomeCounts.unknown === 0 &&
     ev.quota.verifiedIncludedCount === ev.inWindowReceiptCount &&
-    ev.cost.verifiedZeroCount === ev.inWindowReceiptCount;
+    ev.cost.verifiedZeroCount === ev.inWindowReceiptCount &&
+    ev.humanTouches.unknownReceiptCount === 0;
   const pureOtelPopulation = correlationResult.throughput.otelVerifiedAcceptedOutcomesInWindow ===
     correlationResult.throughput.acceptedOutcomesInWindow;
 
