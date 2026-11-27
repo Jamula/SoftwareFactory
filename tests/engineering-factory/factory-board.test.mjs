@@ -12,6 +12,7 @@ import {
   buildUnavailableSnapshot,
   combineRestChecksAndStatus,
   createBoardPoller,
+  createSseClientRegistry,
   extractMilestoneStep,
   extractReferencedIssueNumbers,
   fetchFactoryBoardSnapshot,
@@ -674,9 +675,11 @@ test("fetchViaGhGraphql, fetchViaPublicRest, and fetchFactoryBoardSnapshot handl
     data: {
       repository: {
         milestones: {
+          pageInfo: { hasNextPage: false },
           nodes: [{ number: 2, title: "M01 - Autonomous SoftwareFactory", state: "OPEN" }],
         },
         openIssues: {
+          pageInfo: { hasNextPage: false, endCursor: null },
           nodes: [
             null,
             {
@@ -691,6 +694,7 @@ test("fetchViaGhGraphql, fetchViaPublicRest, and fetchFactoryBoardSnapshot handl
           ],
         },
         closedIssues: {
+          pageInfo: { hasNextPage: false, endCursor: null },
           nodes: [
             {
               number: 1,
@@ -702,6 +706,7 @@ test("fetchViaGhGraphql, fetchViaPublicRest, and fetchFactoryBoardSnapshot handl
           ],
         },
         openPulls: {
+          pageInfo: { hasNextPage: false },
           nodes: [
             {
               number: 122,
@@ -757,12 +762,18 @@ test("fetchViaGhGraphql, fetchViaPublicRest, and fetchFactoryBoardSnapshot handl
     },
   };
 
+  const observedSummaries = [];
+  const captureObserve = async (stage, work) => {
+    const summary = await work();
+    observedSummaries.push({ stage, ...summary });
+  };
+
   const ghSnap = await fetchFactoryBoardSnapshot({
     repo: DEFAULT_REPO,
     clock: () => "2026-11-27T01:00:00Z",
+    observe: captureObserve,
     execGh: async (args) => {
-      assert.equal(args[0], "api");
-      assert.equal(args[1], "graphql");
+      assert.deepEqual(args.slice(0, 4), ["api", "--hostname", "github.com", "graphql"]);
       return JSON.stringify(graphqlPayload);
     },
     request: async () => {
@@ -772,8 +783,13 @@ test("fetchViaGhGraphql, fetchViaPublicRest, and fetchFactoryBoardSnapshot handl
   assert.equal(ghSnap.ok, true);
   assert.equal(ghSnap.source, "gh-graphql");
   assert.equal(ghSnap.totals.openPulls, 2);
+  assert.deepEqual(observedSummaries.at(-1), {
+    stage: "reconcile",
+    outcome: "eligible",
+    reason: "NONE",
+  });
 
-  // Sparse GraphQL repository object + multi-page cursor pagination + truncation detection
+  // Multi-page cursor pagination + truncation detection + pinned --hostname github.com
   let gqlCalls = 0;
   const paginatedGqlRaw = await fetchViaGhGraphql({
     owner: "Jamula",
@@ -781,6 +797,7 @@ test("fetchViaGhGraphql, fetchViaPublicRest, and fetchFactoryBoardSnapshot handl
     maxIssuePages: 2,
     execGh: async (args) => {
       gqlCalls += 1;
+      assert.deepEqual(args.slice(0, 4), ["api", "--hostname", "github.com", "graphql"]);
       if (args.some((a) => a.startsWith("cursor="))) {
         return JSON.stringify({
           data: {
@@ -796,11 +813,14 @@ test("fetchViaGhGraphql, fetchViaPublicRest, and fetchFactoryBoardSnapshot handl
       return JSON.stringify({
         data: {
           repository: {
+            milestones: { pageInfo: { hasNextPage: false }, nodes: [] },
             openIssues: {
               pageInfo: { hasNextPage: true, endCursor: "cur-1" },
               nodes: [{ number: 98, title: "[M01.07] Page 1 issue", state: "OPEN" }],
             },
+            closedIssues: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] },
             openPulls: {
+              pageInfo: { hasNextPage: false },
               nodes: [
                 {
                   number: 1,
@@ -817,6 +837,7 @@ test("fetchViaGhGraphql, fetchViaPublicRest, and fetchFactoryBoardSnapshot handl
                 },
               ],
             },
+            mergedPulls: { nodes: [] },
           },
         },
       });
@@ -826,6 +847,14 @@ test("fetchViaGhGraphql, fetchViaPublicRest, and fetchFactoryBoardSnapshot handl
   assert.equal(paginatedGqlRaw.issues.length, 2);
   assert.equal(paginatedGqlRaw.truncated, true);
 
+  const validInitialRepoWithNext = {
+    milestones: { pageInfo: { hasNextPage: false }, nodes: [] },
+    openIssues: { pageInfo: { hasNextPage: true, endCursor: "c1" }, nodes: [] },
+    closedIssues: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] },
+    openPulls: { pageInfo: { hasNextPage: false }, nodes: [] },
+    mergedPulls: { nodes: [] },
+  };
+
   await assert.rejects(
     () =>
       fetchViaGhGraphql({
@@ -834,15 +863,58 @@ test("fetchViaGhGraphql, fetchViaPublicRest, and fetchFactoryBoardSnapshot handl
         execGh: async (args) =>
           args.some((a) => a.startsWith("cursor="))
             ? JSON.stringify({ errors: [{ message: "page error" }] })
-            : JSON.stringify({
-                data: {
-                  repository: {
-                    openIssues: { pageInfo: { hasNextPage: true, endCursor: "c1" }, nodes: [] },
-                  },
-                },
-              }),
+            : JSON.stringify({ data: { repository: validInitialRepoWithNext } }),
       }),
     /GH_GRAPHQL_ERRORS/,
+  );
+
+  // Reject missing or malformed GraphQL inventory connections & continuation pages
+  await assert.rejects(
+    () =>
+      fetchViaGhGraphql({
+        owner: "Jamula",
+        name: "SoftwareFactory",
+        execGh: async () => JSON.stringify({ data: { repository: { milestones: { nodes: [] } } } }),
+      }),
+    /GH_GRAPHQL_CONNECTION_INVALID/,
+  );
+  await assert.rejects(
+    () =>
+      fetchViaGhGraphql({
+        owner: "Jamula",
+        name: "SoftwareFactory",
+        execGh: async () =>
+          JSON.stringify({
+            data: {
+              repository: {
+                ...validInitialRepoWithNext,
+                openIssues: { pageInfo: { hasNextPage: true, endCursor: "" }, nodes: [] },
+              },
+            },
+          }),
+      }),
+    /GH_GRAPHQL_CONNECTION_INVALID/,
+  );
+  await assert.rejects(
+    () =>
+      fetchViaGhGraphql({
+        owner: "Jamula",
+        name: "SoftwareFactory",
+        execGh: async () => JSON.stringify({ data: { repository: { milestones: null } } }),
+      }),
+    /GH_GRAPHQL_CONNECTION_INVALID/,
+  );
+  await assert.rejects(
+    () =>
+      fetchViaGhGraphql({
+        owner: "Jamula",
+        name: "SoftwareFactory",
+        execGh: async (args) =>
+          args.some((a) => a.startsWith("cursor="))
+            ? JSON.stringify({ data: { repository: {} } })
+            : JSON.stringify({ data: { repository: validInitialRepoWithNext } }),
+      }),
+    /GH_GRAPHQL_CONNECTION_INVALID/,
   );
 
   await assert.rejects(
@@ -1119,11 +1191,18 @@ test("fetchViaGhGraphql, fetchViaPublicRest, and fetchFactoryBoardSnapshot handl
   assert.ok(lastUnitState.blockedUntilMs > Date.parse("2026-11-27T01:01:00Z"));
 
   // Authenticated gh success clears REST backoff state
+  const emptyValidGqlRepo = {
+    milestones: { pageInfo: { hasNextPage: false }, nodes: [] },
+    openIssues: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] },
+    closedIssues: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] },
+    openPulls: { pageInfo: { hasNextPage: false }, nodes: [] },
+    mergedPulls: { nodes: [] },
+  };
   const rlCleared = await fetchFactoryBoardSnapshot({
     repo: DEFAULT_REPO,
     clock: () => "2026-11-27T01:00:40Z",
     rateLimitState: sharedRateState,
-    execGh: async () => JSON.stringify({ data: { repository: {} } }),
+    execGh: async () => JSON.stringify({ data: { repository: emptyValidGqlRepo } }),
   });
   assert.equal(rlCleared.ok, true);
   assert.equal(sharedRateState.blockedUntilMs, 0);
@@ -1244,18 +1323,25 @@ test("fetchViaGhGraphql, fetchViaPublicRest, and fetchFactoryBoardSnapshot handl
     /REST_PAYLOAD_INVALID/,
   );
 
-  // Invalid repo slug fails closed
+  // Invalid repo slug fails closed and emits sanitized INVALID_EVIDENCE observation
   const badSlugSnap = await fetchFactoryBoardSnapshot({
     repo: "invalid slug",
     clock: () => "2026-11-27T01:12:00Z",
+    observe: captureObserve,
   });
   assert.equal(badSlugSnap.ok, false);
   assert.equal(badSlugSnap.error.code, "INVALID_REPO_SLUG");
+  assert.deepEqual(observedSummaries.at(-1), {
+    stage: "reconcile",
+    outcome: "blocked",
+    reason: "INVALID_EVIDENCE",
+  });
 
-  // Both gh and REST failing preserves previousSnapshot with stale: true
+  // Both gh and REST failing preserves previousSnapshot with stale: true and emits RUNTIME failure observation
   const bothFailed = await fetchFactoryBoardSnapshot({
     repo: DEFAULT_REPO,
     clock: () => "2026-11-27T01:15:00Z",
+    observe: captureObserve,
     execGh: async () => {
       throw new Error("gh failed");
     },
@@ -1288,15 +1374,16 @@ test("fetchViaGhGraphql, fetchViaPublicRest, and fetchFactoryBoardSnapshot handl
     (err) => err.code === "REST_RATE_LIMITED" && err.blockedUntilMs === 1_700_003_600_000,
   );
 
-  // Offline subprocess test for defaultExecGh error fallback and success path (never invokes ambient gh)
+  // Offline subprocess test for defaultExecGh error fallback, GH_HOST=github.com pinning, and success path
   const emptyConn = { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } };
   const gqlOk = JSON.stringify({
     data: {
       repository: {
         milestones: emptyConn,
-        issues: emptyConn,
+        openIssues: emptyConn,
+        closedIssues: emptyConn,
         openPulls: emptyConn,
-        mergedPulls: emptyConn,
+        mergedPulls: { nodes: [] },
       },
     },
   });
@@ -1307,7 +1394,12 @@ test("fetchViaGhGraphql, fetchViaPublicRest, and fetchFactoryBoardSnapshot handl
         if (specifier === "node:child_process") {
           return { shortCircuit: true, url: "data:text/javascript," + encodeURIComponent(
             "let n = 0; const gqlOk = " + ${JSON.stringify(JSON.stringify(gqlOk))} + ";" +
-            "export function execFile(_cmd, _args, _opts, cb) { n += 1; if (n === 1) cb(new Error('stubbed offline gh failure'), '', 'err'); else cb(null, gqlOk, ''); }"
+            "export function execFile(cmd, args, opts, cb) {" +
+            "  if (cmd !== 'gh' || args[1] !== '--hostname' || args[2] !== 'github.com' || opts?.env?.GH_HOST !== 'github.com') {" +
+            "    cb(new Error('unpinned gh host'), '', ''); return;" +
+            "  }" +
+            "  n += 1; if (n === 1) cb(new Error('stubbed offline gh failure'), '', 'err'); else cb(null, gqlOk, '');" +
+            "}"
           )};
         }
         return nextResolve(specifier, context);
@@ -1319,6 +1411,7 @@ test("fetchViaGhGraphql, fetchViaPublicRest, and fetchFactoryBoardSnapshot handl
   const offlineRunner = `
     import assert from "node:assert/strict";
     import { DEFAULT_REPO, fetchFactoryBoardSnapshot } from ${JSON.stringify(boardModuleUrl)};
+    process.env.GH_HOST = "ghe.example.internal";
     const fallbackRes = await fetchFactoryBoardSnapshot({
       repo: DEFAULT_REPO,
       clock: () => "2026-11-27T01:20:00Z",
@@ -1879,6 +1972,93 @@ test("board-ui loopback HTTP/SSE server and createFactoryBoardCanvasSpec satisfy
   await standalone.close();
   await liveSseReader.cancel().catch(() => {});
   assert.ok(logs.length >= 1);
+
+  // Close server while SSE stream is still open to verify server-initiated SSE cleanup
+  await standalone.close();
+  await standalone.close();
+  await liveSseReader.cancel().catch(() => {});
+  assert.ok(logs.length >= 1);
+
+  // Deterministic SSE backpressure coalescing & slow-viewer disconnection
+  let clearedTimers = 0;
+  const reg = createSseClientRegistry({
+    timers: { setInterval: () => 1, clearInterval: () => { clearedTimers += 1; } },
+    maxBufferBytes: 128,
+  });
+  const writtenFrames = [];
+  let drainListener = null;
+  let flushNext = false;
+  let destroyedCount = 0;
+  const slowRes = {
+    destroyed: false,
+    writableEnded: false,
+    writableLength: 0,
+    write(frame) {
+      writtenFrames.push(frame);
+      if (!flushNext) {
+        this.writableLength = 32;
+        return false;
+      }
+      this.writableLength = 0;
+      return true;
+    },
+    once(ev, cb) {
+      if (ev === "drain") drainListener = cb;
+    },
+    destroy() {
+      this.destroyed = true;
+      destroyedCount += 1;
+    },
+    end() {
+      this.writableEnded = true;
+    },
+  };
+  reg.add(slowRes, 101);
+  // Initial state frame hits backpressure (returns false)
+  reg.broadcastState("event: state\ndata: {\"v\":1}\n\n");
+  // Keepalive while backpressured is dropped; state frames coalesce to latest (v=3)
+  reg.write(slowRes, ": keepalive\n\n");
+  reg.broadcastState("event: state\ndata: {\"v\":2}\n\n");
+  reg.broadcastState("event: state\ndata: {\"v\":3}\n\n");
+  assert.deepEqual(writtenFrames, ["event: state\ndata: {\"v\":1}\n\n"]);
+  flushNext = true;
+  drainListener();
+  assert.deepEqual(writtenFrames, [
+    "event: state\ndata: {\"v\":1}\n\n",
+    "event: state\ndata: {\"v\":3}\n\n",
+  ]);
+  // Drain with no pending frame is a clean no-op
+  flushNext = false;
+  reg.write(slowRes, ": keepalive\n\n");
+  flushNext = true;
+  drainListener();
+  // Oversized frame or exceeded writableLength disconnects slow viewer immediately
+  reg.write(slowRes, "x".repeat(256));
+  assert.equal(destroyedCount, 1);
+  assert.equal(reg.size(), 0);
+  assert.equal(clearedTimers, 1);
+  // Post-write writableLength overflow also disconnects immediately
+  const overflowRes = {
+    destroyed: false,
+    writableEnded: false,
+    writableLength: 0,
+    write() {
+      this.writableLength = 512;
+      return false;
+    },
+    once() {},
+    destroy() {
+      this.destroyed = true;
+      destroyedCount += 1;
+    },
+    end() {},
+  };
+  reg.add(overflowRes, 102);
+  reg.broadcastState("event: state\ndata: {\"v\":4}\n\n");
+  assert.equal(destroyedCount, 2);
+  assert.equal(reg.size(), 0);
+  // Writing to an ended or unregistered response is safely ignored
+  reg.write(overflowRes, ": keepalive\n\n");
 });
 
 test("initFactoryBoardClient renders verified, partial, stale, and cold-unavailable states and handles UI controls", async () => {
@@ -2139,6 +2319,9 @@ test("initFactoryBoardClient renders verified, partial, stale, and cold-unavaila
   assert.match(elements.get("error-banner").textContent, /Partial bounded inventory/);
   assert.match(elements.get("kpi-grid").innerHTML, /Closed Issues \(Proxy\)/);
   assert.match(elements.get("kpi-grid").innerHTML, /≥ 1 closed/);
+  // Partial milestone progress bars expose milestone aria-label and aria-valuetext without numeric aria-valuenow
+  assert.match(elements.get("milestones-grid").innerHTML, /role="progressbar" aria-label="M01 - Autonomous SoftwareFactory closed issue activity proxy" aria-valuetext="Unknown \(partial inventory\)"/);
+  assert.doesNotMatch(elements.get("milestones-grid").innerHTML, /aria-valuenow=/);
 
   // Toggle milestone drawer closed & open
   const drawers = elements.get("milestones-grid").querySelectorAll("details.issue-drawer");
@@ -2199,6 +2382,7 @@ test("initFactoryBoardClient renders verified, partial, stale, and cold-unavaila
   assert.equal(elements.get("error-banner").hidden, true);
   assert.equal(elements.get("error-banner").textContent, "");
   assert.match(elements.get("kpi-grid").innerHTML, /100% closed \(activity proxy, not verified acceptance\)/);
+  assert.match(elements.get("milestones-grid").innerHTML, /role="progressbar" aria-label="M01 - Auto closed issue activity proxy" aria-valuenow="100" aria-valuemin="0" aria-valuemax="100"/);
 
   const staleDegraded = buildUnavailableSnapshot({
     repo: DEFAULT_REPO,
@@ -2312,6 +2496,41 @@ test("startFactoryBoardExtension and extension.mjs register canvas, forward logs
 
   await capturedJoinOptions.hooks.handlers.onSessionEnd();
   assert.equal(closeAllCalls, 1);
+
+  // Verify optional local OTLP telemetry bootstrap & shutdown when OTEL_EXPORTER_OTLP_ENDPOINT is set
+  let telemetryShutdownCalls = 0;
+  let capturedObserve = null;
+  const otelBoot = await startFactoryBoardExtension({
+    CanvasError: MockCanvasError,
+    createCanvas: (spec) => spec,
+    env: {
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://127.0.0.1:4318",
+      OTEL_EXPORTER_OTLP_HEADERS: "x-otlp-api-key=local-test-key",
+    },
+    startTelemetry: async () => ({
+      observe: async (_stage, work) => work(),
+      shutdown: async () => {
+        telemetryShutdownCalls += 1;
+      },
+    }),
+    createManager: (opts) => {
+      capturedObserve = opts.observe;
+      return {
+        openInstance: async () => ({ title: CANVAS_DISPLAY_NAME, status: "Auto-refreshing (20s)", url: "http://127.0.0.1:1/" }),
+        closeInstance: async () => true,
+        closeAll: async () => {},
+        refreshInstance: async () => null,
+        setInstanceInterval: () => ({ ok: false, code: "instance_not_found", message: "none" }),
+      };
+    },
+    joinSession: async (options) => {
+      await options.hooks.handlers.onSessionEnd();
+      return { log() {} };
+    },
+  });
+  assert.equal(typeof capturedObserve, "function");
+  assert.equal(telemetryShutdownCalls, 1);
+  assert.equal(otelBoot.canvas.id, CANVAS_ID);
 
   // Execute .github/extensions/factory-board/extension.mjs in a real Node subprocess with a stubbed @microsoft/copilot-sdk/extension module
   const loaderSource = `

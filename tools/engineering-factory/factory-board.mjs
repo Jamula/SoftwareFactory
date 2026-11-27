@@ -1,6 +1,8 @@
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { createServer } from "node:http";
+import { startLocalSdk } from "./local-otel-sdk.mjs";
+import { telemetrySummary } from "./telemetry.mjs";
 
 export const DEFAULT_REPO = "Jamula/SoftwareFactory";
 export const DEFAULT_INTERVAL_SECONDS = 20;
@@ -8,6 +10,7 @@ export const MIN_INTERVAL_SECONDS = 10;
 export const MAX_INTERVAL_SECONDS = 300;
 export const DEFAULT_TIMEOUT_MS = 5000;
 export const DEFAULT_MAX_BYTES = 1_048_576;
+export const MAX_SSE_BUFFER_BYTES = 262_144;
 export const CANVAS_ID = "factory-board";
 export const CANVAS_DISPLAY_NAME = "SoftwareFactory Live Board";
 export const CANVAS_DESCRIPTION =
@@ -15,6 +18,7 @@ export const CANVAS_DESCRIPTION =
 
 const MAX_POST_BYTES = 4096;
 const SSE_KEEPALIVE_MS = 15_000;
+const noopObserve = (_stage, work) => work();
 
 export const CANONICAL_MILESTONES = Object.freeze([
   Object.freeze({ id: "M01", defaultTitle: "M01 - Autonomous SoftwareFactory" }),
@@ -649,7 +653,13 @@ function defaultExecGh(args, timeoutMs) {
         encoding: "utf8",
         timeout: timeoutMs,
         maxBuffer: 2 * 1024 * 1024,
-        env: { ...process.env, GH_PAGER: "", GH_PROMPT_DISABLED: "1", NO_COLOR: "1" },
+        env: {
+          ...process.env,
+          GH_HOST: "github.com",
+          GH_PAGER: "",
+          GH_PROMPT_DISABLED: "1",
+          NO_COLOR: "1",
+        },
       },
       (err, stdout) => {
         if (err) {
@@ -660,6 +670,28 @@ function defaultExecGh(args, timeoutMs) {
       },
     );
   });
+}
+
+function assertGraphqlConnection(
+  conn,
+  { requirePageInfo = true, requireCursorWhenNext = false } = {},
+) {
+  if (!conn || typeof conn !== "object" || !Array.isArray(conn.nodes)) {
+    throw new Error("GH_GRAPHQL_CONNECTION_INVALID");
+  }
+  if (requirePageInfo) {
+    const pageInfo = conn.pageInfo;
+    if (!pageInfo || typeof pageInfo !== "object" || typeof pageInfo.hasNextPage !== "boolean") {
+      throw new Error("GH_GRAPHQL_CONNECTION_INVALID");
+    }
+    if (
+      requireCursorWhenNext &&
+      pageInfo.hasNextPage === true &&
+      (typeof pageInfo.endCursor !== "string" || pageInfo.endCursor.length === 0)
+    ) {
+      throw new Error("GH_GRAPHQL_CONNECTION_INVALID");
+    }
+  }
 }
 
 function addGraphqlIssueNodes(issueMap, bucket) {
@@ -693,13 +725,15 @@ async function paginateGraphqlIssues({
   timeoutMs,
   maxIssuePages,
 }) {
-  let hasNextPage = initialPageInfo?.hasNextPage === true;
-  let cursor = typeof initialPageInfo?.endCursor === "string" ? initialPageInfo.endCursor : "";
+  let hasNextPage = initialPageInfo.hasNextPage === true;
+  let cursor = typeof initialPageInfo.endCursor === "string" ? initialPageInfo.endCursor : "";
   let pageCount = 1;
-  while (hasNextPage && cursor.length > 0 && pageCount < maxIssuePages) {
+  while (hasNextPage && pageCount < maxIssuePages) {
     const stdout = await execGh(
       [
         "api",
+        "--hostname",
+        "github.com",
         "graphql",
         "-f",
         `query=${GRAPHQL_ISSUES_PAGE_QUERY}`,
@@ -719,9 +753,10 @@ async function paginateGraphqlIssues({
       throw new Error("GH_GRAPHQL_ERRORS");
     }
     const conn = parsed?.data?.repository?.issues;
-    addGraphqlIssueNodes(issueMap, conn?.nodes);
-    hasNextPage = conn?.pageInfo?.hasNextPage === true;
-    cursor = typeof conn?.pageInfo?.endCursor === "string" ? conn.pageInfo.endCursor : "";
+    assertGraphqlConnection(conn, { requireCursorWhenNext: true });
+    addGraphqlIssueNodes(issueMap, conn.nodes);
+    hasNextPage = conn.pageInfo.hasNextPage === true;
+    cursor = typeof conn.pageInfo.endCursor === "string" ? conn.pageInfo.endCursor : "";
     pageCount += 1;
   }
   return hasNextPage;
@@ -737,6 +772,8 @@ export async function fetchViaGhGraphql({
   const stdout = await execGh(
     [
       "api",
+      "--hostname",
+      "github.com",
       "graphql",
       "-f",
       `query=${GRAPHQL_SNAPSHOT_QUERY}`,
@@ -755,17 +792,22 @@ export async function fetchViaGhGraphql({
   if (!repoNode || typeof repoNode !== "object") {
     throw new Error("GH_REPOSITORY_MISSING");
   }
+  assertGraphqlConnection(repoNode.milestones);
+  assertGraphqlConnection(repoNode.openIssues, { requireCursorWhenNext: true });
+  assertGraphqlConnection(repoNode.closedIssues, { requireCursorWhenNext: true });
+  assertGraphqlConnection(repoNode.openPulls);
+  assertGraphqlConnection(repoNode.mergedPulls, { requirePageInfo: false });
 
   const issueMap = new Map();
-  addGraphqlIssueNodes(issueMap, repoNode.openIssues?.nodes);
-  addGraphqlIssueNodes(issueMap, repoNode.closedIssues?.nodes);
+  addGraphqlIssueNodes(issueMap, repoNode.openIssues.nodes);
+  addGraphqlIssueNodes(issueMap, repoNode.closedIssues.nodes);
 
   const [openTruncated, closedTruncated] = await Promise.all([
     paginateGraphqlIssues({
       owner,
       name,
       state: "OPEN",
-      initialPageInfo: repoNode.openIssues?.pageInfo,
+      initialPageInfo: repoNode.openIssues.pageInfo,
       issueMap,
       execGh,
       timeoutMs,
@@ -775,7 +817,7 @@ export async function fetchViaGhGraphql({
       owner,
       name,
       state: "CLOSED",
-      initialPageInfo: repoNode.closedIssues?.pageInfo,
+      initialPageInfo: repoNode.closedIssues.pageInfo,
       issueMap,
       execGh,
       timeoutMs,
@@ -1195,6 +1237,15 @@ export async function fetchViaPublicRest({
   };
 }
 
+async function runObservedReconcile(observe, work) {
+  let result;
+  await observe("reconcile", async () => {
+    result = await work();
+    return telemetrySummary(result.telemetry);
+  });
+  return result.snapshot;
+}
+
 export async function fetchFactoryBoardSnapshot({
   repo = DEFAULT_REPO,
   execGh = defaultExecGh,
@@ -1204,6 +1255,7 @@ export async function fetchFactoryBoardSnapshot({
   maxBytes = DEFAULT_MAX_BYTES,
   previousSnapshot = null,
   rateLimitState = null,
+  observe = noopObserve,
 } = {}) {
   const generatedAt = clock();
   const parsedClockMs = Date.parse(generatedAt);
@@ -1212,80 +1264,97 @@ export async function fetchFactoryBoardSnapshot({
   try {
     parsedRepo = parseRepoSlug(repo);
   } catch {
-    return buildUnavailableSnapshot({
-      repo: String(repo),
-      generatedAt,
-      error: { code: "INVALID_REPO_SLUG", message: "Repository must use owner/name format." },
-      previousSnapshot: null,
-    });
+    return runObservedReconcile(observe, async () => ({
+      telemetry: { reason: "INVALID_IDENTITY" },
+      snapshot: buildUnavailableSnapshot({
+        repo: String(repo),
+        generatedAt,
+        error: { code: "INVALID_REPO_SLUG", message: "Repository must use owner/name format." },
+        previousSnapshot: null,
+      }),
+    }));
   }
 
-  try {
-    const raw = await fetchViaGhGraphql({
-      owner: parsedRepo.owner,
-      name: parsedRepo.name,
-      execGh,
-      timeoutMs,
-    });
-    if (rateLimitState) {
-      rateLimitState.blockedUntilMs = 0;
-      rateLimitState.nextPollAtMs = 0;
-    }
-    return buildFactoryBoardSnapshot(raw, {
-      repo: parsedRepo.fullName,
-      source: "gh-graphql",
-      generatedAt,
-    });
-  } catch {
-    if (rateLimitState && rateLimitState.blockedUntilMs > nowMs) {
-      return buildUnavailableSnapshot({
-        repo: parsedRepo.fullName,
-        generatedAt,
-        error: {
-          code: "REST_RATE_LIMITED",
-          message: `Public GitHub REST rate limit active until ${new Date(rateLimitState.blockedUntilMs).toISOString()}.`,
-        },
-        previousSnapshot,
-      });
-    }
+  return runObservedReconcile(observe, async () => {
     try {
-      const raw = await fetchViaPublicRest({
+      const raw = await fetchViaGhGraphql({
         owner: parsedRepo.owner,
         name: parsedRepo.name,
-        request,
+        execGh,
         timeoutMs,
-        maxBytes,
-        nowMs,
       });
-      if (rateLimitState && raw.rateLimit) {
-        rateLimitState.blockedUntilMs = raw.rateLimit.blockedUntilMs;
-        rateLimitState.nextPollAtMs = raw.rateLimit.nextPollAtMs;
+      if (rateLimitState) {
+        rateLimitState.blockedUntilMs = 0;
+        rateLimitState.nextPollAtMs = 0;
       }
-      return buildFactoryBoardSnapshot(raw, {
-        repo: parsedRepo.fullName,
-        source: "github-rest",
-        generatedAt,
-      });
-    } catch (restErr) {
-      const isRateLimited = restErr?.code === "REST_RATE_LIMITED";
-      if (isRateLimited && rateLimitState && Number.isFinite(restErr.blockedUntilMs)) {
-        rateLimitState.blockedUntilMs = restErr.blockedUntilMs;
-        rateLimitState.nextPollAtMs = restErr.blockedUntilMs;
+      return {
+        telemetry: { reason: "SHADOW_RECONCILED" },
+        snapshot: buildFactoryBoardSnapshot(raw, {
+          repo: parsedRepo.fullName,
+          source: "gh-graphql",
+          generatedAt,
+        }),
+      };
+    } catch {
+      if (rateLimitState && rateLimitState.blockedUntilMs > nowMs) {
+        return {
+          telemetry: { reason: "RATE_LIMIT_OR_UNKNOWN" },
+          snapshot: buildUnavailableSnapshot({
+            repo: parsedRepo.fullName,
+            generatedAt,
+            error: {
+              code: "REST_RATE_LIMITED",
+              message: `Public GitHub REST rate limit active until ${new Date(rateLimitState.blockedUntilMs).toISOString()}.`,
+            },
+            previousSnapshot,
+          }),
+        };
       }
-      return buildUnavailableSnapshot({
-        repo: parsedRepo.fullName,
-        generatedAt,
-        error: {
-          code: isRateLimited ? "REST_RATE_LIMITED" : "SNAPSHOT_FETCH_FAILED",
-          message:
-            restErr instanceof Error && restErr.message
-              ? restErr.message
-              : "Both gh CLI and public GitHub REST reads failed.",
-        },
-        previousSnapshot,
-      });
+      try {
+        const raw = await fetchViaPublicRest({
+          owner: parsedRepo.owner,
+          name: parsedRepo.name,
+          request,
+          timeoutMs,
+          maxBytes,
+          nowMs,
+        });
+        if (rateLimitState && raw.rateLimit) {
+          rateLimitState.blockedUntilMs = raw.rateLimit.blockedUntilMs;
+          rateLimitState.nextPollAtMs = raw.rateLimit.nextPollAtMs;
+        }
+        return {
+          telemetry: { reason: "SHADOW_RECONCILED" },
+          snapshot: buildFactoryBoardSnapshot(raw, {
+            repo: parsedRepo.fullName,
+            source: "github-rest",
+            generatedAt,
+          }),
+        };
+      } catch (restErr) {
+        const isRateLimited = restErr?.code === "REST_RATE_LIMITED";
+        if (isRateLimited && rateLimitState && Number.isFinite(restErr.blockedUntilMs)) {
+          rateLimitState.blockedUntilMs = restErr.blockedUntilMs;
+          rateLimitState.nextPollAtMs = restErr.blockedUntilMs;
+        }
+        return {
+          telemetry: { reason: isRateLimited ? "RATE_LIMIT_OR_UNKNOWN" : "READ_FAILED" },
+          snapshot: buildUnavailableSnapshot({
+            repo: parsedRepo.fullName,
+            generatedAt,
+            error: {
+              code: isRateLimited ? "REST_RATE_LIMITED" : "SNAPSHOT_FETCH_FAILED",
+              message:
+                restErr instanceof Error && restErr.message
+                  ? restErr.message
+                  : "Both gh CLI and public GitHub REST reads failed.",
+            },
+            previousSnapshot,
+          }),
+        };
+      }
     }
-  }
+  });
 }
 
 export function formatBoardStatus(intervalSeconds, paused) {
@@ -1298,6 +1367,7 @@ export function createBoardPoller({
   fetchSnapshot = fetchFactoryBoardSnapshot,
   timers = { setInterval, clearInterval },
   now = Date.now,
+  observe = noopObserve,
 } = {}) {
   const parsed = parseRepoSlug(repo);
   const validated = validateIntervalSeconds(initialInterval);
@@ -1367,6 +1437,7 @@ export function createBoardPoller({
           repo: parsed.fullName,
           previousSnapshot: snapshot,
           rateLimitState,
+          observe,
         });
         if (next?.rateLimit?.nextPollAtMs > rateLimitState.nextPollAtMs) {
           rateLimitState.nextPollAtMs = next.rateLimit.nextPollAtMs;
@@ -1696,8 +1767,12 @@ export function initFactoryBoardClient(win) {
     const milestonesHtml = snap.milestones
       .map((m) => {
         const isOpen = state.openDrawers.has(m.id);
-        const pctValue = m.completionPercent === null ? 0 : m.completionPercent;
-        const pctLabel = m.completionPercent === null ? "Partial" : m.completionPercent + "%";
+        const hasKnownPct = m.completionPercent !== null;
+        const pctValue = hasKnownPct ? m.completionPercent : 0;
+        const pctLabel = hasKnownPct ? m.completionPercent + "%" : "Partial";
+        const progressAriaAttrs = hasKnownPct
+          ? 'aria-valuenow="' + pctValue + '" aria-valuemin="0" aria-valuemax="100"'
+          : 'aria-valuetext="Unknown (partial inventory)"';
         const issuesHtml =
           m.issues.length === 0
             ? '<div class="empty-state">No issues assigned</div>'
@@ -1764,9 +1839,11 @@ export function initFactoryBoardClient(win) {
           pctLabel +
           "</span>" +
           "</div>" +
-          '<div class="progress-track" role="progressbar" aria-valuenow="' +
-          pctValue +
-          '" aria-valuemin="0" aria-valuemax="100">' +
+          '<div class="progress-track" role="progressbar" aria-label="' +
+          esc(m.title + " closed issue activity proxy") +
+          '" ' +
+          progressAriaAttrs +
+          ">" +
           '<div class="progress-fill" style="width:' +
           pctValue +
           '%"></div>' +
@@ -2275,12 +2352,89 @@ function isApprovedParentOrigin(raw, expectedOrigin) {
   }
 }
 
+export function createSseClientRegistry({
+  timers = { setInterval, clearInterval },
+  maxBufferBytes = MAX_SSE_BUFFER_BYTES,
+} = {}) {
+  const clients = new Map();
+
+  function remove(res) {
+    const client = clients.get(res);
+    if (!client) {
+      return;
+    }
+    timers.clearInterval(client.keepAlive);
+    clients.delete(res);
+  }
+
+  function write(res, frame, { isState = false } = {}) {
+    const client = clients.get(res);
+    if (!client || res.destroyed || res.writableEnded) {
+      remove(res);
+      return;
+    }
+    const frameBytes = Buffer.byteLength(frame);
+    if ((res.writableLength ?? 0) > maxBufferBytes || frameBytes > maxBufferBytes) {
+      remove(res);
+      res.destroy();
+      return;
+    }
+    if (client.waitingDrain) {
+      if (isState) {
+        client.pendingStateFrame = frame;
+      }
+      return;
+    }
+    const flushed = res.write(frame);
+    if (!flushed) {
+      if ((res.writableLength ?? 0) > maxBufferBytes) {
+        remove(res);
+        res.destroy();
+        return;
+      }
+      client.waitingDrain = true;
+      res.once("drain", () => {
+        client.waitingDrain = false;
+        const nextFrame = client.pendingStateFrame;
+        client.pendingStateFrame = null;
+        if (nextFrame !== null) {
+          write(res, nextFrame, { isState: true });
+        }
+      });
+    }
+  }
+
+  function add(res, keepAlive) {
+    clients.set(res, { keepAlive, waitingDrain: false, pendingStateFrame: null });
+  }
+
+  function broadcastState(frame) {
+    for (const res of [...clients.keys()]) {
+      write(res, frame, { isState: true });
+    }
+  }
+
+  function closeAll() {
+    for (const [res, client] of clients.entries()) {
+      timers.clearInterval(client.keepAlive);
+      if (!res.writableEnded) {
+        res.end();
+      }
+    }
+    clients.clear();
+  }
+
+  return { add, remove, write, broadcastState, closeAll, size: () => clients.size };
+}
+
 export async function startLoopbackBoardServer({
   repo = DEFAULT_REPO,
   intervalSeconds = DEFAULT_INTERVAL_SECONDS,
   fetchSnapshot = fetchFactoryBoardSnapshot,
   timers,
   onLog,
+  observe = noopObserve,
+  maxSseBufferBytes = MAX_SSE_BUFFER_BYTES,
   standalone = false,
   frameAncestors = standalone ? ["'none'"] : DEFAULT_CANVAS_FRAME_ANCESTORS,
 } = {}) {
@@ -2296,10 +2450,14 @@ export async function startLoopbackBoardServer({
     intervalSeconds,
     fetchSnapshot,
     timers: runtimeTimers,
+    observe,
   });
 
   const sockets = new Set();
-  const sseClients = new Map();
+  const sseRegistry = createSseClientRegistry({
+    timers: runtimeTimers,
+    maxBufferBytes: maxSseBufferBytes,
+  });
   const boardToken = randomBytes(16).toString("hex");
   const html = renderBoardHtml({
     title: CANVAS_DISPLAY_NAME,
@@ -2312,12 +2470,7 @@ export async function startLoopbackBoardServer({
   let expectedOrigin = "";
 
   const unsubscribe = poller.subscribe((envelope) => {
-    const frame = `event: state\ndata: ${JSON.stringify(envelope)}\n\n`;
-    for (const res of sseClients.keys()) {
-      if (!res.writableEnded) {
-        res.write(frame);
-      }
-    }
+    sseRegistry.broadcastState(`event: state\ndata: ${JSON.stringify(envelope)}\n\n`);
   });
 
   const server = createServer(async (req, res) => {
@@ -2447,27 +2600,21 @@ export async function startLoopbackBoardServer({
         res.flushHeaders();
 
         const keepAlive = runtimeTimers.setInterval(() => {
-          if (!res.writableEnded) {
-            res.write(": keepalive\n\n");
-          }
+          sseRegistry.write(res, ": keepalive\n\n");
         }, SSE_KEEPALIVE_MS);
         keepAlive.unref?.();
 
-        sseClients.set(res, keepAlive);
-        res.write(`event: state\ndata: ${JSON.stringify(poller.getState())}\n\n`);
+        sseRegistry.add(res, keepAlive);
+        sseRegistry.write(res, `event: state\ndata: ${JSON.stringify(poller.getState())}\n\n`, {
+          isState: true,
+        });
         if (!poller.getState().snapshot) {
           void poller.refresh();
         }
 
-        const cleanupClient = () => {
-          const timer = sseClients.get(res);
-          if (timer) {
-            runtimeTimers.clearInterval(timer);
-            sseClients.delete(res);
-          }
-        };
-        req.on("close", cleanupClient);
-        res.on("close", cleanupClient);
+        const onStreamClosed = () => sseRegistry.remove(res);
+        req.on("close", onStreamClosed);
+        res.on("close", onStreamClosed);
         return;
       }
 
@@ -2513,13 +2660,7 @@ export async function startLoopbackBoardServer({
     closed = true;
     unsubscribe();
     poller.close();
-    for (const [res, timer] of sseClients.entries()) {
-      runtimeTimers.clearInterval(timer);
-      if (!res.writableEnded) {
-        res.end();
-      }
-    }
-    sseClients.clear();
+    sseRegistry.closeAll();
     await new Promise((resolve) => {
       server.close(() => resolve());
       for (const socket of sockets) {
@@ -2537,6 +2678,7 @@ export function createBoardInstanceManager({
   startServer = startLoopbackBoardServer,
   timers,
   onLog,
+  observe = noopObserve,
 } = {}) {
   const instances = new Map();
   const pendingOpens = new Map();
@@ -2589,6 +2731,7 @@ export function createBoardInstanceManager({
               fetchSnapshot,
               timers,
               onLog,
+              observe,
             });
             if (record.cancelled) {
               await created.close();
@@ -2773,9 +2916,26 @@ export async function startFactoryBoardExtension({
   createCanvas,
   joinSession,
   createManager = createBoardInstanceManager,
+  env = process.env,
+  startTelemetry = startLocalSdk,
 }) {
   let activeSession = null;
+  const endpoint = env?.OTEL_EXPORTER_OTLP_ENDPOINT;
+  const telemetry =
+    typeof endpoint === "string" && endpoint.trim().length > 0
+      ? await startTelemetry(
+          {
+            endpoint,
+            protocol: env.OTEL_EXPORTER_OTLP_PROTOCOL ?? "http/protobuf",
+            headers: env.OTEL_EXPORTER_OTLP_HEADERS,
+          },
+          undefined,
+          env,
+        ).catch(() => null)
+      : null;
+
   const manager = createManager({
+    observe: telemetry?.observe,
     onLog: (message, options) => {
       if (activeSession && typeof activeSession.log === "function") {
         activeSession.log(message, options);
@@ -2793,6 +2953,9 @@ export async function startFactoryBoardExtension({
       handlers: {
         onSessionEnd: async () => {
           await manager.closeAll();
+          if (telemetry) {
+            await telemetry.shutdown().catch(() => {});
+          }
         },
       },
     },
