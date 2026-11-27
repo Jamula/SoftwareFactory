@@ -304,6 +304,21 @@ test('runner emits sanitized laptop-free receipts across commands without requir
  assert.equal(sideOnlyFailed[0].outcome,'failed');
  assert.deepEqual(sideOnlyStderr,['FACTORY_RUN_FAILED']);
 
+ // Output-sink failure during --receipt is guarded, notifies writeReceipt, and exits 1 via fail channel
+ const sinkThrowSide=[],sinkThrowStderr=[];
+ assert.equal(await run(['--inventory','--receipt'],{
+  clock,env:hostedEnv,
+  inventory:async()=>({shadow:true,issues:[1],pulls:[],evidenceComplete:false,liveDispatch:false,liveMerge:false}),
+  write:()=>{throw Error('stdout pipe closed');},
+  fail:v=>sinkThrowStderr.push(v),
+  writeReceipt:r=>sinkThrowSide.push(r)
+ }),1);
+ assert.equal(sinkThrowSide.length,1);
+ assert.equal(sinkThrowSide[0].outcome,'failed');
+ assert.equal(sinkThrowSide[0].reason,'RUNTIME');
+ assert.equal(JSON.stringify(sinkThrowSide).includes('stdout pipe closed'),false);
+ assert.deepEqual(sinkThrowStderr,['FACTORY_RUN_FAILED']);
+
  for(const invalidArgs of [['--receipt','--receipt'],['--smoke','--inventory','--receipt'],['--receipt','--unknown']]){
   const errs=[];
   assert.equal(await run(invalidArgs,{fail:v=>errs.push(v),write:assert.fail}),2);

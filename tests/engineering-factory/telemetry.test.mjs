@@ -186,6 +186,43 @@ test('telemetrySummary classifies coordinator, event-journal and protected-merge
   {outcome:'unknown',reason:'NONE'});
  assert.deepEqual(telemetrySummary({shadow:true,completed:[],reason:'SHADOW_TICK_COMPLETE'}),
   {outcome:'unknown',reason:'NONE'});
+
+ // Policy-aware planLanes NO_READY_WORK preserves known blockedTasks denials while empty blockers stay unknown
+ const validConfig={
+  schemaVersion:1,
+  project:{key:'sf',repository:'Jamula/SoftwareFactory',defaultBranch:'main'},
+  execution:{mode:'shadow',enabled:true,stop:false},
+  limits:{maxConcurrentLanes:2,leaseMs:30000,maxAttempts:3,baseDelayMs:100,maxDelayMs:1000},
+  adapters:{workTracker:'mock',engineeringAgent:'mock',state:'sqlite'},
+  lanes:[{id:'core',owners:['src'],prompt:'prompts/core.md'}]
+ };
+ const blockedPolicyPlan=planLanes(
+  validConfig,
+  [{id:1,lane:'core',state:'approved',priority:1,dependencies:[],paths:['src/a.mjs']}],
+  [],
+  {now:1000,agingMs:60000,riskCeiling:'low',ready:[{id:1,readySince:500,risk:'high'}]}
+ );
+ assert.equal(blockedPolicyPlan.reason,'NO_READY_WORK');
+ assert.deepEqual(telemetrySummary(blockedPolicyPlan),{outcome:'blocked',reason:'POLICY'});
+ const blockedReceipt=createExecutionReceipt({
+  source:'github-hosted',repositoryId:1471342715,receiptId:'gh-900-1',
+  observedMs:1000,stage:'evaluate',result:blockedPolicyPlan
+ });
+ assert.equal(blockedReceipt.valid,true);
+ assert.equal(blockedReceipt.outcome,'blocked');
+ assert.equal(blockedReceipt.reason,'POLICY');
+
+ const emptyPolicyPlan=planLanes(validConfig,[],[],{now:1000,agingMs:60000,riskCeiling:'low',ready:[]});
+ assert.equal(emptyPolicyPlan.reason,'NO_READY_WORK');
+ assert.deepEqual(telemetrySummary(emptyPolicyPlan),{outcome:'unknown',reason:'NONE'});
+ assert.deepEqual(telemetrySummary({
+  shadow:true,scheduled:[],reason:'NO_READY_WORK',
+  blockedTasks:[{id:1,reason:'CAPACITY_FULL'},{id:2,reason:'TASK_READ_FAILED'}]
+ }),{outcome:'failed',reason:'RUNTIME'});
+ assert.deepEqual(telemetrySummary({
+  shadow:true,scheduled:[],reason:'NO_READY_WORK',
+  blockedTasks:[{id:1,reason:'custom unmapped blocker'}]
+ }),{outcome:'blocked',reason:'OTHER'});
  assert.deepEqual(telemetrySummary({
   shadow:true,completed:[{lane:'core',taskId:1,state:'shadow-reviewed'}],reason:'SHADOW_TICK_COMPLETE'
  }),{outcome:'eligible',reason:'NONE'});

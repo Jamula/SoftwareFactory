@@ -140,7 +140,9 @@ export async function run(args,{write=console.log,fail=console.error,inventory=r
       const receipt=buildStageReceipt({
         env,spec,startedAt,finishedAt,result:{reason:'READ_FAILED'},receiptId,quota,cost,humanTouches,correlation
       });
-      if(parsed.emitReceipt) write(JSON.stringify(receipt));
+      if(parsed.emitReceipt) {
+        try {write(JSON.stringify(receipt));} catch {}
+      }
       if(typeof writeReceipt==='function') {
         try {writeReceipt(receipt);} catch {}
       }

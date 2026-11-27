@@ -79,7 +79,7 @@ const eligibleCodes=new Set([
 ]);
 const unknownCodes=new Set([
   'PULL_IDENTITY_MATCHED','ISSUE_IDENTITY_MATCHED','IDENTITY_ONLY','NORMALIZED_ONLY',
-  'NO_READY_WORK','NO_CLAIM','NO_RECOVERABLE_INTENT'
+  'NO_CLAIM','NO_RECOVERABLE_INTENT'
 ]);
 
 function ownValue(value,key) {
@@ -137,6 +137,17 @@ export function telemetrySummary(result) {
   if(failedCodes.has(code)) return {outcome:'failed',reason};
   if(reconciled===false||state==='blocked'||ownValue(result,'accepted')===false||ownValue(result,'eligible')===false)
     return {outcome:'blocked',reason};
+  if(code==='NO_READY_WORK') {
+    const blockedTasks=ownValue(result,'blockedTasks');
+    if(Array.isArray(blockedTasks)&&blockedTasks.length>0) {
+      const summaries=blockedTasks.map(item=>{
+        const summary=telemetrySummary(item);
+        return summary.outcome==='failed'?summary:{outcome:'blocked',reason:summary.reason};
+      });
+      return summaries.find(item=>item.outcome==='failed')??summaries[0];
+    }
+    return {outcome:'unknown',reason:'NONE'};
+  }
   if(reconciled===true||unknownCodes.has(code)) return {outcome:'unknown',reason};
   if(code==='SHADOW_PLAN') {
     const ready=ownValue(result,'ready');
