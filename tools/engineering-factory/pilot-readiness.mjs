@@ -89,6 +89,16 @@ export function verifyM01AutonomousExit(e){
   return exitDeny('WORKER_CAPACITY_UNKNOWN');
  const repeatability=evaluateSelfPilotCycles(e.cycles,e.expectedComponents,{repositoryId:SOFTWARE_FACTORY_REPO_ID});
  if(repeatability.reason!=='SYNTHETIC_REPEATABILITY_ONLY')return exitDeny(repeatability.reason);
+ for(let i=0;i<e.cycles.length;i++){
+  const c=e.cycles[i];
+  if(!own(c,['acceptanceVerified','gateBypasses'])||c.acceptanceVerified!==true||c.gateBypasses!==0)
+   return exitDeny('SAFETY_OR_COST_UNKNOWN');
+  for(let j=0;j<c.coverageReports.length;j++){
+   const r=c.coverageReports[j];
+   if(r.lines*100<e.policy.lineMin*r.lineTotal||r.branches*100<e.policy.branchMin*r.branchTotal)
+    return exitDeny('COVERAGE');
+  }
+ }
  return {shadow:true,ready:true,liveActivation:false,accepted:false,reason:'M01_EXIT_EVIDENCE_READY_ONLY',
   sampleCount:repeatability.sampleCount,p50Ms:repeatability.p50Ms,p95Ms:repeatability.p95Ms,
   actualWorkerMax:e.actualWorkerMax,workerShortfallFrom12:e.workerShortfallFrom12};

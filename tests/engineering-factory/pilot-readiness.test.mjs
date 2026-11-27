@@ -75,11 +75,13 @@ test('cycle inventory rejects caller-defined iteration, accessors, and proxies w
 test('M01 autonomous exit verifier enforces all structural prerequisites, worker shortfall, and accepted cycles without live activation',()=>{
  const sfPolicy={repositoryId:1471342715,pin:'c'.repeat(40),lineMin:98,branchMin:95,firstPilot:true};
  const sfReadiness={repositoryId:1471342715,pin:sfPolicy.pin,enrolled:true,stop:false,upstreamAccepted:false,review:true,coverageLine:99,coverageBranch:96,requiredChecks:true,quotaVerified:true,rollbackVerified:true,securityClear:true};
+ const m01Cycle=(n,extra={})=>cycle(n,{acceptanceVerified:true,gateBypasses:0,...extra});
+ const m01Batch=()=>[m01Cycle(1),m01Cycle(2),m01Cycle(3)];
  const exitEvidence=(extra={})=>({
   policy:sfPolicy,
   readiness:sfReadiness,
   ...m01Prereqs,
-  cycles:batch(),
+  cycles:m01Batch(),
   expectedComponents:inventory,
   actualWorkerMax:4,
   workerShortfallFrom12:8,
@@ -112,9 +114,23 @@ test('M01 autonomous exit verifier enforces all structural prerequisites, worker
  });
  assert.equal(verifyExit(exitEvidence({actualWorkerMax:16,workerShortfallFrom12:0})).ready,true);
 
+ const strictReports=head=>inventory.map(component=>({component,head,lines:99,lineTotal:100,branches:24,branchTotal:25}));
+ const strictPolicy={...sfPolicy,lineMin:99,branchMin:96};
+ assert.equal(verifyExit(exitEvidence({policy:strictPolicy})).reason,'COVERAGE');
+ assert.equal(verifyExit(exitEvidence({
+  policy:{...sfPolicy,branchMin:96},
+  cycles:[1,2,3].map(n=>m01Cycle(n,{coverageReports:inventory.map(component=>({component,head:String(n).repeat(40),lines:99,lineTotal:100,branches:19,branchTotal:20}))}))
+ })).reason,'COVERAGE');
+ assert.equal(verifyExit(exitEvidence({
+  policy:strictPolicy,
+  cycles:[1,2,3].map(n=>m01Cycle(n,{coverageReports:strictReports(String(n).repeat(40))}))
+ })).ready,true);
+
  let traps=0;const trap=()=>{traps++;throw Error('unexpected exit trap');};
  const proxyEvidence=new Proxy(exitEvidence(),{get:trap,getOwnPropertyDescriptor:trap});
  const getterPolicy={...sfPolicy};Object.defineProperty(getterPolicy,'requireM01Prerequisites',{get:trap});
+ const getterAcceptanceCycle=m01Cycle(1);Object.defineProperty(getterAcceptanceCycle,'acceptanceVerified',{get:trap});
+ const getterBypassCycle=m01Cycle(1);Object.defineProperty(getterBypassCycle,'gateBypasses',{get:trap});
  for(const bad of [null,[],Object.create(exitEvidence()),proxyEvidence,exitEvidence({readiness:null})]){
   const res=verifyExit(bad);
   assert.equal(res.ready,false);
@@ -146,12 +162,18 @@ test('M01 autonomous exit verifier enforces all structural prerequisites, worker
   {actualWorkerMax:4,workerShortfallFrom12:null}
  ])assert.equal(verifyExit(exitEvidence(badWorkers)).reason,'WORKER_CAPACITY_UNKNOWN');
 
- assert.equal(verifyExit(exitEvidence({cycles:[cycle(1),cycle(2)]})).reason,'CYCLE_INVENTORY_UNKNOWN');
- assert.equal(verifyExit(exitEvidence({cycles:[cycle(1,{humanInterventions:1}),cycle(2),cycle(3)]})).reason,'SAFETY_OR_COST_UNKNOWN');
- assert.equal(verifyExit(exitEvidence({cycles:[cycle(1,{duplicateDispatches:1}),cycle(2),cycle(3)]})).reason,'SAFETY_OR_COST_UNKNOWN');
- assert.equal(verifyExit(exitEvidence({cycles:[cycle(1,{unauthorizedWrites:1}),cycle(2),cycle(3)]})).reason,'SAFETY_OR_COST_UNKNOWN');
- assert.equal(verifyExit(exitEvidence({cycles:[cycle(1,{extraCost:1}),cycle(2),cycle(3)]})).reason,'SAFETY_OR_COST_UNKNOWN');
- assert.equal(verifyExit(exitEvidence({cycles:[cycle(1,{reviewFix:false}),cycle(2),cycle(3)]})).reason,'SCENARIO_MISSING');
- assert.equal(verifyExit(exitEvidence({cycles:[cycle(1),cycle(2,{parallelCandidate:false}),cycle(3)]})).reason,'SCENARIO_MISSING');
+ assert.equal(verifyExit(exitEvidence({cycles:[m01Cycle(1),m01Cycle(2)]})).reason,'CYCLE_INVENTORY_UNKNOWN');
+ assert.equal(verifyExit(exitEvidence({cycles:batch()})).reason,'SAFETY_OR_COST_UNKNOWN');
+ const missingBypass=m01Cycle(1);delete missingBypass.gateBypasses;
+ assert.equal(verifyExit(exitEvidence({cycles:[missingBypass,m01Cycle(2),m01Cycle(3)]})).reason,'SAFETY_OR_COST_UNKNOWN');
+ assert.equal(verifyExit(exitEvidence({cycles:[getterAcceptanceCycle,m01Cycle(2),m01Cycle(3)]})).reason,'SAFETY_OR_COST_UNKNOWN');
+ assert.equal(verifyExit(exitEvidence({cycles:[getterBypassCycle,m01Cycle(2),m01Cycle(3)]})).reason,'SAFETY_OR_COST_UNKNOWN');
+ for(const badSafety of [{acceptanceVerified:false},{acceptanceVerified:null},{gateBypasses:1},{gateBypasses:-1},{gateBypasses:null},{humanInterventions:1},{duplicateDispatches:1},{unauthorizedWrites:1},{extraCost:1}]){
+  const res=verifyExit(exitEvidence({cycles:[m01Cycle(1,badSafety),m01Cycle(2),m01Cycle(3)]}));
+  assert.equal(res.reason,'SAFETY_OR_COST_UNKNOWN');
+  assert.equal(res.accepted,false);
+ }
+ assert.equal(verifyExit(exitEvidence({cycles:[m01Cycle(1,{reviewFix:false}),m01Cycle(2),m01Cycle(3)]})).reason,'SCENARIO_MISSING');
+ assert.equal(verifyExit(exitEvidence({cycles:[m01Cycle(1),m01Cycle(2,{parallelCandidate:false}),m01Cycle(3)]})).reason,'SCENARIO_MISSING');
  assert.equal(traps,0);
 });
