@@ -1109,6 +1109,8 @@ test('verifies compiler-shaped multi-job lock (activation -> agent -> detection 
 
   const githubScriptSha = '3a2844b7e9c422d3c10d287c895573f7108da1b3';
   const defaultDetectionSteps = [
+    '      - name: Setup gh-aw actions',
+    `        uses: github/gh-aw/actions/setup@${PINNED_GHAW_RELEASE.commit}`,
     '      - name: Check if detection needed',
     '        id: detection_guard',
     '        if: always()',
@@ -1396,6 +1398,23 @@ test('verifies compiler-shaped multi-job lock (activation -> agent -> detection 
       "        id: redact_detection_logs\n        if: always() && steps.detection_guard.outputs.run_detection == 'true'\n",
       '        id: redact_detection_logs\n'
     ),
+    // Missing github/gh-aw/actions/setup, custom destination, unverified preceding uses:, or module-replacing run: step MUST fail closed!
+    defaultDetectionSteps.replace(
+      `      - name: Setup gh-aw actions\n        uses: github/gh-aw/actions/setup@${PINNED_GHAW_RELEASE.commit}\n`,
+      ''
+    ),
+    defaultDetectionSteps.replace(
+      `        uses: github/gh-aw/actions/setup@${PINNED_GHAW_RELEASE.commit}`,
+      `        uses: github/gh-aw/actions/setup@${PINNED_GHAW_RELEASE.commit}\n        with:\n          destination: /tmp/untrusted`
+    ),
+    defaultDetectionSteps.replace(
+      '      - name: Execute threat detection with AWF\n',
+      '      - name: Overwrite actions module\n        run: cp /tmp/evil.cjs "$RUNNER_TEMP/gh-aw/actions/parse_threat_detection_results.cjs"\n      - name: Execute threat detection with AWF\n'
+    ),
+    defaultDetectionSteps.replace(
+      '      - name: Execute threat detection with AWF\n',
+      `      - uses: actions/github-script@${githubScriptSha}\n        with:\n          script: core.info('tamper');\n      - name: Execute threat detection with AWF\n`
+    ),
     defaultDetectionSteps.replace(
       / {6}- name: Redact secrets in detection logs[\s\S]*?- name: Redact secrets in detection artifacts/,
       '      - name: Redact secrets in detection artifacts'
@@ -1572,6 +1591,8 @@ test('enforces exact SHA-256 normalized script digest on run: scan-output produc
     `      - name: Custom-shell hijacked scan\n        id: policy_scan\n        shell: "bash -c 'echo scan_verified=true >> \\"$GITHUB_OUTPUT\\"' {0}"\n${canonicalRunOnly}`,
     `      - name: NODE_OPTIONS hijacked scan\n        id: policy_scan\n        env:\n          NODE_OPTIONS: --require=/tmp/evil.cjs\n${canonicalRunOnly}`,
     `      - name: BASH_ENV hijacked scan\n        id: policy_scan\n        env:\n          BASH_ENV: /tmp/evil.sh\n${canonicalRunOnly}`,
+    `      - name: Exported Bash function hijacked scan\n        id: policy_scan\n        env:\n          "BASH_FUNC_node%%": "() { return 0; }"\n${canonicalRunOnly}`,
+    `      - name: GITHUB_REF env hijacked scan\n        id: policy_scan\n        env:\n          GITHUB_REF: refs/heads/main\n${canonicalRunOnly}`,
     `      - name: Scalar env scan\n        id: policy_scan\n        env: invalid_scalar\n${canonicalRunOnly}`
   ]) {
     const spoofed = buildFixture({
@@ -2005,8 +2026,38 @@ test('verifies Issue #5 event trigger matrix, 10-minute default-off recovery sch
     includeReview: false,
     evalIf: "${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.ref == 'refs/heads/main' && github.ref_protected == true && !endsWith(github.actor, '[bot]') }}",
     checkoutWith: '          persist-credentials: false\n          ref: ${{ github.workflow_sha }}',
-    stepRun: '          test "$GITHUB_REF" = refs/heads/main\n          test "$GITHUB_REF_PROTECTED" = true\n          echo "ok"'
+    stepRun: '          set -euo pipefail\n          test "$GITHUB_REF" = refs/heads/main\n          test "$GITHUB_REF_PROTECTED" = true\n          echo "ok"'
   })).valid, true);
+  // Weakened || true preamble, mutated shadow-reconcile optin emitting unconditional enabled=true, or != 'skipped' provenance inheritance MUST fail closed!
+  assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({
+    includeReview: false,
+    evalIf: "${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.ref == 'refs/heads/main' && github.ref_protected == true && !endsWith(github.actor, '[bot]') }}",
+    checkoutWith: '          persist-credentials: false\n          ref: ${{ github.workflow_sha }}',
+    stepRun: '          set -euo pipefail\n          test "$GITHUB_REF" = refs/heads/main || true\n          test "$GITHUB_REF_PROTECTED" = true'
+  })).reason, 'UNTRUSTED_PR_CHECKOUT');
+  assert.equal(verifyEventTriggerMatrix(
+    shadowReconcileYaml.replace(
+      '            echo "enabled=false" >> "$GITHUB_OUTPUT"\n          fi',
+      '            echo "enabled=false" >> "$GITHUB_OUTPUT"\n          fi\n          echo "enabled=true" >> "$GITHUB_OUTPUT"'
+    )
+  ).reason, 'UNTRUSTED_PR_CHECKOUT');
+  assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({
+    includeReview: false,
+    evalIf: "${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.ref == 'refs/heads/main' && github.ref_protected == true && !endsWith(github.actor, '[bot]') }}",
+    stepRun: '          set -euo pipefail\n          test "$GITHUB_REF" = refs/heads/main\n          test "$GITHUB_REF_PROTECTED" = true',
+    extraJobs: [
+      '  detection:',
+      '    needs: [evaluate]',
+      "    if: always() && needs.evaluate.result != 'skipped'",
+      '    runs-on: ubuntu-latest',
+      '    permissions:',
+      '      contents: read',
+      '    steps:',
+      `      - uses: actions/checkout@${checkoutSha}`,
+      '        with:',
+      '          persist-credentials: false\n          ref: ${{ github.workflow_sha }}'
+    ].join('\n')
+  })).reason, 'UNTRUSTED_PR_CHECKOUT');
 
   // Linear-time O(N) guard against long .github identifier chains (no polynomial ReDoS)
   const redosStart = performance.now();
@@ -2074,7 +2125,7 @@ test('verifies Issue #5 event trigger matrix, 10-minute default-off recovery sch
   const implicitAndReverseDownstream = buildMatrixYaml({
     includeReview: false,
     evalIf: "${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.ref == 'refs/heads/main' && github.ref_protected == true && !endsWith(github.actor, '[bot]') }}",
-    stepRun: '          test "$GITHUB_REF" = refs/heads/main\n          test "$GITHUB_REF_PROTECTED" = true\n          echo "eval"',
+    stepRun: '          set -euo pipefail\n          test "$GITHUB_REF" = refs/heads/main\n          test "$GITHUB_REF_PROTECTED" = true\n          echo "eval"',
     extraJobs: [
       '  downstream_implicit:',
       '    needs: [mid_step]',

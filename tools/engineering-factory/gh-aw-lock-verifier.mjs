@@ -790,6 +790,13 @@ const PINNED_GHAW_DETECTION_GUARD_RUN_SHA256 =
   'cd263ee1576f187c6631de7e4e336dfadb2b8f71404f70dfccaa319b2530af44';
 const UNCONDITIONAL_DETECTION_GUARD_RUN_SHA256 =
   '09fc5d5793d63171201ff6034a92a2c9201437b57dcbcb6f3cfbfa0621fd8f19';
+const PINNED_CLEAR_AGENT_USAGE_RUN_SHA256 =
+  'c93a5242d91f278481809a338d359e8c976f21e030dbbd395410c7eec1a5d4f7';
+const PINNED_SHADOW_RECONCILE_OPTIN_RUN_SHA256 =
+  'fb54fe1118f487e97b5c0ae0941ff48f484ab1f76ad6cace70d9464290a84949';
+const STRICT_THREAT_DETECT_CMD_RE = /^threat-detect(?:\s+--[a-z0-9-]+(?:\s+[A-Za-z0-9_.-]+)?)*$/;
+const SIMPLE_POSIX_TEST_LINE_RE = /^test "\$[A-Z][A-Z0-9_]*" = [A-Za-z0-9_./-]+$/;
+const VALID_ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const PINNED_REDACTION_SCRIPT_SHA256S = new Set([
   '26a88c8a5717600f5fd310e6421561c072ac7381d95edfd5fc081bc82fcc93be',
   'bf99a81555fbc952f9f2173d234c6071a0fa01ba181cb046fc12f88ef7294ff3'
@@ -834,8 +841,13 @@ function isSafeScanEnv(envValue) {
   if (envValue === undefined) return true;
   if (!isMapObject(envValue)) return false;
   return Object.keys(envValue).every(key => {
+    if (!VALID_ENV_KEY_RE.test(key)) return false;
     const lower = key.toLowerCase();
-    return !lower.startsWith('input_') && !FORBIDDEN_SCAN_ENV_KEYS.has(lower);
+    return !lower.startsWith('input_') &&
+      !lower.startsWith('bash_func_') &&
+      !lower.startsWith('github_') &&
+      !lower.startsWith('npm_config_') &&
+      !FORBIDDEN_SCAN_ENV_KEYS.has(lower);
   });
 }
 
@@ -888,12 +900,26 @@ function isSafeSetupStepBeforePolicyScan(step, usesLower) {
   return true;
 }
 
-function escapeRegExp(literal) {
-  return literal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+function hasFailClosedPosixRefPreamble(runText, expectedBranchRef) {
+  const lines = runText
+    .split('\n')
+    .map(line => line.trim())
+    .filter(line => line.length > 0 && !line.startsWith('#'));
+  if (lines.length < 3 || lines[0] !== 'set -euo pipefail') return false;
+  let sawRef = false;
+  let sawProtected = false;
+  for (let i = 1; i < lines.length; i++) {
+    if (!SIMPLE_POSIX_TEST_LINE_RE.test(lines[i])) break;
+    if (lines[i] === `test "$GITHUB_REF" = ${expectedBranchRef}`) sawRef = true;
+    if (lines[i] === 'test "$GITHUB_REF_PROTECTED" = true') sawProtected = true;
+    if (sawRef && sawProtected) return true;
+  }
+  return false;
 }
 
-function resolveJobProtectedBranchProvenance(job, jobAst, expectedBranchRef) {
-  if (jobAst === null || astHasBypassCall(jobAst) || !Array.isArray(job.steps)) {
+function resolveJobProtectedBranchProvenance(job, jobAst, expectedBranchRef, outerEnvSafe) {
+  if (!outerEnvSafe || job.defaults !== undefined || job.container !== undefined ||
+      !isSafeScanEnv(job.env) || jobAst === null || astHasBypassCall(jobAst) || !Array.isArray(job.steps)) {
     return {jobWide: false, gatedStepIds: new Set()};
   }
   const conjuncts = collectMandatoryConjuncts(jobAst);
@@ -905,11 +931,6 @@ function resolveJobProtectedBranchProvenance(job, jobAst, expectedBranchRef) {
   if (!hasRef || !hasProtected) {
     return {jobWide: false, gatedStepIds: new Set()};
   }
-  const escapedRef = escapeRegExp(expectedBranchRef);
-  const posixRefRe = new RegExp(`(?:^|\\n)\\s*test\\s+"\\$GITHUB_REF"\\s*=\\s*${escapedRef}(?:\\s|$)`);
-  const posixProtRe = /(?:^|\n)\s*test\s+"\$GITHUB_REF_PROTECTED"\s*=\s*true(?:\s|$)/;
-  const bashRefRe = new RegExp(`\\[\\[[^\\]]*"\\$GITHUB_REF"\\s*==\\s*${escapedRef}(?:\\s|\\]\\])`);
-  const bashProtRe = /\[\[[^\]]*"\$GITHUB_REF_PROTECTED"\s*==\s*true(?:\s|\]\])/;
 
   let jobWide = false;
   const guardOutputStepIds = new Set();
@@ -923,13 +944,9 @@ function resolveJobProtectedBranchProvenance(job, jobAst, expectedBranchRef) {
       if (stepAst !== null && !astHasBypassCall(stepAst)) {
         const stepConjuncts = collectMandatoryConjuncts(stepAst);
         const gatedByPriorOptin = [...guardOutputStepIds].some(guardId =>
-          stepConjuncts.some(c => {
-            if (c.kind !== 'Compare' || c.op !== '==') return false;
-            const identPath = c.left.kind === 'Ident' && c.right.kind === 'Literal' && c.right.value === 'true'
-              ? c.left.path
-              : (c.right.kind === 'Ident' && c.left.kind === 'Literal' && c.left.value === 'true' ? c.right.path : null);
-            return identPath !== null && identPath.startsWith(`steps.${guardId}.outputs.`);
-          })
+          stepConjuncts.some(c =>
+            isIdentCompareLiteral(c, '==', `steps.${guardId}.outputs.enabled`, 'true')
+          )
         );
         if (gatedByPriorOptin) gatedCheckoutIndices.add(idx);
       }
@@ -940,15 +957,11 @@ function resolveJobProtectedBranchProvenance(job, jobAst, expectedBranchRef) {
         !isSafeScanEnv(step.env)) {
       continue;
     }
-    const refMatch = posixRefRe.exec(step.run);
-    const protMatch = posixProtRe.exec(step.run);
-    if (refMatch !== null && protMatch !== null) {
-      const nodeIdx = step.run.search(/\bnode\b/);
-      if (nodeIdx === -1 || (refMatch.index < nodeIdx && protMatch.index < nodeIdx)) {
-        jobWide = true;
-      }
+    if (hasFailClosedPosixRefPreamble(step.run, expectedBranchRef)) {
+      jobWide = true;
     }
-    if (typeof step.id === 'string' && bashRefRe.test(step.run) && bashProtRe.test(step.run)) {
+    if (expectedBranchRef === 'refs/heads/main' && typeof step.id === 'string' &&
+        computeNormalizedScriptSha256(step.run) === PINNED_SHADOW_RECONCILE_OPTIN_RUN_SHA256) {
       guardOutputStepIds.add(step.id);
     }
   }
@@ -1004,6 +1017,18 @@ function isAllowedThreatScanStepIf(step, stepAst) {
   return isAlwaysZeroArgCall(stepAst);
 }
 
+function isValidGhAwSetupStep(step, usesLower, releaseCommit) {
+  if (usesLower !== `github/gh-aw/actions/setup@${releaseCommit}` || step.if !== undefined) {
+    return false;
+  }
+  if (step.with === undefined) return true;
+  if (!isMapObject(step.with)) return false;
+  return Object.entries(step.with).every(([key, val]) =>
+    key.toLowerCase() !== 'destination' ||
+    (typeof val === 'string' && val.trim() === '${{ runner.temp }}/gh-aw/actions')
+  );
+}
+
 function isValidActionConclusionProducer(
   step,
   precedingUnconditionalStepIds,
@@ -1012,6 +1037,7 @@ function isValidActionConclusionProducer(
 ) {
   if (step.id !== 'detection_conclusion' ||
       step.if === undefined ||
+      !precedingDetectionPrereqs.actionsTamperFree ||
       !precedingDetectionPrereqs.hasValidGuard ||
       !precedingDetectionPrereqs.hasRedactLogs ||
       !precedingDetectionPrereqs.hasRedactArtifacts ||
@@ -1031,6 +1057,11 @@ function isValidActionConclusionProducer(
   }
   const scriptDigest = computeNormalizedScriptSha256(step.with.script);
   if (scriptDigest === null || !trustedDetectionDigests.has(scriptDigest)) {
+    return false;
+  }
+  if ((scriptDigest === PINNED_GHAW_DETECTION_CONCLUSION_SCRIPT_SHA256 ||
+       step.with.script.includes('RUNNER_TEMP')) &&
+      !precedingDetectionPrereqs.hasGhAwSetup) {
     return false;
   }
   const outcomeMatch = STEP_OUTCOME_REF_RE.exec(step.env.DETECTION_AGENTIC_EXECUTION_OUTCOME.trim());
@@ -1352,6 +1383,8 @@ export function verifyGhAwWorkflowLock(input) {
     const actionConclusionGuardDeps = new Map();
     const precedingUnconditionalScanStepIds = new Set();
     const precedingDetectionPrereqs = {
+      hasGhAwSetup: false,
+      actionsTamperFree: true,
       hasValidGuard: false,
       guardEvalDep: null,
       hasRedactLogs: false,
@@ -1437,21 +1470,29 @@ export function verifyGhAwWorkflowLock(input) {
             }
           }
           if (isThreatScan) {
-            if (!isSafeSetupStepBeforePolicyScan(step, usesLower)) {
+            const safeForPolicy = isSafeSetupStepBeforePolicyScan(step, usesLower);
+            if (!safeForPolicy) {
               canRegisterPolicyScanProducer = false;
             }
-            if (step.id === 'redact_detection_logs' && isValidRedactionStep(step, usesLower)) {
+            if (isValidGhAwSetupStep(step, usesLower, releaseCheck.release.commit)) {
+              precedingDetectionPrereqs.hasGhAwSetup = true;
+            } else if (step.id === 'redact_detection_logs' && isValidRedactionStep(step, usesLower)) {
               precedingDetectionPrereqs.hasRedactLogs = true;
             } else if (step.id === 'redact_detection_artifacts' && isValidRedactionStep(step, usesLower)) {
               precedingDetectionPrereqs.hasRedactArtifacts = true;
-            } else if (isValidActionConclusionProducer(
-              step,
-              precedingUnconditionalScanStepIds,
-              precedingDetectionPrereqs,
-              trustedDetectionDigests
-            )) {
-              validScanOutputStepIds.add(step.id);
-              actionConclusionGuardDeps.set(step.id, precedingDetectionPrereqs.guardEvalDep);
+            } else if (step.id === 'detection_conclusion') {
+              if (isValidActionConclusionProducer(
+                step,
+                precedingUnconditionalScanStepIds,
+                precedingDetectionPrereqs,
+                trustedDetectionDigests
+              )) {
+                validScanOutputStepIds.add(step.id);
+                actionConclusionGuardDeps.set(step.id, precedingDetectionPrereqs.guardEvalDep);
+              }
+              precedingDetectionPrereqs.actionsTamperFree = false;
+            } else if (!safeForPolicy) {
+              precedingDetectionPrereqs.actionsTamperFree = false;
             }
           }
         }
@@ -1464,24 +1505,32 @@ export function verifyGhAwWorkflowLock(input) {
                 (step.shell !== undefined && step.shell !== 'bash')) {
               return deny('MISSING_THREAT_SCAN_GATE');
             }
+            const normalizedRunSha = computeNormalizedScriptSha256(step.run);
+            let runSafeForDetectionModules = normalizedRunSha === PINNED_CLEAR_AGENT_USAGE_RUN_SHA256;
             if (step.id === 'detection_guard') {
               const guardDep = resolveValidDetectionGuardDep(step);
               if (guardDep !== null) {
                 precedingDetectionPrereqs.hasValidGuard = true;
                 precedingDetectionPrereqs.guardEvalDep = guardDep;
+                runSafeForDetectionModules = true;
               }
             }
             if (step.if === undefined && step.run.trim().length > 0) {
               hasUnconditionalThreatScanRunStep = true;
+              const isStrictThreatDetectCmd = STRICT_THREAT_DETECT_CMD_RE.test(step.run.trim());
+              const isTrustedPolicyRun = trustedPolicyScanDigests.has(normalizedRunSha);
+              if (isStrictThreatDetectCmd || isTrustedPolicyRun) {
+                runSafeForDetectionModules = true;
+              }
               if (typeof step.id === 'string' && /^[A-Za-z_][A-Za-z0-9_-]*$/.test(step.id)) {
                 precedingUnconditionalScanStepIds.add(step.id);
-                if (canRegisterPolicyScanProducer) {
-                  const runDigest = computeNormalizedScriptSha256(step.run);
-                  if (trustedPolicyScanDigests.has(runDigest)) {
-                    validScanOutputStepIds.add(step.id);
-                  }
+                if (canRegisterPolicyScanProducer && isTrustedPolicyRun) {
+                  validScanOutputStepIds.add(step.id);
                 }
               }
+            }
+            if (!runSafeForDetectionModules) {
+              precedingDetectionPrereqs.actionsTamperFree = false;
             }
             canRegisterPolicyScanProducer = false;
           }
@@ -1527,7 +1576,9 @@ export function verifyGhAwWorkflowLock(input) {
   const evalJobIdSet = new Set(evaluationJobIds.map(entry => entry.jobId));
   const evalRefProvenanceIds = new Set(
     evaluationJobIds
-      .filter(({job}) => resolveJobProtectedBranchProvenance(job, parseIfExpression(job.if), 'refs/heads/main').jobWide)
+      .filter(({job}) =>
+        resolveJobProtectedBranchProvenance(job, parseIfExpression(job.if), 'refs/heads/main', workflowEnvSafeForScan).jobWide
+      )
       .map(({jobId}) => jobId)
   );
   const threatScanById = new Map(threatScanJobs.map(entry => [entry.jobId, entry]));
@@ -1553,7 +1604,8 @@ export function verifyGhAwWorkflowLock(input) {
     const scanSelfProvenance = resolveJobProtectedBranchProvenance(
       job,
       job.if === undefined ? null : parseIfExpression(job.if),
-      'refs/heads/main'
+      'refs/heads/main',
+      workflowEnvSafeForScan
     ).jobWide;
     if (job.if !== undefined) {
       const scanAst = parseIfExpression(job.if);
@@ -2116,6 +2168,7 @@ export function verifyEventTriggerMatrix(lockYamlSource, options) {
     return deny('MISSING_CONCURRENCY_GUARD');
   }
 
+  const workflowEnvSafeForProvenance = lockDoc.defaults === undefined && isSafeScanEnv(lockDoc.env);
   const disabledJobIds = new Set();
   const guardedJobIds = new Set();
   const refGuardedJobIds = new Set();
@@ -2144,7 +2197,12 @@ export function verifyEventTriggerMatrix(lockYamlSource, options) {
           matchedEnableVars.add(enableVar.slice('vars.'.length));
         }
       }
-      const refProv = resolveJobProtectedBranchProvenance(job, jobAst, expectedBranchRef);
+      const refProv = resolveJobProtectedBranchProvenance(
+        job,
+        jobAst,
+        expectedBranchRef,
+        workflowEnvSafeForProvenance
+      );
       if (refProv.jobWide) refGuardedJobIds.add(jobId);
       if (refProv.gatedStepIds.size > 0) stepGatedProvenanceByJob.set(jobId, refProv.gatedStepIds);
     }
@@ -2186,18 +2244,18 @@ export function verifyEventTriggerMatrix(lockYamlSource, options) {
       const conjuncts = collectMandatoryConjuncts(jobAst);
       const hasAlways = conjuncts.some(isAlwaysZeroArgCall);
       const isScanJob = THREAT_SCAN_JOB_IDS.has(jobId);
-      const inheritsFrom = predSet => needs.some(dep =>
+      const inheritsFrom = (predSet, allowScanNonSkipped) => needs.some(dep =>
         predSet.has(dep) &&
         conjuncts.some(c =>
           isIdentCompareLiteral(c, '==', `needs.${dep}.result`, 'success') ||
-          (isScanJob && hasAlways && isIdentCompareLiteral(c, '!=', `needs.${dep}.result`, 'skipped'))
+          (allowScanNonSkipped && isScanJob && hasAlways && isIdentCompareLiteral(c, '!=', `needs.${dep}.result`, 'skipped'))
         )
       );
-      if (!guardedJobIds.has(jobId) && inheritsFrom(guardedJobIds)) {
+      if (!guardedJobIds.has(jobId) && inheritsFrom(guardedJobIds, true)) {
         guardedJobIds.add(jobId);
         progress = true;
       }
-      if (!refGuardedJobIds.has(jobId) && inheritsFrom(refGuardedJobIds)) {
+      if (!refGuardedJobIds.has(jobId) && inheritsFrom(refGuardedJobIds, false)) {
         refGuardedJobIds.add(jobId);
         progress = true;
       }
