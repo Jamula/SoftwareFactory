@@ -6,9 +6,9 @@ import {readBoundedFile} from './verify-dashboard-api.mjs';
 
 const PYTHON_PATH_PATTERN=/\.(?:py|pyw|pyc|pyo|pyd|pyi|ipynb)$/i;
 const PYTHON_MANIFEST_PATTERN=/(?:^|\/)(?:\.python-version|requirements(?:[-_.][A-Za-z0-9_.-]+)?\.txt|Pipfile(?:\.lock)?|pyproject\.toml|poetry\.lock|uv\.lock|setup\.cfg|tox\.ini)$/i;
-const WORKFLOW_PATH_PATTERN=/^(?:\.github\/workflows\/[^/]+|(?:|\.github\/actions\/.+\/)action)\.(?:yml|yaml)$/i;
+const WORKFLOW_PATH_PATTERN=/^(?:\.github\/workflows\/[^/]+|(?:.+\/)?action)\.(?:yml|yaml)$/i;
 const WORKFLOW_PYTHON_ACTION_PATTERN=/\bsetup-python\b/i;
-const WORKFLOW_PYTHON_COMMAND_PATTERN=/(?:^|[^\w.-])(?:python(?:\d+(?:\.\d+)?)?(?:\.exe)?|py\.exe|py(?=\s+-)|pip(?:\d+(?:\.\d+)?)?(?:\.exe)?|pipx(?:\.exe)?|uvx(?:\.exe)?|pytest(?:\.exe)?|pipenv|poetry\s+run|uv\s+(?:tool\s+)?run|conda\s+run)(?=$|[^\w.-])/i;
+const WORKFLOW_PYTHON_COMMAND_PATTERN=/(?:^|[^\w.-])(?:python(?:\d+(?:\.\d+)?)?(?:\.exe)?|py(?:\.exe)?|pip(?:\d+(?:\.\d+)?)?(?:\.exe)?|pipx(?:\.exe)?|uvx(?:\.exe)?|pytest(?:\.exe)?|pipenv|poetry\s+run|uv\s+(?:tool\s+)?run|conda\s+run)(?=$|[^\w.-])/i;
 const WORKFLOW_PYTHON_SCRIPT_PATTERN=/(?:^|[^\w.-])[A-Za-z0-9_./\\$-]+\.pyw?(?=$|[^\w.-])/i;
 
 export function hasPythonCommand(line){
@@ -19,22 +19,30 @@ export function hasPythonCommand(line){
 
 export function verifyNoPythonInventory({trackedFiles,workflows,packageJson}){
   if(!Array.isArray(trackedFiles)||trackedFiles.length===0)throw Error('MISSING_TRACKED_INVENTORY');
+  const expectedWorkflowPaths=new Set();
   for(const file of trackedFiles){
     if(typeof file!=='string'||file.length===0)throw Error('INVALID_TRACKED_PATH');
     const normalized=file.replaceAll('\\','/');
     if(PYTHON_PATH_PATTERN.test(normalized)||PYTHON_MANIFEST_PATTERN.test(normalized))
       throw Error('TRACKED_PYTHON_FORBIDDEN');
+    if(WORKFLOW_PATH_PATTERN.test(normalized))expectedWorkflowPaths.add(normalized);
   }
   if(!Array.isArray(workflows)||workflows.length===0)throw Error('MISSING_WORKFLOW_INVENTORY');
+  const inspectedWorkflowPaths=new Set();
   for(const workflow of workflows){
-    if(workflow===null||typeof workflow!=='object'||typeof workflow.path!=='string'||typeof workflow.content!=='string'||
-       !WORKFLOW_PATH_PATTERN.test(workflow.path.replaceAll('\\','/')))
+    if(workflow===null||typeof workflow!=='object'||typeof workflow.path!=='string'||typeof workflow.content!=='string')
       throw Error('INVALID_WORKFLOW_ENTRY');
+    const normalizedPath=workflow.path.replaceAll('\\','/');
+    if(!WORKFLOW_PATH_PATTERN.test(normalizedPath))throw Error('INVALID_WORKFLOW_ENTRY');
+    inspectedWorkflowPaths.add(normalizedPath);
     for(const rawLine of workflow.content.split(/\r?\n/)){
       const trimmed=rawLine.trim();
       if(trimmed.length===0||trimmed.startsWith('#'))continue;
       if(hasPythonCommand(trimmed))throw Error('WORKFLOW_PYTHON_FORBIDDEN');
     }
+  }
+  for(const requiredPath of expectedWorkflowPaths){
+    if(!inspectedWorkflowPaths.has(requiredPath))throw Error('MISSING_WORKFLOW_INVENTORY');
   }
   if(packageJson===null||typeof packageJson!=='object'||Array.isArray(packageJson))
     throw Error('INVALID_PACKAGE_JSON');

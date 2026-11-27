@@ -86,6 +86,8 @@ test('verifyNoPythonInventory rejects Python workflow actions, interpreters, pac
     '        run: C:/hostedtoolcache/windows/Python/3.12.0/x64/python.exe -c 1',
     '        run: python2.7 -c 1',
     '        run: python3.12 script',
+    '        run: py',
+    '        run: py < commands.txt',
     '        run: py -3 -m unittest',
     '        run: py.exe tool',
     '        run: /usr/local/bin/pip3 install foo',
@@ -105,11 +107,21 @@ test('verifyNoPythonInventory rejects Python workflow actions, interpreters, pac
     assert.throws(()=>verifyNoPythonInventory(f),/WORKFLOW_PYTHON_FORBIDDEN/,line);
   }
 
-  const actionFixture=validFixture();
-  actionFixture.workflows.push({path:'.github/actions/custom/action.yml',content:'runs:\n  steps:\n    - run: python3 -c 1'});
-  assert.throws(()=>verifyNoPythonInventory(actionFixture),/WORKFLOW_PYTHON_FORBIDDEN/);
+  for(const actionPath of ['action.yml','.github/actions/custom/action.yml','tools/local-action/action.yml','packages/nested/sub/action.yaml']){
+    const omitted=validFixture();
+    omitted.trackedFiles.push(actionPath);
+    assert.throws(()=>verifyNoPythonInventory(omitted),/MISSING_WORKFLOW_INVENTORY/,actionPath);
 
-  for(const badPkg of [null,[],{scripts:null},{scripts:[]},{scripts:{bad:123}},{scripts:{check:'python3 test.py'}}]){
+    const actionFixture=validFixture();
+    actionFixture.trackedFiles.push(actionPath);
+    actionFixture.workflows.push({path:actionPath,content:'runs:\n  using: composite\n  steps:\n    - run: python3 -c 1'});
+    assert.throws(()=>verifyNoPythonInventory(actionFixture),/WORKFLOW_PYTHON_FORBIDDEN/,actionPath);
+  }
+
+  for(const badPkg of [
+    null,[],{scripts:null},{scripts:[]},{scripts:{bad:123}},
+    {scripts:{check:'python3 test.py'}},{scripts:{repl:'py'}},{scripts:{stdin:'py < commands.txt'}}
+  ]){
     assert.throws(()=>verifyNoPythonInventory({...validFixture(),packageJson:badPkg}));
   }
 });
