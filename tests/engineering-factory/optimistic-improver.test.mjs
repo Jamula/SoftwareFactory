@@ -626,6 +626,10 @@ test('verifyCohortImprovementOrRollback enforces >=5 comparable outcomes and tri
       reason: 'REWORK_RATE_REGRESSED'
     },
     {
+      after: buildCandidateCohort({reworkRateBps: 12_000}), // >100% repair-iterations-per-superstep triggers rollback, not INVALID_COHORT_EVIDENCE
+      reason: 'REWORK_RATE_REGRESSED'
+    },
+    {
       after: buildCandidateCohort({aiCreditsTotal: 210}),
       reason: 'AI_CREDIT_COST_REGRESSION'
     },
@@ -646,6 +650,23 @@ test('verifyCohortImprovementOrRollback enforces >=5 comparable outcomes and tri
     assert.equal(res.verifiedImprovement, false);
     assert.equal(res.rollbackReasons.includes(rc.reason), true);
   }
+
+  // Absolute human-intervention increase (1/5 -> 2/10, equal 0.2 rate) AND per-outcome rate increase (2/10 -> 2/5, equal count) both trigger rollback
+  const absInterventionIncrease = verifyCohortImprovementOrRollback({
+    beforeCohort: buildBaselineCohort({acceptedOutcomes: 5, routineHumanInterventions: 1}),
+    afterCohort: buildCandidateCohort({acceptedOutcomes: 10, routineHumanInterventions: 2, medianCycleTimeMs: 300_000})
+  });
+  assert.equal(absInterventionIncrease.status, 'ROLLBACK_REQUIRED');
+  assert.equal(absInterventionIncrease.rollbackRequired, true);
+  assert.equal(absInterventionIncrease.rollbackReasons.includes('HUMAN_INTERVENTION_REGRESSED'), true);
+
+  const rateInterventionIncrease = verifyCohortImprovementOrRollback({
+    beforeCohort: buildBaselineCohort({acceptedOutcomes: 10, routineHumanInterventions: 2}),
+    afterCohort: buildCandidateCohort({acceptedOutcomes: 5, routineHumanInterventions: 2, medianCycleTimeMs: 300_000})
+  });
+  assert.equal(rateInterventionIncrease.status, 'ROLLBACK_REQUIRED');
+  assert.equal(rateInterventionIncrease.rollbackRequired, true);
+  assert.equal(rateInterventionIncrease.rollbackReasons.includes('HUMAN_INTERVENTION_REGRESSED'), true);
 
   // Stricter consumer policy (e.g. Spellbook 97% line / 92% branch) preserved and enforced without regression
   const consumerPass = verifyCohortImprovementOrRollback({

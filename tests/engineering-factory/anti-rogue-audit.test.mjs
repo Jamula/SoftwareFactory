@@ -107,6 +107,8 @@ function buildValidChain() {
         implementationAgentIdentity: 'copilot-swe-agent[bot]',
         authorizedReviewers: ['copilot-pull-request-reviewer[bot]', 'senior-maintainer'],
         reviewState: 'COMMENTED',
+        reviewHistoryComplete: true,
+        outstandingChangesRequested: 0,
         unresolvedThreads: 0,
         summaryFindingsResolved: true,
         observedMs: 1400
@@ -504,6 +506,39 @@ test('verifyCausalProvenanceChain fails closed across broken spans, timestamps, 
   const reviewHeadMismatch = buildValidChain();
   reviewHeadMismatch.stages.independentReview.reviewedHeadSha = OTHER_SHA;
   assert.equal(verifyCausalProvenanceChain(reviewHeadMismatch).code, 'REVIEW_HEAD_MISMATCH');
+
+  // Complete review history and zero outstanding CHANGES_REQUESTED across all reviewers
+  const withCleanNormalizedHistory = buildValidChain();
+  withCleanNormalizedHistory.stages.independentReview.normalizedReviews = [
+    {reviewer: 'copilot-pull-request-reviewer[bot]', head: COMMIT_SHA, state: 'COMMENTED'},
+    {reviewer: 'senior-maintainer', head: COMMIT_SHA, state: 'APPROVED'}
+  ];
+  assert.equal(verifyCausalProvenanceChain(withCleanNormalizedHistory).valid, true);
+
+  const incompleteReviewHistory = buildValidChain();
+  incompleteReviewHistory.stages.independentReview.reviewHistoryComplete = false;
+  assert.equal(verifyCausalProvenanceChain(incompleteReviewHistory).code, 'REVIEW_HISTORY_INCOMPLETE');
+
+  const blockingCountNonZero = buildValidChain();
+  blockingCountNonZero.stages.independentReview.outstandingChangesRequested = 1;
+  assert.equal(verifyCausalProvenanceChain(blockingCountNonZero).code, 'OUTSTANDING_CHANGES_REQUESTED');
+
+  const blockingInNormalized = buildValidChain();
+  blockingInNormalized.stages.independentReview.normalizedReviews = [
+    {reviewer: 'copilot-pull-request-reviewer[bot]', head: COMMIT_SHA, state: 'COMMENTED'},
+    {reviewer: 'security-reviewer', head: OTHER_SHA, state: 'CHANGES_REQUESTED'}
+  ];
+  assert.equal(verifyCausalProvenanceChain(blockingInNormalized).code, 'OUTSTANDING_CHANGES_REQUESTED');
+
+  const inconsistentNormalized = buildValidChain();
+  inconsistentNormalized.stages.independentReview.normalizedReviews = [
+    {reviewer: 'senior-maintainer', head: COMMIT_SHA, state: 'APPROVED'}
+  ];
+  assert.equal(verifyCausalProvenanceChain(inconsistentNormalized).code, 'REVIEW_HISTORY_INCONSISTENT');
+
+  const malformedNormalized = buildValidChain();
+  malformedNormalized.stages.independentReview.normalizedReviews = [];
+  assert.equal(verifyCausalProvenanceChain(malformedNormalized).code, 'INVALID_INDEPENDENT_REVIEW');
 
   // Self-review forbidden for both commit author AND implementation agent
   const selfAuthorReview = buildValidChain();

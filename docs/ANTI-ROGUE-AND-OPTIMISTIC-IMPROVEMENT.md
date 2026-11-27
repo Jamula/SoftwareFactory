@@ -31,7 +31,9 @@ stages:
    `reviewerIdentity` distinct from both `authorIdentity` and
    `implementationAgentIdentity`, allowlisted in `authorizedReviewers`, acceptable
    `reviewState` (`APPROVED`, or SoftwareFactory Copilot bot `COMMENTED` when formal
-   approval is not required), `unresolvedThreads === 0`, and
+   approval is not required), `reviewHistoryComplete === true`,
+   `outstandingChangesRequested === 0` (plus optional `normalizedReviews` verified free of
+   `CHANGES_REQUESTED` objections), `unresolvedThreads === 0`, and
    `summaryFindingsResolved === true`
 8. `mergeQueueSquash` — `expectedHeadSha === commitSha`, 40-hex `squashCommitSha`
 9. `verifiedMain` — `mainCommitSha === squashCommitSha`, `mainHealthy === true`, `receiptId`
@@ -104,5 +106,6 @@ while strictly isolating `sourceKind: "historical-proxy"` from
   deterministic rollback (`status: "ROLLBACK_REQUIRED"`, `rollbackRequired: true`)
   triggers immediately if coverage drops below `98%/95%` (or stricter consumer thresholds)
   or regresses relative to `beforeCohort`, `securityFindings > 0`, `mainFailures > 0`,
-  routine human interventions per outcome increase, `reworkRateBps` regresses beyond
+  routine human interventions increase in either absolute count or per-outcome rate,
+  `reworkRateBps` (including `>10,000` bps repair-per-superstep ratios) regresses beyond
   tolerance, or AI-credit cost per accepted outcome exceeds baseline.

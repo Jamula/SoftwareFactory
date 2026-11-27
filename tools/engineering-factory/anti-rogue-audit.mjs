@@ -349,20 +349,44 @@ export function verifyCausalProvenanceChain(chain) {
       if (!exactRecord(stage, [
         'traceparent', 'parentSpanId', 'reviewId', 'reviewedHeadSha', 'reviewerIdentity',
         'authorIdentity', 'implementationAgentIdentity', 'authorizedReviewers', 'reviewState',
+        'reviewHistoryComplete', 'outstandingChangesRequested',
         'unresolvedThreads', 'summaryFindingsResolved', 'observedMs'
-      ], ['requireFormalApproval']) || !token(stage.reviewId) || !hex40(stage.reviewedHeadSha) ||
+      ], ['requireFormalApproval', 'normalizedReviews']) || !token(stage.reviewId) ||
+          !hex40(stage.reviewedHeadSha) ||
           !identityToken(stage.reviewerIdentity) || !identityToken(stage.authorIdentity) ||
           !identityToken(stage.implementationAgentIdentity) ||
           !denseDataArray(stage.authorizedReviewers, 64) || stage.authorizedReviewers.length === 0 ||
           !stage.authorizedReviewers.every(identityToken) ||
           new Set(stage.authorizedReviewers.map(r => r.toLowerCase())).size !== stage.authorizedReviewers.length ||
           !REVIEW_STATES.has(stage.reviewState) ||
+          typeof stage.reviewHistoryComplete !== 'boolean' ||
+          !nonnegInt(stage.outstandingChangesRequested) ||
           (stage.requireFormalApproval !== undefined && typeof stage.requireFormalApproval !== 'boolean') ||
+          (stage.normalizedReviews !== undefined && (!denseDataArray(stage.normalizedReviews, 64) ||
+            stage.normalizedReviews.length === 0 ||
+            !stage.normalizedReviews.every(r => exactRecord(r, ['reviewer', 'head', 'state']) &&
+              identityToken(r.reviewer) && hex40(r.head) && REVIEW_STATES.has(r.state)) ||
+            new Set(stage.normalizedReviews.map(r => r.reviewer.toLowerCase())).size !==
+              stage.normalizedReviews.length)) ||
           !nonnegInt(stage.unresolvedThreads) || typeof stage.summaryFindingsResolved !== 'boolean') {
         return provenanceFail('INVALID_EVIDENCE', 'INVALID_INDEPENDENT_REVIEW', stageName);
       }
       if (stage.reviewedHeadSha !== commitSha) return provenanceFail('STALE', 'REVIEW_HEAD_MISMATCH', stageName);
+      if (stage.reviewHistoryComplete !== true) {
+        return provenanceFail('REVIEW', 'REVIEW_HISTORY_INCOMPLETE', stageName);
+      }
       const reviewerLower = stage.reviewerIdentity.toLowerCase();
+      if (stage.outstandingChangesRequested !== 0 ||
+          (stage.normalizedReviews !== undefined &&
+            stage.normalizedReviews.some(r => r.state === 'CHANGES_REQUESTED'))) {
+        return provenanceFail('REVIEW', 'OUTSTANDING_CHANGES_REQUESTED', stageName);
+      }
+      if (stage.normalizedReviews !== undefined) {
+        const selectedEntry = stage.normalizedReviews.find(r => r.reviewer.toLowerCase() === reviewerLower);
+        if (!selectedEntry || selectedEntry.head !== commitSha || selectedEntry.state !== stage.reviewState) {
+          return provenanceFail('REVIEW', 'REVIEW_HISTORY_INCONSISTENT', stageName);
+        }
+      }
       const authorLower = stage.authorIdentity.toLowerCase();
       const agentLower = stage.implementationAgentIdentity.toLowerCase();
       if (reviewerLower === authorLower || reviewerLower === agentLower) {

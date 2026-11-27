@@ -427,7 +427,7 @@ function validCohortRecord(cohort) {
     nonnegInt(cohort.securityFindings) &&
     nonnegInt(cohort.mainFailures) &&
     nonnegInt(cohort.routineHumanInterventions) &&
-    nonnegInt(cohort.reworkRateBps) && cohort.reworkRateBps <= 10000 &&
+    nonnegInt(cohort.reworkRateBps) &&
     nonnegInt(cohort.aiCreditsTotal) &&
     nonnegInt(cohort.incrementalBilledUsdCents) &&
     positiveInt(cohort.medianCycleTimeMs);
@@ -553,11 +553,13 @@ export function verifyCohortImprovementOrRollback(input) {
   if (afterCohort.mainFailures > 0) {
     rollbackReasons.push('MAIN_HEALTH_FAILURE');
   }
-  if (BigInt(afterCohort.routineHumanInterventions) * BigInt(beforeCohort.acceptedOutcomes) >
+  if (afterCohort.routineHumanInterventions > beforeCohort.routineHumanInterventions ||
+      BigInt(afterCohort.routineHumanInterventions) * BigInt(beforeCohort.acceptedOutcomes) >
       BigInt(beforeCohort.routineHumanInterventions) * BigInt(afterCohort.acceptedOutcomes)) {
     rollbackReasons.push('HUMAN_INTERVENTION_REGRESSED');
   }
-  if (afterCohort.reworkRateBps > beforeCohort.reworkRateBps + policy.maxReworkRegressionBps) {
+  if (BigInt(afterCohort.reworkRateBps) >
+      BigInt(beforeCohort.reworkRateBps) + BigInt(policy.maxReworkRegressionBps)) {
     rollbackReasons.push('REWORK_RATE_REGRESSED');
   }
   if (afterCohort.incrementalBilledUsdCents > 0 ||
