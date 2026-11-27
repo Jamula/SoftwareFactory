@@ -1,5 +1,5 @@
 // Deterministic, metadata-only consumer onboarding, isolation and rollback contract verifier.
-import { isDeepStrictEqual, types } from 'node:util';
+import { types } from 'node:util';
 import { evaluate, validPolicy } from './core.mjs';
 
 export const CONSUMER_CONTRACT_VERSION = 1;
@@ -99,10 +99,24 @@ const strictSnapshotShape = s =>
   dense(s.reviews) &&
   s.reviews.every(r => exact(r, ['reviewer', 'head', 'state']));
 
+function sameData(candidateVal, expectedVal) {
+  if (!expectedVal || typeof expectedVal !== 'object') {
+    return Object.is(candidateVal, expectedVal);
+  }
+  if (Array.isArray(expectedVal)) {
+    return dense(candidateVal) &&
+      candidateVal.length === expectedVal.length &&
+      expectedVal.every((item, i) => sameData(candidateVal[i], item));
+  }
+  const keys = Object.keys(expectedVal);
+  return exact(candidateVal, keys) &&
+    keys.every(key => sameData(candidateVal[key], expectedVal[key]));
+}
+
 const singleMutation = (baseSnap, candidate, field) => {
   const keys = Object.keys(baseSnap);
   return exact(candidate, keys) &&
-    keys.every(key => key === field || isDeepStrictEqual(candidate[key], baseSnap[key]));
+    keys.every(key => key === field || sameData(candidate[key], baseSnap[key]));
 };
 
 const isStaleReviewScenario = (baseSnap, candidate) =>
@@ -291,8 +305,7 @@ export function verifyConsumerOnboardingPackage(pkg, registry = []) {
 
   const shadowPolicy = { ...pkg.policy, mode: 'shadow', killSwitch: false };
   if (!strictSnapshotShape(suite.eligibleCandidate) ||
-      !strictPolicyShape(suite.killSwitchPolicy) ||
-      !isDeepStrictEqual(suite.killSwitchPolicy, { ...shadowPolicy, killSwitch: true }) ||
+      !sameData(suite.killSwitchPolicy, { ...shadowPolicy, killSwitch: true }) ||
       !isStaleReviewScenario(suite.eligibleCandidate, suite.staleReview) ||
       !isDismissedReviewScenario(suite.eligibleCandidate, suite.dismissedReview) ||
       !isCommentedBotScenario(suite.eligibleCandidate, suite.commentedBotReview) ||

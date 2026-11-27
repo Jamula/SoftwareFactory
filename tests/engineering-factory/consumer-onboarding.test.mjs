@@ -528,6 +528,25 @@ test('requires complete exact-mutation shadow denial replay suite and rollback c
     killSwitchPolicy: suite.killSwitchPolicy
   };
 
+  // Enumerable getters on nested snapshot fields must never be invoked during comparison
+  let getterInvocations = 0;
+  const baselineGetterCoverage = { ...cand.coverage };
+  Object.defineProperty(baselineGetterCoverage, 'line', {
+    enumerable: true,
+    get: () => {
+      getterInvocations += 1;
+      return cand.coverage.line;
+    }
+  });
+  const throwingGetterCoverage = { ...cand.coverage };
+  Object.defineProperty(throwingGetterCoverage, 'line', {
+    enumerable: true,
+    get: () => {
+      getterInvocations += 1;
+      throw new Error('getter must not run');
+    }
+  });
+
   for (const badSuite of [
     null,
     unhealthyDerivedSuite,
@@ -545,6 +564,11 @@ test('requires complete exact-mutation shadow denial replay suite and rollback c
     { ...suite, killSwitchPolicy: { ...familyTreePkg.policy, mode: 'disabled', killSwitch: false } },
     { ...suite, staleReview: cand },
     { ...suite, staleReview: suite.wrongRepository },
+    { ...suite, staleReview: { ...cand, coverage: baselineGetterCoverage, reviews: suite.staleReview.reviews } },
+    { ...suite, staleReview: { ...cand, coverage: throwingGetterCoverage, reviews: suite.staleReview.reviews } },
+    { ...suite, staleReview: { ...cand, paths: 'not-array', reviews: suite.staleReview.reviews } },
+    { ...suite, staleReview: { ...cand, paths: [], reviews: suite.staleReview.reviews } },
+    { ...suite, staleReview: { ...cand, paths: ['src/other.ts'], reviews: suite.staleReview.reviews } },
     { ...suite, staleReview: { ...cand, issue: 99, reviews: [] } },
     { ...suite, staleReview: { ...cand, reviews: 'bad' } },
     { ...suite, staleReview: { ...cand, reviews: [] } },
@@ -587,6 +611,7 @@ test('requires complete exact-mutation shadow denial replay suite and rollback c
       'SHADOW_REPLAY_INCOMPLETE'
     );
   }
+  assert.equal(getterInvocations, 0);
 
   for (const badRollback of [
     null,
