@@ -167,8 +167,9 @@ const maxSourceElements = 100000000;
 const scorecardInputFields = ['query', 'units', 'stageSamples', 'quality', 'historicalProxies', 'baseline'];
 const scorecardQueryFields = [
   'repositoryId', 'cohort', 'provenance', 'complete', 'stageSourceComplete',
-  'fromMs', 'toMs', 'observedMs', 'nowMs', 'maxAgeMs'
+  'fromMs', 'toMs', 'observedMs', 'nowMs', 'maxAgeMs', 'coveragePolicy'
 ];
+const coveragePolicyFields = ['profile', 'minLinePercent', 'minBranchPercent', 'expectedComponents'];
 const unitFields = [
   'cohort', 'provenance', 'issue', 'pulls', 'cost', 'rework', 'utilization', 'humanInterventions'
 ];
@@ -186,9 +187,11 @@ const reworkFields = [
 const utilizationFields = ['complete', 'activeMs', 'blockedMs', 'idleMs', 'blockedReasons'];
 const interventionFields = ['complete', 'routineCount', 'governanceCount'];
 const qualityFields = [
-  'repositoryId', 'provenance', 'complete', 'coveredLines', 'totalLines', 'coveredBranches', 'totalBranches',
-  'minLinePercent', 'minBranchPercent', 'failedMainCount', 'unauthorizedWriteCount',
-  'duplicateDispatchCount', 'budgetViolationCount'
+  'repositoryId', 'provenance', 'complete', 'head', 'components', 'failedMainCount',
+  'unauthorizedWriteCount', 'duplicateDispatchCount', 'budgetViolationCount'
+];
+const qualityComponentFields = [
+  'component', 'head', 'coveredLines', 'totalLines', 'coveredBranches', 'totalBranches'
 ];
 const proxySectionFields = ['provenance', 'sourceComplete', 'issueCreatedToCloseRows', 'prCreatedToMergeRows'];
 const scorecardSnapshotFields = [
@@ -199,10 +202,25 @@ const scorecardSnapshotFields = [
 
 const exactData = (v, keys) =>
   ownData(v, keys) && Object.getPrototypeOf(v) === Object.prototype && Reflect.ownKeys(v).length === keys.length;
+const componentName = v => typeof v === 'string' && /^[a-z0-9][a-z0-9._-]{0,79}$/.test(v);
 const boundedCount = n => time(n) && n <= maxUnitCount;
 const boundedPositiveCount = n => id(n) && n <= maxUnitCount;
 const boundedMs = n => time(n) && n <= maxUnitDurationMs;
 const nearestRank = (sorted, p) => sorted[Math.ceil(p * sorted.length) - 1] ?? null;
+
+function validCoveragePolicy(policy) {
+  if (!exactData(policy, coveragePolicyFields)) return false;
+  if (policy.profile !== 'software-factory' && policy.profile !== 'consumer') return false;
+  const floorLine = policy.profile === 'software-factory' ? 98 : 95;
+  const floorBranch = policy.profile === 'software-factory' ? 95 : 90;
+  if (!id(policy.minLinePercent) || policy.minLinePercent < floorLine || policy.minLinePercent > 100 ||
+      !id(policy.minBranchPercent) || policy.minBranchPercent < floorBranch || policy.minBranchPercent > 100) {
+    return false;
+  }
+  return dense(policy.expectedComponents, 250) && policy.expectedComponents.length > 0 &&
+    policy.expectedComponents.every(componentName) &&
+    new Set(policy.expectedComponents).size === policy.expectedComponents.length;
+}
 
 function validBlockedReasons(map, expectedBlockedMs) {
   if (map === null || typeof map !== 'object' || types.isProxy(map) ||
@@ -261,10 +279,13 @@ function parseUnitTelemetry(unit) {
 }
 
 function evaluateQualityReceipt(quality, query) {
+  const policy = query.coveragePolicy;
   const unknownQuality = {
-    status: 'unknown', coveredLines: null, totalLines: null, lineCoverageRatio: null,
+    status: 'unknown', head: null,
+    coveredLines: null, totalLines: null, lineCoverageRatio: null,
     coveredBranches: null, totalBranches: null, branchCoverageRatio: null,
-    minLinePercent: null, minBranchPercent: null, violations: null
+    minLinePercent: policy.minLinePercent, minBranchPercent: policy.minBranchPercent,
+    componentCount: null, failingComponentCount: null, violations: null
   };
   if (quality === null) return {ok: true, summary: unknownQuality};
   if (isHistoricalProxyArtifact(quality)) return {ok: false, reason: 'PROVENANCE_ISOLATION_VIOLATION'};
@@ -279,19 +300,46 @@ function evaluateQualityReceipt(quality, query) {
   }
   if (quality.repositoryId !== query.repositoryId) return {ok: false, reason: 'ENTRY_SCOPE_UNKNOWN'};
   if (typeof quality.complete !== 'boolean' ||
-      !id(quality.totalLines) || quality.totalLines > maxSourceElements ||
-      !time(quality.coveredLines) || quality.coveredLines > quality.totalLines ||
-      !id(quality.totalBranches) || quality.totalBranches > maxSourceElements ||
-      !time(quality.coveredBranches) || quality.coveredBranches > quality.totalBranches ||
-      !id(quality.minLinePercent) || quality.minLinePercent < 95 || quality.minLinePercent > 100 ||
-      !id(quality.minBranchPercent) || quality.minBranchPercent < 90 || quality.minBranchPercent > 100 ||
       !boundedCount(quality.failedMainCount) || !boundedCount(quality.unauthorizedWriteCount) ||
       !boundedCount(quality.duplicateDispatchCount) || !boundedCount(quality.budgetViolationCount)) {
     return {ok: false, reason: 'INVALID_QUALITY_EVIDENCE'};
   }
-  if (!quality.complete) return {ok: true, summary: unknownQuality};
-  const linesPass = quality.coveredLines * 100 >= quality.minLinePercent * quality.totalLines;
-  const branchesPass = quality.coveredBranches * 100 >= quality.minBranchPercent * quality.totalBranches;
+  if (!quality.complete) {
+    if (quality.head !== null || !dense(quality.components, 0)) {
+      return {ok: false, reason: 'INVALID_QUALITY_EVIDENCE'};
+    }
+    return {ok: true, summary: unknownQuality};
+  }
+  if (!sha(quality.head) || !dense(quality.components, 250) ||
+      quality.components.length !== policy.expectedComponents.length) {
+    return {ok: false, reason: 'INVALID_QUALITY_EVIDENCE'};
+  }
+  const expectedSet = new Set(policy.expectedComponents);
+  const seen = new Set();
+  let coveredLines = 0;
+  let totalLines = 0;
+  let coveredBranches = 0;
+  let totalBranches = 0;
+  let failingComponentCount = 0;
+  for (const row of quality.components) {
+    if (!exactData(row, qualityComponentFields) || !expectedSet.has(row.component) ||
+        seen.has(row.component) || row.head !== quality.head ||
+        !id(row.totalLines) || row.totalLines > maxSourceElements ||
+        !time(row.coveredLines) || row.coveredLines > row.totalLines ||
+        !id(row.totalBranches) || row.totalBranches > maxSourceElements ||
+        !time(row.coveredBranches) || row.coveredBranches > row.totalBranches) {
+      return {ok: false, reason: 'INVALID_QUALITY_EVIDENCE'};
+    }
+    seen.add(row.component);
+    coveredLines += row.coveredLines;
+    totalLines += row.totalLines;
+    coveredBranches += row.coveredBranches;
+    totalBranches += row.totalBranches;
+    if (row.coveredLines * 100 < policy.minLinePercent * row.totalLines ||
+        row.coveredBranches * 100 < policy.minBranchPercent * row.totalBranches) {
+      failingComponentCount++;
+    }
+  }
   const violations = {
     failedMainCount: quality.failedMainCount,
     unauthorizedWriteCount: quality.unauthorizedWriteCount,
@@ -303,15 +351,18 @@ function evaluateQualityReceipt(quality, query) {
   return {
     ok: true,
     summary: {
-      status: linesPass && branchesPass && safetyPass ? 'passed' : 'failed',
-      coveredLines: quality.coveredLines,
-      totalLines: quality.totalLines,
-      lineCoverageRatio: quality.coveredLines / quality.totalLines,
-      coveredBranches: quality.coveredBranches,
-      totalBranches: quality.totalBranches,
-      branchCoverageRatio: quality.coveredBranches / quality.totalBranches,
-      minLinePercent: quality.minLinePercent,
-      minBranchPercent: quality.minBranchPercent,
+      status: failingComponentCount === 0 && safetyPass ? 'passed' : 'failed',
+      head: quality.head,
+      coveredLines,
+      totalLines,
+      lineCoverageRatio: coveredLines / totalLines,
+      coveredBranches,
+      totalBranches,
+      branchCoverageRatio: coveredBranches / totalBranches,
+      minLinePercent: policy.minLinePercent,
+      minBranchPercent: policy.minBranchPercent,
+      componentCount: seen.size,
+      failingComponentCount,
       violations
     }
   };
@@ -370,7 +421,10 @@ function validScorecardSnapshot(s) {
     ownData(s.counts, ['accepted']) && time(s.counts.accepted) &&
     ownData(s.throughput, ['acceptedOutcomesPerDay', 'readyToAcceptedP50Ms', 'readyToAcceptedP95Ms']) &&
     ownData(s.cost, ['status', 'costPerAcceptedUsdMicros']) &&
-    ownData(s.quality, ['status']) &&
+    ownData(s.quality, [
+      'status', 'coveredLines', 'totalLines', 'coveredBranches', 'totalBranches',
+      'minLinePercent', 'minBranchPercent'
+    ]) &&
     ownData(s.humanInterventions, ['status']);
 }
 
@@ -410,10 +464,21 @@ export function compareVelocityScorecards(baseline, candidate) {
   const verifiedCost = s => ['verified-zero', 'verified-spend'].includes(s.cost.status) &&
     Number.isFinite(s.cost.costPerAcceptedUsdMicros) && s.cost.costPerAcceptedUsdMicros >= 0;
   const validLatencies = s => time(s.throughput.readyToAcceptedP50Ms) && time(s.throughput.readyToAcceptedP95Ms);
+  const passedQuality = s => s.quality.status === 'passed' &&
+    id(s.quality.totalLines) && time(s.quality.coveredLines) && s.quality.coveredLines <= s.quality.totalLines &&
+    id(s.quality.totalBranches) && time(s.quality.coveredBranches) && s.quality.coveredBranches <= s.quality.totalBranches;
+  const coverageRegressed = () =>
+    BigInt(candidate.quality.coveredLines) * BigInt(baseline.quality.totalLines) <
+      BigInt(baseline.quality.coveredLines) * BigInt(candidate.quality.totalLines) ||
+    BigInt(candidate.quality.coveredBranches) * BigInt(baseline.quality.totalBranches) <
+      BigInt(baseline.quality.coveredBranches) * BigInt(candidate.quality.totalBranches);
   if (!verifiedCost(baseline) || !verifiedCost(candidate) ||
       candidate.cost.costPerAcceptedUsdMicros > baseline.cost.costPerAcceptedUsdMicros ||
       !validLatencies(baseline) || !validLatencies(candidate) ||
-      candidate.quality.status !== 'passed' || baseline.quality.status === 'failed') {
+      !passedQuality(baseline) || !passedQuality(candidate) ||
+      baseline.quality.minLinePercent !== candidate.quality.minLinePercent ||
+      baseline.quality.minBranchPercent !== candidate.quality.minBranchPercent ||
+      coverageRegressed()) {
     return unavailable('GUARDRAIL_UNVERIFIED_OR_REGRESSED');
   }
   const throughputMultiplier = candidate.throughput.acceptedOutcomesPerDay / baseline.throughput.acceptedOutcomesPerDay;
@@ -424,8 +489,7 @@ export function compareVelocityScorecards(baseline, candidate) {
       : 'SYNTHETIC_COMPARABLE_COHORTS',
     provenance: candidate.provenance,
     autonomousClaimEligible: candidate.autonomousSpeedClaimEligible &&
-      baseline.humanInterventions.status === 'measured' &&
-      baseline.quality.status === 'passed',
+      baseline.humanInterventions.status === 'measured',
     throughputMultiplier,
     achievedCheckpoints: THROUGHPUT_CHECKPOINTS.filter(m => throughputMultiplier >= m),
     readyToAcceptedDeltaP50Ms: candidate.throughput.readyToAcceptedP50Ms - baseline.throughput.readyToAcceptedP50Ms,
@@ -448,7 +512,7 @@ export function buildVelocityScorecard(input, authorizedRepositoryIds) {
       !dense(authorizedRepositoryIds, 32) || !authorizedRepositoryIds.every(id) ||
       !authorizedRepositoryIds.includes(query.repositoryId) || !label(query.cohort) ||
       !isNonProxyProvenance(query.provenance) || typeof query.complete !== 'boolean' ||
-      typeof query.stageSourceComplete !== 'boolean' ||
+      typeof query.stageSourceComplete !== 'boolean' || !validCoveragePolicy(query.coveragePolicy) ||
       !time(query.fromMs) || !time(query.toMs) || query.fromMs >= query.toMs) {
     return unknown('COHORT_UNKNOWN');
   }

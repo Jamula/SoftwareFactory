@@ -194,6 +194,13 @@ test('fails closed on stale data, cross-repository and mixed cohort sources, and
 });
 
 const dayMs = 86400000;
+const defaultCoveragePolicy = {
+  profile: 'software-factory',
+  minLinePercent: 98,
+  minBranchPercent: 95,
+  expectedComponents: ['engineering-factory.outcome-measurement', 'engineering-factory.stage-aggregate']
+};
+
 const scorecardQuery = {
   repositoryId: 1,
   cohort: 'small-independent',
@@ -204,7 +211,8 @@ const scorecardQuery = {
   toMs: dayMs * 2,
   observedMs: dayMs * 2 + 10000,
   nowMs: dayMs * 2 + 15000,
-  maxAgeMs: 60000
+  maxAgeMs: 60000,
+  coveragePolicy: defaultCoveragePolicy
 };
 
 const makeScorecardUnit = (number, overrides = {}) => {
@@ -286,12 +294,25 @@ const makeQuality = (overrides = {}) => ({
   repositoryId: 1,
   provenance: scorecardQuery.provenance,
   complete: true,
-  coveredLines: 990,
-  totalLines: 1000,
-  coveredBranches: 960,
-  totalBranches: 1000,
-  minLinePercent: 98,
-  minBranchPercent: 95,
+  head: h,
+  components: [
+    {
+      component: 'engineering-factory.outcome-measurement',
+      head: h,
+      coveredLines: 495,
+      totalLines: 500,
+      coveredBranches: 480,
+      totalBranches: 500
+    },
+    {
+      component: 'engineering-factory.stage-aggregate',
+      head: h,
+      coveredLines: 495,
+      totalLines: 500,
+      coveredBranches: 480,
+      totalBranches: 500
+    }
+  ],
   failedMainCount: 0,
   unauthorizedWriteCount: 0,
   duplicateDispatchCount: 0,
@@ -538,7 +559,7 @@ test('never treats missing cost, utilization, rework, interventions, or zero den
       utilization: {complete: true, activeMs: 0, blockedMs: 0, idleMs: 0, blockedReasons: {}},
       humanInterventions: {complete: true, routineCount: 2, governanceCount: 0}
     })],
-    quality: makeQuality({complete: false})
+    quality: makeQuality({complete: false, head: null, components: []})
   }), [1]);
   assert.equal(zeroCapacity.utilization.status, 'unknown');
   assert.equal(zeroCapacity.utilization.reason, 'ZERO_ALLOCATED_CAPACITY');
@@ -558,17 +579,76 @@ test('never treats missing cost, utilization, rework, interventions, or zero den
   assert.equal(zeroActivePositiveAllocated.utilization.blockedTimeRatio, 0.5);
   assert.equal(zeroActivePositiveAllocated.utilization.idleTimeRatio, 0.5);
 
-  const emptyCohort = buildVelocityScorecard(makeScorecardInput({
+  // Even when summed overall coverage >= 98%/95% (999/1000 + 97/100 = 1096/1100 = 99.64%),
+  // a single failing component (97/100 < 98% or 94/100 < 95% branches) marks quality failed.
+  const concealedComponentFailure = buildVelocityScorecard(makeScorecardInput({
     units: [],
-    quality: makeQuality({coveredLines: 970})
+    quality: makeQuality({
+      components: [
+        {
+          component: 'engineering-factory.outcome-measurement',
+          head: h,
+          coveredLines: 999,
+          totalLines: 1000,
+          coveredBranches: 999,
+          totalBranches: 1000
+        },
+        {
+          component: 'engineering-factory.stage-aggregate',
+          head: h,
+          coveredLines: 97,
+          totalLines: 100,
+          coveredBranches: 94,
+          totalBranches: 100
+        }
+      ]
+    })
   }), [1]);
-  assert.equal(emptyCohort.throughput.acceptedOutcomesPerDay, 0);
-  assert.equal(emptyCohort.cost.status, 'unknown');
-  assert.equal(emptyCohort.cost.costPerAcceptedUsdMicros, null);
-  assert.equal(emptyCohort.rework.status, 'unknown');
-  assert.equal(emptyCohort.utilization.status, 'unknown');
-  assert.equal(emptyCohort.humanInterventions.status, 'unknown');
-  assert.equal(emptyCohort.quality.status, 'failed');
+  assert.equal(concealedComponentFailure.throughput.acceptedOutcomesPerDay, 0);
+  assert.equal(concealedComponentFailure.cost.status, 'unknown');
+  assert.equal(concealedComponentFailure.cost.costPerAcceptedUsdMicros, null);
+  assert.equal(concealedComponentFailure.rework.status, 'unknown');
+  assert.equal(concealedComponentFailure.utilization.status, 'unknown');
+  assert.equal(concealedComponentFailure.humanInterventions.status, 'unknown');
+  assert.equal(concealedComponentFailure.quality.status, 'failed');
+  assert.equal(concealedComponentFailure.quality.failingComponentCount, 1);
+  assert.equal(concealedComponentFailure.autonomousSpeedClaimEligible, false);
+
+  // Stricter consumer profile (e.g. Spellbook 97/90) is enforced per component.
+  const consumerQuery = {
+    ...scorecardQuery,
+    coveragePolicy: {
+      profile: 'consumer',
+      minLinePercent: 97,
+      minBranchPercent: 90,
+      expectedComponents: defaultCoveragePolicy.expectedComponents
+    }
+  };
+  const consumerFail96 = buildVelocityScorecard(makeScorecardInput({
+    query: consumerQuery,
+    quality: makeQuality({
+      components: [
+        {
+          component: 'engineering-factory.outcome-measurement',
+          head: h,
+          coveredLines: 96,
+          totalLines: 100,
+          coveredBranches: 95,
+          totalBranches: 100
+        },
+        {
+          component: 'engineering-factory.stage-aggregate',
+          head: h,
+          coveredLines: 100,
+          totalLines: 100,
+          coveredBranches: 95,
+          totalBranches: 100
+        }
+      ]
+    })
+  }), [1]);
+  assert.equal(consumerFail96.quality.status, 'failed');
+  assert.equal(consumerFail96.autonomousSpeedClaimEligible, false);
 });
 
 test('isolates historical-github-proxy snapshot from verified-autonomous-outcome speed claims', () => {
@@ -814,6 +894,26 @@ test('compares matched >=5 unit baseline and candidate cohorts and enforces qual
     baseline,
     {...candidate10, quality: {...candidate10.quality, status: 'failed'}}
   ).reason, 'GUARDRAIL_UNVERIFIED_OR_REGRESSED');
+  assert.equal(compareVelocityScorecards(
+    {...baseline, quality: {...baseline.quality, status: 'unknown'}},
+    candidate10
+  ).reason, 'GUARDRAIL_UNVERIFIED_OR_REGRESSED');
+  assert.equal(compareVelocityScorecards(
+    {...baseline, quality: {...baseline.quality, coveredLines: 1000, totalLines: 1000}},
+    candidate10
+  ).reason, 'GUARDRAIL_UNVERIFIED_OR_REGRESSED');
+  assert.equal(compareVelocityScorecards(
+    {...baseline, quality: {...baseline.quality, coveredBranches: 970, totalBranches: 1000}},
+    candidate10
+  ).reason, 'GUARDRAIL_UNVERIFIED_OR_REGRESSED');
+  assert.equal(compareVelocityScorecards(
+    baseline,
+    {...candidate10, quality: {...candidate10.quality, minLinePercent: 95}}
+  ).reason, 'GUARDRAIL_UNVERIFIED_OR_REGRESSED');
+  assert.equal(compareVelocityScorecards(
+    baseline,
+    {...candidate10, quality: {...candidate10.quality, minBranchPercent: 90}}
+  ).reason, 'GUARDRAIL_UNVERIFIED_OR_REGRESSED');
   assert.equal(compareVelocityScorecards(null, candidate10).reason, 'INVALID_SCORECARD');
 });
 
@@ -821,7 +921,15 @@ test('fails closed across malformed scorecard inputs, incomplete outcomes, confl
   assert.equal(buildVelocityScorecard(null, [1]).reason, 'INVALID_INPUT');
   for (const qChange of [
     {repositoryId: 0}, {cohort: 'Bad Label'}, {provenance: 'bogus'}, {complete: 'true'},
-    {stageSourceComplete: null}, {fromMs: -1}, {toMs: scorecardQuery.fromMs}
+    {stageSourceComplete: null}, {fromMs: -1}, {toMs: scorecardQuery.fromMs},
+    {coveragePolicy: null},
+    {coveragePolicy: {...defaultCoveragePolicy, profile: 'unknown'}},
+    {coveragePolicy: {...defaultCoveragePolicy, minLinePercent: 95}},
+    {coveragePolicy: {...defaultCoveragePolicy, minBranchPercent: 90}},
+    {coveragePolicy: {...defaultCoveragePolicy, profile: 'consumer', minLinePercent: 94}},
+    {coveragePolicy: {...defaultCoveragePolicy, expectedComponents: []}},
+    {coveragePolicy: {...defaultCoveragePolicy, expectedComponents: ['Bad Component']}},
+    {coveragePolicy: {...defaultCoveragePolicy, expectedComponents: ['dup', 'dup']}}
   ]) {
     assert.equal(
       buildVelocityScorecard(makeScorecardInput({query: {...scorecardQuery, ...qChange}}), [1]).reason,
@@ -943,15 +1051,33 @@ test('fails closed across malformed scorecard inputs, incomplete outcomes, confl
     buildVelocityScorecard(makeScorecardInput({quality: makeQuality({repositoryId: 2})}), [1]).reason,
     'ENTRY_SCOPE_UNKNOWN'
   );
+  const validComp = makeQuality().components;
   for (const badQuality of [
     {},
     makeQuality({provenance: 'bogus'}),
-    makeQuality({minLinePercent: 94}),
-    makeQuality({coveredLines: 1001})
+    makeQuality({complete: 'true'}),
+    makeQuality({complete: false, head: h, components: []}),
+    makeQuality({complete: false, head: null, components: validComp}),
+    makeQuality({head: 'not-a-sha'}),
+    makeQuality({components: [validComp[0]]}),
+    makeQuality({components: [validComp[0], validComp[0]]}),
+    makeQuality({components: [{...validComp[0], component: 'unexpected.comp'}, validComp[1]]}),
+    makeQuality({components: [{...validComp[0], head: 'b'.repeat(40)}, validComp[1]]}),
+    makeQuality({components: [{...validComp[0], coveredLines: 501}, validComp[1]]}),
+    makeQuality({components: [{...validComp[0], coveredBranches: 501}, validComp[1]]})
   ]) {
     assert.equal(buildVelocityScorecard(makeScorecardInput({quality: badQuality}), [1]).reason,
       'INVALID_QUALITY_EVIDENCE');
   }
+  const branchOnlyBelowTarget = buildVelocityScorecard(makeScorecardInput({
+    quality: makeQuality({
+      components: [
+        validComp[0],
+        {...validComp[1], coveredLines: 495, totalLines: 500, coveredBranches: 470, totalBranches: 500}
+      ]
+    })
+  }), [1]);
+  assert.equal(branchOnlyBelowTarget.quality.status, 'failed');
   assert.equal(
     buildVelocityScorecard(makeScorecardInput({
       quality: makeQuality({failedMainCount: 1})

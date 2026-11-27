@@ -209,8 +209,8 @@ export function aggregateScorecardStages(samples, query, authorizedRepositoryIds
     if (row.repositoryId !== query.repositoryId || row.cohort !== query.cohort) {
       return unknownStages('SCOPE_MISMATCH');
     }
-    if (!validSampleToken(row.id) || !Object.hasOwn(VELOCITY_STAGE_OBJECTIVES, row.stage) ||
-        !validStageTiming(row, query.observedMs)) {
+    if (!validSampleToken(row.id) || typeof row.stage !== 'string' ||
+        !Object.hasOwn(VELOCITY_STAGE_OBJECTIVES, row.stage) || !validStageTiming(row, query.observedMs)) {
       return unknownStages('INVALID_SAMPLE');
     }
     const key = row.stage + ':' + row.id;

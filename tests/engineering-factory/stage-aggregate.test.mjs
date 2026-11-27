@@ -334,6 +334,7 @@ test('enforces strict provenance isolation and fails closed on invalid, stale, c
   for (const invalidSample of [
     null,
     stageSample('ready->firstPr', 'bad id', 2000, 3000),
+    stageSample({[Symbol.toPrimitive]: trap}, 's1', 2000, 3000),
     stageSample('unknown->stage', 's1', 2000, 3000),
     stageSample('ready->firstPr', 's1', 2000, 3000, 'completed', {provenance: 'bogus'}),
     stageSample('ready->firstPr', 's1', 3000, 2000, 'completed'),
