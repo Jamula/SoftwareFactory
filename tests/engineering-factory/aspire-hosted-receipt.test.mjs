@@ -509,10 +509,36 @@ test('verifyMafSourceManifests fails closed on malformed inputs, retired GitHub 
     'EXCLUDED_AGENT_FRAMEWORK_FORBIDDEN'
   );
 
+  // Valid XML prolog, benign comments, verbatim C# strings, and escaped quotes/chars remain accepted.
+  const benignDecorated = loadRepoManifests();
+  benignDecorated.appHostSource =
+    `// Leading comment\n/* block comment */\n${benignDecorated.appHostSource}\nvar literal = @"verbatim ""quote"" /* not comment */";\nvar escaped = "escaped \\" // not comment";\nvar ch = '\\''; // trailing comment without newline`;
+  benignDecorated.agentsCsprojSource =
+    `<?xml version="1.0" encoding="utf-8"?>\n<!-- benign header comment -->\n${benignDecorated.agentsCsprojSource}\n<!-- trailing comment -->\n`;
+  assert.equal(verifyMafSourceManifests(benignDecorated).valid, true);
+
+  const eofDirectiveOnly = loadRepoManifests();
+  eofDirectiveOnly.appHostSource = '#:package Aspire.Hosting.AppHost@17.0.0';
+  assert.equal(verifyMafSourceManifests(eofDirectiveOnly).reason, 'MAF_ACTIVITY_SOURCE_UNREADY');
+
   for (const mutate of [
     m => { m.appHostSource = 'var b = 1;'; },
-    m => { m.appHostSource = `${m.appHostSource}\n#:package MalformedNoVersion\n`; },
-    m => { m.appHostSource = `${m.appHostSource.replaceAll('\n', '\r\n')}\r\n#:package Bad@1.0.0@extra\r\n`; },
+    m => { m.appHostSource = 'bad\rcarriage'; },
+    m => { m.appHostSource = `${m.appHostSource}\n/* unclosed block comment`; },
+    m => { m.appHostSource = `${m.appHostSource}\nvar bad = @"unclosed verbatim;`; },
+    m => { m.appHostSource = `${m.appHostSource}\nvar bad = """raw""";`; },
+    m => { m.appHostSource = `${m.appHostSource}\n}`; },
+    m => { m.appHostSource = `${m.appHostSource}\n{`; },
+    m => { m.appHostSource = `${m.appHostSource}\nif (false) { var x = 1; }`; },
+    m => { m.appHostSource = m.appHostSource.replace('var builder =', 'return;\nvar builder ='); },
+    m => { m.appHostSource = m.appHostSource.replace('builder.Build().Run();', ''); },
+    m => { m.appHostSource = `${m.appHostSource}\nvar bad = "unclosed string\n";`; },
+    m => { m.appHostSource = `${m.appHostSource}\nvar bad = "dangling escape\\\n";`; },
+    m => { m.appHostSource = `${m.appHostSource}\nvar bad = "eof escape\\`; },
+    m => { m.appHostSource = `${m.appHostSource}\n#:package AfterCode@1.0.0\n`; },
+    m => { m.appHostSource = `#if false\n${m.appHostSource}\n#endif\n`; },
+    m => { m.appHostSource = `#:package MalformedNoVersion\n${m.appHostSource}`; },
+    m => { m.appHostSource = `#:package Bad@1.0.0@extra\r\n${m.appHostSource.replaceAll('\n', '\r\n')}`; },
     m => { m.appHostSource = m.appHostSource.replace('17.0.0', '16.0.0'); },
     m => {
       // Missing WithExplicitStart() on synthetic-shadow must not match maf-specialist-shadow's WithExplicitStart().
@@ -522,16 +548,68 @@ test('verifyMafSourceManifests fails closed on malformed inputs, retired GitHub 
       );
     },
     m => {
+      // C# block-commented .WithExplicitStart() must fail closed.
+      m.appHostSource = m.appHostSource.replaceAll('.WithExplicitStart()', '/* .WithExplicitStart() */');
+    },
+    m => {
+      // Inline // comment before .WithExplicitStart() must fail closed.
+      m.appHostSource = m.appHostSource.replace('.WithExplicitStart()', '// .WithExplicitStart()');
+    },
+    m => {
       m.appHostSource = m.appHostSource.replace(
         'builder.AddDotnetProject',
         '// builder.AddDotnetProject'
       );
     },
     m => { m.appHostSource = m.appHostSource.replaceAll('.WithExplicitStart()', ''); },
+    m => { m.agentsCsprojSource = 'bad\rxml'; },
+    m => { m.agentsCsprojSource = '<?xml bad'; },
+    m => { m.agentsCsprojSource = `<?xml bad ><Project Sdk="Microsoft.NET.Sdk">?>`; },
+    m => { m.agentsCsprojSource = `${m.agentsCsprojSource}<!-- unclosed`; },
+    m => { m.agentsCsprojSource = `${m.agentsCsprojSource}<!-- illegal -- double dash -->`; },
+    m => { m.agentsCsprojSource = `<!DOCTYPE Project>\n${m.agentsCsprojSource}`; },
+    m => { m.agentsCsprojSource = `${m.agentsCsprojSource}\nstray-trailing-text`; },
+    m => { m.agentsCsprojSource = '<Project Sdk="Microsoft.NET.Sdk">stray</Project>'; },
+    m => { m.agentsCsprojSource = '<Project Sdk="Microsoft.NET.Sdk.Web"></Project>'; },
+    m => { m.agentsCsprojSource = `${m.agentsCsprojSource}\n<Project Sdk="Microsoft.NET.Sdk"></Project>`; },
+    m => { m.agentsCsprojSource = '<Project Sdk="Microsoft.NET.Sdk"><Unclosed'; },
+    m => { m.agentsCsprojSource = '<Project Sdk="Microsoft.NET.Sdk"></WrongClose>'; },
+    m => { m.agentsCsprojSource = '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup></Project>'; },
+    m => { m.agentsCsprojSource = '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup>'; },
+    m => { m.agentsCsprojSource = m.agentsCsprojSource.replace('<PropertyGroup>', '<PropertyGroup Condition="false">'); },
+    m => { m.agentsCsprojSource = m.agentsCsprojSource.replace('<ItemGroup>', '<Target Name="Override">'); },
+    m => { m.agentsCsprojSource = m.agentsCsprojSource.replace('<TargetFramework>net10.0</TargetFramework>', '<TargetFrameworks>net10.0</TargetFrameworks>'); },
+    m => { m.agentsCsprojSource = m.agentsCsprojSource.replace('<TargetFramework>net10.0</TargetFramework>', '<TargetFramework Condition="false">net10.0</TargetFramework>'); },
+    m => { m.agentsCsprojSource = '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0'; },
+    m => { m.agentsCsprojSource = '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework'; },
+    m => { m.agentsCsprojSource = m.agentsCsprojSource.replace('</TargetFramework>', '</Mismatch>'); },
+    m => {
+      // Later PropertyGroup overriding CopilotSkipCliDownload to false must fail closed.
+      m.agentsCsprojSource = m.agentsCsprojSource.replace(
+        '</Project>',
+        '  <PropertyGroup><CopilotSkipCliDownload>false</CopilotSkipCliDownload></PropertyGroup>\n</Project>'
+      );
+    },
+    m => {
+      // XML-commented CopilotSkipCliDownload property must fail closed.
+      m.agentsCsprojSource = m.agentsCsprojSource.replace(
+        '<CopilotSkipCliDownload>true</CopilotSkipCliDownload>',
+        '<!-- <CopilotSkipCliDownload>true</CopilotSkipCliDownload> -->'
+      );
+    },
+    m => {
+      // XML-commented ItemGroup / PackageReference declarations must fail closed.
+      m.agentsCsprojSource = m.agentsCsprojSource
+        .replace('<ItemGroup>', '<!-- <ItemGroup>')
+        .replace('</ItemGroup>', '</ItemGroup> -->');
+    },
     m => { m.agentsCsprojSource = m.agentsCsprojSource.replace('net10.0', 'net8.0'); },
+    m => { m.agentsCsprojSource = m.agentsCsprojSource.replace('<CopilotSkipCliDownload>true</CopilotSkipCliDownload>', '<CopilotSkipCliDownload>false</CopilotSkipCliDownload>'); },
     m => { m.agentsCsprojSource = m.agentsCsprojSource.replace('<CopilotSkipCliDownload>true</CopilotSkipCliDownload>', ''); },
-    m => { m.agentsCsprojSource = `${m.agentsCsprojSource.replaceAll('\n', '\r\n')}\r\n<PackageReference Broken="true" />\r\n`; },
-    m => { m.agentsCsprojSource = '<Project><PropertyGroup><TargetFramework>net10.0</TargetFramework><CopilotSkipCliDownload>true</CopilotSkipCliDownload></PropertyGroup></Project>'; },
+    m => { m.agentsCsprojSource = m.agentsCsprojSource.replace('/>', '></PackageReference>'); },
+    m => { m.agentsCsprojSource = m.agentsCsprojSource.replace('Version="1.28.0" />', 'Broken="true" />'); },
+    m => { m.agentsCsprojSource = m.agentsCsprojSource.replace('Version="1.28.0" />', 'Version="1.28.0" Condition="false" />'); },
+    m => { m.agentsCsprojSource = '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework><CopilotSkipCliDownload>true</CopilotSkipCliDownload></PropertyGroup></Project>'; },
     m => { m.agentsCsprojSource = m.agentsCsprojSource.replace('Version="1.28.0"', 'Version="1.27.0"'); },
     m => {
       m.agentsCsprojSource = m.agentsCsprojSource.replaceAll(
@@ -541,6 +619,13 @@ test('verifyMafSourceManifests fails closed on malformed inputs, retired GitHub 
     },
     m => { m.telemetrySource = m.telemetrySource.replaceAll('"Microsoft.Agents.AI.Workflows"', '"Other.Workflows"'); },
     m => { m.telemetrySource = m.telemetrySource.replaceAll('"SoftwareFactory.Agents"', '"Other.Agents"'); },
+    m => {
+      // Block-commented .AddSource(...) in LocalOtlpBootstrap.cs must fail closed.
+      m.localOtlpBootstrapSource = m.localOtlpBootstrapSource.replace(
+        '.AddSource(SoftwareFactoryTelemetry.WorkflowsSourceName, SoftwareFactoryTelemetry.AgentsSourceName)',
+        '/* .AddSource(SoftwareFactoryTelemetry.WorkflowsSourceName, SoftwareFactoryTelemetry.AgentsSourceName) */'
+      );
+    },
     m => { m.localOtlpBootstrapSource = m.localOtlpBootstrapSource.replaceAll('AgentsSourceName', 'OtherSource'); },
     m => { m.localOtlpBootstrapSource = m.localOtlpBootstrapSource.replace('TryGetValue("OTEL_EXPORTER_OTLP_ENDPOINT"', 'TryGetValue("NONE"'); },
     m => { m.localOtlpBootstrapSource = m.localOtlpBootstrapSource.replace('TryGetValue("OTEL_EXPORTER_OTLP_HEADERS"', 'TryGetValue("NONE"'); }

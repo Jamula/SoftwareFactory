@@ -95,7 +95,8 @@ const ISO_UTC_SECONDS_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
 const LOOPBACK_HTTPS_ORIGIN_RE = /^https:\/\/(?:localhost|127\.0\.0\.1|\[::1\]):([1-9][0-9]{0,4})$/;
 const PACKAGE_NAME_RE = /^[A-Za-z0-9]+(?:\.[A-Za-z0-9]+)*$/;
 const SEMVER_RE = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
-const CSPROJ_PKG_REF_RE = /^<PackageReference Include="([^"]+)" Version="([^"]+)" \/>$/;
+const XML_PROP_NAME_RE = /^[A-Za-z][A-Za-z0-9]*$/;
+const CSPROJ_PKG_ATTRS_RE = /^PackageReference\s+Include="([^"]+)"\s+Version="([^"]+)"$/;
 const RETIRED_GITHUB_MODELS_RE = /github\.?models/i;
 const EXCLUDED_AGENT_FRAMEWORK_RE = /(?:^|[^A-Za-z0-9])(?:semantickernel|semantic[_-]kernel|autogen)(?:$|[^A-Za-z0-9])/i;
 const CONTROL_CHAR_RE = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/;
@@ -556,6 +557,232 @@ export function verifyCrossOsAspireRuntimeEvidence(evidence) {
   });
 }
 
+function scanCSharpSource(rawSource, allowPackageDirectives) {
+  const source = rawSource.replaceAll('\r\n', '\n');
+  if (source.includes('\r')) return null;
+  const directives = [];
+  const statements = [];
+  let current = '';
+  let atLineStart = true;
+  let seenCodeToken = false;
+  let braceDepth = 0;
+  const appendSpace = () => {
+    if (current.length > 0 && !current.endsWith(' ')) current += ' ';
+  };
+  const flushStatement = () => {
+    const trimmed = current.trim();
+    if (trimmed.length > 0) statements.push({text: trimmed, braceDepth});
+    current = '';
+  };
+
+  for (let i = 0; i < source.length;) {
+    const ch = source[i];
+    if (ch === ' ' || ch === '\t') {
+      appendSpace();
+      i++;
+      continue;
+    }
+    if (ch === '\n') {
+      appendSpace();
+      atLineStart = true;
+      i++;
+      continue;
+    }
+    if (ch === '/' && source[i + 1] === '/') {
+      const nl = source.indexOf('\n', i + 2);
+      appendSpace();
+      if (nl === -1) break;
+      atLineStart = true;
+      i = nl + 1;
+      continue;
+    }
+    if (ch === '/' && source[i + 1] === '*') {
+      const end = source.indexOf('*/', i + 2);
+      if (end === -1) return null;
+      appendSpace();
+      atLineStart = false;
+      i = end + 2;
+      continue;
+    }
+    if (atLineStart && ch === '#') {
+      const nl = source.indexOf('\n', i);
+      const line = nl === -1 ? source.slice(i) : source.slice(i, nl);
+      if (!allowPackageDirectives || seenCodeToken || !line.startsWith('#:package')) {
+        return null;
+      }
+      directives.push(line.trim());
+      if (nl === -1) break;
+      atLineStart = true;
+      i = nl + 1;
+      continue;
+    }
+    atLineStart = false;
+    seenCodeToken = true;
+    if (ch === '@' && source[i + 1] === '"') {
+      current += '@"';
+      i += 2;
+      let closed = false;
+      while (i < source.length) {
+        if (source[i] === '"' && source[i + 1] === '"') {
+          current += '""';
+          i += 2;
+        } else if (source[i] === '"') {
+          current += '"';
+          i++;
+          closed = true;
+          break;
+        } else {
+          current += source[i++];
+        }
+      }
+      if (!closed) return null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      if (ch === '"' && source[i + 1] === '"' && source[i + 2] === '"') return null;
+      const quote = ch;
+      current += quote;
+      i++;
+      let closed = false;
+      while (i < source.length && source[i] !== '\n') {
+        if (source[i] === '\\') {
+          if (i + 1 >= source.length || source[i + 1] === '\n') return null;
+          current += source.slice(i, i + 2);
+          i += 2;
+        } else if (source[i] === quote) {
+          current += quote;
+          i++;
+          closed = true;
+          break;
+        } else {
+          current += source[i++];
+        }
+      }
+      if (!closed) return null;
+      continue;
+    }
+    if (ch === ';') {
+      flushStatement();
+      i++;
+      continue;
+    }
+    if (ch === '{') {
+      flushStatement();
+      braceDepth++;
+      i++;
+      continue;
+    }
+    if (ch === '}') {
+      flushStatement();
+      braceDepth--;
+      if (braceDepth < 0) return null;
+      i++;
+      continue;
+    }
+    current += ch;
+    i++;
+  }
+  if (braceDepth !== 0) return null;
+  flushStatement();
+  return {directives, statements};
+}
+
+function stripXmlComments(rawXml) {
+  const xml = rawXml.replaceAll('\r\n', '\n');
+  if (xml.includes('\r')) return null;
+  let out = '';
+  let pos = 0;
+  while (pos < xml.length) {
+    const start = xml.indexOf('<!--', pos);
+    if (start === -1) {
+      out += xml.slice(pos);
+      break;
+    }
+    out += xml.slice(pos, start);
+    const bodyStart = start + 4;
+    const end = xml.indexOf('-->', bodyStart);
+    if (end === -1 || xml.slice(bodyStart, end).includes('--')) return null;
+    pos = end + 3;
+  }
+  return out;
+}
+
+function parseAgentsCsprojManifest(rawXml) {
+  const xml = stripXmlComments(rawXml);
+  if (xml === null) return null;
+  let pos = 0;
+  const trimmedStart = xml.trimStart();
+  if (trimmedStart.startsWith('<?xml ')) {
+    const prologStart = xml.indexOf('<?xml ');
+    const prologEnd = xml.indexOf('?>', prologStart + 6);
+    const firstClose = xml.indexOf('>', prologStart + 6);
+    if (prologEnd === -1 || prologEnd + 1 !== firstClose) return null;
+    pos = prologEnd + 2;
+  }
+
+  const stack = [];
+  const properties = new Map();
+  const packages = [];
+  let seenRoot = false;
+
+  while (pos < xml.length) {
+    const lt = xml.indexOf('<', pos);
+    if (lt === -1) {
+      if (xml.slice(pos).trim().length > 0) return null;
+      break;
+    }
+    if (xml.slice(pos, lt).trim().length > 0) return null;
+    if (xml.startsWith('<!', lt) || xml.startsWith('<?', lt)) return null;
+    const gt = xml.indexOf('>', lt + 1);
+    if (gt === -1) return null;
+    const rawTag = xml.slice(lt + 1, gt).trim();
+    pos = gt + 1;
+
+    if (stack.length === 0) {
+      if (seenRoot || rawTag !== 'Project Sdk="Microsoft.NET.Sdk"') return null;
+      seenRoot = true;
+      stack.push('Project');
+      continue;
+    }
+    const parent = stack[stack.length - 1];
+    if (rawTag.startsWith('/')) {
+      const closingName = rawTag.slice(1).trim();
+      if (closingName !== parent) return null;
+      stack.pop();
+      continue;
+    }
+    if (parent === 'Project') {
+      if (rawTag !== 'PropertyGroup' && rawTag !== 'ItemGroup') return null;
+      stack.push(rawTag);
+      continue;
+    }
+    if (parent === 'PropertyGroup') {
+      if (!XML_PROP_NAME_RE.test(rawTag) || rawTag === 'TargetFrameworks' || properties.has(rawTag)) {
+        return null;
+      }
+      const closeStart = xml.indexOf('<', pos);
+      if (closeStart === -1) return null;
+      const valueText = xml.slice(pos, closeStart).trim();
+      const closeEnd = xml.indexOf('>', closeStart + 1);
+      if (closeEnd === -1 || xml.slice(closeStart + 1, closeEnd).trim() !== `/${rawTag}`) {
+        return null;
+      }
+      properties.set(rawTag, valueText);
+      pos = closeEnd + 1;
+      continue;
+    }
+    // parent === 'ItemGroup'
+    if (!rawTag.endsWith('/')) return null;
+    const itemSpec = rawTag.slice(0, -1).trim();
+    const match = CSPROJ_PKG_ATTRS_RE.exec(itemSpec);
+    if (match === null) return null;
+    packages.push(Object.freeze({name: match[1], version: match[2]}));
+  }
+
+  if (!seenRoot || stack.length !== 0) return null;
+  return {properties, packages};
+}
+
 // Pure manifest parser confirming apphost.cs, SoftwareFactory.Agents.csproj, and OTLP
 // bootstrap sources match the Aspire 17 + MAF ActivitySource readiness contract.
 export function verifyMafSourceManifests(manifests) {
@@ -572,11 +799,16 @@ export function verifyMafSourceManifests(manifests) {
       return deny('EXCLUDED_AGENT_FRAMEWORK_FORBIDDEN');
     }
   }
+  const appHostScan = scanCSharpSource(manifests.appHostSource, true);
+  const bootstrapScan = scanCSharpSource(manifests.localOtlpBootstrapSource, false);
+  const telemetryScan = scanCSharpSource(manifests.telemetrySource, false);
+  const csprojParsed = parseAgentsCsprojManifest(manifests.agentsCsprojSource);
+  if (appHostScan === null || bootstrapScan === null || telemetryScan === null || csprojParsed === null) {
+    return deny('MAF_ACTIVITY_SOURCE_UNREADY');
+  }
   const appHostPackages = [];
-  for (const rawLine of manifests.appHostSource.split('\n')) {
-    const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1).trim() : rawLine.trim();
-    if (!line.startsWith('#:package')) continue;
-    const spec = line.slice('#:package'.length).trim();
+  for (const directive of appHostScan.directives) {
+    const spec = directive.slice('#:package'.length).trim();
     const atIndex = spec.indexOf('@');
     if (atIndex <= 0 || atIndex !== spec.lastIndexOf('@') || spec.includes(' ')) {
       return deny('MAF_ACTIVITY_SOURCE_UNREADY');
@@ -589,34 +821,30 @@ export function verifyMafSourceManifests(manifests) {
     const entry = appHostInv.map.get(pkgName);
     if (!entry || entry.version !== pinnedVersion) return deny('MAF_ACTIVITY_SOURCE_UNREADY');
   }
-  const stripLineComments = text => text
-    .split('\n')
-    .filter(rawLine => !rawLine.trim().startsWith('//'))
-    .join('\n');
-  const appHostActive = stripLineComments(manifests.appHostSource);
-  const appHostStatements = appHostActive.split(';');
-  const hasExplicitNodeShadow = appHostStatements.some(stmt =>
-    stmt.includes('AddNodeApp("synthetic-shadow"') && stmt.includes('.WithExplicitStart()')
-  );
-  const hasExplicitMafShadow = appHostStatements.some(stmt =>
-    stmt.includes('AddDotnetProject("maf-specialist-shadow", "./src/SoftwareFactory.Agents/SoftwareFactory.Agents.csproj")') &&
-    stmt.includes('.WithExplicitStart()')
-  );
-  if (!hasExplicitNodeShadow || !hasExplicitMafShadow) {
+  if (appHostScan.statements.some(({text, braceDepth}) =>
+    braceDepth !== 0 || text === 'return' || text.startsWith('return ') || text.startsWith('throw ')
+  )) {
     return deny('MAF_ACTIVITY_SOURCE_UNREADY');
   }
-  if (!manifests.agentsCsprojSource.includes('<TargetFramework>net10.0</TargetFramework>') ||
-      !/<CopilotSkipCliDownload>true<\/CopilotSkipCliDownload>/.test(manifests.agentsCsprojSource)) {
+  const hasExplicitNodeShadow = appHostScan.statements.some(({text}) =>
+    text.startsWith('builder.AddNodeApp("synthetic-shadow", "./tools/engineering-factory", "aspire-telemetry-smoke.mjs")') &&
+    text.endsWith('.WithExplicitStart()') &&
+    !text.includes('?')
+  );
+  const hasExplicitMafShadow = appHostScan.statements.some(({text}) =>
+    text.startsWith('builder.AddDotnetProject("maf-specialist-shadow", "./src/SoftwareFactory.Agents/SoftwareFactory.Agents.csproj")') &&
+    text.endsWith('.WithExplicitStart()') &&
+    !text.includes('?')
+  );
+  if (!hasExplicitNodeShadow || !hasExplicitMafShadow ||
+      !appHostScan.statements.some(({text}) => text === 'builder.Build().Run()')) {
     return deny('MAF_ACTIVITY_SOURCE_UNREADY');
   }
-  const agentPackages = [];
-  for (const rawLine of manifests.agentsCsprojSource.split('\n')) {
-    const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1).trim() : rawLine.trim();
-    if (!line.startsWith('<PackageReference')) continue;
-    const match = CSPROJ_PKG_REF_RE.exec(line);
-    if (match === null) return deny('MAF_ACTIVITY_SOURCE_UNREADY');
-    agentPackages.push(Object.freeze({name: match[1], version: match[2]}));
+  if (csprojParsed.properties.get('TargetFramework') !== 'net10.0' ||
+      csprojParsed.properties.get('CopilotSkipCliDownload') !== 'true') {
+    return deny('MAF_ACTIVITY_SOURCE_UNREADY');
   }
+  const agentPackages = csprojParsed.packages;
   const agentInv = validatePackageInventory(agentPackages);
   if (!agentInv.ok) return deny(agentInv.reason);
   for (const pkgName of REQUIRED_MAF_AGENT_PACKAGES) {
@@ -628,18 +856,27 @@ export function verifyMafSourceManifests(manifests) {
   for (const pkgName of REQUIRED_OTEL_AGENT_PACKAGES) {
     if (!agentInv.map.has(pkgName)) return deny('MAF_ACTIVITY_SOURCE_UNREADY');
   }
-  const bootstrapActive = stripLineComments(manifests.localOtlpBootstrapSource);
-  const hasDualActivitySources = bootstrapActive.split(';').some(stmt => {
-    const addSourceIdx = stmt.indexOf('.AddSource(');
-    if (addSourceIdx === -1) return false;
-    const tail = stmt.slice(addSourceIdx);
-    return tail.includes('WorkflowsSourceName') && tail.includes('AgentsSourceName');
-  });
-  if (!stripLineComments(manifests.telemetrySource).includes(`"${REQUIRED_MAF_ACTIVITY_SOURCE}"`) ||
-      !stripLineComments(manifests.telemetrySource).includes(`"${REQUIRED_AGENTS_ACTIVITY_SOURCE}"`) ||
-      !hasDualActivitySources ||
-      !bootstrapActive.includes('TryGetValue("OTEL_EXPORTER_OTLP_ENDPOINT"') ||
-      !bootstrapActive.includes('TryGetValue("OTEL_EXPORTER_OTLP_HEADERS"')) {
+  const bootstrapStatements = bootstrapScan.statements.map(s => s.text);
+  const telemetryStatements = telemetryScan.statements.map(s => s.text);
+  const hasDualActivitySources = bootstrapStatements.some(stmt =>
+    stmt.startsWith('TracerProvider tracerProvider = Sdk.CreateTracerProviderBuilder()') &&
+    stmt.includes('.AddSource(SoftwareFactoryTelemetry.WorkflowsSourceName, SoftwareFactoryTelemetry.AgentsSourceName)') &&
+    stmt.includes('.AddOtlpExporter(') &&
+    stmt.endsWith('.Build()')
+  );
+  const hasEndpointLookup = bootstrapStatements.some(stmt =>
+    stmt.includes('env.TryGetValue("OTEL_EXPORTER_OTLP_ENDPOINT"')
+  );
+  const hasHeadersLookup = bootstrapStatements.some(stmt =>
+    stmt.includes('env.TryGetValue("OTEL_EXPORTER_OTLP_HEADERS"')
+  );
+  const hasWorkflowsConst = telemetryStatements.includes(
+    `public const string WorkflowsSourceName = "${REQUIRED_MAF_ACTIVITY_SOURCE}"`
+  );
+  const hasAgentsConst = telemetryStatements.includes(
+    `public const string AgentsSourceName = "${REQUIRED_AGENTS_ACTIVITY_SOURCE}"`
+  );
+  if (!hasWorkflowsConst || !hasAgentsConst || !hasDualActivitySources || !hasEndpointLookup || !hasHeadersLookup) {
     return deny('MAF_ACTIVITY_SOURCE_UNREADY');
   }
   return Object.freeze({
