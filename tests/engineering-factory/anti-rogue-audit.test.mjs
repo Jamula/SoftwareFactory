@@ -251,6 +251,78 @@ test('verifyCausalProvenanceChain validates completed 9-link chain and supports 
   strictSfChain.coveragePolicy = {minLinePercent: 99, minBranchPercent: 96};
   assert.equal(verifyCausalProvenanceChain(strictSfChain).valid, true);
 
+  // Supports head-bound branchless component justifications with authorized independent reviewer
+  const branchlessChain = buildValidChain();
+  branchlessChain.stages.exactHeadValidation.expectedComponents = [
+    'engineering-factory.constants',
+    'engineering-factory.telemetry'
+  ];
+  branchlessChain.stages.exactHeadValidation.coverageReports = [
+    {component: 'engineering-factory.constants', head: COMMIT_SHA, lines: 50, lineTotal: 50, branches: 0, branchTotal: 0},
+    {component: 'engineering-factory.telemetry', head: COMMIT_SHA, lines: 99, lineTotal: 100, branches: 48, branchTotal: 50}
+  ];
+  branchlessChain.stages.exactHeadValidation.branchless = [
+    {
+      component: 'engineering-factory.constants',
+      head: COMMIT_SHA,
+      reviewedBy: 'senior-maintainer',
+      reason: 'Pure frozen constants inventory with zero conditional branches'
+    }
+  ];
+  branchlessChain.stages.exactHeadValidation.lines = 149;
+  branchlessChain.stages.exactHeadValidation.lineTotal = 150;
+  branchlessChain.stages.exactHeadValidation.branches = 48;
+  branchlessChain.stages.exactHeadValidation.branchTotal = 50;
+  assert.equal(verifyCausalProvenanceChain(branchlessChain).valid, true);
+
+  // Also supports all-branchless inventory (0/0 aggregate branches) when justified
+  const allBranchless = buildValidChain();
+  allBranchless.stages.exactHeadValidation.expectedComponents = ['engineering-factory.constants'];
+  allBranchless.stages.exactHeadValidation.coverageReports = [
+    {component: 'engineering-factory.constants', head: COMMIT_SHA, lines: 50, lineTotal: 50, branches: 0, branchTotal: 0}
+  ];
+  allBranchless.stages.exactHeadValidation.branchless = [
+    {
+      component: 'engineering-factory.constants',
+      head: COMMIT_SHA,
+      reviewedBy: 'senior-maintainer',
+      reason: 'Pure frozen constants inventory with zero conditional branches'
+    }
+  ];
+  allBranchless.stages.exactHeadValidation.lines = 50;
+  allBranchless.stages.exactHeadValidation.lineTotal = 50;
+  allBranchless.stages.exactHeadValidation.branches = 0;
+  allBranchless.stages.exactHeadValidation.branchTotal = 0;
+  assert.equal(verifyCausalProvenanceChain(allBranchless).valid, true);
+
+  // Rejects branchless justification on wrong head, non-allowlisted reviewer, author/agent reviewer, or in-flight without review stage
+  const staleBranchless = structuredClone(branchlessChain);
+  staleBranchless.stages.exactHeadValidation.branchless[0].head = OTHER_SHA;
+  assert.equal(verifyCausalProvenanceChain(staleBranchless).code, 'BRANCHLESS_UNJUSTIFIED');
+
+  for (const badReviewer of ['unlisted-reviewer', 'cyrusjamula', 'copilot-swe-agent[bot]']) {
+    const unauthorizedBl = structuredClone(branchlessChain);
+    unauthorizedBl.stages.exactHeadValidation.branchless[0].reviewedBy = badReviewer;
+    assert.equal(verifyCausalProvenanceChain(unauthorizedBl).code, 'BRANCHLESS_REVIEWER_UNAUTHORIZED');
+  }
+
+  const inFlightUnverifiedBranchless = {
+    allowInFlightUpToStage: 'exactHeadValidation',
+    stages: {
+      eventDelivery: branchlessChain.stages.eventDelivery,
+      ghAwLock: branchlessChain.stages.ghAwLock,
+      casLease: branchlessChain.stages.casLease,
+      missionControlTask: branchlessChain.stages.missionControlTask,
+      candidateCommit: branchlessChain.stages.candidateCommit,
+      exactHeadValidation: branchlessChain.stages.exactHeadValidation
+    }
+  };
+  assert.equal(verifyCausalProvenanceChain(inFlightUnverifiedBranchless).code, 'BRANCHLESS_REVIEWER_UNAUTHORIZED');
+
+  const badBranchlessEntry = structuredClone(branchlessChain);
+  badBranchlessEntry.stages.exactHeadValidation.branchless = [{}];
+  assert.equal(verifyCausalProvenanceChain(badBranchlessEntry).code, 'INVALID_EXACT_HEAD_VALIDATION');
+
   // Partial in-flight chain up to candidateCommit
   const base = buildValidChain();
   const inFlight = verifyCausalProvenanceChain({

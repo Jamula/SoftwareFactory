@@ -227,6 +227,7 @@ export function verifyCausalProvenanceChain(chain) {
   let laneId = null;
   let ownedPaths = null;
   let commitSha = null;
+  let pendingBranchless = null;
   let squashCommitSha = null;
 
   for (let i = 0; i <= targetIndex; i++) {
@@ -300,31 +301,49 @@ export function verifyCausalProvenanceChain(chain) {
         'traceparent', 'parentSpanId', 'headSha', 'ciReceiptId', 'codeqlReceiptId',
         'coverageReceiptId', 'expectedComponents', 'coverageReports',
         'lines', 'lineTotal', 'branches', 'branchTotal', 'observedMs'
-      ]) || !hex40(stage.headSha) || !token(stage.ciReceiptId) || !token(stage.codeqlReceiptId) ||
+      ], ['branchless']) || !hex40(stage.headSha) || !token(stage.ciReceiptId) || !token(stage.codeqlReceiptId) ||
           !token(stage.coverageReceiptId) || !denseDataArray(stage.expectedComponents, 250) ||
           !denseDataArray(stage.coverageReports, 250) ||
           !stage.coverageReports.every(r => exactRecord(r, [
             'component', 'head', 'lines', 'lineTotal', 'branches', 'branchTotal'
-          ])) || !validCounts(stage.lines, stage.lineTotal) ||
-          !validCounts(stage.branches, stage.branchTotal)) {
+          ])) ||
+          (stage.branchless !== undefined && (!denseDataArray(stage.branchless, 250) ||
+            !stage.branchless.every(entry => exactRecord(entry, [
+              'component', 'head', 'reviewedBy', 'reason'
+            ])))) ||
+          !validCounts(stage.lines, stage.lineTotal) ||
+          !((stage.branches === 0 && stage.branchTotal === 0 && stage.branchless !== undefined) ||
+            validCounts(stage.branches, stage.branchTotal))) {
         return provenanceFail('INVALID_EVIDENCE', 'INVALID_EXACT_HEAD_VALIDATION', stageName);
       }
       if (stage.headSha !== commitSha) return provenanceFail('STALE', 'EXACT_HEAD_MISMATCH', stageName);
-      const cov = coverageEvidence(commitSha, stage.expectedComponents, stage.coverageReports, {
+      const covPolicy = {
         repository: repositoryId === SOFTWARE_FACTORY_REPOSITORY_ID
           ? 'Jamula/SoftwareFactory'
           : 'consumer/repository',
         lineMin: policy.minLinePercent,
-        branchMin: policy.minBranchPercent
-      });
+        branchMin: policy.minBranchPercent,
+        ...(stage.branchless !== undefined ? {branchless: stage.branchless} : {})
+      };
+      const cov = coverageEvidence(commitSha, stage.expectedComponents, stage.coverageReports, covPolicy);
       if (!cov.valid) {
-        return cov.reason === 'COMPONENT_BELOW_TARGET'
-          ? provenanceFail('COVERAGE', 'COVERAGE_BELOW_THRESHOLD', stageName)
-          : provenanceFail('INVALID_EVIDENCE', 'INVALID_EXACT_HEAD_VALIDATION', stageName);
+        if (cov.reason === 'COMPONENT_BELOW_TARGET') {
+          return provenanceFail('COVERAGE', 'COVERAGE_BELOW_THRESHOLD', stageName);
+        }
+        if (cov.reason === 'BRANCHLESS_UNJUSTIFIED') {
+          return provenanceFail('COVERAGE', 'BRANCHLESS_UNJUSTIFIED', stageName);
+        }
+        return provenanceFail('INVALID_EVIDENCE', 'INVALID_EXACT_HEAD_VALIDATION', stageName);
       }
       if (stage.lines !== cov.lines || stage.lineTotal !== cov.lineTotal ||
           stage.branches !== cov.branches || stage.branchTotal !== cov.branchTotal) {
         return provenanceFail('COVERAGE', 'COVERAGE_COUNTS_MISMATCH', stageName);
+      }
+      if (stage.branchless !== undefined && stage.branchless.length > 0) {
+        if (targetIndex < 6) {
+          return provenanceFail('COVERAGE', 'BRANCHLESS_REVIEWER_UNAUTHORIZED', stageName);
+        }
+        pendingBranchless = stage.branchless;
       }
     } else if (stageName === 'independentReview') {
       if (!exactRecord(stage, [
@@ -344,8 +363,9 @@ export function verifyCausalProvenanceChain(chain) {
       }
       if (stage.reviewedHeadSha !== commitSha) return provenanceFail('STALE', 'REVIEW_HEAD_MISMATCH', stageName);
       const reviewerLower = stage.reviewerIdentity.toLowerCase();
-      if (reviewerLower === stage.authorIdentity.toLowerCase() ||
-          reviewerLower === stage.implementationAgentIdentity.toLowerCase()) {
+      const authorLower = stage.authorIdentity.toLowerCase();
+      const agentLower = stage.implementationAgentIdentity.toLowerCase();
+      if (reviewerLower === authorLower || reviewerLower === agentLower) {
         return provenanceFail('REVIEW', 'SELF_REVIEW_FORBIDDEN', stageName);
       }
       const allowlist = new Set(stage.authorizedReviewers.map(r => r.toLowerCase()));
@@ -360,6 +380,12 @@ export function verifyCausalProvenanceChain(chain) {
         (!formalRequired && stage.reviewState === 'COMMENTED' && COPILOT_BOT_REVIEWERS.has(reviewerLower));
       if (!stateAcceptable) {
         return provenanceFail('REVIEW', 'REVIEW_NOT_ACCEPTABLE', stageName);
+      }
+      if (pendingBranchless !== null && pendingBranchless.some(entry => {
+        const by = entry.reviewedBy.toLowerCase();
+        return !allowlist.has(by) || by === authorLower || by === agentLower;
+      })) {
+        return provenanceFail('COVERAGE', 'BRANCHLESS_REVIEWER_UNAUTHORIZED', 'exactHeadValidation');
       }
     } else if (stageName === 'mergeQueueSquash') {
       if (!exactRecord(stage, ['traceparent', 'parentSpanId', 'expectedHeadSha', 'squashCommitSha', 'observedMs']) ||

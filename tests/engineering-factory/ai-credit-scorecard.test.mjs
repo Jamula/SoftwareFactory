@@ -165,7 +165,22 @@ test('never substitutes 0 for missing, estimated, or empty-window metrics', () =
   assert.equal(emptySc.auditTraceability.killSwitchTrips, null);
   assert.equal(emptySc.auditTraceability.violationCounts, null);
 
-  // Estimated or missing accounting, null sandbox/runner, null queue, null MAF, null audit
+  // Estimated or missing accounting, null sandbox/runner, null queue, null MAF, and 0 observed audits vs partial audits
+  const zeroAuditSc = buildAiCreditAndAutonomyScorecard(makeBaseScorecardInput([
+    makeAutonomousRecord(1, {
+      accounting: {status: 'estimated'},
+      ghAwQueueLatencyMs: null,
+      maf: null,
+      audit: null
+    })
+  ]));
+  assert.equal(zeroAuditSc.auditTraceability.observedAuditActions, 0);
+  assert.equal(zeroAuditSc.auditTraceability.auditComplete, false);
+  assert.equal(zeroAuditSc.auditTraceability.killSwitchTrips, null);
+  assert.equal(zeroAuditSc.auditTraceability.violationCounts, null);
+  assert.equal(zeroAuditSc.confirmedIncrementalBilledUsdCents, null);
+
+  // Partial audit and partial accounting preserve observed lower-bound killSwitchTrips and confirmedIncrementalBilledUsdCents in bottlenecks
   const partialSc = buildAiCreditAndAutonomyScorecard(makeBaseScorecardInput([
     makeAutonomousRecord(1, {
       accounting: {status: 'estimated'},
@@ -174,23 +189,69 @@ test('never substitutes 0 for missing, estimated, or empty-window metrics', () =
       audit: null
     }),
     makeAutonomousRecord(2, {
-      accounting: null
+      accounting: {
+        status: 'verified',
+        aiCredits: 25,
+        incrementalBilledUsdCents: 7,
+        cloudSandboxMinutes: 5,
+        actionsRunnerMinutes: 3
+      },
+      audit: {
+        fullProvenance: false,
+        killSwitchTripped: true,
+        violations: ['OUT_OF_LANE_EDIT']
+      }
     })
   ]));
   assert.equal(partialSc.valid, true);
-  assert.equal(partialSc.estimatedOrMissingCount, 2);
+  assert.equal(partialSc.estimatedOrMissingCount, 1);
   assert.equal(partialSc.aiCreditsTotal, null);
   assert.equal(partialSc.aiCreditsUsdCents, null);
   assert.equal(partialSc.aiCreditsPerAcceptedOutcome, null);
   assert.equal(partialSc.incrementalBilledUsdCents, null);
+  assert.equal(partialSc.confirmedIncrementalBilledUsdCents, 7);
   assert.equal(partialSc.cloudSandboxMinutes, null);
   assert.equal(partialSc.actionsRunnerMinutes, null);
   assert.equal(partialSc.ghAwQueueLatencyMs.unknownCount, 1);
   assert.equal(partialSc.mafTelemetry.superstepsTotal, null);
   assert.equal(partialSc.mafTelemetry.missingCount, 1);
+  assert.equal(partialSc.auditTraceability.observedAuditActions, 1);
+  assert.equal(partialSc.auditTraceability.auditComplete, false);
   assert.equal(partialSc.auditTraceability.provenanceCompletenessPct, null);
-  assert.equal(partialSc.auditTraceability.killSwitchTrips, null);
-  assert.equal(partialSc.bottlenecks[0].id, 'ai-credit-accounting-gap');
+  assert.equal(partialSc.auditTraceability.killSwitchTrips, 1);
+  assert.equal(partialSc.auditTraceability.violationCounts.OUT_OF_LANE_EDIT, 1);
+  assert.deepEqual(
+    partialSc.bottlenecks.map(b => b.id),
+    ['anti-rogue-kill-switch-trips', 'ai-credit-accounting-gap', 'incremental-billed-spend']
+  );
+
+  // Safe integer overflow across any accounting or MAF sum fails closed with UNSAFE_AGGREGATE_TOTAL
+  const max = Number.MAX_SAFE_INTEGER;
+  for (const secondOverride of [
+    {accounting: {status: 'verified', aiCredits: max, incrementalBilledUsdCents: 0, cloudSandboxMinutes: 1, actionsRunnerMinutes: 1}},
+    {accounting: {status: 'verified', aiCredits: 1, incrementalBilledUsdCents: max, cloudSandboxMinutes: 1, actionsRunnerMinutes: 1}},
+    {accounting: {status: 'verified', aiCredits: 1, incrementalBilledUsdCents: 0, cloudSandboxMinutes: max, actionsRunnerMinutes: 1}},
+    {accounting: {status: 'verified', aiCredits: 1, incrementalBilledUsdCents: 0, cloudSandboxMinutes: 1, actionsRunnerMinutes: max}},
+    {maf: {supersteps: max, checkpointResumes: 0, innerRepairIterations: 0}},
+    {maf: {supersteps: 1, checkpointResumes: max, innerRepairIterations: 0}},
+    {maf: {supersteps: 1, checkpointResumes: 0, innerRepairIterations: max}}
+  ]) {
+    const r1 = makeAutonomousRecord(1, {
+      accounting: {status: 'verified', aiCredits: 20, incrementalBilledUsdCents: 1, cloudSandboxMinutes: 5, actionsRunnerMinutes: 5},
+      maf: {supersteps: 10, checkpointResumes: 1, innerRepairIterations: 1}
+    });
+    const r2 = makeAutonomousRecord(2, secondOverride);
+    const overflowSc = buildAiCreditAndAutonomyScorecard(makeBaseScorecardInput([r1, r2]));
+    assert.equal(overflowSc.valid, false);
+    assert.equal(overflowSc.autonomousClaimEligible, false);
+    assert.equal(overflowSc.reason, 'UNSAFE_AGGREGATE_TOTAL');
+  }
+  // Overflow of reworkRateBps (> MAX_SAFE_INTEGER when innerRepairs * 10000 / supersteps overflows) also fails closed
+  const bpsOverflowSc = buildAiCreditAndAutonomyScorecard(makeBaseScorecardInput([
+    makeAutonomousRecord(1, {maf: {supersteps: 1, checkpointResumes: 0, innerRepairIterations: max}})
+  ]));
+  assert.equal(bpsOverflowSc.valid, false);
+  assert.equal(bpsOverflowSc.reason, 'UNSAFE_AGGREGATE_TOTAL');
 
   // Verified credits but null compute minutes or 0 accepted outcomes keep dependent metrics null
   const missingCompute = buildAiCreditAndAutonomyScorecard(makeBaseScorecardInput([

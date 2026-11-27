@@ -22,9 +22,11 @@ stages:
 5. `candidateCommit` — 40-hex `commitSha`, `signed: true`, in-lane `touchedPaths`, `observedMs`
 6. `exactHeadValidation` — `headSha === commitSha`, `ciReceiptId`, `codeqlReceiptId`,
    `coverageReceiptId`, `expectedComponents`, `coverageReports` verified per-component via
-   `coverageEvidence(...)`, and `lines`/`lineTotal` + `branches`/`branchTotal` bound to
-   trusted repository policy (`1471342715` always requires `>=98%` lines / `>=95%`
-   branches; consumers require `>=95%` / `>=90%` or stricter)
+   `coverageEvidence(...)` (including optional head-bound `branchless` component
+   justifications whose `reviewedBy` must be an independent authorized reviewer), and
+   `lines`/`lineTotal` + `branches`/`branchTotal` bound to trusted repository policy
+   (`1471342715` always requires `>=98%` lines / `>=95%` branches; consumers require
+   `>=95%` / `>=90%` or stricter)
 7. `independentReview` — `reviewId`, `reviewedHeadSha === commitSha`,
    `reviewerIdentity` distinct from both `authorIdentity` and
    `implementationAgentIdentity`, allowlisted in `authorizedReviewers`, acceptable
@@ -64,17 +66,22 @@ while strictly isolating `sourceKind: "historical-proxy"` from
 - **AI-credit & compute accounting:** `aiCreditsTotal`, `aiCreditsUsdCents`
   (`1 AI credit = 1 cent`), `aiCreditsPerAcceptedOutcome` (deduplicated per distinct
   accepted `issueNumber` / `workUnitId` while summing action-level credits across all
-  retries), `incrementalBilledUsdCents`, `estimatedOrMissingCount`, `cloudSandboxMinutes`,
-  and `actionsRunnerMinutes`. Missing or estimated values remain `null` and are never
-  coerced to `0`.
+  retries with `Number.isSafeInteger` overflow checks failing closed as
+  `UNSAFE_AGGREGATE_TOTAL`), `incrementalBilledUsdCents`,
+  `confirmedIncrementalBilledUsdCents` (surfacing verified billed-spend violations in
+  `bottlenecks` even when other rows lack accounting), `estimatedOrMissingCount`,
+  `cloudSandboxMinutes`, and `actionsRunnerMinutes`. Missing or estimated values remain
+  `null` and are never coerced to `0`.
 - **Outer queue & inner MAF telemetry:** `ghAwQueueLatencyMs` (`p50`, `p95`, `sampleCount`,
   `unknownCount`) and `mafTelemetry` (`superstepsTotal`, `checkpointResumes`,
   `innerRepairIterations`, `reworkRateBps`).
 - **Audit traceability & ranked bottlenecks:** `auditTraceability` (`totalActions`,
-  `fullProvenanceActions`, `provenanceCompletenessPct` — `null` when `0` actions —
-  `killSwitchTrips`, `violationCounts`; inconsistent records with `violations.length > 0`
-  and `killSwitchTripped: false` fail closed) and deterministic ranked `bottlenecks`
-  feeding `optimistic-improver.mjs`.
+  `observedAuditActions`, `auditComplete`, `fullProvenanceActions`,
+  `provenanceCompletenessPct` — `null` when `0` actions or partial — and lower-bound
+  `killSwitchTrips` / `violationCounts` whenever `observedAuditActions > 0` so missing
+  audit rows never mask a confirmed kill-switch trip; inconsistent records with
+  `violations.length > 0` and `killSwitchTripped: false` fail closed) and deterministic
+  ranked `bottlenecks` feeding `optimistic-improver.mjs`.
 
 ## 4. Optimistic Improvement Loop & Cohort Rollback (`optimistic-improver.mjs`)
 

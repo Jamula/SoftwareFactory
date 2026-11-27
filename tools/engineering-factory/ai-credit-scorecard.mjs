@@ -121,8 +121,15 @@ function invalidScorecard(reason) {
     valid: false,
     shadow: true,
     readOnly: true,
+    autonomousClaimEligible: false,
     reason
   });
+}
+
+function addSafeInt(sums, key, delta) {
+  if (sums[key] > Number.MAX_SAFE_INTEGER - delta) return false;
+  sums[key] += delta;
+  return true;
 }
 
 function resolveThresholds(raw) {
@@ -253,6 +260,7 @@ function aggregateProxyScorecard(input) {
     aiCreditsUsdCents: null,
     aiCreditsPerAcceptedOutcome: null,
     incrementalBilledUsdCents: null,
+    confirmedIncrementalBilledUsdCents: null,
     estimatedOrMissingCount: null,
     cloudSandboxMinutes: null,
     actionsRunnerMinutes: null,
@@ -271,6 +279,8 @@ function aggregateProxyScorecard(input) {
     }),
     auditTraceability: Object.freeze({
       totalActions: 0,
+      observedAuditActions: 0,
+      auditComplete: false,
       fullProvenanceActions: 0,
       provenanceCompletenessPct: null,
       killSwitchTrips: null,
@@ -330,13 +340,14 @@ function buildRankedBottlenecks(metrics, thresholds) {
       severityScore: 920
     });
   }
-  if (metrics.incrementalBilledUsdCents !== null && metrics.incrementalBilledUsdCents > 0) {
+  if (metrics.confirmedIncrementalBilledUsdCents !== null &&
+      metrics.confirmedIncrementalBilledUsdCents > 0) {
     candidates.push({
       id: 'incremental-billed-spend',
       category: 'ai-credit-efficiency',
       suggestedScope: 'factory-velocity',
       metric: 'incrementalBilledUsdCents',
-      observedValue: metrics.incrementalBilledUsdCents,
+      observedValue: metrics.confirmedIncrementalBilledUsdCents,
       thresholdValue: 0,
       severityScore: 900
     });
@@ -447,19 +458,21 @@ export function buildAiCreditAndAutonomyScorecard(input) {
   let totalActions = 0;
   let acceptedActionRows = 0;
   let estimatedOrMissingCount = 0;
-  let sumAiCredits = 0;
-  let sumIncrementalCents = 0;
-  let sumSandboxMinutes = 0;
   let missingSandboxCount = 0;
-  let sumRunnerMinutes = 0;
   let missingRunnerCount = 0;
-  let sumSupersteps = 0;
-  let sumCheckpointResumes = 0;
-  let sumInnerRepairs = 0;
   let missingMafCount = 0;
   let fullProvenanceActions = 0;
   let killSwitchTrips = 0;
   let missingAuditCount = 0;
+  const sums = {
+    aiCredits: 0,
+    incrementalCents: 0,
+    sandboxMinutes: 0,
+    runnerMinutes: 0,
+    supersteps: 0,
+    checkpointResumes: 0,
+    innerRepairs: 0
+  };
   const violationCounts = Object.fromEntries(KNOWN_VIOLATION_CODES.map(code => [code, 0]));
 
   for (const row of input.records) {
@@ -502,12 +515,20 @@ export function buildAiCreditAndAutonomyScorecard(input) {
     if (row.accounting === null || row.accounting.status !== 'verified') {
       estimatedOrMissingCount++;
     } else {
-      sumAiCredits += row.accounting.aiCredits;
-      sumIncrementalCents += row.accounting.incrementalBilledUsdCents;
-      if (row.accounting.cloudSandboxMinutes === null) missingSandboxCount++;
-      else sumSandboxMinutes += row.accounting.cloudSandboxMinutes;
-      if (row.accounting.actionsRunnerMinutes === null) missingRunnerCount++;
-      else sumRunnerMinutes += row.accounting.actionsRunnerMinutes;
+      if (!addSafeInt(sums, 'aiCredits', row.accounting.aiCredits) ||
+          !addSafeInt(sums, 'incrementalCents', row.accounting.incrementalBilledUsdCents)) {
+        return invalidScorecard('UNSAFE_AGGREGATE_TOTAL');
+      }
+      if (row.accounting.cloudSandboxMinutes === null) {
+        missingSandboxCount++;
+      } else if (!addSafeInt(sums, 'sandboxMinutes', row.accounting.cloudSandboxMinutes)) {
+        return invalidScorecard('UNSAFE_AGGREGATE_TOTAL');
+      }
+      if (row.accounting.actionsRunnerMinutes === null) {
+        missingRunnerCount++;
+      } else if (!addSafeInt(sums, 'runnerMinutes', row.accounting.actionsRunnerMinutes)) {
+        return invalidScorecard('UNSAFE_AGGREGATE_TOTAL');
+      }
     }
 
     if (row.ghAwQueueLatencyMs === null) queueUnknownCount++;
@@ -515,10 +536,10 @@ export function buildAiCreditAndAutonomyScorecard(input) {
 
     if (row.maf === null) {
       missingMafCount++;
-    } else {
-      sumSupersteps += row.maf.supersteps;
-      sumCheckpointResumes += row.maf.checkpointResumes;
-      sumInnerRepairs += row.maf.innerRepairIterations;
+    } else if (!addSafeInt(sums, 'supersteps', row.maf.supersteps) ||
+        !addSafeInt(sums, 'checkpointResumes', row.maf.checkpointResumes) ||
+        !addSafeInt(sums, 'innerRepairs', row.maf.innerRepairIterations)) {
+      return invalidScorecard('UNSAFE_AGGREGATE_TOTAL');
     }
 
     if (row.audit === null) {
@@ -535,16 +556,19 @@ export function buildAiCreditAndAutonomyScorecard(input) {
   queueDurations.sort((a, b) => a - b);
 
   const acceptedOutcomes = acceptedWorkUnits.size;
+  const verifiedAccountingCount = totalActions - estimatedOrMissingCount;
   const accountingComplete = totalActions > 0 && estimatedOrMissingCount === 0;
-  const aiCreditsTotal = accountingComplete ? sumAiCredits : null;
+  const aiCreditsTotal = accountingComplete ? sums.aiCredits : null;
   const aiCreditsUsdCents = aiCreditsTotal === null ? null : aiCreditsTotal * AI_CREDIT_USD_CENTS;
-  const incrementalBilledUsdCents = accountingComplete ? sumIncrementalCents : null;
+  const incrementalBilledUsdCents = accountingComplete ? sums.incrementalCents : null;
+  const confirmedIncrementalBilledUsdCents =
+    verifiedAccountingCount > 0 ? sums.incrementalCents : null;
   const aiCreditsPerAcceptedOutcome =
     accountingComplete && acceptedOutcomes > 0 ? aiCreditsTotal / acceptedOutcomes : null;
   const cloudSandboxMinutes =
-    accountingComplete && missingSandboxCount === 0 ? sumSandboxMinutes : null;
+    accountingComplete && missingSandboxCount === 0 ? sums.sandboxMinutes : null;
   const actionsRunnerMinutes =
-    accountingComplete && missingRunnerCount === 0 ? sumRunnerMinutes : null;
+    accountingComplete && missingRunnerCount === 0 ? sums.runnerMinutes : null;
 
   const ghAwQueueLatencyMs = Object.freeze({
     p50: nearestRank(queueDurations, 0.5),
@@ -554,23 +578,35 @@ export function buildAiCreditAndAutonomyScorecard(input) {
   });
 
   const mafComplete = totalActions > 0 && missingMafCount === 0;
+  let reworkRateBps = null;
+  if (mafComplete) {
+    const reworkBig = (BigInt(sums.innerRepairs) * 20000n + BigInt(sums.supersteps)) /
+      (2n * BigInt(sums.supersteps));
+    if (reworkBig > BigInt(Number.MAX_SAFE_INTEGER)) {
+      return invalidScorecard('UNSAFE_AGGREGATE_TOTAL');
+    }
+    reworkRateBps = Number(reworkBig);
+  }
   const mafTelemetry = Object.freeze({
-    superstepsTotal: mafComplete ? sumSupersteps : null,
-    checkpointResumes: mafComplete ? sumCheckpointResumes : null,
-    innerRepairIterations: mafComplete ? sumInnerRepairs : null,
-    reworkRateBps: mafComplete ? Math.round((sumInnerRepairs * 10000) / sumSupersteps) : null,
+    superstepsTotal: mafComplete ? sums.supersteps : null,
+    checkpointResumes: mafComplete ? sums.checkpointResumes : null,
+    innerRepairIterations: mafComplete ? sums.innerRepairs : null,
+    reworkRateBps,
     missingCount: missingMafCount
   });
 
-  const auditComplete = missingAuditCount === 0;
+  const observedAuditCount = totalActions - missingAuditCount;
+  const auditComplete = observedAuditCount === totalActions;
   const provenanceCompletenessPct =
     totalActions === 0 || !auditComplete ? null : (fullProvenanceActions * 100) / totalActions;
   const auditTraceability = Object.freeze({
     totalActions,
+    observedAuditActions: observedAuditCount,
+    auditComplete,
     fullProvenanceActions,
     provenanceCompletenessPct,
-    killSwitchTrips: totalActions > 0 && auditComplete ? killSwitchTrips : null,
-    violationCounts: totalActions > 0 && auditComplete ? Object.freeze(violationCounts) : null
+    killSwitchTrips: observedAuditCount > 0 ? killSwitchTrips : null,
+    violationCounts: observedAuditCount > 0 ? Object.freeze(violationCounts) : null
   });
 
   const assembled = {
@@ -580,6 +616,7 @@ export function buildAiCreditAndAutonomyScorecard(input) {
     aiCreditsUsdCents,
     aiCreditsPerAcceptedOutcome,
     incrementalBilledUsdCents,
+    confirmedIncrementalBilledUsdCents,
     estimatedOrMissingCount,
     cloudSandboxMinutes,
     actionsRunnerMinutes,
