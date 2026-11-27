@@ -1,0 +1,945 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {
+  ASPIRE_FAILURE_CATEGORIES,
+  ASPIRE_STAGE_KEYS,
+  FAST_FEEDBACK_STRETCH_MS,
+  LANE_TARGET_MS,
+  MANDATORY_CI_CHECK_CONTEXTS,
+  MAX_AUTO_REPAIR_ATTEMPTS,
+  PINNED_CI_TOOLCHAIN,
+  STANDARD_CI_P50_TARGET_MS,
+  WINDOWS_ASPIRE_RUNTIME_PROVISIONAL_TARGET_MS,
+  analyzeAspireRuntimeStages,
+  buildExactInputCacheManifest,
+  buildMafBoundedRepairHandoff,
+  evaluateCiCriticalPath
+} from '../../tools/engineering-factory/ci-stage-benchmark.mjs';
+import {defaultSoftwareFactoryTestInventory} from '../../tools/engineering-factory/contract-routing.mjs';
+import {hashLockedContent} from '../../tools/engineering-factory/locked-build-cache.mjs';
+
+const SHA_A = 'a'.repeat(40);
+const SHA_B = 'b'.repeat(40);
+const SHA_C = 'c'.repeat(40);
+const SHA_D = 'd'.repeat(40);
+const SHA_E = 'e'.repeat(40);
+const SHA_F = 'f'.repeat(40);
+
+function makePassingChecks(headSha, eventAtMs = 1_000, timings = {}) {
+  const {
+    linuxBuildEnd = 52_000,
+    coverageQueued = 24_000,
+    coverageStart = 25_500,
+    coverageEnd = 31_000,
+    linuxStart = 3_000,
+    windowsStart = 5_000,
+    windowsEnd = 62_000,
+    securityStart = 4_000,
+    securityEnd = 58_000
+  } = timings;
+  return [
+    {
+      context: 'build-test',
+      lane: 'linux',
+      headSha,
+      conclusion: 'success',
+      queuedAtMs: eventAtMs,
+      startedAtMs: eventAtMs + linuxStart,
+      completedAtMs: eventAtMs + linuxBuildEnd
+    },
+    {
+      context: 'upload-coverage-javascript',
+      lane: 'linux',
+      headSha,
+      conclusion: 'success',
+      queuedAtMs: eventAtMs + coverageQueued,
+      startedAtMs: eventAtMs + coverageStart,
+      completedAtMs: eventAtMs + coverageEnd
+    },
+    {
+      context: 'windows-aspire-runtime',
+      lane: 'windows',
+      headSha,
+      conclusion: 'success',
+      queuedAtMs: eventAtMs,
+      startedAtMs: eventAtMs + windowsStart,
+      completedAtMs: eventAtMs + windowsEnd
+    },
+    {
+      context: 'CodeQL',
+      lane: 'security',
+      headSha,
+      conclusion: 'success',
+      queuedAtMs: eventAtMs,
+      startedAtMs: eventAtMs + securityStart,
+      completedAtMs: eventAtMs + securityEnd
+    }
+  ];
+}
+
+test('exported SLO constants and mandatory gate contracts match engineering standards', () => {
+  assert.equal(STANDARD_CI_P50_TARGET_MS, 75_000);
+  assert.equal(FAST_FEEDBACK_STRETCH_MS, 30_000);
+  assert.equal(LANE_TARGET_MS, 65_000);
+  assert.equal(WINDOWS_ASPIRE_RUNTIME_PROVISIONAL_TARGET_MS, 120_000);
+  assert.equal(MAX_AUTO_REPAIR_ATTEMPTS, 2);
+  assert.deepEqual(MANDATORY_CI_CHECK_CONTEXTS, [
+    'build-test',
+    'upload-coverage-javascript',
+    'windows-aspire-runtime',
+    'CodeQL'
+  ]);
+  assert.equal(ASPIRE_STAGE_KEYS.length, 8);
+  assert.equal(ASPIRE_FAILURE_CATEGORIES.length, 8);
+  assert.deepEqual(PINNED_CI_TOOLCHAIN, {
+    node: '26.13.1',
+    dotnet: '10.0.404',
+    aspireCli: '17.0.0'
+  });
+});
+
+test('evaluateCiCriticalPath computes max(endMs) - eventAtMs across parallel lanes, separates cold/warm cohorts, and never treats <75s as a timeout or gate waiver', () => {
+  const runs = [
+    {
+      runId: 'warm-fast-1',
+      headSha: SHA_A,
+      cacheCohort: 'warm',
+      eventAtMs: 1_000,
+      independentReviewAtMs: 1_000 + 95_000,
+      independentReviewHeadSha: SHA_A,
+      checks: [
+        ...makePassingChecks(SHA_A, 1_000, {
+          linuxStart: 2_000,
+          linuxBuildEnd: 26_000,
+          coverageQueued: 18_000,
+          coverageStart: 19_000,
+          coverageEnd: 24_000,
+          windowsStart: 3_000,
+          windowsEnd: 29_000,
+          securityStart: 2_500,
+          securityEnd: 28_000
+        }),
+        {
+          context: 'optional-advisory',
+          lane: 'linux',
+          headSha: SHA_A,
+          conclusion: 'skipped',
+          queuedAtMs: 1_000,
+          startedAtMs: null,
+          completedAtMs: null
+        }
+      ]
+    },
+    {
+      runId: 'warm-pass-2',
+      headSha: SHA_B,
+      cacheCohort: 'warm',
+      eventAtMs: 10_000,
+      independentReviewAtMs: 10_000 + 80_000,
+      independentReviewHeadSha: SHA_A, // stale review head -> ignored for independentReviewMs
+      checks: makePassingChecks(SHA_B, 10_000, {
+        linuxStart: 2_000,
+        linuxBuildEnd: 52_000,
+        windowsStart: 6_000,
+        windowsEnd: 63_000,
+        securityStart: 3_000,
+        securityEnd: 59_000
+      })
+    },
+    {
+      runId: 'cold-boundary-miss-75s',
+      headSha: SHA_C,
+      cacheCohort: 'cold',
+      eventAtMs: 0,
+      independentReviewAtMs: null,
+      checks: makePassingChecks(SHA_C, 0, {
+        linuxStart: 4_000,
+        linuxBuildEnd: 68_000, // exceeds 65s lane target
+        windowsStart: 7_000,
+        windowsEnd: 75_000, // exact 75_000ms misses strict <75_000ms SLO!
+        securityStart: 3_000,
+        securityEnd: 61_000
+      })
+    },
+    {
+      runId: 'cold-failed-1',
+      headSha: SHA_D,
+      cacheCohort: 'cold',
+      eventAtMs: 5_000,
+      attempt: 1,
+      checks: [
+        ...makePassingChecks(SHA_D, 5_000).slice(0, 3),
+        {
+          context: 'CodeQL',
+          lane: 'security',
+          headSha: SHA_D,
+          conclusion: 'cancelled',
+          queuedAtMs: 5_000,
+          startedAtMs: 7_000,
+          completedAtMs: 25_000
+        }
+      ]
+    },
+    {
+      runId: 'warm-retry-sha-d',
+      headSha: SHA_D, // same-head retry after cold-failed-1
+      cacheCohort: 'warm',
+      eventAtMs: 50_000,
+      attempt: 2,
+      checks: makePassingChecks(SHA_D, 50_000, {
+        linuxStart: 2_000,
+        linuxBuildEnd: 48_000,
+        windowsStart: 4_000,
+        windowsEnd: 55_000,
+        securityStart: 3_000,
+        securityEnd: 50_000
+      })
+    },
+    {
+      runId: 'cold-missing-mandatory',
+      headSha: SHA_E,
+      cacheCohort: 'cold',
+      eventAtMs: 0,
+      attempt: 3, // standalone attempt=3 -> 2 prior same-head retries
+      checks: makePassingChecks(SHA_E, 0).slice(0, 3) // missing CodeQL
+    },
+    {
+      runId: 'warm-head-mismatch',
+      headSha: SHA_F,
+      cacheCohort: 'warm',
+      eventAtMs: 0,
+      checks: [
+        ...makePassingChecks(SHA_F, 0).slice(0, 3),
+        {
+          context: 'CodeQL',
+          lane: 'security',
+          headSha: SHA_A, // wrong headSha -> ineligible
+          conclusion: 'success',
+          queuedAtMs: 0,
+          startedAtMs: 2_000,
+          completedAtMs: 40_000
+        }
+      ]
+    }
+  ];
+
+  const report = evaluateCiCriticalPath(runs);
+  assert.equal(report.valid, true);
+  assert.equal(report.reason, 'CI_CRITICAL_PATH_EVALUATED');
+  assert.equal(report.sloIsTimeoutOrGateWaiver, false);
+  assert.equal(report.fullVerificationRequired, true);
+  assert.equal(report.skipRequiredChecks, false);
+
+  // Parallel sum on warm-fast-1 would be 26k + 29k + 28k = 83k; max(end) - eventAtMs is 29_000ms!
+  const warmFast = report.runs[0];
+  assert.equal(warmFast.eligibleSample, true);
+  assert.equal(warmFast.eventToLastRequiredCheckMs, 29_000);
+  assert.equal(warmFast.firstJobStartToLastCheckMs, 27_000);
+  assert.equal(warmFast.runnerQueueWaitMs, 3_000);
+  assert.equal(warmFast.independentReviewMs, 95_000);
+  assert.equal(warmFast.mergeReadinessCriticalPathMs, 95_000);
+  assert.equal(warmFast.meetsStandardSlo, true);
+  assert.equal(warmFast.meetsFastFeedbackStretch, true);
+
+  // Stale review head on warm-pass-2 yields independentReviewMs: null
+  const warmPass2 = report.runs[1];
+  assert.equal(warmPass2.eventToLastRequiredCheckMs, 63_000);
+  assert.equal(warmPass2.independentReviewMs, null);
+  assert.equal(warmPass2.mergeReadinessCriticalPathMs, null);
+
+  // Exact 75_000ms run is still an eligible sample (never waived or timed out!) and increments sloMissCount
+  const coldSlow = report.runs[2];
+  assert.equal(coldSlow.eligibleSample, true);
+  assert.equal(coldSlow.gateWaived, false);
+  assert.equal(coldSlow.cancelledBySlo, false);
+  assert.equal(coldSlow.eventToLastRequiredCheckMs, 75_000);
+  assert.equal(coldSlow.meetsStandardSlo, false);
+  assert.equal(coldSlow.lanes.linux.meetsTarget, false);
+  assert.equal(coldSlow.lanes.windows.meetsTarget, false);
+  assert.equal(coldSlow.lanes.security.meetsTarget, true);
+
+  // Cohort separation: warm has 3 eligible (29_000, 55_000, 63_000), cold has 1 eligible (75_000)
+  assert.equal(report.sampleCount, 4);
+  assert.equal(report.p50Ms, 55_000);
+  assert.equal(report.p95Ms, 75_000);
+  assert.equal(report.p50MeetsStandardTarget, true);
+  assert.equal(report.p50MeetsStretchTarget, false);
+  assert.equal(report.sloMissCount, 1);
+  assert.equal(report.failedOrCancelledCount, 1);
+  assert.equal(report.incompleteOrMismatchedCount, 2);
+  assert.equal(report.sameHeadRetryCount, 3); // 1 on SHA_D + 2 on SHA_E
+
+  assert.equal(report.cohorts.warm.sampleCount, 3);
+  assert.equal(report.cohorts.warm.p50Ms, 55_000);
+  assert.equal(report.cohorts.warm.p95Ms, 63_000);
+  assert.equal(report.cohorts.warm.p50MeetsStandardTarget, true);
+  assert.equal(report.cohorts.warm.sloMissCount, 0);
+  assert.equal(report.cohorts.warm.sameHeadRetryCount, 1);
+  assert.equal(report.cohorts.warm.independentReviewMs.sampleCount, 1);
+  assert.equal(report.cohorts.warm.independentReviewMs.p50Ms, 95_000);
+
+  assert.equal(report.cohorts.cold.sampleCount, 1);
+  assert.equal(report.cohorts.cold.p50Ms, 75_000);
+  assert.equal(report.cohorts.cold.p50MeetsStandardTarget, false);
+  assert.equal(report.cohorts.cold.sloMissCount, 1);
+  assert.equal(report.cohorts.cold.failedOrCancelledCount, 1);
+  assert.equal(report.cohorts.cold.incompleteOrMismatchedCount, 1);
+  assert.equal(report.cohorts.cold.sameHeadRetryCount, 2);
+  assert.equal(report.cohorts.cold.lanes.linux.targetMissCount, 1);
+  assert.equal(report.cohorts.cold.lanes.windows.targetMissCount, 1);
+  assert.equal(report.cohorts.cold.lanes.security.targetMissCount, 0);
+});
+
+test('evaluateCiCriticalPath fails closed on proxies, non-plain objects, non-data descriptors, duplicates, and malformed checks', () => {
+  const validRun = {
+    runId: 'run-1',
+    headSha: SHA_A,
+    cacheCohort: 'warm',
+    eventAtMs: 1_000,
+    checks: makePassingChecks(SHA_A, 1_000)
+  };
+  const proxyArray = new Proxy([validRun], {
+    get() {
+      throw new Error('proxy trap must not execute');
+    }
+  });
+  const proxyRun = new Proxy(validRun, {
+    get() {
+      throw new Error('proxy trap must not execute');
+    }
+  });
+  const getterRun = {...validRun};
+  Object.defineProperty(getterRun, 'headSha', {
+    enumerable: true,
+    get() {
+      throw new Error('getter must not execute');
+    }
+  });
+  const hiddenPropRun = {...validRun};
+  Object.defineProperty(hiddenPropRun, 'hidden', {value: 1, enumerable: false});
+  const symbolRun = {...validRun, [Symbol('extra')]: true};
+  const nonEnumArrayItem = [validRun];
+  Object.defineProperty(nonEnumArrayItem, '0', {value: validRun, enumerable: false});
+  const extraArrayKey = [validRun];
+  extraArrayKey.extra = true;
+
+  for (const badRuns of [
+    null,
+    {},
+    [],
+    proxyArray,
+    new Array(1),
+    nonEnumArrayItem,
+    extraArrayKey,
+    Object.setPrototypeOf([validRun], {})
+  ]) {
+    const res = evaluateCiCriticalPath(badRuns);
+    assert.equal(res.valid, false);
+    assert.equal(res.reason, 'RUNS_INVALID');
+    assert.equal(res.sloIsTimeoutOrGateWaiver, false);
+  }
+
+  for (const badRun of [
+    null,
+    [],
+    proxyRun,
+    Object.create(validRun),
+    getterRun,
+    hiddenPropRun,
+    symbolRun,
+    {...validRun, extraKey: 'forbidden'},
+    {...validRun, attempt: undefined},
+    {...validRun, runId: 'bad id!'},
+    {...validRun, headSha: 'bad'},
+    {...validRun, cacheCohort: 'lukewarm'},
+    {...validRun, eventAtMs: -1},
+    {...validRun, attempt: 0},
+    {...validRun, attempt: 21},
+    {...validRun, independentReviewAtMs: 500}, // before eventAtMs
+    {...validRun, independentReviewAtMs: '2000'},
+    {...validRun, independentReviewHeadSha: SHA_A}, // head without timestamp
+    {...validRun, independentReviewAtMs: 2_000, independentReviewHeadSha: 'bad'},
+    {...validRun, checks: []},
+    {
+      ...validRun,
+      checks: [{...makePassingChecks(SHA_A, 1_000)[0], queuedAtMs: 500}] // queued before eventAtMs
+    },
+    {
+      ...validRun,
+      checks: [{...makePassingChecks(SHA_A, 1_000)[0], startedAtMs: null, completedAtMs: null}] // success cannot have null start
+    },
+    {
+      ...validRun,
+      checks: [{...makePassingChecks(SHA_A, 1_000)[0], completedAtMs: 2_000}] // completed before started
+    },
+    {
+      ...validRun,
+      checks: [{
+        ...makePassingChecks(SHA_A, 1_000)[0],
+        conclusion: 'cancelled',
+        startedAtMs: 4_000,
+        completedAtMs: 3_000 // completed before started on non-success
+      }]
+    },
+    {
+      ...validRun,
+      checks: [{
+        ...makePassingChecks(SHA_A, 1_000)[0],
+        conclusion: 'cancelled',
+        startedAtMs: 4_000,
+        completedAtMs: null // half-null timestamps
+      }]
+    }
+  ]) {
+    assert.equal(evaluateCiCriticalPath([badRun]).reason, 'INVALID_RUN');
+  }
+
+  assert.equal(
+    evaluateCiCriticalPath([validRun, {...validRun, headSha: SHA_B}]).reason,
+    'DUPLICATE_RUN_ID'
+  );
+  assert.equal(
+    evaluateCiCriticalPath([{
+      ...validRun,
+      checks: [{...makePassingChecks(SHA_A, 1_000)[0], lane: 'windows'}]
+    }]).reason,
+    'INVALID_CHECK_LANE'
+  );
+  assert.equal(
+    evaluateCiCriticalPath([{
+      ...validRun,
+      checks: [makePassingChecks(SHA_A, 1_000)[0], makePassingChecks(SHA_A, 1_000)[0]]
+    }]).reason,
+    'DUPLICATE_CHECK_CONTEXT'
+  );
+});
+
+test('analyzeAspireRuntimeStages decomposes Linux/Windows stages, flags dominant bottleneck, checks <120s Windows target, and classifies all 8 failure categories without raw logs', () => {
+  const baseWin = {
+    platform: 'windows',
+    headSha: SHA_A,
+    runnerEnvironment: 'github-hosted',
+    outcome: 'succeeded',
+    queueWaitMs: 6_000,
+    setupMs: 8_000,
+    restoreBuildMs: 44_000,
+    certificateExportMs: 3_000,
+    appHostStartupMs: 21_000,
+    syntheticWorkloadMs: 9_000,
+    exportVerifyMs: 7_000,
+    stopCleanupMs: 4_000
+  };
+
+  const winOk = analyzeAspireRuntimeStages(baseWin);
+  assert.equal(winOk.valid, true);
+  assert.equal(winOk.reason, 'ASPIRE_RUNTIME_STAGES_ANALYZED');
+  assert.equal(winOk.queueWaitMs, 6_000);
+  assert.equal(winOk.runtimeExecutionMs, 96_000);
+  assert.equal(winOk.totalWallMs, 102_000);
+  assert.equal(winOk.dominantStage, 'restoreBuildMs');
+  assert.equal(winOk.dominantStageMs, 44_000);
+  assert.equal(winOk.meetsWindowsProvisionalTarget, true);
+  assert.equal(winOk.meetsLaneTarget, false);
+  assert.equal(winOk.failureCategory, null);
+  assert.equal(winOk.tlsVerificationRequired, true);
+
+  // Provisional target is strict < 120_000ms on runtimeExecutionMs (queueWaitMs excluded from runtimeExecutionMs)
+  const winExact120s = analyzeAspireRuntimeStages({
+    ...baseWin,
+    restoreBuildMs: 68_000 // runtimeExecutionMs becomes exact 120_000ms
+  });
+  assert.equal(winExact120s.runtimeExecutionMs, 120_000);
+  assert.equal(winExact120s.meetsWindowsProvisionalTarget, false);
+
+  const linuxFast = analyzeAspireRuntimeStages({
+    ...baseWin,
+    platform: 'linux',
+    queueWaitMs: 2_000,
+    setupMs: 5_000,
+    restoreBuildMs: 14_000,
+    certificateExportMs: 1_000,
+    appHostStartupMs: 16_000,
+    syntheticWorkloadMs: 6_000,
+    exportVerifyMs: 4_000,
+    stopCleanupMs: 2_000
+  });
+  assert.equal(linuxFast.meetsWindowsProvisionalTarget, null);
+  assert.equal(linuxFast.meetsLaneTarget, true);
+  assert.equal(linuxFast.dominantStage, 'appHostStartupMs');
+  assert.equal(linuxFast.dominantStageMs, 16_000);
+
+  // Verify all 8 sanitized failure categories via bounded failureCode and stage-based fallback
+  const codeCases = [
+    ['tls-or-certificate', 'tls-or-certificate'],
+    ['dashboard-401', 'authentication'],
+    ['invalid-cli-option', 'arguments'],
+    ['sharing-violation', 'file-access'],
+    ['apphost-start-timeout', 'startup-timeout'],
+    ['nuget-restore-failed', 'restore-build'],
+    ['metric-receipt-missing', 'export-receipt'],
+    ['unclassified', 'unclassified']
+  ];
+  for (const [failureCode, expectedCategory] of codeCases) {
+    const res = analyzeAspireRuntimeStages({
+      ...baseWin,
+      outcome: 'failed',
+      syntheticWorkloadMs: null,
+      exportVerifyMs: null,
+      failureCode
+    });
+    assert.equal(res.valid, true);
+    assert.equal(res.failureCategory, expectedCategory);
+    assert.equal(res.meetsWindowsProvisionalTarget, false);
+    assert.equal(res.meetsLaneTarget, false);
+  }
+
+  // Stage-inferred categories when failureCode is omitted/null, plus cancelled-in-queue (all active stages null)
+  const inferredCases = [
+    [{outcome: 'failed', failedStage: 'certificateExportMs', failureCode: null}, 'tls-or-certificate'],
+    [{outcome: 'timed-out', failedStage: 'appHostStartupMs'}, 'startup-timeout'],
+    [{outcome: 'failed', failedStage: 'restoreBuildMs'}, 'restore-build'],
+    [{outcome: 'failed', failedStage: 'exportVerifyMs'}, 'export-receipt'],
+    [{outcome: 'cancelled', failedStage: 'setupMs'}, 'unclassified']
+  ];
+  for (const [overrides, expectedCategory] of inferredCases) {
+    const res = analyzeAspireRuntimeStages({...baseWin, ...overrides});
+    assert.equal(res.failureCategory, expectedCategory);
+  }
+
+  const cancelledInQueue = analyzeAspireRuntimeStages({
+    platform: 'windows',
+    headSha: SHA_A,
+    runnerEnvironment: 'github-hosted',
+    outcome: 'cancelled',
+    queueWaitMs: 15_000,
+    setupMs: null,
+    restoreBuildMs: null,
+    certificateExportMs: null,
+    appHostStartupMs: null,
+    syntheticWorkloadMs: null,
+    exportVerifyMs: null,
+    stopCleanupMs: null
+  });
+  assert.equal(cancelledInQueue.valid, true);
+  assert.equal(cancelledInQueue.dominantStage, null);
+  assert.equal(cancelledInQueue.dominantStageMs, null);
+  assert.equal(cancelledInQueue.runtimeExecutionMs, 0);
+  assert.equal(cancelledInQueue.failureCategory, 'unclassified');
+
+  // Reject raw logs, tokens, URLs, PEM blocks, self-hosted runners, and contradictory outcomes
+  for (const secretOrRawLog of [
+    'https://127.0.0.1:18888/login?t=secret-token',
+    '-----BEGIN CERTIFICATE-----',
+    'Error: SSL trust chain failed',
+    'unknown-custom-code'
+  ]) {
+    const rejected = analyzeAspireRuntimeStages({
+      ...baseWin,
+      outcome: 'failed',
+      failureCode: secretOrRawLog
+    });
+    assert.equal(rejected.valid, false);
+    assert.equal(rejected.reason, 'UNSAFE_DIAGNOSTIC_REJECTED');
+    assert.equal(JSON.stringify(rejected).includes(secretOrRawLog), false);
+  }
+
+  assert.equal(
+    analyzeAspireRuntimeStages({...baseWin, runnerEnvironment: 'self-hosted'}).reason,
+    'UNSUPPORTED_RUNNER_ENVIRONMENT'
+  );
+  assert.equal(
+    analyzeAspireRuntimeStages({...baseWin, failureCode: 'arguments'}).reason,
+    'CONTRADICTORY_OUTCOME'
+  );
+  assert.equal(
+    analyzeAspireRuntimeStages({...baseWin, failedStage: 'setupMs'}).reason,
+    'CONTRADICTORY_OUTCOME'
+  );
+
+  for (const invalidSample of [
+    null,
+    [],
+    new Proxy(baseWin, {get() { throw new Error('must not run'); }}),
+    {...baseWin, rawLogs: 'secret output'},
+    {...baseWin, platform: 'darwin'},
+    {...baseWin, headSha: 'bad'},
+    {...baseWin, outcome: 'unknown'},
+    {...baseWin, queueWaitMs: -1},
+    {...baseWin, setupMs: null}, // succeeded cannot have null active stage
+    {...baseWin, outcome: 'failed', setupMs: -5},
+    {...baseWin, outcome: 'failed', setupMs: 3_600_001},
+    {...baseWin, outcome: 'failed', failedStage: 'queueWaitMs'}
+  ]) {
+    assert.equal(analyzeAspireRuntimeStages(invalidSample).reason, 'STAGE_SAMPLE_INVALID');
+  }
+});
+
+function makeManifestInput(overrides = {}) {
+  return {
+    repositoryId: 1471342715,
+    repository: 'Jamula/SoftwareFactory',
+    trustedSource: true,
+    isFork: false,
+    branchProtected: false,
+    os: 'linux',
+    arch: 'x64',
+    toolchain: {
+      node: '26.13.1',
+      dotnet: '10.0.404',
+      aspireCli: '17.0.0'
+    },
+    packageLockSha256: hashLockedContent('{"name":"softwarefactory","lockfileVersion":3}'),
+    globalJsonSha256: hashLockedContent('{"sdk":{"version":"10.0.404","rollForward":"disable"}}'),
+    appHostSha256: hashLockedContent('#:package Aspire.Hosting.AppHost@17.0.0'),
+    ...overrides
+  };
+}
+
+test('buildExactInputCacheManifest derives deterministic SHA-256 keys, enforces fork/protected write isolation, and invalidates reuse fail-closed on any digest mismatch', () => {
+  const linuxPr = buildExactInputCacheManifest(makeManifestInput());
+  const winMain = buildExactInputCacheManifest(makeManifestInput({
+    os: 'windows',
+    branchProtected: true,
+    nugetLockSha256: '4'.repeat(64),
+    packageJsonSha256: hashLockedContent('{"name":"softwarefactory","private":true}')
+  }));
+  const win32Alias = buildExactInputCacheManifest(makeManifestInput({
+    os: 'win32',
+    branchProtected: true,
+    nugetLockSha256: '4'.repeat(64),
+    packageJsonSha256: hashLockedContent('{"name":"softwarefactory","private":true}')
+  }));
+
+  assert.equal(linuxPr.valid, true);
+  assert.equal(linuxPr.reason, 'EXACT_CACHE_MANIFEST_BUILT');
+  assert.equal(linuxPr.rid, 'linux-x64');
+  assert.equal(linuxPr.allowProtectedCacheWrite, false); // PR branch cannot write to protected scope
+  assert.equal(linuxPr.fullVerificationRequired, true);
+  assert.equal(linuxPr.skipRequiredChecks, false);
+  assert.match(linuxPr.keys.npm, /^sf-npm-v1-linux-x64-node-26\.13\.1-[a-f0-9]{64}$/);
+  assert.match(linuxPr.keys.nuget, /^sf-nuget-v1-linux-x64-dotnet-10\.0\.404-release-[a-f0-9]{64}$/);
+  assert.match(linuxPr.keys['aspire-cli'], /^sf-aspire-cli-v1-linux-x64-aspire-17\.0\.0-[a-f0-9]{64}$/);
+  assert.equal(linuxPr.entries.nuget.nugetLockBound, false);
+
+  assert.equal(winMain.valid, true);
+  assert.equal(winMain.rid, 'win-x64');
+  assert.equal(winMain.allowProtectedCacheWrite, true); // non-fork protected branch allowed
+  assert.equal(winMain.entries.nuget.nugetLockBound, true);
+  assert.deepEqual(winMain, win32Alias);
+
+  // Every input digest rotation changes its exact target key deterministically
+  const lockChanged = buildExactInputCacheManifest(makeManifestInput({packageLockSha256: '1'.repeat(64)}));
+  assert.notEqual(lockChanged.keys.npm, linuxPr.keys.npm);
+  assert.equal(lockChanged.keys.nuget, linuxPr.keys.nuget);
+
+  const globalChanged = buildExactInputCacheManifest(makeManifestInput({globalJsonSha256: '2'.repeat(64)}));
+  assert.notEqual(globalChanged.keys.nuget, linuxPr.keys.nuget);
+  assert.notEqual(globalChanged.keys['aspire-cli'], linuxPr.keys['aspire-cli']);
+
+  const appHostChanged = buildExactInputCacheManifest(makeManifestInput({appHostSha256: '3'.repeat(64)}));
+  assert.notEqual(appHostChanged.keys.nuget, linuxPr.keys.nuget);
+  assert.equal(appHostChanged.keys.npm, linuxPr.keys.npm);
+
+  const nugetLockAdded = buildExactInputCacheManifest(makeManifestInput({nugetLockSha256: '5'.repeat(64)}));
+  assert.notEqual(nugetLockAdded.keys.nuget, linuxPr.keys.nuget);
+
+  // Observed cache verification succeeds only when writer is non-fork protected and digests match
+  const makeObserved = (manifest, target, overrides = {}) => ({
+    key: manifest.entries[target].key,
+    inputSha256: manifest.entries[target].inputSha256,
+    expectedArtifactSha256: '9'.repeat(64),
+    observedArtifactSha256: '9'.repeat(64),
+    writerRepositoryId: 1471342715,
+    writerRepository: 'Jamula/SoftwareFactory',
+    writerTrusted: true,
+    writerIsFork: false,
+    writerBranchProtected: true,
+    cleanLayout: true,
+    ...overrides
+  });
+
+  const verifiedManifest = buildExactInputCacheManifest(makeManifestInput({
+    nugetLockSha256: '5'.repeat(64),
+    observedCache: {
+      npm: makeObserved(nugetLockAdded, 'npm'),
+      nuget: makeObserved(nugetLockAdded, 'nuget'),
+      'aspire-cli': makeObserved(nugetLockAdded, 'aspire-cli')
+    }
+  }));
+  assert.equal(verifiedManifest.valid, true);
+  assert.equal(verifiedManifest.reason, 'EXACT_CACHE_MANIFEST_VERIFIED');
+  assert.equal(verifiedManifest.reuseEligible, true);
+  assert.equal(verifiedManifest.entries.npm.verifiedHit, true);
+  assert.equal(verifiedManifest.entries.nuget.verifiedHit, true);
+  assert.equal(verifiedManifest.entries['aspire-cli'].verifiedHit, true);
+
+  // Partial observedCache (e.g. only npm hit) marks only npm verifiedHit
+  const partialHit = buildExactInputCacheManifest(makeManifestInput({
+    branchProtected: undefined, // test omitted optional branchProtected via delete below
+    observedCache: {npm: makeObserved(linuxPr, 'npm')}
+  }));
+  assert.equal(partialHit.valid, false); // explicit undefined property is rejected!
+  const omittedProtected = makeManifestInput({observedCache: {npm: makeObserved(linuxPr, 'npm')}});
+  delete omittedProtected.branchProtected;
+  const validPartial = buildExactInputCacheManifest(omittedProtected);
+  assert.equal(validPartial.valid, true);
+  assert.equal(validPartial.allowProtectedCacheWrite, false);
+  assert.equal(validPartial.entries.npm.verifiedHit, true);
+  assert.equal(validPartial.entries.nuget.verifiedHit, false);
+
+  // Fork PRs never derive keys or write to protected cache scopes
+  const forkDenied = buildExactInputCacheManifest(makeManifestInput({
+    isFork: true,
+    branchProtected: true
+  }));
+  assert.equal(forkDenied.valid, false);
+  assert.equal(forkDenied.reason, 'UNTRUSTED_PROVENANCE');
+  assert.equal(forkDenied.allowProtectedCacheWrite, false);
+  assert.equal(forkDenied.reuseEligible, false);
+
+  // Digest mismatch on nugetLockSha256 or observed entry invalidates reuse fail-closed
+  const nugetLockMismatch = buildExactInputCacheManifest(makeManifestInput({
+    nugetLockSha256: '6'.repeat(64),
+    observedCache: {nuget: makeObserved(nugetLockAdded, 'nuget')}
+  }));
+  assert.equal(nugetLockMismatch.valid, false);
+  assert.equal(nugetLockMismatch.reason, 'DIGEST_MISMATCH');
+  assert.equal(nugetLockMismatch.reuseEligible, false);
+
+  const keySpoofed = buildExactInputCacheManifest(makeManifestInput({
+    observedCache: {npm: makeObserved(linuxPr, 'npm', {key: 'sf-npm-spoofed'})}
+  }));
+  assert.equal(keySpoofed.valid, false);
+  assert.equal(keySpoofed.reason, 'CACHE_POISONING_DETECTED');
+
+  const forkWriter = buildExactInputCacheManifest(makeManifestInput({
+    observedCache: {npm: makeObserved(linuxPr, 'npm', {writerIsFork: true})}
+  }));
+  assert.equal(forkWriter.valid, false);
+  assert.equal(forkWriter.reason, 'UNTRUSTED_WRITER_PROVENANCE');
+
+  // OS/arch/toolchain drift and invalid digests/inputs fail closed
+  for (const drifted of [
+    makeManifestInput({os: 'darwin'}),
+    makeManifestInput({arch: 'arm64'}),
+    makeManifestInput({toolchain: {...PINNED_CI_TOOLCHAIN, node: '26.13.0'}}),
+    makeManifestInput({toolchain: {...PINNED_CI_TOOLCHAIN, dotnet: '10.0.400'}}),
+    makeManifestInput({toolchain: {...PINNED_CI_TOOLCHAIN, aspireCli: '17.0.1'}})
+  ]) {
+    assert.equal(buildExactInputCacheManifest(drifted).reason, 'TOOLCHAIN_OR_OS_DRIFT');
+  }
+
+  for (const badDigest of [
+    makeManifestInput({packageLockSha256: 'bad'}),
+    makeManifestInput({globalJsonSha256: 'A'.repeat(64)}),
+    makeManifestInput({appHostSha256: 'short'}),
+    makeManifestInput({packageJsonSha256: 'bad'}),
+    makeManifestInput({nugetLockSha256: 'bad'})
+  ]) {
+    assert.equal(buildExactInputCacheManifest(badDigest).reason, 'INVALID_DIGEST');
+  }
+
+  // Explicit null nugetLockSha256 and observedCache: null are accepted cleanly
+  const explicitNulls = buildExactInputCacheManifest(
+    makeManifestInput({nugetLockSha256: null, observedCache: null})
+  );
+  assert.equal(explicitNulls.valid, true);
+  assert.equal(explicitNulls.reuseEligible, false);
+
+  for (const badCache of [
+    makeManifestInput({observedCache: {}}),
+    makeManifestInput({observedCache: []}),
+    makeManifestInput({observedCache: {npm: null}}),
+    makeManifestInput({observedCache: {npm: makeObserved(linuxPr, 'npm', {key: 123})}}),
+    makeManifestInput({observedCache: {npm: makeObserved(linuxPr, 'npm', {key: ''})}}),
+    makeManifestInput({observedCache: {npm: makeObserved(linuxPr, 'npm', {key: 'k'.repeat(201)})}})
+  ]) {
+    assert.equal(buildExactInputCacheManifest(badCache).reason, 'CACHE_ENTRY_UNKNOWN');
+  }
+
+  for (const badInput of [
+    null,
+    [],
+    new Proxy(makeManifestInput(), {get() { throw new Error('must not run'); }}),
+    makeManifestInput({toolchain: null}),
+    makeManifestInput({branchProtected: 'true'})
+  ]) {
+    assert.equal(buildExactInputCacheManifest(badInput).reason, 'MANIFEST_INPUT_INVALID');
+  }
+});
+
+function makeHandoffInput(signal = 'test-failure', failureOverrides = {}, topOverrides = {}) {
+  const baseSha = SHA_A;
+  const headSha = SHA_B;
+  return {
+    repository: 'Jamula/SoftwareFactory',
+    baseSha,
+    headSha,
+    changeEvidence: {
+      repository: 'Jamula/SoftwareFactory',
+      producer: 'trusted-ci',
+      verified: true,
+      complete: true,
+      base: baseSha,
+      head: headSha,
+      paths: ['docs/CI-CONSOLIDATION.md'],
+      testInventory: defaultSoftwareFactoryTestInventory()
+    },
+    failureEvidence: {
+      head: headSha,
+      complete: true,
+      producer: 'trusted-ci',
+      verified: true,
+      signal,
+      transient: false,
+      attempt: 0,
+      retryLimit: 2,
+      repairAttempt: 0,
+      maxRepairAttempts: 2,
+      ...failureOverrides
+    },
+    ...topOverrides
+  };
+}
+
+test('buildMafBoundedRepairHandoff routes test, coverage, dependency, infra, permission, and security signals with maxAttempts <= 2 and mandatoryFullGatesPreserved', () => {
+  // Deterministic repairable categories: test, coverage, dependency, and deterministic stage timeout
+  for (const [signal, expectedCategory, expectedAction] of [
+    ['test-failure', 'test', 'repair-code-or-test'],
+    ['coverage-below-target', 'coverage', 'add-targeted-coverage-tests'],
+    ['npm-lock-mismatch', 'dependency', 'reconcile-locked-dependencies'],
+    ['job-step-timeout', 'infra', 'diagnose-stage-timeout']
+  ]) {
+    const handoff = buildMafBoundedRepairHandoff(
+      makeHandoffInput(signal, {}, {requestedMaxAttempts: 5}) // capped at <= 2!
+    );
+    assert.equal(handoff.valid, true);
+    assert.equal(handoff.reason, 'BOUNDED_REPAIR_HANDOFF_READY');
+    assert.equal(handoff.failureCategory, expectedCategory);
+    assert.equal(handoff.repairAction, expectedAction);
+    assert.equal(handoff.eligibleForAutoRepair, true);
+    assert.equal(handoff.eligibleForTransientRetry, false);
+    assert.equal(handoff.blindRetryRejected, true);
+    assert.equal(handoff.maxAttempts, 2);
+    assert.equal(handoff.remainingAttempts, 2);
+    assert.equal(handoff.mandatoryFullGatesPreserved, true);
+    assert.equal(handoff.fullValidationRequired, true);
+    assert.equal(handoff.skipRequiredChecks, false);
+    assert.equal(handoff.escalateToHuman, false);
+    assert.deepEqual(handoff.fastFeedbackChecks, [
+      'tests/engineering-factory/contract-routing.test.mjs',
+      'tests/engineering-factory/run.test.mjs',
+      'tests/engineering-factory/validation-diagnosis.test.mjs'
+    ]);
+
+    // Exhausted repair budget escalates to human
+    const exhausted = buildMafBoundedRepairHandoff(
+      makeHandoffInput(signal, {repairAttempt: 2, maxRepairAttempts: 2})
+    );
+    assert.equal(exhausted.valid, true);
+    assert.equal(exhausted.reason, 'REPAIR_BUDGET_EXHAUSTED');
+    assert.equal(exhausted.eligibleForAutoRepair, false);
+    assert.equal(exhausted.maxAttempts, 2);
+    assert.equal(exhausted.remainingAttempts, 0);
+    assert.equal(exhausted.mandatoryFullGatesPreserved, true);
+    assert.equal(exhausted.escalateToHuman, true);
+  }
+
+  // Transient infra failure: bounded retry without code mutation, then escalate when exhausted
+  const transientInfra = buildMafBoundedRepairHandoff(
+    makeHandoffInput('runner-lost', {transient: true, attempt: 1, retryLimit: 2}, {requestedMaxAttempts: 10})
+  );
+  assert.equal(transientInfra.valid, true);
+  assert.equal(transientInfra.failureCategory, 'infra');
+  assert.equal(transientInfra.reason, 'TRANSIENT_INFRA_RETRY_HANDOFF');
+  assert.equal(transientInfra.eligibleForAutoRepair, false);
+  assert.equal(transientInfra.eligibleForTransientRetry, true);
+  assert.equal(transientInfra.maxAttempts, 2);
+  assert.equal(transientInfra.remainingAttempts, 1);
+  assert.equal(transientInfra.escalateToHuman, false);
+  assert.equal(transientInfra.mandatoryFullGatesPreserved, true);
+
+  const transientExhausted = buildMafBoundedRepairHandoff(
+    makeHandoffInput('runner-lost', {transient: true, attempt: 2, retryLimit: 2})
+  );
+  assert.equal(transientExhausted.reason, 'INFRA_RETRY_BUDGET_EXHAUSTED');
+  assert.equal(transientExhausted.eligibleForAutoRepair, false);
+  assert.equal(transientExhausted.eligibleForTransientRetry, false);
+  assert.equal(transientExhausted.remainingAttempts, 0);
+  assert.equal(transientExhausted.escalateToHuman, true);
+
+  // Permission and security categories ALWAYS block auto-repair and escalate to human
+  for (const [signal, expectedCategory, expectedReason] of [
+    ['http-403-forbidden', 'permission', 'PERMISSION_BOUNDARY_BLOCKED'],
+    ['codeql-alert', 'security', 'SECURITY_GATE_BLOCKED'],
+    ['tls-or-certificate', 'security', 'SECURITY_GATE_BLOCKED']
+  ]) {
+    const terminal = buildMafBoundedRepairHandoff(makeHandoffInput(signal));
+    assert.equal(terminal.valid, true);
+    assert.equal(terminal.failureCategory, expectedCategory);
+    assert.equal(terminal.reason, expectedReason);
+    assert.equal(terminal.eligibleForAutoRepair, false);
+    assert.equal(terminal.eligibleForTransientRetry, false);
+    assert.equal(terminal.maxAttempts, 0);
+    assert.equal(terminal.remainingAttempts, 0);
+    assert.equal(terminal.mandatoryFullGatesPreserved, true);
+    assert.equal(terminal.escalateToHuman, true);
+  }
+
+  // Newly added ci-stage-benchmark suite and WORKSTATION-COMPATIBILITY doc map cleanly via change graph
+  const newSuite = 'tests/engineering-factory/ci-stage-benchmark.test.mjs';
+  const selfMapped = buildMafBoundedRepairHandoff(makeHandoffInput('assertion-failed', {}, {
+    changeEvidence: {
+      ...makeHandoffInput().changeEvidence,
+      paths: [
+        'tools/engineering-factory/ci-stage-benchmark.mjs',
+        newSuite,
+        'docs/WORKSTATION-COMPATIBILITY.md'
+      ],
+      testInventory: [...defaultSoftwareFactoryTestInventory(), newSuite]
+    }
+  }));
+  assert.equal(selfMapped.valid, true);
+  assert.equal(selfMapped.eligibleForAutoRepair, true);
+  assert.ok(selfMapped.fastFeedbackChecks.includes(newSuite));
+  assert.ok(selfMapped.affectedComponents.includes('engineering-factory'));
+  assert.ok(selfMapped.affectedComponents.includes('repository-docs'));
+});
+
+test('buildMafBoundedRepairHandoff fails closed with escalateToHuman on invalid, proxy, unmapped, or stale evidence', () => {
+  const unmapped = buildMafBoundedRepairHandoff(makeHandoffInput('test-failure', {}, {
+    changeEvidence: {
+      ...makeHandoffInput().changeEvidence,
+      paths: ['unmapped-folder/file.mjs']
+    }
+  }));
+  assert.equal(unmapped.valid, false);
+  assert.equal(unmapped.reason, 'PATH_UNMAPPED');
+  assert.equal(unmapped.eligibleForAutoRepair, false);
+  assert.equal(unmapped.mandatoryFullGatesPreserved, true);
+  assert.equal(unmapped.escalateToHuman, true);
+
+  const staleFailure = buildMafBoundedRepairHandoff(
+    makeHandoffInput('test-failure', {head: SHA_C})
+  );
+  assert.equal(staleFailure.valid, false);
+  assert.equal(staleFailure.reason, 'EVIDENCE_INVALID_OR_STALE');
+  assert.equal(staleFailure.eligibleForAutoRepair, false);
+  assert.equal(staleFailure.escalateToHuman, true);
+
+  for (const invalid of [
+    null,
+    [],
+    new Proxy(makeHandoffInput(), {get() { throw new Error('must not run'); }}),
+    makeHandoffInput('test-failure', {}, {changeEvidence: null}),
+    makeHandoffInput('test-failure', {}, {failureEvidence: null}),
+    makeHandoffInput('test-failure', {}, {requestedMaxAttempts: -1}),
+    makeHandoffInput('test-failure', {}, {requestedMaxAttempts: 101})
+  ]) {
+    const denied = buildMafBoundedRepairHandoff(invalid);
+    assert.equal(denied.valid, false);
+    assert.equal(denied.reason, 'HANDOFF_INPUT_INVALID');
+    assert.equal(denied.mandatoryFullGatesPreserved, true);
+    assert.equal(denied.escalateToHuman, true);
+  }
+});
