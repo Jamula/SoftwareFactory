@@ -434,7 +434,8 @@ test('enforces non-estimated AI-credit accounting, $0 hard-stop meters across al
     {...validBilling, accounting: {...validAccounting, runAiCreditsRequired: 0}},
     {...validBilling, accounting: {...validAccounting, runAiCreditsRequired: 1_000_000_001}},
     {...validBilling, accounting: {...validAccounting, premiumRequestsRequired: -1}},
-    {...validBilling, accounting: {...validAccounting, netOfReservationsVerified: 'true'}}
+    {...validBilling, accounting: {...validAccounting, netOfReservationsVerified: 'true'}},
+    {...validBilling, accounting: {...validAccounting, dailyUsageIncludesReservations: 'true'}}
   ]) {
     const res = evaluateCloudAgentAdmission(makeFixture({billingEntitlement: badBilling}));
     assert.equal(res.reason, 'BUDGET_UNKNOWN');
@@ -651,7 +652,64 @@ test('enforces non-estimated AI-credit accounting, $0 hard-stop meters across al
   assert.equal(activePremDenied.reason, 'CAPACITY_EXHAUSTED');
   assert.equal(activePremDenied.admissionCode, 'INCLUDED_PREMIUM_REQUESTS_EXHAUSTED');
 
-  // Explicit netOfReservationsVerified: true accepts pre-deducted balances without double-subtracting
+  // Explicit netOfReservationsVerified: true accepts pre-deducted balances without double-subtracting,
+  // while still adding active commitments to dailyAiCreditsUsed unless dailyUsageIncludesReservations: true
+  const preDeductedDailyBlocked = evaluateCloudAgentAdmission(makeFixture({
+    billingEntitlement: {
+      ...validBilling,
+      accounting: {
+        ...validAccounting,
+        netOfReservationsVerified: true,
+        remainingIncludedAiCredits: 60,
+        remainingIncludedPremiumRequests: 2,
+        dailyAiCreditsUsed: 410,
+        runAiCreditsRequired: 40,
+        premiumRequestsRequired: 1
+      }
+    },
+    workerPool: {
+      ...base.workerPool,
+      requestedWorkers: 1,
+      verifiedPriorWorkerTier: 0,
+      reservations: [active60Reservation]
+    }
+  }));
+  assert.equal(preDeductedDailyBlocked.admitted, false);
+  assert.equal(preDeductedDailyBlocked.reason, 'CAPACITY_EXHAUSTED');
+  assert.equal(preDeductedDailyBlocked.admissionCode, 'GH_AW_DAILY_AI_CREDITS_EXCEEDED');
+  assertCleanTelemetry(preDeductedDailyBlocked, 'blocked', 'QUOTA');
+
+  const bothPreDeductedOk = evaluateCloudAgentAdmission(makeFixture({
+    billingEntitlement: {
+      ...validBilling,
+      accounting: {
+        ...validAccounting,
+        netOfReservationsVerified: true,
+        dailyUsageIncludesReservations: true,
+        remainingIncludedAiCredits: 60,
+        remainingIncludedPremiumRequests: 2,
+        dailyAiCreditsUsed: 450,
+        runAiCreditsRequired: 40,
+        premiumRequestsRequired: 2
+      }
+    },
+    workerPool: {
+      ...base.workerPool,
+      requestedWorkers: 1,
+      verifiedPriorWorkerTier: 0,
+      reservations: [{
+        reservationId: 'res-net-both',
+        issue: 101,
+        lane: 'lane-a',
+        paths: ['tools/engineering-coordinator'],
+        leaseGeneration: 1,
+        expiresAtMs: base.nowMs + 60_000
+      }]
+    }
+  }));
+  assert.equal(bothPreDeductedOk.admitted, true);
+  assert.equal(bothPreDeductedOk.accounting.reservedAiCredits, 0);
+
   const preDeductedOk = evaluateCloudAgentAdmission(makeFixture({
     billingEntitlement: {
       ...validBilling,
@@ -675,8 +733,7 @@ test('enforces non-estimated AI-credit accounting, $0 hard-stop meters across al
         paths: ['tools/engineering-coordinator'],
         leaseGeneration: 1,
         expiresAtMs: base.nowMs + 60_000,
-        reservedAiCredits: 0,
-        reservedPremiumRequests: 0
+        reservedAiCredits: 60
       }]
     }
   }));
@@ -691,10 +748,24 @@ test('enforces non-estimated AI-credit accounting, $0 hard-stop meters across al
   for (const [acctOverride, badReservations] of [
     [{}, [noCommitmentRes]],
     [{}, [noReqRes]],
+    [{netOfReservationsVerified: true}, [noCommitmentRes]],
     [{}, [{...base.workerPool.reservations[0], reservedAiCredits: -1}]],
     [{}, [{...base.workerPool.reservations[0], reservedPremiumRequests: 1.5}]],
     [{netOfReservationsVerified: true}, [{...base.workerPool.reservations[0], reservedAiCredits: -1}]],
     [{netOfReservationsVerified: true}, [{...base.workerPool.reservations[0], reservedPremiumRequests: -1}]],
+    [{netOfReservationsVerified: true}, [
+      {...base.workerPool.reservations[0], reservedAiCredits: Number.MAX_SAFE_INTEGER},
+      {
+        reservationId: 'res-active-2',
+        issue: 102,
+        pr: 202,
+        lane: 'lane-b',
+        paths: ['docs'],
+        leaseGeneration: 1,
+        expiresAtMs: base.nowMs + 60_000,
+        reservedAiCredits: Number.MAX_SAFE_INTEGER
+      }
+    ]],
     [{}, [
       {...base.workerPool.reservations[0], reservedAiCredits: Number.MAX_SAFE_INTEGER, reservedPremiumRequests: 1},
       {

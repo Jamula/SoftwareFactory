@@ -340,34 +340,94 @@ function hasMismatchedRepoId(value,repositoryId) {
   return plainJsonObject(value)&&Object.hasOwn(value,'repositoryId')&&value.repositoryId!==repositoryId;
 }
 
-export function evaluateProtectedSquash(input,repositoryId=DEFAULT_REPOSITORY_ID,evaluator=guardedSquashEvidence) {
-  if(!positiveInt(repositoryId)) {
-    return {shadow:true,liveMerge:false,dependentWorkAllowed:false,reason:'PROVENANCE_MISMATCH'};
+function hasMismatchedStringField(value,key,expected) {
+  return expected!==null&&plainJsonObject(value)&&Object.hasOwn(value,key)&&value[key]!==expected;
+}
+
+export function evaluateProtectedSquash(input,bindingOrRepoId=DEFAULT_REPOSITORY_ID,evaluator=guardedSquashEvidence) {
+  const blockedSquash=reason=>({shadow:true,liveMerge:false,dependentWorkAllowed:false,reason});
+  const binding=typeof bindingOrRepoId==='number'
+    ?{
+      repositoryId:bindingOrRepoId,
+      repository:bindingOrRepoId===DEFAULT_REPOSITORY_ID?DEFAULT_REPOSITORY:null,
+      branch:bindingOrRepoId===DEFAULT_REPOSITORY_ID?DEFAULT_BRANCH:null,
+      inActions:false
+    }
+    :(plainJsonObject(bindingOrRepoId)
+      ?{
+        repositoryId:bindingOrRepoId.repositoryId,
+        repository:bindingOrRepoId.repository??null,
+        branch:bindingOrRepoId.branch??(bindingOrRepoId.repositoryId===DEFAULT_REPOSITORY_ID?DEFAULT_BRANCH:null),
+        inActions:bindingOrRepoId.inActions===true
+      }
+      :{repositoryId:0,repository:null,branch:null,inActions:false});
+  const {repositoryId,repository:expectedRepository,branch:expectedBranch,inActions}=binding;
+  if(!positiveInt(repositoryId)||(repositoryId!==DEFAULT_REPOSITORY_ID&&inActions&&expectedRepository===null)) {
+    return blockedSquash('PROVENANCE_MISMATCH');
   }
   if(!plainJsonObject(input)||!Object.keys(input).every(k=>SQUASH_INPUT_KEYS.has(k))||
      !Object.hasOwn(input,'intent')||!Object.hasOwn(input,'evidence')) {
-    return {shadow:true,liveMerge:false,dependentWorkAllowed:false,reason:'INTENT_UNKNOWN'};
+    return blockedSquash('INTENT_UNKNOWN');
   }
   const hasScope=Object.hasOwn(input,'scope');
-  const scope=hasScope
-    ?input.scope
-    :(repositoryId!==DEFAULT_FACTORY_SCOPE.repositoryId&&plainJsonObject(input.intent)&&typeof input.intent.repository==='string'
+  let scope;
+  if(hasScope) {
+    scope=input.scope;
+  } else if(repositoryId===DEFAULT_FACTORY_SCOPE.repositoryId) {
+    scope=expectedBranch===DEFAULT_BRANCH
+      ?DEFAULT_FACTORY_SCOPE
+      :{
+        repository:DEFAULT_REPOSITORY,
+        repositoryId:DEFAULT_REPOSITORY_ID,
+        branch:expectedBranch,
+        requiredChecks:DEFAULT_FACTORY_SCOPE.requiredChecks
+      };
+  } else {
+    const inferredRepo=expectedRepository??
+      (plainJsonObject(input.intent)&&typeof input.intent.repository==='string'?input.intent.repository:null);
+    const inferredBranch=expectedBranch??
+      (plainJsonObject(input.intent)&&typeof input.intent.branch==='string'?input.intent.branch:null);
+    scope=inferredRepo!==null&&inferredRepo.toLowerCase()!==DEFAULT_REPOSITORY.toLowerCase()
       ?{
-        repository:input.intent.repository,
+        repository:inferredRepo,
         repositoryId,
-        ...(typeof input.intent.branch==='string'?{branch:input.intent.branch}:{})
+        ...(inferredBranch!==null?{branch:inferredBranch}:{})
       }
-      :DEFAULT_FACTORY_SCOPE);
-  const mismatchedEvidenceNested=plainJsonObject(input.evidence)&&(
-    hasMismatchedRepoId(input.evidence.protection,repositoryId)||
-    hasMismatchedRepoId(input.evidence.policy,repositoryId)
+      :DEFAULT_FACTORY_SCOPE;
+  }
+  const ev=plainJsonObject(input.evidence)?input.evidence:null;
+  const mismatchedRepoName=
+    hasMismatchedStringField(scope,'repository',expectedRepository)||
+    hasMismatchedStringField(input.intent,'repository',expectedRepository)||
+    hasMismatchedStringField(ev,'repository',expectedRepository)||
+    (ev!==null&&(
+      hasMismatchedStringField(ev.protection,'repository',expectedRepository)||
+      hasMismatchedStringField(ev.policy,'repository',expectedRepository)||
+      hasMismatchedStringField(ev.snapshot,'repository',expectedRepository)
+    ));
+  const mismatchedBranch=
+    hasMismatchedStringField(scope,'branch',expectedBranch)||
+    hasMismatchedStringField(input.intent,'branch',expectedBranch)||
+    hasMismatchedStringField(input.intent,'targetBranch',expectedBranch)||
+    hasMismatchedStringField(input.intent,'baseRef',expectedBranch)||
+    hasMismatchedStringField(ev,'branch',expectedBranch)||
+    (ev!==null&&(
+      hasMismatchedStringField(ev.protection,'branch',expectedBranch)||
+      hasMismatchedStringField(ev.policy,'defaultBranch',expectedBranch)||
+      hasMismatchedStringField(ev.snapshot,'baseBranch',expectedBranch)
+    ));
+  const mismatchedEvidenceNested=ev!==null&&(
+    hasMismatchedRepoId(ev.protection,repositoryId)||
+    hasMismatchedRepoId(ev.policy,repositoryId)
   );
   if((hasScope&&(!plainJsonObject(scope)||scope.repositoryId!==repositoryId))||
      hasMismatchedRepoId(scope,repositoryId)||
      hasMismatchedRepoId(input.intent,repositoryId)||
-     hasMismatchedRepoId(input.evidence,repositoryId)||
-     mismatchedEvidenceNested) {
-    return {shadow:true,liveMerge:false,dependentWorkAllowed:false,reason:'PROVENANCE_MISMATCH'};
+     hasMismatchedRepoId(ev,repositoryId)||
+     mismatchedEvidenceNested||
+     mismatchedRepoName||
+     mismatchedBranch) {
+    return blockedSquash('PROVENANCE_MISMATCH');
   }
   return evaluator(input.intent,input.evidence,scope);
 }
@@ -599,7 +659,12 @@ export async function run(args,options={}) {
         }
         return normalizePlanResult(await plan(parsedInput.config,parsedInput.tasks,parsedInput.active,parsedInput.policy));
       },
-      '--evaluate-squash':async()=>evaluateProtectedSquash(parsedInput,effectiveRepositoryId,evaluateSquash),
+      '--evaluate-squash':async()=>evaluateProtectedSquash(parsedInput,{
+        repositoryId:effectiveRepositoryId,
+        repository:repoBinding.repository,
+        branch:repoBinding.branch,
+        inActions:env?.GITHUB_ACTIONS==='true'
+      },evaluateSquash),
       '--verify-admission':async()=>{
         if(plainJsonObject(parsedInput)&&(hasMismatchedRepoId(parsedInput,effectiveRepositoryId)||
            (Object.hasOwn(parsedInput,'approvedRepositoryId')&&parsedInput.approvedRepositoryId!==effectiveRepositoryId))) {

@@ -65,7 +65,8 @@ const REQUIRED_ACCOUNTING_KEYS = Object.freeze([
 ]);
 const ACCOUNTING_KEYS = new Set([
   ...REQUIRED_ACCOUNTING_KEYS,
-  'netOfReservationsVerified'
+  'netOfReservationsVerified',
+  'dailyUsageIncludesReservations'
 ]);
 const GH_AW_CAP_KEYS = new Set(['maxAiCredits', 'maxDailyAiCredits']);
 const WORKER_POOL_KEYS = new Set([
@@ -255,6 +256,8 @@ function evaluateBillingAndCredits(billing, nowMs) {
       !REQUIRED_ACCOUNTING_KEYS.every(k => Object.hasOwn(accounting, k)) ||
       (Object.hasOwn(accounting, 'netOfReservationsVerified') &&
         typeof accounting.netOfReservationsVerified !== 'boolean') ||
+      (Object.hasOwn(accounting, 'dailyUsageIncludesReservations') &&
+        typeof accounting.dailyUsageIncludesReservations !== 'boolean') ||
       accounting.accountingSource !== 'verified' ||
       accounting.isEstimated !== false ||
       !nonneg(accounting.observedAtMs) ||
@@ -345,8 +348,10 @@ function evaluateCandidateAndPool(candidate, workerPool, nowMs, accounting, ghAw
   const activeLanes = new Set();
   const activePaths = [];
   const netAlreadyDeducted = accounting.netOfReservationsVerified === true;
+  const dailyAlreadyIncludesReservations = accounting.dailyUsageIncludesReservations === true;
   let activeReservationCount = 0;
   let committedAiCredits = 0;
+  let dailyCommittedAiCredits = 0;
   let committedPremiumRequests = 0;
   let invalidActiveCommitments = false;
 
@@ -376,19 +381,27 @@ function evaluateCandidateAndPool(candidate, workerPool, nowMs, accounting, ghAw
         activeLanes.has(r.lane) || r.paths.some(p => activePaths.some(ap => pathsOverlap(p, ap)))) {
       return {error: deny('LANE_OR_PATH_RESERVED', 'ACTIVE_RESERVATION_CONFLICT')};
     }
-    if (netAlreadyDeducted) {
-      if ((hasReservedCredits && !nonneg(r.reservedAiCredits)) ||
-          (hasReservedRequests && !nonneg(r.reservedPremiumRequests))) {
-        invalidActiveCommitments = true;
-      }
-    } else if (!hasReservedCredits || !hasReservedRequests ||
-        !nonneg(r.reservedAiCredits) || !nonneg(r.reservedPremiumRequests) ||
-        !Number.isSafeInteger(committedAiCredits + r.reservedAiCredits) ||
-        !Number.isSafeInteger(committedPremiumRequests + r.reservedPremiumRequests)) {
+    if ((hasReservedCredits && !nonneg(r.reservedAiCredits)) ||
+        (hasReservedRequests && !nonneg(r.reservedPremiumRequests))) {
       invalidActiveCommitments = true;
     } else {
-      committedAiCredits += r.reservedAiCredits;
-      committedPremiumRequests += r.reservedPremiumRequests;
+      if (!netAlreadyDeducted) {
+        if (!hasReservedCredits || !hasReservedRequests ||
+            !Number.isSafeInteger(committedAiCredits + r.reservedAiCredits) ||
+            !Number.isSafeInteger(committedPremiumRequests + r.reservedPremiumRequests)) {
+          invalidActiveCommitments = true;
+        } else {
+          committedAiCredits += r.reservedAiCredits;
+          committedPremiumRequests += r.reservedPremiumRequests;
+        }
+      }
+      if (!dailyAlreadyIncludesReservations) {
+        if (!hasReservedCredits || !Number.isSafeInteger(dailyCommittedAiCredits + r.reservedAiCredits)) {
+          invalidActiveCommitments = true;
+        } else {
+          dailyCommittedAiCredits += r.reservedAiCredits;
+        }
+      }
     }
     activeReservationCount++;
     activeIssues.add(r.issue);
@@ -445,7 +458,7 @@ function evaluateCandidateAndPool(candidate, workerPool, nowMs, accounting, ghAw
 
   const totalBatchAiCredits = workerPool.requestedWorkers * accounting.runAiCreditsRequired;
   const totalBatchPremiumRequests = workerPool.requestedWorkers * accounting.premiumRequestsRequired;
-  const effectiveDailyUsed = accounting.dailyAiCreditsUsed + committedAiCredits;
+  const effectiveDailyUsed = accounting.dailyAiCreditsUsed + dailyCommittedAiCredits;
   if (!Number.isSafeInteger(effectiveDailyUsed + totalBatchAiCredits) ||
       effectiveDailyUsed + totalBatchAiCredits > ghAwCaps.maxDailyAiCredits) {
     return {error: deny('CAPACITY_EXHAUSTED', 'GH_AW_DAILY_AI_CREDITS_EXCEEDED', actualWorkerMax)};

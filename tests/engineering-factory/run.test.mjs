@@ -565,6 +565,48 @@ test('unified subcommands, parameterized repositoryId, and bounded JSON input en
  assert.equal(squashReceiptOut[0].outcome,'eligible');
  assert.equal(squashReceiptOut[0].reason,'NONE');
  assert.equal(evaluateProtectedSquash(null).reason,'INTENT_UNKNOWN');
+ assert.equal(evaluateProtectedSquash({intent:squashIntent,evidence:squashEvidence},'bad-binding').reason,'PROVENANCE_MISMATCH');
+
+ // --evaluate-squash enforces FACTORY_EXPECTED_BRANCH and trusted repository name across omitted and inline scopes
+ const releaseSquashRejected=[];
+ assert.equal(await run(['--evaluate-squash'],{
+  env:{FACTORY_EXPECTED_BRANCH:'release'},
+  input:{intent:squashIntent,evidence:squashEvidence},
+  write:v=>releaseSquashRejected.push(JSON.parse(v))
+ }),0);
+ assert.equal(releaseSquashRejected[0].reason,'PROVENANCE_MISMATCH');
+
+ const releaseSquashIntent={...squashIntent,branch:'release'};
+ const releaseSquashEvidence={
+  ...squashEvidence,
+  branch:'release',
+  protection:{...squashEvidence.protection,branch:'release'},
+  policy:{...squashEvidence.policy,defaultBranch:'release'},
+  snapshot:{...squashEvidence.snapshot,baseBranch:'release'}
+ };
+ const releaseSquashOk=[];
+ assert.equal(await run(['--evaluate-squash'],{
+  env:{FACTORY_EXPECTED_BRANCH:'release'},
+  input:{intent:releaseSquashIntent,evidence:releaseSquashEvidence},
+  write:v=>releaseSquashOk.push(JSON.parse(v))
+ }),0);
+ assert.equal(releaseSquashOk[0].reason,'SHADOW_SQUASH_ELIGIBLE');
+
+ // Conflicting targetBranch / baseRef / snapshot / policy repository or branch fields fail closed
+ for(const badBranchOrRepoPatch of [
+  {intent:{...squashIntent,targetBranch:'release'},evidence:squashEvidence},
+  {intent:{...squashIntent,baseRef:'release'},evidence:squashEvidence},
+  {intent:squashIntent,evidence:{...squashEvidence,snapshot:{...squashEvidence.snapshot,baseBranch:'release'}}},
+  {intent:squashIntent,evidence:{...squashEvidence,snapshot:{...squashEvidence.snapshot,repository:'Other/Repo'}}},
+  {intent:squashIntent,evidence:{...squashEvidence,policy:{...squashEvidence.policy,repository:'Other/Repo'}}},
+  {intent:squashIntent,evidence:{...squashEvidence,protection:{...squashEvidence.protection,repository:'Other/Repo'}}}
+ ]){
+  const out=[];
+  assert.equal(await run(['--evaluate-squash'],{
+   env:{},input:badBranchOrRepoPatch,write:v=>out.push(JSON.parse(v))
+  }),0);
+  assert.equal(out[0].reason,'PROVENANCE_MISMATCH');
+ }
 
  // 4. --verify-admission invokes cloud-agent-admission.mjs
  const meter={verified:true,paidOverageEnabled:false,overageHardStopUsdCents:0};
@@ -977,6 +1019,25 @@ test('unified subcommands, parameterized repositoryId, and bounded JSON input en
   write:v=>mismatchSquash.push(JSON.parse(v))
  }),0);
  assert.equal(mismatchSquash[1].reason,'PROVENANCE_MISMATCH');
+ assert.equal(await run(['--evaluate-squash'],{
+  repositoryId:consumerRepoId,repository:consumerRepoName,branch:'release',env:{},
+  input:{
+   scope:{repository:'Attacker/OtherRepo',repositoryId:consumerRepoId,branch:'release'},
+   intent:{repository:'Attacker/OtherRepo',repositoryId:consumerRepoId,branch:'release',number:1,expectedHead:workflowSha,expectedBase:baseSha},
+   evidence:{}
+  },
+  write:v=>mismatchSquash.push(JSON.parse(v))
+ }),0);
+ assert.equal(mismatchSquash[2].reason,'PROVENANCE_MISMATCH');
+ assert.equal(await run(['--evaluate-squash'],{
+  repositoryId:consumerRepoId,env:{GITHUB_ACTIONS:'true',GITHUB_REPOSITORY_ID:String(consumerRepoId)},
+  input:{
+   intent:{repository:consumerRepoName,repositoryId:consumerRepoId,branch:'main',number:1,expectedHead:workflowSha,expectedBase:baseSha},
+   evidence:{}
+  },
+  write:v=>mismatchSquash.push(JSON.parse(v))
+ }),0);
+ assert.equal(mismatchSquash[3].reason,'PROVENANCE_MISMATCH');
  assert.equal(await run(['--verify-admission'],{
   repositoryId:consumerRepoId,env:{},input:admissionInput,
   write:v=>mismatchAdm.push(JSON.parse(v))
