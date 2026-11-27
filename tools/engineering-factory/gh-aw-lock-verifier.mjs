@@ -715,15 +715,33 @@ function collectMandatoryConjuncts(node) {
   return [node];
 }
 
-function astHasBypassCall(node) {
+function astHasCallNamed(node, namesSet) {
   if (node.kind === 'Call') {
-    return BYPASS_CALL_NAMES.has(node.name) || node.args.some(astHasBypassCall);
+    return namesSet.has(node.name) || node.args.some(arg => astHasCallNamed(arg, namesSet));
   }
   if (node.kind === 'And' || node.kind === 'Or' || node.kind === 'Compare') {
-    return astHasBypassCall(node.left) || astHasBypassCall(node.right);
+    return astHasCallNamed(node.left, namesSet) || astHasCallNamed(node.right, namesSet);
   }
-  if (node.kind === 'Not') return astHasBypassCall(node.expr);
+  if (node.kind === 'Not') return astHasCallNamed(node.expr, namesSet);
   return false;
+}
+
+const STATUS_CHECK_CALL_NAMES = new Set(['always', 'failure', 'cancelled', 'success']);
+
+function astHasBypassCall(node) {
+  return astHasCallNamed(node, BYPASS_CALL_NAMES);
+}
+
+function stepIfPreservesPriorSuccess(parsedStepIf) {
+  if (parsedStepIf === undefined || parsedStepIf === null || astHasBypassCall(parsedStepIf)) {
+    return false;
+  }
+  if (!astHasCallNamed(parsedStepIf, STATUS_CHECK_CALL_NAMES)) {
+    return true;
+  }
+  return collectMandatoryConjuncts(parsedStepIf).some(
+    c => c.kind === 'Call' && c.name === 'success' && c.args.length === 0
+  );
 }
 
 function isIdentCompareLiteral(node, op, expectedPath, expectedLiteral) {
@@ -965,8 +983,7 @@ function resolveJobProtectedBranchProvenance(job, jobAst, expectedBranchRef, out
     const parsedStepIf = step.if === undefined
       ? null
       : (typeof step.if === 'string' ? parseIfExpression(step.if) : undefined);
-    const stepOverridesFailure = step.if !== undefined &&
-      (parsedStepIf === undefined || parsedStepIf === null || astHasBypassCall(parsedStepIf));
+    const stepOverridesFailure = step.if !== undefined && !stepIfPreservesPriorSuccess(parsedStepIf);
     if (stepOverridesFailure) {
       onlyInertSetupSoFar = false;
       pendingInertCheckoutIndices.length = 0;
