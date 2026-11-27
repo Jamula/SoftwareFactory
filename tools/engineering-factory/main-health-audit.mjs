@@ -8,6 +8,7 @@ import {classifyReviewSummary} from './review-batch.mjs';
 export const SOFTWARE_FACTORY_REPO = 'Jamula/SoftwareFactory';
 export const SOFTWARE_FACTORY_REPO_ID = 1471342715;
 export const GITHUB_ACTIONS_APP_ID = 15368;
+export const GITHUB_ADVANCED_SECURITY_APP_ID = 57789;
 
 export const ACTIVE_MAIN_WORKFLOWS = Object.freeze([
   'Factory validation',
@@ -182,6 +183,19 @@ function addReason(list, reason) {
   if (!list.includes(reason)) list.push(reason);
 }
 
+function isExpectedCheckAppId(checkName, appId, requiredCheckMap, forceActionsOnly) {
+  if (forceActionsOnly || builtInActionsJobSet.has(checkName)) {
+    return appId === GITHUB_ACTIONS_APP_ID;
+  }
+  if (requiredCheckMap.has(checkName)) {
+    return appId === requiredCheckMap.get(checkName);
+  }
+  if (checkName === 'CodeQL') {
+    return appId === GITHUB_ADVANCED_SECURITY_APP_ID || appId === GITHUB_ACTIONS_APP_ID;
+  }
+  return appId === GITHUB_ACTIONS_APP_ID;
+}
+
 function formatCoverageSummary(componentCount, lines, lineTotal, branches, branchTotal, sdkVersion) {
   const linePct = Math.round((lines * 10000) / lineTotal) / 100;
   const branchPct = branchTotal === 0 ? null : Math.round((branches * 10000) / branchTotal) / 100;
@@ -330,11 +344,27 @@ function auditRuleset(ruleset) {
       codeqlRule.alertsThreshold === 'all');
 
   let builtInProducerOverridden = false;
+  const effectiveCheckMap = new Map(defaultRequiredCheckMap);
   for (const [ctx, appId] of checkMap) {
     if (builtInActionsJobSet.has(ctx) && appId !== GITHUB_ACTIONS_APP_ID) {
       builtInProducerOverridden = true;
+    } else if (ctx === 'CodeQL' &&
+               appId !== GITHUB_ADVANCED_SECURITY_APP_ID &&
+               appId !== GITHUB_ACTIONS_APP_ID) {
+      builtInProducerOverridden = true;
+    } else {
+      effectiveCheckMap.set(ctx, appId);
     }
   }
+
+  const effectiveLineMin =
+    Number.isFinite(ruleset.minimumCoverage) &&
+    ruleset.minimumCoverage >= 98 &&
+    ruleset.minimumCoverage <= 100
+      ? ruleset.minimumCoverage
+      : 98;
+  const effectiveRequiredApprovals =
+    ruleset.requiredApprovingReviewCount > 0 ? ruleset.requiredApprovingReviewCount : 0;
 
   if (!Number.isFinite(ruleset.minimumCoverage) ||
       ruleset.minimumCoverage < 98 ||
@@ -357,9 +387,9 @@ function auditRuleset(ruleset) {
       structuralError: false,
       ok: false,
       reason: 'RULESET_INCOMPLETE',
-      lineMin: 98,
-      requiredApprovals: 0,
-      requiredCheckMap: defaultRequiredCheckMap
+      lineMin: effectiveLineMin,
+      requiredApprovals: effectiveRequiredApprovals,
+      requiredCheckMap: effectiveCheckMap
     };
   }
 
@@ -367,8 +397,8 @@ function auditRuleset(ruleset) {
     structuralError: false,
     ok: true,
     reason: null,
-    lineMin: ruleset.minimumCoverage,
-    requiredApprovals: ruleset.requiredApprovingReviewCount,
+    lineMin: effectiveLineMin,
+    requiredApprovals: effectiveRequiredApprovals,
     requiredCheckMap: checkMap
   };
 }
@@ -594,17 +624,12 @@ function auditMainSection(main, lineMin, requiredCheckMap) {
       const job = run.jobs[j];
       presentJobs.add(job.name);
       if (job.headSha !== main.head) addReason(reasons, 'MAIN_HEAD_MISMATCH');
-      const isBuiltInWorkflowOrJob =
-        activeWorkflowSet.has(run.workflow) ||
-        isDefaultOff ||
-        builtInActionsJobSet.has(job.name);
-      const expectedAppId = isBuiltInWorkflowOrJob
-        ? GITHUB_ACTIONS_APP_ID
-        : (requiredCheckMap.has(job.name) ? requiredCheckMap.get(job.name) : GITHUB_ACTIONS_APP_ID);
-      if (job.appId !== expectedAppId) addReason(reasons, 'UNTRUSTED_CHECK_APP');
+      const forceActionsOnly = activeWorkflowSet.has(run.workflow) || isDefaultOff;
+      const trustedApp = isExpectedCheckAppId(job.name, job.appId, requiredCheckMap, forceActionsOnly);
+      if (!trustedApp) addReason(reasons, 'UNTRUSTED_CHECK_APP');
       if (!isDefaultOff &&
           job.headSha === main.head &&
-          job.appId === expectedAppId &&
+          trustedApp &&
           job.status === 'completed' &&
           job.conclusion === 'success') {
         satisfiedMainChecks.add(`${job.name}\u0000${job.appId}`);
@@ -895,10 +920,9 @@ function auditCandidateSection(candidate, mainHead, mainAudit, lineMin, required
   for (let i = 0; i < candidate.pullChecks.length; i++) {
     const c = candidate.pullChecks[i];
     if (c.headSha !== candidate.head) addReason(reasons, 'CANDIDATE_PULL_HEAD_MISMATCH');
-    const expectedAppId = builtInActionsJobSet.has(c.name)
-      ? GITHUB_ACTIONS_APP_ID
-      : (requiredCheckMap.has(c.name) ? requiredCheckMap.get(c.name) : GITHUB_ACTIONS_APP_ID);
-    if (c.appId !== expectedAppId) addReason(reasons, 'UNTRUSTED_CHECK_APP');
+    if (!isExpectedCheckAppId(c.name, c.appId, requiredCheckMap, false)) {
+      addReason(reasons, 'UNTRUSTED_CHECK_APP');
+    }
     const eventOk = requiredPullCheckSet.has(c.name)
       ? c.event === 'pull_request'
       : (c.event === 'pull_request' || c.event === 'dynamic');
@@ -986,7 +1010,7 @@ function auditCandidateSection(candidate, mainHead, mainAudit, lineMin, required
     addReason(reasons, 'REVIEW_APPROVAL_COUNT_UNMET');
   }
 
-  let bodyDispositionClear = true;
+  let bodyDispositionClear = !(isCopilotBot && rv.state === 'COMMENTED');
   if (hasSummaryBody && isCopilotBot) {
     const classified = classifyReviewSummary(rv.reviewId, rv.summaryBody);
     bodyDispositionClear = classified.summaryDisposition === 'clear' && classified.findings.length === 0;
@@ -1012,10 +1036,9 @@ function auditCandidateSection(candidate, mainHead, mainAudit, lineMin, required
   for (let i = 0; i < mg.checks.length; i++) {
     const c = mg.checks[i];
     if (c.headSha !== mg.head) addReason(reasons, 'MERGE_GROUP_SHA_MISMATCH');
-    const expectedAppId = builtInActionsJobSet.has(c.name)
-      ? GITHUB_ACTIONS_APP_ID
-      : (requiredCheckMap.has(c.name) ? requiredCheckMap.get(c.name) : GITHUB_ACTIONS_APP_ID);
-    if (c.appId !== expectedAppId) addReason(reasons, 'UNTRUSTED_CHECK_APP');
+    if (!isExpectedCheckAppId(c.name, c.appId, requiredCheckMap, false)) {
+      addReason(reasons, 'UNTRUSTED_CHECK_APP');
+    }
     if (c.event !== 'merge_group') addReason(reasons, 'MERGE_GROUP_EVENT_MISMATCH');
     if (c.status !== 'completed' || c.conclusion !== 'success') mgAllGreen = false;
   }

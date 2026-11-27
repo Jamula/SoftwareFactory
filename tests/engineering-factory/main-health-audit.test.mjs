@@ -7,6 +7,7 @@ import {
   ACTIVE_MAIN_WORKFLOWS,
   DEFAULT_OFF_MAIN_WORKFLOWS,
   GITHUB_ACTIONS_APP_ID,
+  GITHUB_ADVANCED_SECURITY_APP_ID,
   REQUIRED_CANDIDATE_PULL_CHECKS,
   REQUIRED_CANDIDATE_RUNTIME_CHECKS,
   REQUIRED_MERGE_GROUP_CHECKS,
@@ -432,7 +433,20 @@ test('verifies healthy protected main alone and full protected main + candidate 
     status: 'completed',
     conclusion: 'success'
   });
+  copilotShortLogin.candidate.pullChecks.push({
+    name: 'CodeQL',
+    jobId: 8887,
+    appId: GITHUB_ADVANCED_SECURITY_APP_ID,
+    headSha: CAND_SHA,
+    event: 'dynamic',
+    status: 'completed',
+    conclusion: 'success'
+  });
   assert.equal(auditProtectedMainAndCandidateGates(copilotShortLogin).eligible, true);
+
+  const untrustedCodeqlApp = cloneJson(copilotShortLogin);
+  untrustedCodeqlApp.candidate.pullChecks.find(c => c.name === 'CodeQL').appId = 99999;
+  assert.equal(auditProtectedMainAndCandidateGates(untrustedCodeqlApp).reason, 'UNTRUSTED_CHECK_APP');
 });
 
 test('fails closed on unhealthy protected main across all active workflows, incomplete runs, untrusted apps, and security alerts', () => {
@@ -672,6 +686,13 @@ test('fails closed on fork PR skipped runtime checks, summary-only review findin
   summaryOpenBodyWithClaimedClear.candidate.review.summaryBody = ACTIONABLE_COPILOT_SUMMARY;
   assert.equal(
     auditProtectedMainAndCandidateGates(summaryOpenBodyWithClaimedClear).reason,
+    'SUMMARY_REVIEW_FINDINGS_OPEN'
+  );
+
+  const copilotCommentMissingBody = makeFullHealthyInput();
+  delete copilotCommentMissingBody.candidate.review.summaryBody;
+  assert.equal(
+    auditProtectedMainAndCandidateGates(copilotCommentMissingBody).reason,
     'SUMMARY_REVIEW_FINDINGS_OPEN'
   );
 
@@ -1146,6 +1167,15 @@ test('enforces ruleset completeness, scope matching, and strict types.isProxy / 
         {context: 'linux-aspire-runtime', integrationId: 99999}
       ]
     },
+    {
+      requiredStatusChecks: [
+        ...REQUIRED_STATUS_CHECK_CONTEXTS.map(context => ({
+          context,
+          integrationId: GITHUB_ACTIONS_APP_ID
+        })),
+        {context: 'CodeQL', integrationId: 99999}
+      ]
+    },
     {codeScanningTools: []},
     {
       codeScanningTools: [
@@ -1196,6 +1226,17 @@ test('enforces ruleset completeness, scope matching, and strict types.isProxy / 
     assert.equal(res.mainHealthy, false);
     assert.equal(res.reason, 'RULESET_INCOMPLETE');
   }
+
+  // Stricter ruleset floors remain active even when another ruleset rule is incomplete
+  const strictFloorWithIncompleteRuleset = makeFullHealthyInput();
+  strictFloorWithIncompleteRuleset.ruleset.minimumCoverage = 99.95;
+  strictFloorWithIncompleteRuleset.ruleset.requiredApprovingReviewCount = 2;
+  strictFloorWithIncompleteRuleset.ruleset.codeScanningTools = [];
+  const strictFloorRes = auditProtectedMainAndCandidateGates(strictFloorWithIncompleteRuleset);
+  assert.equal(strictFloorRes.valid, false);
+  assert.equal(strictFloorRes.failureReasons.includes('DOTNET_COVERAGE_BELOW_TARGET'), true);
+  assert.equal(strictFloorRes.failureReasons.includes('REVIEW_APPROVAL_COUNT_UNMET'), true);
+  assert.equal(strictFloorRes.failureReasons.includes('RULESET_INCOMPLETE'), true);
 
   // Structural invalid inputs across top-level, ruleset, main, and candidate
   for (const bad of [
