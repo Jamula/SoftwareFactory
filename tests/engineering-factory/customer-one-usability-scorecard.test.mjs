@@ -707,7 +707,7 @@ test('compares matched baseline windows and blocks cross-class, mismatched, stal
     'HISTORICAL_PROXY_NOT_COMPARABLE'
   );
 
-  // Incomplete baseline or candidate returns INCOMPLETE_OR_STALE_EVIDENCE
+  // Incomplete or genuinely stale baseline or candidate returns INCOMPLETE_OR_STALE_EVIDENCE
   const emptyBaseline = evaluateCustomerOneUsabilityAndPortfolio(makeInput([], {
     fromMs: 10_000,
     toMs: 30_000,
@@ -722,17 +722,76 @@ test('compares matched baseline windows and blocks cross-class, mismatched, stal
     })).baselineComparison.reason,
     'INCOMPLETE_OR_STALE_EVIDENCE'
   );
+  const staleBaseline = evaluateCustomerOneUsabilityAndPortfolio(makeInput([
+    makeObservation(1, {observedAtMs: 15_000})
+  ], {
+    fromMs: 10_000,
+    toMs: 30_000,
+    nowMs: 32_000,
+    maxAgeMs: 10_000
+  }));
+  assert.equal(
+    evaluateCustomerOneUsabilityAndPortfolio(makeInput([makeObservation(2, {observedAtMs: 45_000})], {
+      fromMs: 30_000,
+      toMs: 50_000,
+      nowMs: 52_000,
+      baseline: staleBaseline
+    })).baselineComparison.reason,
+    'INCOMPLETE_OR_STALE_EVIDENCE'
+  );
+  const incompleteSourceBaseline = evaluateCustomerOneUsabilityAndPortfolio(makeInput([
+    makeObservation(1, {observedAtMs: 15_000})
+  ], {
+    fromMs: 10_000,
+    toMs: 30_000,
+    nowMs: 32_000,
+    maxAgeMs: 20_000,
+    sourceComplete: false
+  }));
+  assert.equal(
+    evaluateCustomerOneUsabilityAndPortfolio(makeInput([makeObservation(2, {observedAtMs: 45_000})], {
+      fromMs: 30_000,
+      toMs: 50_000,
+      nowMs: 52_000,
+      baseline: incompleteSourceBaseline
+    })).baselineComparison.reason,
+    'INCOMPLETE_OR_STALE_EVIDENCE'
+  );
 
-  // Invalid / forged baselines fail closed with INVALID_BASELINE
+  // Invalid / forged baselines (including tampered freshnessStatus/stale/timestamps) fail closed with INVALID_BASELINE
   for (const badBaseline of [
     'not-an-object',
     {},
     {...baseline, evidenceClass: 'unknown-class'},
     {...baseline, valid: false},
     {...baseline, window: {...baseline.window, nowMs: 10_000}},
+    {...staleBaseline, freshnessStatus: 'fresh'},
+    {
+      ...staleBaseline,
+      freshnessStatus: 'fresh',
+      stale: false,
+      portfolio: {...staleBaseline.portfolio, freshnessStatus: 'fresh', stale: false}
+    },
+    {
+      ...baseline,
+      lastObservedAtMs: 5_000,
+      portfolio: {...baseline.portfolio, lastObservedAtMs: 5_000}
+    },
     {...baseline, portfolio: {...baseline.portfolio, observedCohortKeys: []}},
     {...baseline, portfolio: {...baseline.portfolio, observedCohortKeys: ['bad-cohort']}},
+    {...baseline, historicalProxySummary: {nonAutonomousProxyOnly: true}},
     {...baseline, usability: null},
+    {...baseline, usability: {...baseline.usability, overallSloStatus: 'failed'}},
+    {
+      ...baseline,
+      usability: {
+        ...baseline.usability,
+        metrics: {
+          ...baseline.usability.metrics,
+          initialPlanMs: {...baseline.usability.metrics.initialPlanMs, sloStatus: 'unknown'}
+        }
+      }
+    },
     {
       ...baseline,
       usability: {

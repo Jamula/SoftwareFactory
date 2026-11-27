@@ -161,10 +161,22 @@ const SNAPSHOT_KEYS = [
   'baselineComparison'
 ];
 
+const PORTFOLIO_KEYS = [
+  'authorizedRepositoryCount',
+  'observedRepositoryCount',
+  'observedCohortKeys',
+  'observationCount',
+  'lastObservedAtMs',
+  'freshnessStatus',
+  'stale',
+  'dataCompletenessPct',
+  'byMilestone',
+  'byLane'
+];
+
 const evidenceClassSet = new Set(CUSTOMER_ONE_EVIDENCE_CLASSES);
 const milestoneSet = new Set(PORTFOLIO_MILESTONES);
 const scenarioKindSet = new Set(ONBOARDING_SCENARIO_KINDS);
-const freshnessSet = new Set(['fresh', 'stale', 'unknown']);
 
 const positiveInt = n => Number.isSafeInteger(n) && n > 0;
 const nonnegInt = n => Number.isSafeInteger(n) && n >= 0;
@@ -623,28 +635,69 @@ const DELTA_METRIC_FIELDS = Object.freeze([
 function validCompleteUsabilitySnapshot(usability) {
   if (!isPlainObject(usability) ||
       !hasOwnEnumerableData(usability, 'overallSloStatus') ||
-      !['passed', 'failed', 'stale', 'unknown'].includes(usability.overallSloStatus) ||
       !hasOwnEnumerableData(usability, 'metrics') ||
       !exactRecord(usability.metrics, CUSTOMER_ONE_METRIC_KEYS)) {
     return false;
   }
-  return DELTA_METRIC_FIELDS.every(([key, field]) => {
+  const metricsValid = METRIC_SPECS.every(spec => {
+    const entry = usability.metrics[spec.key];
+    if (!isPlainObject(entry) || !hasOwnEnumerableData(entry, 'sloStatus')) return false;
+    return spec.targetMax === null
+      ? entry.sloStatus === 'informational'
+      : (entry.sloStatus === 'passed' || entry.sloStatus === 'failed');
+  }) && DELTA_METRIC_FIELDS.every(([key, field]) => {
     const entry = usability.metrics[key];
-    return isPlainObject(entry) &&
-      hasOwnEnumerableData(entry, field) &&
-      nonnegInt(entry[field]) &&
-      hasOwnEnumerableData(entry, 'sloStatus') &&
-      ['passed', 'failed', 'informational', 'unknown'].includes(entry.sloStatus);
+    return hasOwnEnumerableData(entry, field) && nonnegInt(entry[field]);
   });
+  if (!metricsValid) return false;
+  const anyFailed = METRIC_SPECS.some(
+    spec => spec.targetMax !== null && usability.metrics[spec.key].sloStatus === 'failed'
+  );
+  return usability.overallSloStatus === (anyFailed ? 'failed' : 'passed');
+}
+
+function validBaselineFreshnessAndPortfolio(s) {
+  const w = s.window;
+  const p = s.portfolio;
+  if (!exactRecord(p, PORTFOLIO_KEYS) ||
+      p.observationCount !== s.observationCount ||
+      p.lastObservedAtMs !== s.lastObservedAtMs ||
+      p.freshnessStatus !== s.freshnessStatus ||
+      p.stale !== s.stale ||
+      p.dataCompletenessPct !== s.dataCompletenessPct ||
+      !denseDataArray(p.observedCohortKeys, 5000) ||
+      !p.observedCohortKeys.every(validCohortKey) ||
+      hasDuplicates(p.observedCohortKeys)) {
+    return false;
+  }
+  if (s.observationCount === 0) {
+    return s.lastObservedAtMs === null &&
+      s.stale === null &&
+      s.freshnessStatus === 'unknown' &&
+      s.dataCompletenessPct === null &&
+      p.observedCohortKeys.length === 0;
+  }
+  if (!nonnegInt(s.lastObservedAtMs) ||
+      s.lastObservedAtMs < w.fromMs ||
+      s.lastObservedAtMs >= w.toMs ||
+      p.observedCohortKeys.length === 0) {
+    return false;
+  }
+  const expectedStale = w.nowMs - s.lastObservedAtMs > w.maxAgeMs;
+  if (s.stale !== expectedStale ||
+      s.freshnessStatus !== (expectedStale ? 'stale' : 'fresh')) {
+    return false;
+  }
+  if (!s.sourceComplete) return s.dataCompletenessPct === null;
+  return Number.isFinite(s.dataCompletenessPct) &&
+    s.dataCompletenessPct >= 0 &&
+    s.dataCompletenessPct <= 100;
 }
 
 function validBaselineSnapshot(s) {
   if (!exactRecord(s, SNAPSHOT_KEYS) || s.valid !== true ||
       typeof s.sourceComplete !== 'boolean' ||
       !nonnegInt(s.observationCount) ||
-      !freshnessSet.has(s.freshnessStatus) ||
-      (s.dataCompletenessPct !== null &&
-        (!Number.isFinite(s.dataCompletenessPct) || s.dataCompletenessPct < 0 || s.dataCompletenessPct > 100)) ||
       !exactRecord(s.window, ['fromMs', 'toMs', 'nowMs', 'maxAgeMs']) ||
       !nonnegInt(s.window.fromMs) || !nonnegInt(s.window.toMs) || s.window.fromMs >= s.window.toMs ||
       !nonnegInt(s.window.nowMs) || s.window.nowMs < s.window.toMs || !positiveInt(s.window.maxAgeMs) ||
@@ -652,18 +705,14 @@ function validBaselineSnapshot(s) {
       !denseDataArray(s.filters.repositoryIds, 32) ||
       !denseDataArray(s.filters.milestones, 5) ||
       (s.filters.lanes !== null && !denseDataArray(s.filters.lanes, 64)) ||
-      !isPlainObject(s.portfolio) ||
-      !hasOwnEnumerableData(s.portfolio, 'observedCohortKeys') ||
-      !denseDataArray(s.portfolio.observedCohortKeys, 5000) ||
-      !s.portfolio.observedCohortKeys.every(validCohortKey) ||
-      hasDuplicates(s.portfolio.observedCohortKeys) ||
-      (s.observationCount > 0 && s.portfolio.observedCohortKeys.length === 0)) {
+      !validBaselineFreshnessAndPortfolio(s)) {
     return false;
   }
   if (s.evidenceClass === 'historical-proxy') {
-    return s.usability === null;
+    return s.usability === null && isPlainObject(s.historicalProxySummary);
   }
-  if (s.sourceComplete && s.observationCount > 0 && s.freshnessStatus === 'fresh' && s.dataCompletenessPct === 100) {
+  if (s.historicalProxySummary !== null) return false;
+  if (s.sourceComplete && s.observationCount > 0 && !s.stale && s.dataCompletenessPct === 100) {
     return validCompleteUsabilitySnapshot(s.usability);
   }
   return isPlainObject(s.usability);
@@ -718,7 +767,7 @@ function evaluateBaselineComparison(baseline, candidate) {
 
   const bothReady = baseline.sourceComplete && candidate.sourceComplete &&
     baseline.observationCount > 0 && candidate.observationCount > 0 &&
-    baseline.freshnessStatus === 'fresh' && candidate.freshnessStatus === 'fresh' &&
+    !baseline.stale && !candidate.stale &&
     baseline.dataCompletenessPct === 100 && candidate.dataCompletenessPct === 100;
   if (!bothReady) {
     return unavailable('INCOMPLETE_OR_STALE_EVIDENCE');
