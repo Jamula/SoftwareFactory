@@ -37,6 +37,7 @@ public sealed class SpecialistPromptRequest
     public required long RepositoryId { get; init; }
     public required int Iteration { get; init; }
     public required IReadOnlyList<string> OwnedPaths { get; init; }
+    public IReadOnlyList<string> ExpectedCandidatePaths { get; init; } = [];
 }
 
 public interface IOfflineSyntheticChatClient : IChatClient
@@ -159,7 +160,7 @@ public sealed class DeterministicSyntheticChatClient : IOfflineSyntheticChatClie
         {
             SyntheticScenario.OutOfLanePathAttempt when request.Stage == "coder" => ["unowned-surface/rogue.cs"],
             SyntheticScenario.ProtectedControlPlaneAttempt when request.Stage == "coder" => [".github/workflows/validate.yml"],
-            _ => [ownedTarget]
+            _ => request.ExpectedCandidatePaths.Count > 0 ? request.ExpectedCandidatePaths : [ownedTarget]
         };
 
         bool deficitOnThisTurn = (_scenario == SyntheticScenario.RepairableCoverageDeficit && request.Iteration == 0)

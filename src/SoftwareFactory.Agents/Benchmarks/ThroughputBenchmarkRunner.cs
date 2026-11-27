@@ -180,34 +180,52 @@ public static class ThroughputBenchmarkRunner
         }
 
         int comparableUnits = Math.Min(input.BaselineComparableUnits, input.CandidateComparableUnits);
-        double ratio = Math.Round(rawRatio, 4);
+        double displayRatio = Math.Round(rawRatio, 4);
 
         if (comparableUnits < 5)
         {
-            return DenyCohort(input.TargetMultiplier, "MIN_COMPARABLE_UNITS_REQUIRED", ratio, comparableUnits);
+            return DenyCohort(input.TargetMultiplier, "MIN_COMPARABLE_UNITS_REQUIRED", displayRatio, comparableUnits);
         }
 
         if (input.IncrementalUnapprovedSpendUsd > 0.0 || input.CandidateCostCreditsPerUnit > input.BaselineCostCreditsPerUnit)
         {
-            return DenyCohort(input.TargetMultiplier, "COST_REGRESSION_REJECTED", ratio, comparableUnits);
+            return DenyCohort(input.TargetMultiplier, "COST_REGRESSION_REJECTED", displayRatio, comparableUnits);
         }
 
         if (input.CandidateLineCoveragePct < 98.0 || input.CandidateLineCoveragePct < input.BaselineLineCoveragePct)
         {
-            return DenyCohort(input.TargetMultiplier, "LINE_COVERAGE_REGRESSION_REJECTED", ratio, comparableUnits);
+            return DenyCohort(input.TargetMultiplier, "LINE_COVERAGE_REGRESSION_REJECTED", displayRatio, comparableUnits);
         }
 
         if (input.CandidateBranchCoveragePct < 95.0 || input.CandidateBranchCoveragePct < input.BaselineBranchCoveragePct)
         {
-            return DenyCohort(input.TargetMultiplier, "BRANCH_COVERAGE_REGRESSION_REJECTED", ratio, comparableUnits);
+            return DenyCohort(input.TargetMultiplier, "BRANCH_COVERAGE_REGRESSION_REJECTED", displayRatio, comparableUnits);
         }
 
-        if (input.CandidateUnresolvedFindings > 0)
+        if (input.CandidateUnresolvedFindings > 0
+            || input.CandidateReworkRate > input.BaselineReworkRate
+            || input.CandidateInterventionsPerUnit > input.BaselineInterventionsPerUnit)
         {
-            return DenyCohort(input.TargetMultiplier, "QUALITY_OR_REVIEW_REGRESSION_REJECTED", ratio, comparableUnits);
+            return DenyCohort(input.TargetMultiplier, "QUALITY_OR_REVIEW_REGRESSION_REJECTED", displayRatio, comparableUnits);
         }
 
-        bool achieved = ratio >= input.TargetMultiplier;
+        bool achieved = rawRatio >= input.TargetMultiplier;
+        if (!input.ProvenanceVerified || !input.CostAccountingVerified)
+        {
+            return new CohortComparisonResult
+            {
+                TargetMultiplier = input.TargetMultiplier,
+                Eligible = false,
+                TargetAchieved = achieved,
+                Verified = false,
+                SyntheticIllustrativeOnly = true,
+                Status = "UNVERIFIED_PROVENANCE_OR_COST",
+                ReasonCode = "UNVERIFIED_PROVENANCE_OR_COST",
+                MeasuredSpeedupRatio = displayRatio,
+                ComparableAcceptedUnits = comparableUnits
+            };
+        }
+
         return new CohortComparisonResult
         {
             TargetMultiplier = input.TargetMultiplier,
@@ -217,13 +235,16 @@ public static class ThroughputBenchmarkRunner
             SyntheticIllustrativeOnly = false,
             Status = achieved ? "measured-cohort-verified" : "measured-cohort-below-stretch",
             ReasonCode = achieved ? "COHORT_IMPROVEMENT_VERIFIED" : "TARGET_MULTIPLIER_NOT_REACHED",
-            MeasuredSpeedupRatio = ratio,
+            MeasuredSpeedupRatio = displayRatio,
             ComparableAcceptedUnits = comparableUnits
         };
     }
 
     private static bool HasValidFiniteNumbers(CohortSampleInput? input) =>
         input is not null
+        && input.RepositoryId > 0
+        && double.IsFinite(input.ObservationWindowHours)
+        && input.ObservationWindowHours > 0.0
         && input.TargetMultiplier > 0
         && input.BaselineComparableUnits >= 0
         && input.CandidateComparableUnits >= 0
@@ -239,6 +260,14 @@ public static class ThroughputBenchmarkRunner
         && input.BaselineCostCreditsPerUnit >= 0.0
         && double.IsFinite(input.CandidateCostCreditsPerUnit)
         && input.CandidateCostCreditsPerUnit >= 0.0
+        && double.IsFinite(input.BaselineReworkRate)
+        && input.BaselineReworkRate is >= 0.0 and <= 1.0
+        && double.IsFinite(input.CandidateReworkRate)
+        && input.CandidateReworkRate is >= 0.0 and <= 1.0
+        && double.IsFinite(input.BaselineInterventionsPerUnit)
+        && input.BaselineInterventionsPerUnit >= 0.0
+        && double.IsFinite(input.CandidateInterventionsPerUnit)
+        && input.CandidateInterventionsPerUnit >= 0.0
         && double.IsFinite(input.IncrementalUnapprovedSpendUsd)
         && input.IncrementalUnapprovedSpendUsd >= 0.0
         && input.CandidateUnresolvedFindings >= 0;

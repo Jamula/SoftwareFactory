@@ -45,6 +45,47 @@ public static class SoftwareFactoryTelemetry
         "verified"
     };
 
+    private static readonly HashSet<string> AllowedReasonCodes = new(StringComparer.Ordinal)
+    {
+        "PLANNING",
+        "CONTRACT_PLANNED",
+        "CODING",
+        "CANDIDATE_PATCH_READY",
+        "VERIFYING_TESTS",
+        "COVERAGE_VERIFIED",
+        "COVERAGE_INCOMPLETE",
+        "VERIFYING_SECURITY",
+        "SECURITY_AND_REVIEW_CLEAR",
+        "SECURITY_OR_REVIEW_BLOCKED",
+        "AGGREGATING",
+        "SHADOW_ELIGIBLE",
+        "REPAIR_ITERATION_SCHEDULED",
+        "REPAIR_BUDGET_EXHAUSTED",
+        "CHECKPOINT_COMMITTED",
+        "CHECKPOINT_VERIFIED",
+        "BENCHMARK_STARTED",
+        "BENCHMARK_COMPLETED",
+        "CONTRACT_VALID",
+        "CONTRACT_NULL",
+        "CROSS_REPO_ISOLATION_VIOLATION",
+        "INVALID_REPOSITORY_SLUG",
+        "INVALID_HEAD_SHA",
+        "INVALID_ISSUE_NUMBER",
+        "INVALID_LANE_ID",
+        "UNKNOWN_SPECIALIST_ROLE",
+        "INVALID_OWNED_PATHS",
+        "UNSAFE_OR_DUPLICATE_OWNED_PATH",
+        "COVERAGE_THRESHOLD_BELOW_FLOOR",
+        "INVALID_REPAIR_BUDGET",
+        "INVALID_TRACEPARENT",
+        "EMPTY_OR_EXCESSIVE_CANDIDATE_PATHS",
+        "UNSAFE_PATH_REJECTED",
+        "DUPLICATE_CANDIDATE_PATH",
+        "PROTECTED_CONTROL_PLANE_PATH_REJECTED",
+        "OUT_OF_LANE_PATH_REJECTED",
+        "SPECIALIST_RESPONSE_MISMATCH"
+    };
+
     public static Activity? StartStageActivity(
         string stage,
         string lane,
@@ -94,7 +135,6 @@ public static class SoftwareFactoryTelemetry
         activity.SetTag("sf.outcome", sanitizedOutcome);
         activity.SetTag("sf.reason", sanitizedReason);
         activity.SetStatus(sanitizedOutcome == "blocked" ? ActivityStatusCode.Error : ActivityStatusCode.Ok);
-        StageDurationHistogram.Record(Math.Max(0.0, activity.Duration.TotalMilliseconds), metricTags);
 
         ILogger? logger = Volatile.Read(ref s_stageLogger);
         if (logger is not null)
@@ -112,6 +152,9 @@ public static class SoftwareFactoryTelemetry
                 exception: null,
                 static (_, _) => "sf.agent.stage.completed");
         }
+
+        activity.Stop();
+        StageDurationHistogram.Record(Math.Max(0.0, activity.Duration.TotalMilliseconds), metricTags);
     }
 
     public static string SanitizeStage(string? stage) =>
@@ -123,24 +166,8 @@ public static class SoftwareFactoryTelemetry
     public static string SanitizeOutcome(string? outcome) =>
         outcome is not null && AllowedOutcomes.Contains(outcome) ? outcome : "blocked";
 
-    public static string SanitizeReasonCode(string? reason)
-    {
-        if (string.IsNullOrEmpty(reason) || reason.Length > 64)
-        {
-            return "UNCLASSIFIED_REASON";
-        }
-
-        foreach (char c in reason)
-        {
-            bool valid = (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
-            if (!valid)
-            {
-                return "UNCLASSIFIED_REASON";
-            }
-        }
-
-        return reason;
-    }
+    public static string SanitizeReasonCode(string? reason) =>
+        reason is not null && AllowedReasonCodes.Contains(reason) ? reason : "UNCLASSIFIED_REASON";
 
     private static Activity? TryCreateActivity(string sanitizedStage, string? traceParent)
     {

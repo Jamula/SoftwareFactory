@@ -9,11 +9,13 @@ namespace SoftwareFactory.Agents.Workflows;
 
 public static class SpecialistPromptHelper
 {
-    public static async ValueTask<SpecialistAgentPayload> InvokeSpecialistAsync(
+    public static async ValueTask<(SpecialistAgentPayload Payload, string? MismatchReason)> InvokeSpecialistAsync(
         AIAgent agent,
         string stage,
         WorkItemContract contract,
+        long trustedRepositoryId,
         int iteration,
+        IReadOnlyList<string> expectedCandidatePaths,
         CancellationToken cancellationToken)
     {
         var prompt = new SpecialistPromptRequest
@@ -21,13 +23,31 @@ public static class SpecialistPromptHelper
             Stage = stage,
             RepositoryId = contract.RepositoryId,
             Iteration = iteration,
-            OwnedPaths = contract.OwnedPaths
+            OwnedPaths = contract.OwnedPaths,
+            ExpectedCandidatePaths = expectedCandidatePaths
         };
 
         string requestJson = JsonSerializer.Serialize(prompt);
         AgentResponse response = await agent.RunAsync(requestJson, session: null, options: null, cancellationToken).ConfigureAwait(false);
-        return JsonSerializer.Deserialize<SpecialistAgentPayload>(response.Text)
+        SpecialistAgentPayload payload = JsonSerializer.Deserialize<SpecialistAgentPayload>(response.Text)
             ?? throw new InvalidOperationException("INVALID_SPECIALIST_RESPONSE");
+
+        if (payload.CandidateRepositoryId != trustedRepositoryId || payload.CandidateRepositoryId != contract.RepositoryId)
+        {
+            return (payload, "CROSS_REPO_ISOLATION_VIOLATION");
+        }
+
+        if (!string.Equals(payload.Role, stage, StringComparison.Ordinal) || payload.ProposedPaths is null)
+        {
+            return (payload, "SPECIALIST_RESPONSE_MISMATCH");
+        }
+
+        if (expectedCandidatePaths.Count > 0 && !payload.ProposedPaths.SequenceEqual(expectedCandidatePaths, StringComparer.Ordinal))
+        {
+            return (payload, "SPECIALIST_RESPONSE_MISMATCH");
+        }
+
+        return (payload, null);
     }
 }
 
@@ -69,12 +89,28 @@ public sealed class PlannerExecutor : Executor<WorkItemEnvelope, CoderWorkOrder>
             };
         }
 
-        SpecialistAgentPayload plan = await SpecialistPromptHelper.InvokeSpecialistAsync(
+        (SpecialistAgentPayload plan, string? mismatchReason) = await SpecialistPromptHelper.InvokeSpecialistAsync(
             _agent,
             "planner",
             contract!,
+            message.TrustedRepositoryId,
             iteration: 0,
+            expectedCandidatePaths: [],
             cancellationToken).ConfigureAwait(false);
+
+        if (mismatchReason is not null)
+        {
+            SoftwareFactoryTelemetry.SetStageResult(activity, "blocked", mismatchReason);
+            return new CoderWorkOrder
+            {
+                Contract = contract!,
+                TrustedRepositoryId = message.TrustedRepositoryId,
+                Iteration = 0,
+                PlannedPaths = [],
+                IsBlocked = true,
+                BlockReason = mismatchReason
+            };
+        }
 
         ContractValidationResult pathCheck = PathOwnershipGuard.ValidateCandidatePaths(
             contract!,
@@ -187,17 +223,21 @@ public sealed class CoderExecutor : Executor<CoderWorkOrder, CandidatePatch>
             "CODING",
             message.Contract.TraceParent);
 
-        SpecialistAgentPayload patch = await SpecialistPromptHelper.InvokeSpecialistAsync(
+        (SpecialistAgentPayload patch, string? mismatchReason) = await SpecialistPromptHelper.InvokeSpecialistAsync(
             _agent,
             "coder",
             message.Contract,
+            message.TrustedRepositoryId,
             message.Iteration,
+            expectedCandidatePaths: [],
             cancellationToken).ConfigureAwait(false);
 
-        ContractValidationResult pathCheck = PathOwnershipGuard.ValidateCandidatePaths(
-            message.Contract,
-            patch.CandidateRepositoryId,
-            patch.ProposedPaths);
+        ContractValidationResult pathCheck = mismatchReason is not null
+            ? ContractValidationResult.Deny(mismatchReason)
+            : PathOwnershipGuard.ValidateCandidatePaths(
+                message.Contract,
+                patch.CandidateRepositoryId,
+                patch.ProposedPaths);
 
         SoftwareFactoryTelemetry.SetStageResult(
             activity,
@@ -262,12 +302,34 @@ public sealed class TestAndCoverageExecutor : Executor<CandidatePatch, Verificat
             };
         }
 
-        SpecialistAgentPayload result = await SpecialistPromptHelper.InvokeSpecialistAsync(
+        (SpecialistAgentPayload result, string? mismatchReason) = await SpecialistPromptHelper.InvokeSpecialistAsync(
             _agent,
             "test-and-coverage",
             message.Contract,
+            message.TrustedRepositoryId,
             message.Iteration,
+            message.TouchedPaths,
             cancellationToken).ConfigureAwait(false);
+
+        if (mismatchReason is not null)
+        {
+            SoftwareFactoryTelemetry.SetStageResult(activity, "blocked", mismatchReason);
+            return new VerificationReport
+            {
+                Kind = VerificationKind.TestAndCoverage,
+                Contract = message.Contract,
+                TrustedRepositoryId = message.TrustedRepositoryId,
+                Iteration = message.Iteration,
+                TouchedPaths = [],
+                Passed = false,
+                Repairable = false,
+                ReasonCode = mismatchReason,
+                LineCoveragePct = 0.0,
+                BranchCoveragePct = 0.0,
+                SecurityClear = false,
+                ReviewClear = false
+            };
+        }
 
         bool coverageMet = result.TestsPassed
             && result.LineCoveragePct >= message.Contract.LineCoverageMin
@@ -340,12 +402,34 @@ public sealed class SecurityAndReviewExecutor : Executor<CandidatePatch, Verific
             };
         }
 
-        SpecialistAgentPayload result = await SpecialistPromptHelper.InvokeSpecialistAsync(
+        (SpecialistAgentPayload result, string? mismatchReason) = await SpecialistPromptHelper.InvokeSpecialistAsync(
             _agent,
             "security-and-review",
             message.Contract,
+            message.TrustedRepositoryId,
             message.Iteration,
+            message.TouchedPaths,
             cancellationToken).ConfigureAwait(false);
+
+        if (mismatchReason is not null)
+        {
+            SoftwareFactoryTelemetry.SetStageResult(activity, "blocked", mismatchReason);
+            return new VerificationReport
+            {
+                Kind = VerificationKind.SecurityAndReview,
+                Contract = message.Contract,
+                TrustedRepositoryId = message.TrustedRepositoryId,
+                Iteration = message.Iteration,
+                TouchedPaths = [],
+                Passed = false,
+                Repairable = false,
+                ReasonCode = mismatchReason,
+                LineCoveragePct = 0.0,
+                BranchCoveragePct = 0.0,
+                SecurityClear = false,
+                ReviewClear = false
+            };
+        }
 
         bool passed = result.SecurityClear && result.ReviewClear;
         string reason = passed ? "SECURITY_AND_REVIEW_CLEAR" : "SECURITY_OR_REVIEW_BLOCKED";

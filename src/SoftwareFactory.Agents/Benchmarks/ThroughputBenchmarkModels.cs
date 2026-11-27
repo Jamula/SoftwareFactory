@@ -21,6 +21,10 @@ public sealed class LogicalLaneSimulationResult
 
 public sealed class CohortSampleInput
 {
+    public long RepositoryId { get; init; } = Contracts.WorkItemContract.SoftwareFactoryRepositoryId;
+    public double ObservationWindowHours { get; init; } = 24.0;
+    public bool ProvenanceVerified { get; init; }
+    public bool CostAccountingVerified { get; init; }
     public required int TargetMultiplier { get; init; }
     public required int BaselineComparableUnits { get; init; }
     public required int CandidateComparableUnits { get; init; }
@@ -32,6 +36,10 @@ public sealed class CohortSampleInput
     public required double CandidateBranchCoveragePct { get; init; }
     public required double BaselineCostCreditsPerUnit { get; init; }
     public required double CandidateCostCreditsPerUnit { get; init; }
+    public double BaselineReworkRate { get; init; }
+    public double CandidateReworkRate { get; init; }
+    public double BaselineInterventionsPerUnit { get; init; }
+    public double CandidateInterventionsPerUnit { get; init; }
     public required int CandidateUnresolvedFindings { get; init; }
     public required double IncrementalUnapprovedSpendUsd { get; init; }
 }

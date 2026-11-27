@@ -98,6 +98,9 @@ public sealed class TelemetryAndAdapterTests
         Assert.Equal("unknown", SoftwareFactoryTelemetry.SanitizeStage(null));
         Assert.Equal("blocked", SoftwareFactoryTelemetry.SanitizeOutcome(null));
         Assert.Equal("UNCLASSIFIED_REASON", SoftwareFactoryTelemetry.SanitizeReasonCode(""));
+        Assert.Equal("UNCLASSIFIED_REASON", SoftwareFactoryTelemetry.SanitizeReasonCode("CUSTOMER_ALICE"));
+        Assert.Equal("UNCLASSIFIED_REASON", SoftwareFactoryTelemetry.SanitizeReasonCode("REQUEST_12345"));
+        Assert.Equal("SHADOW_ELIGIBLE", SoftwareFactoryTelemetry.SanitizeReasonCode("SHADOW_ELIGIBLE"));
     }
 
     [Fact]

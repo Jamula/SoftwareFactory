@@ -111,6 +111,33 @@ public sealed class SpecialistWorkflowAndCliTests
             await SpecialistWorkflowEngine.ExecuteAsync(
                 new WorkItemEnvelope { Contract = contract, TrustedRepositoryId = contract.RepositoryId },
                 nullReplyClient));
+
+        // Planner role mismatch fails closed immediately:
+        using var wrongRolePlannerClient = new CustomOfflineStubChatClient("{\"Role\":\"coder\",\"CandidateRepositoryId\":1471342715,\"ProposedPaths\":[\"src/SoftwareFactory.Agents/a.cs\"],\"LineCoveragePct\":99,\"BranchCoveragePct\":98,\"TestsPassed\":true,\"SecurityClear\":true,\"ReviewClear\":true,\"Repairable\":false,\"ReasonCode\":\"STAGE_OK\"}");
+        WorkflowExecutionReceipt wrongRolePlan = await SpecialistWorkflowEngine.ExecuteAsync(
+            new WorkItemEnvelope { Contract = contract, TrustedRepositoryId = contract.RepositoryId },
+            wrongRolePlannerClient);
+        Assert.Equal("blocked", wrongRolePlan.Decision.Outcome);
+        Assert.Equal("SPECIALIST_RESPONSE_MISMATCH", wrongRolePlan.Decision.ReasonCode);
+
+        // Verifiers reject relabeled paths or mismatched specialist roles without repair:
+        using var verifierPathMismatchClient = new StageSelectiveOfflineChatClient(
+            testStageOverrideJson: "{\"Role\":\"test-and-coverage\",\"CandidateRepositoryId\":1471342715,\"ProposedPaths\":[\"src/SoftwareFactory.Agents/other.cs\"],\"LineCoveragePct\":99.9,\"BranchCoveragePct\":99.9,\"TestsPassed\":true,\"SecurityClear\":true,\"ReviewClear\":true,\"Repairable\":true,\"ReasonCode\":\"STAGE_OK\"}");
+        WorkflowExecutionReceipt testMismatch = await SpecialistWorkflowEngine.ExecuteAsync(
+            new WorkItemEnvelope { Contract = contract, TrustedRepositoryId = contract.RepositoryId },
+            verifierPathMismatchClient);
+        Assert.Equal("blocked", testMismatch.Decision.Outcome);
+        Assert.Equal("SPECIALIST_RESPONSE_MISMATCH", testMismatch.Decision.ReasonCode);
+        Assert.Equal(1, testMismatch.Invocations.CoderInvocations);
+
+        using var securityMismatchClient = new StageSelectiveOfflineChatClient(
+            securityStageOverrideJson: "{\"Role\":\"wrong-role\",\"CandidateRepositoryId\":1471342715,\"ProposedPaths\":[\"src/SoftwareFactory.Agents/deterministic-unit.cs\"],\"LineCoveragePct\":99.9,\"BranchCoveragePct\":99.9,\"TestsPassed\":true,\"SecurityClear\":true,\"ReviewClear\":true,\"Repairable\":true,\"ReasonCode\":\"STAGE_OK\"}");
+        WorkflowExecutionReceipt secMismatch = await SpecialistWorkflowEngine.ExecuteAsync(
+            new WorkItemEnvelope { Contract = contract, TrustedRepositoryId = contract.RepositoryId },
+            securityMismatchClient);
+        Assert.Equal("blocked", secMismatch.Decision.Outcome);
+        Assert.Equal("SPECIALIST_RESPONSE_MISMATCH", secMismatch.Decision.ReasonCode);
+        Assert.Equal(1, secMismatch.Invocations.CoderInvocations);
     }
 
     [Fact]
@@ -212,6 +239,10 @@ public sealed class SpecialistWorkflowAndCliTests
 
         var validCohort = new CohortSampleInput
         {
+            RepositoryId = WorkItemContract.SoftwareFactoryRepositoryId,
+            ObservationWindowHours = 24.0,
+            ProvenanceVerified = true,
+            CostAccountingVerified = true,
             TargetMultiplier = 10,
             BaselineComparableUnits = 6,
             CandidateComparableUnits = 7,
@@ -223,6 +254,10 @@ public sealed class SpecialistWorkflowAndCliTests
             CandidateBranchCoveragePct = 96.5,
             BaselineCostCreditsPerUnit = 5.0,
             CandidateCostCreditsPerUnit = 4.5,
+            BaselineReworkRate = 0.1,
+            CandidateReworkRate = 0.05,
+            BaselineInterventionsPerUnit = 0.2,
+            CandidateInterventionsPerUnit = 0.0,
             CandidateUnresolvedFindings = 0,
             IncrementalUnapprovedSpendUsd = 0.0
         };
@@ -232,6 +267,27 @@ public sealed class SpecialistWorkflowAndCliTests
         Assert.True(measuredReport.MatchedCohorts[0].Verified);
         Assert.False(measuredReport.MatchedCohorts[0].SyntheticIllustrativeOnly);
         Assert.Equal("COHORT_IMPROVEMENT_VERIFIED", measuredReport.MatchedCohorts[0].ReasonCode);
+
+        // Numeric totals without ProvenanceVerified & CostAccountingVerified remain unverified/illustrative:
+        CohortComparisonResult unverifiedProvenance = ThroughputBenchmarkRunner.EvaluateCohortComparison(
+            CloneCohort(validCohort, provenanceVerified: false));
+        Assert.False(unverifiedProvenance.Eligible);
+        Assert.False(unverifiedProvenance.Verified);
+        Assert.True(unverifiedProvenance.SyntheticIllustrativeOnly);
+        Assert.Equal("UNVERIFIED_PROVENANCE_OR_COST", unverifiedProvenance.ReasonCode);
+
+        // Unrounded ratio comparison: 19.99998 / 2.0 = 9.99999 (< 10x), even though Math.Round(..., 4) displays 10:
+        CohortComparisonResult nearMiss = ThroughputBenchmarkRunner.EvaluateCohortComparison(
+            CloneCohort(validCohort, candidateAcceptedPerDay: 19.99998));
+        Assert.True(nearMiss.Eligible);
+        Assert.False(nearMiss.TargetAchieved);
+        Assert.False(nearMiss.Verified);
+        Assert.Equal("TARGET_MULTIPLIER_NOT_REACHED", nearMiss.ReasonCode);
+
+        // Rework or intervention regression is rejected:
+        Assert.Equal(
+            "QUALITY_OR_REVIEW_REGRESSION_REJECTED",
+            ThroughputBenchmarkRunner.EvaluateCohortComparison(CloneCohort(validCohort, candidateReworkRate: 0.25)).ReasonCode);
 
         Assert.Equal("INVALID_COHORT_INPUT", ThroughputBenchmarkRunner.EvaluateCohortComparison(null).ReasonCode);
         Assert.Equal(
@@ -343,6 +399,7 @@ public sealed class SpecialistWorkflowAndCliTests
 
     private static CohortSampleInput CloneCohort(
         CohortSampleInput source,
+        bool? provenanceVerified = null,
         int? targetMultiplier = null,
         int? candidateComparableUnits = null,
         double? baselineAcceptedPerDay = null,
@@ -352,10 +409,15 @@ public sealed class SpecialistWorkflowAndCliTests
         double? baselineBranchPct = null,
         double? candidateBranchPct = null,
         double? candidateCostCredits = null,
+        double? candidateReworkRate = null,
         int? unresolvedFindings = null,
         double? incrementalSpendUsd = null) =>
         new()
         {
+            RepositoryId = source.RepositoryId,
+            ObservationWindowHours = source.ObservationWindowHours,
+            ProvenanceVerified = provenanceVerified ?? source.ProvenanceVerified,
+            CostAccountingVerified = source.CostAccountingVerified,
             TargetMultiplier = targetMultiplier ?? source.TargetMultiplier,
             BaselineComparableUnits = source.BaselineComparableUnits,
             CandidateComparableUnits = candidateComparableUnits ?? source.CandidateComparableUnits,
@@ -367,9 +429,50 @@ public sealed class SpecialistWorkflowAndCliTests
             CandidateBranchCoveragePct = candidateBranchPct ?? source.CandidateBranchCoveragePct,
             BaselineCostCreditsPerUnit = source.BaselineCostCreditsPerUnit,
             CandidateCostCreditsPerUnit = candidateCostCredits ?? source.CandidateCostCreditsPerUnit,
+            BaselineReworkRate = source.BaselineReworkRate,
+            CandidateReworkRate = candidateReworkRate ?? source.CandidateReworkRate,
+            BaselineInterventionsPerUnit = source.BaselineInterventionsPerUnit,
+            CandidateInterventionsPerUnit = source.CandidateInterventionsPerUnit,
             CandidateUnresolvedFindings = unresolvedFindings ?? source.CandidateUnresolvedFindings,
             IncrementalUnapprovedSpendUsd = incrementalSpendUsd ?? source.IncrementalUnapprovedSpendUsd
         };
+
+    private sealed class StageSelectiveOfflineChatClient(
+        string? testStageOverrideJson = null,
+        string? securityStageOverrideJson = null) : IOfflineSyntheticChatClient
+    {
+        private readonly DeterministicSyntheticChatClient _inner = new();
+
+        public Task<ChatResponse> GetResponseAsync(
+            IEnumerable<ChatMessage> messages,
+            ChatOptions? options = null,
+            CancellationToken cancellationToken = default)
+        {
+            ChatMessage lastUser = messages.Last(static m => m.Role == ChatRole.User);
+            SpecialistPromptRequest req = JsonSerializer.Deserialize<SpecialistPromptRequest>(lastUser.Text)!;
+            if (req.Stage == "test-and-coverage" && testStageOverrideJson is not null)
+            {
+                return Task.FromResult(new ChatResponse(new ChatMessage(ChatRole.Assistant, testStageOverrideJson)));
+            }
+
+            if (req.Stage == "security-and-review" && securityStageOverrideJson is not null)
+            {
+                return Task.FromResult(new ChatResponse(new ChatMessage(ChatRole.Assistant, securityStageOverrideJson)));
+            }
+
+            return _inner.GetResponseAsync(messages, options, cancellationToken);
+        }
+
+        public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
+            IEnumerable<ChatMessage> messages,
+            ChatOptions? options = null,
+            CancellationToken cancellationToken = default) =>
+            _inner.GetStreamingResponseAsync(messages, options, cancellationToken);
+
+        public object? GetService(Type serviceType, object? serviceKey = null) => null;
+
+        public void Dispose() => _inner.Dispose();
+    }
 
     private sealed class CustomOfflineStubChatClient(string responseText) : IOfflineSyntheticChatClient
     {
