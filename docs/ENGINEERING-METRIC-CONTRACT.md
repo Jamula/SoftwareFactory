@@ -1,33 +1,46 @@
-# Engineering metric contract (draft)
-Contributes to #18; coordinates #9, #15, #16. Aspire remains local diagnostics; this contract is for historical aggregates. No measurements are asserted here.
+# Engineering metric contract
+Supports #18 (M02.02) and coordinates #9, #15, #16. Aspire remains local diagnostics; this contract defines read-only historical and scorecard aggregates (`tools/engineering-factory/outcome-measurement.mjs` and `tools/engineering-factory/stage-aggregate.mjs`). No live autonomous measurements are asserted by this document before verified #10 pilot evidence exists.
 
 | Metric | Definition / provenance |
 |---|---|
-| Accepted throughput | Count distinct comparable work units with verified acceptance in window / elapsed days; PR counts secondary |
-| Cycle time | Acceptance timestamp minus first authorized work start, p50/p95 plus sample count |
-| Dispatch latency | First eligible timestamp to dispatch, excluding never-dispatched samples; report censored count |
-| CI/review duration | Trusted workflow or review stage start/end, with exact candidate correlation |
-| Rework | Distinct failed/reopened attempts per accepted unit; deduplicate attempt IDs |
-| Cost | Verified attributable incremental spend / accepted units; unknown cost or denominator produces unknown |
-| Utilization | Observed active time / observed allocated capacity, with coverage and idle/blocked breakdown |
-| Coverage | Source covered/total line and branch counts per component, overall from counts; never average percentages |
-| Improvement | Comparable accepted throughput / matched baseline; undefined when baseline missing or zero |
+| Accepted throughput | Count distinct comparable work units with verified acceptance in `[fromMs, toMs)` / elapsed days; PR counts secondary |
+| Cycle time (`ready->accepted`) | Verified acceptance minus issue readiness, nearest-rank p50/p95 plus sample count (25 min initial / 7 min stretch) |
+| Ready to first PR (`ready->firstPr`) | Verified issue readiness to first candidate PR creation, excluding open/censored samples from percentiles (10 min initial / 2 min stretch) |
+| CI check duration (`ciEvent->lastRequiredCheck`) | Trusted candidate event to completion of last required automated check (`p50 < 75 s` initial / `<= 30 s` stretch) |
+| Eligible merge (`eligible->merge`) | Verified fresh merge eligibility plus authority to protected merge receipt (`p95 <= 120 s` initial / `<= 30 s` stretch) |
+| Rework | Distinct candidate rework rounds (`candidateRounds - 1`) plus verified reopenings per accepted unit; deduplicate attempt IDs |
+| Human interventions | Verified `routineCount` (0 objective) and separate owner `governanceCount`; missing or incomplete tracking is `unknown`, never `0` |
+| Cost | Verified attributable incremental USD spend / accepted units (`verified-zero` `$0` vs `verified-spend` vs `unknown`); missing receipt or zero denominator is `unknown` |
+| Utilization | Observed `activeMs / allocatedMs` (`activeMs + blockedMs + idleMs`), with bounded `blockedByReasonMs` (`DEPENDENCY`, `REVIEW`, `CI`, `QUOTA`, `MERGE_QUEUE`, `POLICY`, `SECURITY`, `OTHER`) |
+| Coverage & safety | Source covered/total line and branch counts (SoftwareFactory >=98% / >=95%; consumers >=95% / >=90% or stricter) plus zero failed-main, unauthorized-write, duplicate-dispatch, and budget violations |
+| Improvement | Comparable accepted throughput / matched baseline (`>= 5` comparable accepted units in both non-overlapping equal-duration windows); undefined when baseline missing, zero, or guardrails regress |
 
-Record source kind (synthetic, verified live), schema version, authorized repository scope, bounded stage/outcome/reason enums, observation time, sanitized evidence key and deduplication key. Keep raw prompts, issue bodies, names, tokens and high-cardinality IDs out of metric labels. Restrict drill-down to authorized repository and sanitized evidence; no cross-repository private data.
+## Provenance isolation
 
-Every aggregate carries window, last observation, sample count, source completeness, stale/unknown status, and baseline cohort. Missing evidence is never zero. Every ratio with a zero or unknown denominator is unknown (not zero or infinity), including cost per accepted unit, utilization, coverage and throughput; distinguish a genuinely measured zero numerator with a positive denominator. Do not infer DORA production metrics from local simulations. The 25× target is a hypothesis; report 2×/5×/10×/15×/20×/25× only as measured comparable ratios with quality and cost guardrails.
+Every scorecard query and receipt carries an explicit provenance class from `SCORECARD_PROVENANCES`:
 
-Acceptance fixtures: duplicate events, out-of-order events, missing timestamps, partial source coverage, zero denominator, stale observation, synthetic/live isolation, unauthorized scope, cohort changes and retention expiration. Storage/retention choice follows verified free/local capacity and restart tests.
+1. `verified-autonomous-outcome` — sanitized GitHub-hosted autonomous execution receipts.
+2. `synthetic-fixture` — deterministic replay or simulation fixtures.
+3. `historical-github-proxy` — public GitHub proxy snapshots (`issue-created-to-close`, `pr-created-to-merge`).
+
+`aggregateScorecardStages`, `buildVelocityScorecard`, and `compareVelocityScorecards` enforce strict provenance isolation (`PROVENANCE_ISOLATION_VIOLATION`). Historical GitHub proxy records may be displayed only inside a quarantined `historicalProxyContext` section (`nonAutonomousProxyOnly: true`) and can never populate or blend into `throughput`, `stages`, `rework`, `utilization`, `humanInterventions`, `cost`, `quality`, `baselineComparison`, or `autonomousSpeedClaimEligible`. Synthetic fixtures can never set `autonomousSpeedClaimEligible: true` or compare against `verified-autonomous-outcome` cohorts.
+
+Record provenance, schema version, authorized repository scope, sanitized cohort label, bounded stage/outcome/reason enums, observation time, and deduplication key. Reject extra fields, accessors, and proxies so raw prompts, issue bodies, titles, actor names, tokens, and high-cardinality IDs never enter scorecard records. Restrict evaluation to a single `repositoryId` in `authorizedRepositoryIds`.
+
+Every aggregate carries `[fromMs, toMs)`, `observedMs`, sample counts, source completeness, censored/unknown counts, and cohort label. Missing evidence is never zero. Every ratio with a zero or unknown denominator is `null` (`unknown`), including cost per accepted unit, utilization (`ZERO_ALLOCATED_CAPACITY`), coverage, and baseline multiplier; a genuinely measured zero numerator with a positive denominator (`0` `$0` spend across `>= 1` accepted units with verified receipts, or `0` `activeMs` with positive `allocatedMs`) is preserved as `0`. Require `MIN_COMPARABLE_ACCEPTED_UNITS = 5` comparable accepted units before setting `exploratoryComparisonEligible` or computing `compareVelocityScorecards` multipliers (`2x`, `5x`, `10x`, `15x`, `20x`, `25x`).
 
 
-## PR publication and completion SLO
+## Canonical stage velocity and completion SLOs
 
-| Stage | Start → end | Initial / stretch |
+| Stage key | Start → end | Initial / stretch |
 | --- | --- | --- |
-| Draft to publish | PR creation → first ready-for-review event (or explicit ready-at-creation evidence) | 3 min / 1 min |
-| Publish to merge | First publication → successful protected merge | 7 min / 3 min |
-| Created to merge | PR creation → successful protected merge | 10 min / 4 min |
-| Merge to verified main | Actual merge → exact merged commit independently verified healthy | 2 min / 1 min |
+| `ready->firstPr` | Issue readiness → first candidate PR creation | 10 min (`600000 ms`) / 2 min (`120000 ms`) |
+| `draft->publish` | PR creation → first ready-for-review event (`0 ms` if explicitly created ready) | 3 min (`180000 ms`) / 1 min (`60000 ms`) |
+| `publish->merge` | First publication → successful protected merge | 7 min (`420000 ms`) / 3 min (`180000 ms`) |
+| `creation->merge` | PR creation → successful protected merge | 10 min (`600000 ms`) / 4 min (`240000 ms`) |
+| `merge->verifiedMain` | Actual merge → exact merged commit independently verified healthy | 2 min (`120000 ms`) / 1 min (`60000 ms`) |
+| `eligible->merge` | Fresh verified eligibility + authority → protected merge receipt | 2 min (`120000 ms`) / 30 s (`30000 ms`) |
+| `ciEvent->lastRequiredCheck` | Candidate event → last required automated check (`p50 < 75 s` initial) | `< 75 s` (`75000 ms`) / `<= 30 s` (`30000 ms`) |
 
 Use authoritative PR creation, ready-for-review timeline events, merge and main-verification evidence. Do not substitute updated_at for publication. A PR explicitly created ready has zero draft time; an unknown initial state or incomplete publication history is unknown. Clock starts at creation and first publication and never resets on re-draft, re-publication, head changes or retry. Report open elapsed ages separately as right-censored, not completed durations. Report p50/p95, sample size, window, missing/censored counts and SLO misses for comparable work, including overdue open PRs. Distinguish historical created-to-merge proxies from verified main and issue acceptance. Break delays down into runner queue, runtime (Linux/Windows), security, independent review, rework, ready-to-publish idle, eligible-to-enqueue idle, merge queue/revalidation and verification; do not sum overlapping stages. Use existing OTel/reporting boundaries. SLO is diagnostic, never grounds for skipping security, review, tests, coverage or protection, or adding spend.
 
