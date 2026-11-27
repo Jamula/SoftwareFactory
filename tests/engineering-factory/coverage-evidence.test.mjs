@@ -105,6 +105,7 @@ test('verifyCandidateGateReceipt reconciles rulesets, fork PRs, merge_group chec
    required_approving_review_count:0,
    required_review_thread_resolution:true,
    allowed_merge_methods:['squash'],
+   merge_queue_merge_method:'SQUASH',
    merge_queue_grouping:'ALLGREEN',
    bypass_actors:0,
    secret_scanning_required:true,
@@ -132,6 +133,7 @@ test('verifyCandidateGateReceipt reconciles rulesets, fork PRs, merge_group chec
    unresolvedSummaryFindings:0,
    blockingReviewCount:0
   },
+  baseCoverage:{head:base,lines:98,lineTotal:100},
   expectedComponents:['core'],
   coverageReports:[r]
  });
@@ -145,7 +147,10 @@ test('verifyCandidateGateReceipt reconciles rulesets, fork PRs, merge_group chec
 
  for(const patch of [
   {repository:'example/other'},{repositoryId:1},{branch:'dev'},{headRepository:'bad'},
-  {isFork:'no'},{head:'bad'},{base:'bad'},{base:h},{mergeGroupHead:'bad'},{secretScanningClear:'yes'},{threadsResolved:null},
+  {isFork:'no'},{head:'bad'},{base:'bad'},{base:h},{mergeGroupHead:'bad'},
+  {mergeGroupHead:h,mergeGroup:{head:h,base,memberHeads:[h]},mergeGroupChecks:contexts.map(name=>({name,head:h,appId:15368,event:'merge_group',status:'completed',conclusion:'success'}))},
+  {mergeGroupHead:base,mergeGroup:{head:base,base,memberHeads:[h]},mergeGroupChecks:contexts.map(name=>({name,head:base,appId:15368,event:'merge_group',status:'completed',conclusion:'success'}))},
+  {secretScanningClear:'yes'},{threadsResolved:null},
   {trustedReviewers:null},{trustedReviewers:[]},{trustedReviewers:[' bad']},
   {trustedReviewers:['human-reviewer','Human-Reviewer']},{extra:1}
  ])assert.equal(verifyReceipt({...baseReceipt(),...patch}).reason,'RECEIPT_UNKNOWN');
@@ -161,6 +166,7 @@ test('verifyCandidateGateReceipt reconciles rulesets, fork PRs, merge_group chec
  for(const badRuleset of [
   null,{...baseReceipt().ruleset,required_status_checks:null},{...baseReceipt().ruleset,allowed_merge_methods:null},
   {...baseReceipt().ruleset,code_scanning_tools:null},
+  (() => { const rs={...baseReceipt().ruleset}; delete rs.merge_queue_merge_method; return rs; })(),
   {...baseReceipt().ruleset,required_status_checks:[{context:'',integration_id:15368}]},
   {...baseReceipt().ruleset,required_status_checks:[{context:'build-test',integration_id:0}]},
   {...baseReceipt().ruleset,required_status_checks:[...baseReceipt().ruleset.required_status_checks,{context:'build-test',integration_id:15368}]},
@@ -171,6 +177,7 @@ test('verifyCandidateGateReceipt reconciles rulesets, fork PRs, merge_group chec
   {strict_required_status_checks_policy:false},{required_review_thread_resolution:false},
   {required_approving_review_count:-1},{required_approving_review_count:1},{required_approving_review_count:2},
   {allowed_merge_methods:['merge']},{allowed_merge_methods:['squash','merge']},
+  {merge_queue_merge_method:'MERGE'},{merge_queue_merge_method:'REBASE'},
   {merge_queue_grouping:'SOLO'},{bypass_actors:1},{secret_scanning_required:false},
   {required_status_checks:baseReceipt().ruleset.required_status_checks.slice(0,2)},
   {required_status_checks:baseReceipt().ruleset.required_status_checks.map((c,i)=>i===0?{...c,integration_id:99}:c)},
@@ -197,6 +204,7 @@ test('verifyCandidateGateReceipt reconciles rulesets, fork PRs, merge_group chec
  for(const badMg of [
   null,{head:h,base,memberHeads:[h]},{head:mg,base:h,memberHeads:[h]},
   {head:mg,base,memberHeads:null},{head:mg,base,memberHeads:[]},{head:mg,base,memberHeads:['bad']},
+  {head:mg,base,memberHeads:[base,h]},{head:mg,base,memberHeads:[mg,h]},
   {head:mg,base,memberHeads:[h,h]},{head:mg,base,memberHeads:[otherHead]}
  ])assert.equal(verifyReceipt({...baseReceipt(),mergeGroup:badMg}).reason,'MERGE_GROUP_CHECKS_INCOMPLETE');
 
@@ -242,6 +250,10 @@ test('verifyCandidateGateReceipt reconciles rulesets, fork PRs, merge_group chec
  const stricterRulesetReceipt=baseReceipt();
  stricterRulesetReceipt.ruleset={...stricterRulesetReceipt.ruleset,minimum_coverage:99};
  assert.equal(verifyReceipt(stricterRulesetReceipt).reason,'COVERAGE_UNVERIFIED');
+ for(const badBaseCov of [
+  null,{head:h,lines:98,lineTotal:100},{head:base,lines:-1,lineTotal:100},
+  {head:base,lines:100,lineTotal:100}
+ ])assert.equal(verifyReceipt({...baseReceipt(),baseCoverage:badBaseCov}).reason,'COVERAGE_UNVERIFIED');
 
  const zero={component:'schema',head:h,lines:50,lineTotal:50,branches:0,branchTotal:0};
  const branchlessEntry={component:'schema',head:h,reviewedBy:'human-reviewer',reason:'pure constant schema definition'};

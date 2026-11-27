@@ -30,15 +30,14 @@ Executable production JavaScript lives in two ESM packages under `tools/` (`tool
 
 ## Workflows and effective `main` protection boundary
 
-SoftwareFactory maintains seven GitHub Actions workflows under `.github/workflows/` (documented in [Workflow guide](WORKFLOWS.md)):
+SoftwareFactory maintains six GitHub Actions workflows under `.github/workflows/` (documented in [Workflow guide](WORKFLOWS.md)):
 
 1. `validate.yml` (**Factory validation**): exact-head Linux test/98-95 coverage gate, isolated Linux Aspire OTLP/SQLite runtime validation, `build-test`, and `upload-coverage-javascript` on `pull_request`, `merge_group`, and `main`.
 2. `windows-aspire.yml` (**Windows Aspire runtime**): exact-head `windows-aspire-runtime` validation on `windows-latest` across `pull_request`, `merge_group`, and `main`.
 3. `shadow-reconcile.yml` (**Factory shadow reconciliation**): default-off (`FACTORY_SHADOW_ENABLED=true`), read-only protected-`main` metadata inventory and PR/issue identity listener (`workflow_dispatch`, 10-minute `schedule`, `issues`, `pull_request_target`, `push`, `workflow_run`).
-4. `copilot-hosted-pilot.yml` (**Factory Copilot hosted pilot**): default-off (`FACTORY_COPILOT_PILOT_ENABLED=true`), manual-only (`workflow_dispatch`), zero-checkout synthetic CLI capability check in the protected `factory-copilot-pilot` environment.
-5. `reusable-replay-smoke.yml` (**Reusable replay smoke**): exercises the pinned reusable consumer replay workflow (`afc3d223f287b029db32672908097efc67a259c9`) on contract changes, `merge_group`, and `main`.
-6. `shadow-tests.yml` (**Engineering factory shadow replay**): `workflow_call` synthetic replay of pinned SoftwareFactory tests (`1208481843e73d1d2506085c654e84255303541d`); [docs/consumer-shadow-tests.yml](consumer-shadow-tests.yml) remains an inert example pinned to `fbecbf99b4c8e1696194bd6fa5220b2328cd1379`.
-7. `otel-sdk-lock-evidence.yml` (**OpenTelemetry SDK dependency evidence**): isolated `@opentelemetry/*` lockfile integrity and registry provenance check on same-repo PRs.
+4. `reusable-replay-smoke.yml` (**Reusable replay smoke**): exercises the pinned reusable consumer replay workflow (`afc3d223f287b029db32672908097efc67a259c9`) on contract changes, `merge_group`, and `main`.
+5. `shadow-tests.yml` (**Engineering factory shadow replay**): `workflow_call` synthetic replay of pinned SoftwareFactory tests (`1208481843e73d1d2506085c654e84255303541d`); [docs/consumer-shadow-tests.yml](consumer-shadow-tests.yml) remains an inert example pinned to `fbecbf99b4c8e1696194bd6fa5220b2328cd1379`.
+6. `otel-sdk-lock-evidence.yml` (**OpenTelemetry SDK dependency evidence**): isolated `@opentelemetry/*` lockfile integrity and registry provenance check on same-repo PRs.
 
 ### Ruleset vs. independent review reconciliation
 
@@ -53,7 +52,7 @@ Observed `main` branch rulesets combine repository ruleset `28054442` and organi
 Live autonomous issue dispatch, live review/queue submission, and cross-run hosted atomic persistence remain disabled pending verified M01 gates:
 
 - Ephemeral Actions runner disks cannot serve as the authoritative cross-run lease or terminal idempotency store; hosted persistence, restart recovery, and atomic fencing must be proven on GitHub before live dispatch or merge.
-- Default-off workflows (`shadow-reconcile.yml`, `copilot-hosted-pilot.yml`) perform no repository mutations and require explicit owner opt-in variables, verified included quota with `$0` incremental spend, and independent review.
+- Default-off shadow reconciliation (`shadow-reconcile.yml`) performs no repository mutations and requires explicit owner opt-in variables; hosted agent execution standardizes on native GitHub Cloud Agents (`copilot-swe-agent[bot]` / Repository Cloud Automations, see [GitHub-hosted Copilot pilot](GITHUB-HOSTED-COPILOT-PILOT.md)) gated on verified included quota, `$0` paid-overage billing hard stops, and independent review.
 - Never check out or execute untrusted pull-request code in a privileged workflow, never trust policy or coverage assertions from an unverified PR head, and never synthesize approvals or required checks.
 
 ## Consumer model

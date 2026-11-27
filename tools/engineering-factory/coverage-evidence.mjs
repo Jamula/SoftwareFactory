@@ -11,15 +11,15 @@ const RECEIPT_KEYS = [
   'repository', 'repositoryId', 'branch', 'headRepository', 'isFork',
   'head', 'base', 'mergeGroupHead', 'mergeGroup', 'ruleset', 'pullChecks', 'mergeGroupChecks',
   'codeScanning', 'secretScanningClear', 'threadsResolved', 'trustedReviewers', 'review',
-  'expectedComponents', 'coverageReports'
+  'baseCoverage', 'expectedComponents', 'coverageReports'
 ];
 const RECEIPT_ALLOWED_KEYS = new Set([...RECEIPT_KEYS, 'branchless']);
 const RULESET_KEYS = [
   'strict_required_status_checks_policy', 'required_status_checks',
   'minimum_coverage', 'max_coverage_drop', 'required_approving_review_count',
   'required_review_thread_resolution', 'allowed_merge_methods',
-  'merge_queue_grouping', 'bypass_actors', 'secret_scanning_required',
-  'code_scanning_tools'
+  'merge_queue_merge_method', 'merge_queue_grouping', 'bypass_actors',
+  'secret_scanning_required', 'code_scanning_tools'
 ];
 const REVIEW_KEYS = [
   'head', 'reviewer', 'author', 'agent', 'state', 'independent',
@@ -162,6 +162,7 @@ function verifyRuleset(ruleset) {
       ruleset.required_review_thread_resolution !== true ||
       ruleset.required_approving_review_count !== 0 ||
       ruleset.allowed_merge_methods.length !== 1 || ruleset.allowed_merge_methods[0] !== 'squash' ||
+      ruleset.merge_queue_merge_method !== 'SQUASH' ||
       ruleset.merge_queue_grouping !== 'ALLGREEN' ||
       ruleset.bypass_actors !== 0 || ruleset.secret_scanning_required !== true)
     return {ok: false, reason: 'RULESET_INCOMPLETE'};
@@ -214,7 +215,9 @@ export function verifyCandidateGateReceipt(receipt) {
       receipt.repository !== FACTORY_REPO ||
       receipt.repositoryId !== FACTORY_REPO_ID || receipt.branch !== 'main' ||
       !repoName(receipt.headRepository) || typeof receipt.isFork !== 'boolean' ||
-      !sha(receipt.head) || !sha(receipt.base) || receipt.head === receipt.base || !sha(receipt.mergeGroupHead) ||
+      !sha(receipt.head) || !sha(receipt.base) || receipt.head === receipt.base ||
+      !sha(receipt.mergeGroupHead) || receipt.mergeGroupHead === receipt.head ||
+      receipt.mergeGroupHead === receipt.base ||
       typeof receipt.secretScanningClear !== 'boolean' || typeof receipt.threadsResolved !== 'boolean' ||
       !dense(receipt.trustedReviewers, 64) || !receipt.trustedReviewers.length ||
       !receipt.trustedReviewers.every(reviewerId))
@@ -231,7 +234,8 @@ export function verifyCandidateGateReceipt(receipt) {
   const mg = receipt.mergeGroup;
   if (!exact(mg, ['head', 'base', 'memberHeads']) || mg.head !== receipt.mergeGroupHead ||
       mg.base !== receipt.base || !dense(mg.memberHeads, 5) || !mg.memberHeads.length ||
-      !mg.memberHeads.every(sha) || new Set(mg.memberHeads).size !== mg.memberHeads.length ||
+      !mg.memberHeads.every(m => sha(m) && m !== receipt.base && m !== receipt.mergeGroupHead) ||
+      new Set(mg.memberHeads).size !== mg.memberHeads.length ||
       !mg.memberHeads.includes(receipt.head) ||
       !verifyChecks(receipt.mergeGroupChecks, rules.requiredMap, receipt.mergeGroupHead, 'merge_group'))
     return gateDeny('MERGE_GROUP_CHECKS_INCOMPLETE');
@@ -256,12 +260,17 @@ export function verifyCandidateGateReceipt(receipt) {
         ['copilot-pull-request-reviewer', 'copilot-pull-request-reviewer[bot]'].includes(reviewerLower))) ||
       rv.summaryDisposition !== 'clear' || rv.unresolvedSummaryFindings !== 0 || rv.blockingReviewCount !== 0)
     return gateDeny('INDEPENDENT_REVIEW_INCOMPLETE');
+  const bc = receipt.baseCoverage;
+  if (!exact(bc, ['head', 'lines', 'lineTotal']) || bc.head !== receipt.base ||
+      !count(bc.lines, bc.lineTotal))
+    return gateDeny('COVERAGE_UNVERIFIED');
   const branchless = ownValue(receipt, 'branchless');
   const covPolicy = branchless === undefined
     ? {repository: FACTORY_REPO, lineMin: rules.minimumCoverage, branchMin: 95}
     : {repository: FACTORY_REPO, lineMin: rules.minimumCoverage, branchMin: 95, branchless};
   const cov = coverageEvidence(receipt.head, receipt.expectedComponents, receipt.coverageReports, covPolicy);
-  if (!cov.valid) return gateDeny('COVERAGE_UNVERIFIED');
+  if (!cov.valid || BigInt(cov.lines) * BigInt(bc.lineTotal) < BigInt(bc.lines) * BigInt(cov.lineTotal))
+    return gateDeny('COVERAGE_UNVERIFIED');
   if (branchless !== undefined && branchless.some(entry => {
     const by = entry.reviewedBy.toLowerCase();
     return !allowlist.has(by) || by === authorLower || by === agentLower;
