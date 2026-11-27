@@ -1,0 +1,127 @@
+# gh-aw-metadata: {"schema_version":"v4","frontmatter_hash":"385658e6b1d02e5394faa5bb511e0ea73717a7dd8a26bbb68d80960909dc258f","body_hash":"4eea01b377888dd55ca770509760169d08d63159511b06725f78eb9364aedecb","compiler_version":"v1.2.2","strict":true,"agent_id":"copilot"}
+# gh-aw-manifest: {"version":1,"secrets":[],"actions":[{"repo":"actions/checkout","sha":"3d3c42e5aac5ba805825da76410c181273ba90b1","version":"v7.0.1"},{"repo":"actions/setup-node","sha":"949feb2413d6458794dcd2491c4babbbce0c15c1","version":"v7.1.0"}]}
+# gh-aw-commit: 399a445fe2d8926c616b54b1b82a16b5b2be4445
+# gh-aw-work-queue-protocol: v3
+
+name: Factory gh-aw outer orchestrator
+on:
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: Optional issue number for read-only dry-run evaluation
+        required: false
+        type: string
+        default: ''
+      mode:
+        description: Orchestrator execution mode (shadow dry-run or lock verification)
+        required: false
+        type: choice
+        default: shadow
+        options:
+          - shadow
+          - verify-lock
+permissions:
+  contents: read
+concurrency:
+  group: factory-ghaw-orchestrator-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  evaluate:
+    if: ${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.repository == 'Jamula/SoftwareFactory' && github.repository_id == '1471342715' && github.ref == 'refs/heads/main' && github.ref_protected == true && !endsWith(github.actor, '[bot]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout trusted default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Setup pinned Node runtime
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '26.13.1'
+          package-manager-cache: false
+      - name: Verify gh-aw workflow lock and execute shadow evaluation
+        env:
+          FACTORY_GHAW_ENABLED: ${{ vars.FACTORY_GHAW_ENABLED }}
+          FACTORY_GHAW_MODE: ${{ inputs.mode }}
+          FACTORY_ISSUE_NUMBER: ${{ inputs.issue_number }}
+        run: |
+          set -euo pipefail
+          test "$FACTORY_GHAW_ENABLED" = true
+          test "$GITHUB_REPOSITORY" = Jamula/SoftwareFactory
+          test "$GITHUB_REPOSITORY_ID" = 1471342715
+          test "$GITHUB_REF" = refs/heads/main
+          test "$GITHUB_REF_PROTECTED" = true
+          case "$FACTORY_GHAW_MODE" in
+            shadow|verify-lock) ;;
+            *) echo "::error::Unsupported orchestrator mode"; exit 1 ;;
+          esac
+          if [ -n "$FACTORY_ISSUE_NUMBER" ] && ! printf '%s' "$FACTORY_ISSUE_NUMBER" | grep -Eq '^[1-9][0-9]{0,9}$'; then
+            echo "::error::Invalid issue_number input"
+            exit 1
+          fi
+          node --input-type=module -e '
+            import {readFileSync} from "node:fs";
+            import {verifyGhAwWorkflowLock} from "./tools/engineering-factory/gh-aw-lock-verifier.mjs";
+            const markdownSource = readFileSync(".github/workflows/factory-orchestrator.md", "utf8");
+            const lockYamlSource = readFileSync(".github/workflows/factory-orchestrator.lock.yml", "utf8");
+            const verdict = verifyGhAwWorkflowLock({markdownSource, lockYamlSource});
+            if (!verdict.valid) {
+              console.error(JSON.stringify(verdict));
+              process.exit(1);
+            }
+            console.log(JSON.stringify(verdict));
+          '
+          if [ "$FACTORY_GHAW_MODE" = shadow ]; then
+            node tools/engineering-factory/run.mjs --smoke
+          fi
+
+  threat-and-policy-scan:
+    needs: [evaluate]
+    if: ${{ vars.FACTORY_GHAW_ENABLED == 'true' && needs.evaluate.result == 'success' && !endsWith(github.actor, '[bot]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      scan_verified: ${{ steps.policy_scan.outputs.scan_verified }}
+    steps:
+      - name: Checkout trusted default branch for policy scan
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Setup pinned Node runtime
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '26.13.1'
+          package-manager-cache: false
+      - name: Verify non-mutation and protected-control-plane posture
+        id: policy_scan
+        run: |
+          set -euo pipefail
+          node --input-type=module -e '
+            import {readFileSync} from "node:fs";
+            import {verifyGhAwWorkflowLock} from "./tools/engineering-factory/gh-aw-lock-verifier.mjs";
+            const markdownSource = readFileSync(".github/workflows/factory-orchestrator.md", "utf8");
+            const lockYamlSource = readFileSync(".github/workflows/factory-orchestrator.lock.yml", "utf8");
+            const verdict = verifyGhAwWorkflowLock({markdownSource, lockYamlSource});
+            if (!verdict.valid || verdict.liveDispatch !== false || verdict.liveMerge !== false) {
+              process.exit(1);
+            }
+          '
+          echo "scan_verified=true" >> "$GITHUB_OUTPUT"
+
+  safe-outputs-dry-run:
+    needs: [evaluate, threat-and-policy-scan]
+    if: ${{ false }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Safe-outputs live mutations remain disabled pending separate authorization
+        run: |
+          set -euo pipefail
+          echo "safe-outputs remain disabled until separate live authorization"
