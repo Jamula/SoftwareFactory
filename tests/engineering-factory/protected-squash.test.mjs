@@ -457,6 +457,8 @@ test('aggregates read-only GitHub API metadata for required_approving_review_cou
         type: 'pull_request',
         parameters: {
           required_approving_review_count: 0,
+          require_code_owner_review: false,
+          require_last_push_approval: false,
           required_review_thread_resolution: true,
           allowed_merge_methods: ['squash']
         }
@@ -684,7 +686,12 @@ test('aggregates read-only GitHub API metadata for required_approving_review_cou
   const twoApprovalState = () => ({
     legacyProtection: {
       enforce_admins: {enabled: true},
-      required_pull_request_reviews: {required_approving_review_count: 2}
+      required_pull_request_reviews: {
+        required_approving_review_count: 2,
+        require_code_owner_reviews: false,
+        require_last_push_approval: false,
+        bypass_pull_request_allowances: {users: [], teams: [], apps: []}
+      }
     },
     reviews: [
       {id: 540, user: {login: 'human-reviewer', id: 77}, state: 'APPROVED',
@@ -722,6 +729,7 @@ test('aggregates read-only GitHub API metadata for required_approving_review_cou
         if (url.endsWith('/rules/branches/main')) {
           return response([
             {type: 'pull_request', parameters: {required_approving_review_count: 0,
+              require_code_owner_review: false, require_last_push_approval: false,
               required_review_thread_resolution: true, allowed_merge_methods: ['squash']}},
             {type: 'required_status_checks', parameters: {strict_required_status_checks_policy: true,
               required_status_checks: extendedChecks.filter(c => c.name !== 'CodeQL')

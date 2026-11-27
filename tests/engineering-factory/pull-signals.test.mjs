@@ -205,7 +205,7 @@ test('reads complete exact-head candidate metadata, normalizes rulesets and mult
  const candidatePull={...pull,user:{login:'pr-author',id:50},mergeable:true,mergeable_state:'clean'};
  const rules=[
   {type:'deletion'},
-  {type:'pull_request',parameters:{required_approving_review_count:0,required_review_thread_resolution:true,allowed_merge_methods:['squash']}},
+  {type:'pull_request',parameters:{required_approving_review_count:0,require_code_owner_review:false,require_last_push_approval:false,required_review_thread_resolution:true,allowed_merge_methods:['squash']}},
   {type:'required_status_checks',parameters:{strict_required_status_checks_policy:true,required_status_checks:[
    {context:'build-test',integration_id:15368},
    {context:'upload-coverage-javascript',integration_id:15368},
@@ -368,7 +368,7 @@ test('reads complete exact-head candidate metadata, normalizes rulesets and mult
  }
  const allowMergeMethod=await readCandidatePullMetadata(intent,{
   request:candidateFetch({'https://api.github.com/repos/Jamula/SoftwareFactory/rules/branches/main':()=>response([
-   {type:'pull_request',parameters:{required_approving_review_count:1,required_review_thread_resolution:true,allowed_merge_methods:['merge','squash']}},
+   {type:'pull_request',parameters:{required_approving_review_count:1,require_code_owner_review:false,require_last_push_approval:false,required_review_thread_resolution:true,allowed_merge_methods:['merge','squash']}},
    rules[2],rules[3]
   ])}),
   policyChecks
@@ -376,12 +376,22 @@ test('reads complete exact-head candidate metadata, normalizes rulesets and mult
  assert.equal(allowMergeMethod.protection.method,'other');
  const nonStringMethod=await readCandidatePullMetadata(intent,{
   request:candidateFetch({'https://api.github.com/repos/Jamula/SoftwareFactory/rules/branches/main':()=>response([
-   {type:'pull_request',parameters:{required_approving_review_count:1,allowed_merge_methods:[123]}},
+   {type:'pull_request',parameters:{required_approving_review_count:1,require_code_owner_review:false,require_last_push_approval:false,allowed_merge_methods:[123]}},
    rules[2]
   ])}),
   policyChecks
  });
  assert.equal(nonStringMethod.protection.method,'other');
+
+ for(const unsupportedRule of [
+  [{type:'pull_request',parameters:{required_approving_review_count:1,require_code_owner_review:true,require_last_push_approval:false}},rules[2]],
+  [{type:'pull_request',parameters:{required_approving_review_count:1,require_code_owner_review:false,require_last_push_approval:true}},rules[2]]
+ ]){
+  assert.equal((await readCandidatePullMetadata(intent,{
+   request:candidateFetch({'https://api.github.com/repos/Jamula/SoftwareFactory/rules/branches/main':()=>response(unsupportedRule)}),
+   policyChecks
+  })).reason,'PROTECTIONS_UNVERIFIED');
+ }
 
  for(const badFiles of [
   [],
@@ -414,20 +424,61 @@ test('reads complete exact-head candidate metadata, normalizes rulesets and mult
   request:candidateFetch({'https://api.github.com/repos/Jamula/SoftwareFactory/branches/main/protection':()=>response({
    enforce_admins:{enabled:true},
    required_status_checks:{strict:true,checks:[{context:'legacy-audit',app_id:15368}]},
-   required_pull_request_reviews:{required_approving_review_count:2},
+   required_pull_request_reviews:{
+    required_approving_review_count:2,
+    require_code_owner_reviews:false,
+    require_last_push_approval:false,
+    bypass_pull_request_allowances:{users:[],teams:[],apps:[]}
+   },
    required_conversation_resolution:{enabled:true}
   })}),
-  policyChecks,hostedReviewGate:true
+  policyChecks,hostedReviewGate:hostedGateReceipt,noBypass:noBypassReceipt
  });
  assert.equal(reconciledLegacy.protection.requiredApprovingReviewCount,2);
  assert.equal(reconciledLegacy.protection.review,true);
+ assert.equal(reconciledLegacy.protection.bypass,false);
  assert.equal(reconciledLegacy.protection.requiredChecks.some(c=>c.name==='legacy-audit'&&c.appId===15368),true);
+
+ const legacyBypassAllowancePresent=await readCandidatePullMetadata(intent,{
+  request:candidateFetch({'https://api.github.com/repos/Jamula/SoftwareFactory/branches/main/protection':()=>response({
+   enforce_admins:{enabled:true},
+   required_pull_request_reviews:{
+    required_approving_review_count:1,
+    require_code_owner_reviews:false,
+    require_last_push_approval:false,
+    bypass_pull_request_allowances:{users:[{login:'bypass-user'}],teams:[],apps:[]}
+   }
+  })}),
+  policyChecks,hostedReviewGate:hostedGateReceipt,noBypass:noBypassReceipt
+ });
+ assert.equal(legacyBypassAllowancePresent.protection.bypass,true);
+
+ const legacyUnknownAllowanceWithoutReceipt=await readCandidatePullMetadata(intent,{
+  request:candidateFetch({
+   'https://api.github.com/repos/Jamula/SoftwareFactory/rules/branches/main':()=>response(rules.map(r=>({...r,bypass_actors:[]}))),
+   'https://api.github.com/repos/Jamula/SoftwareFactory/branches/main/protection':()=>response({
+    enforce_admins:{enabled:true},
+    required_pull_request_reviews:{
+     required_approving_review_count:1,
+     require_code_owner_reviews:false,
+     require_last_push_approval:false
+    }
+   })
+  }),
+  policyChecks,hostedReviewGate:hostedGateReceipt
+ });
+ assert.equal(legacyUnknownAllowanceWithoutReceipt.protection.bypass,true);
 
  const legacyBypassWithRulesets=await readCandidatePullMetadata(intent,{
   request:candidateFetch({
    'https://api.github.com/repos/Jamula/SoftwareFactory/branches/main/protection':()=>response({
     enforce_admins:{enabled:false},
-    required_pull_request_reviews:{required_approving_review_count:2}
+    required_pull_request_reviews:{
+     required_approving_review_count:2,
+     require_code_owner_reviews:false,
+     require_last_push_approval:false,
+     bypass_pull_request_allowances:{users:[],teams:[],apps:[]}
+    }
    })
   }),
   policyChecks,hostedReviewGate:hostedGateReceipt,noBypass:noBypassReceipt
@@ -440,7 +491,12 @@ test('reads complete exact-head candidate metadata, normalizes rulesets and mult
    'https://api.github.com/repos/Jamula/SoftwareFactory/branches/main/protection':()=>response({
     enforce_admins:{enabled:false},
     required_status_checks:{strict:true,checks:[{context:'build-test',app_id:15368}]},
-    required_pull_request_reviews:{required_approving_review_count:1},
+    required_pull_request_reviews:{
+     required_approving_review_count:1,
+     require_code_owner_reviews:false,
+     require_last_push_approval:false,
+     bypass_pull_request_allowances:{users:[],teams:[],apps:[]}
+    },
     required_conversation_resolution:{enabled:true}
    })
   }),
@@ -469,7 +525,10 @@ test('reads complete exact-head candidate metadata, normalizes rulesets and mult
   {enforce_admins:{enabled:true},required_status_checks:{contexts:['build-test'],checks:[]}},
   {enforce_admins:{enabled:true},required_status_checks:{checks:[{context:'build-test',app_id:null}]}},
   {enforce_admins:{enabled:true},required_status_checks:{checks:[{context:'build-test',app_id:999}]}},
-  {enforce_admins:{enabled:true},required_pull_request_reviews:{required_approving_review_count:-1}}
+  {enforce_admins:{enabled:true},required_pull_request_reviews:{required_approving_review_count:-1}},
+  {enforce_admins:{enabled:true},required_pull_request_reviews:{required_approving_review_count:1,require_code_owner_reviews:true,require_last_push_approval:false}},
+  {enforce_admins:{enabled:true},required_pull_request_reviews:{required_approving_review_count:1,require_code_owner_reviews:false,require_last_push_approval:true}},
+  {enforce_admins:{enabled:true},required_pull_request_reviews:{required_approving_review_count:1,require_code_owner_reviews:false,require_last_push_approval:false,bypass_pull_request_allowances:null}}
  ]){
   assert.equal((await readCandidatePullMetadata(intent,{
    request:candidateFetch({'https://api.github.com/repos/Jamula/SoftwareFactory/branches/main/protection':()=>response(badLegacy)}),

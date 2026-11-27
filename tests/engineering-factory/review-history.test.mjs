@@ -191,6 +191,12 @@ test('builds candidate review evidence enforcing independence, pending blocks an
   [head,[null],baseOpts],
   [head,[{sequence:1,reviewer:bot,head,state:'COMMENTED',summaryFindings:[{id:'x',state:'actionable',source:'inline'}]}],baseOpts],
   [head,[{sequence:NaN,reviewer:bot,head,state:'COMMENTED'}],{...baseOpts,repository:'Jamula/Spellbook'}],
+  [head,[
+   {sequence:2,reviewer:bot,head,state:'COMMENTED',summaryDisposition:'actionable',
+    summaryFindings:[{id:'summary-2-1',state:'actionable',source:'summary'}]},
+   {sequence:1,reviewer:bot,head,state:'COMMENTED',summaryDisposition:'clear',summaryFindings:[]},
+   r(3,'APPROVED',head,'reviewer')
+  ],{...baseOpts,repository:'Jamula/Spellbook'}],
   [head,[r(2,'APPROVED'),r(1,'APPROVED')],baseOpts],
   [head,[{sequence:1,reviewer:bot,head,state:'COMMENTED',summaryDisposition:'actionable',
    summaryFindings:Array.from({length:10},(_,i)=>({id:`s-${i}`,state:'actionable',source:'summary'}))}

@@ -238,7 +238,7 @@ function normalizeBranchRules(
   if (hasNext || !Array.isArray(value) || value.length > 100 || (value.length === 0 && !legacy.present))
     return {ok:false,reason:'PROTECTIONS_UNVERIFIED'};
   let nativeQueue = false, hasPullRule = false, maxApprovals = 0, threads = false;
-  let observedBypass = false, missingInlineNoBypass = false;
+  let observedBypass = false, missingInlineNoBypass = false, missingLegacyBypassAllowances = false;
   let squashOnly = false, squashDisallowed = false, upToDate = false, codeScanning = false;
   const checkMap = new Map();
   const inspectRuleBypass = rule => {
@@ -259,7 +259,9 @@ function normalizeBranchRules(
       const params = rule.parameters;
       if (!params || typeof params !== 'object' ||
           !Number.isSafeInteger(params.required_approving_review_count) ||
-          params.required_approving_review_count < 0)
+          params.required_approving_review_count < 0 ||
+          params.require_code_owner_review !== false ||
+          params.require_last_push_approval !== false)
         return {ok:false,reason:'PROTECTIONS_UNVERIFIED'};
       inspectRuleBypass(rule);
       hasPullRule = true;
@@ -326,8 +328,22 @@ function normalizeBranchRules(
     if (lpr !== null && lpr !== undefined) {
       if (typeof lpr !== 'object' ||
           !Number.isSafeInteger(lpr.required_approving_review_count) ||
-          lpr.required_approving_review_count < 0) {
+          lpr.required_approving_review_count < 0 ||
+          lpr.require_code_owner_reviews !== false ||
+          lpr.require_last_push_approval !== false) {
         return {ok:false,reason:'PROTECTIONS_UNVERIFIED'};
+      }
+      if (Object.hasOwn(lpr, 'bypass_pull_request_allowances')) {
+        const bpa = lpr.bypass_pull_request_allowances;
+        if (!bpa || typeof bpa !== 'object' || !Array.isArray(bpa.users) ||
+            !Array.isArray(bpa.teams) || !Array.isArray(bpa.apps)) {
+          return {ok:false,reason:'PROTECTIONS_UNVERIFIED'};
+        }
+        if (bpa.users.length > 0 || bpa.teams.length > 0 || bpa.apps.length > 0) {
+          observedBypass = true;
+        }
+      } else {
+        missingLegacyBypassAllowances = true;
       }
       hasLegacyReview = true;
       if (lpr.required_approving_review_count > maxApprovals) {
@@ -342,7 +358,9 @@ function normalizeBranchRules(
     if (pinned) checkMap.set('CodeQL', pinned.appId);
   }
   const rulesNoBypass = value.length === 0 || (!missingInlineNoBypass || noBypassVerified === true);
-  const legacyNoBypass = !legacy.present || legacy.value.enforce_admins.enabled === true;
+  const legacyAllowancesNoBypass = !missingLegacyBypassAllowances || noBypassVerified === true;
+  const legacyNoBypass = !legacy.present ||
+    (legacy.value.enforce_admins.enabled === true && legacyAllowancesNoBypass);
   const bypass = observedBypass || !(rulesNoBypass && legacyNoBypass);
   const security = codeScanning || checkMap.has('CodeQL');
   return {
