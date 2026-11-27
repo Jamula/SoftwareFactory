@@ -296,6 +296,9 @@ test('createExecutionReceipt enforces versioned laptop-free schema, unknown vs v
  cyclicResult.self=cyclicResult;
  const sparseCompleted=[];
  sparseCompleted[1]={state:'shadow-reviewed'};
+ const sparseWithExtra=new Array(1);
+ sparseWithExtra.extra={state:'shadow-reviewed'};
+ const oversizedArrayResult={issues:Array.from({length:501},(_,i)=>i+1)};
  const symbolKeyResult={[Symbol('secret')]:'x',reason:'SHADOW_ELIGIBLE'};
  const tooManyKeysResult=Object.fromEntries(Array.from({length:65},(_,i)=>[`k${i}`,i]));
 
@@ -323,6 +326,7 @@ test('createExecutionReceipt enforces versioned laptop-free schema, unknown vs v
  assert.deepEqual(telemetrySummary(resultGetter),{outcome:'unknown',reason:'OTHER'});
  assert.deepEqual(telemetrySummary(nestedCompletedGetter),{outcome:'unknown',reason:'OTHER'});
  assert.deepEqual(telemetrySummary(cyclicResult),{outcome:'unknown',reason:'OTHER'});
+ assert.deepEqual(telemetrySummary({reason:'SHADOW_TICK_COMPLETE',completed:sparseWithExtra}),{outcome:'unknown',reason:'OTHER'});
 
  for(const bad of [
   null,[],new Proxy(base,{}),accessor,
@@ -333,6 +337,8 @@ test('createExecutionReceipt enforces versioned laptop-free schema, unknown vs v
   {...base,result:cyclicResult},
   {...base,result:Object.create({reason:'SHADOW_ELIGIBLE'})},
   {...base,result:{reason:'SHADOW_TICK_COMPLETE',completed:sparseCompleted}},
+  {...base,result:{reason:'SHADOW_TICK_COMPLETE',completed:sparseWithExtra}},
+  {...base,result:oversizedArrayResult},
   {...base,result:symbolKeyResult},
   {...base,result:tooManyKeysResult},
   {...base,prompt:'injected'},
@@ -418,6 +424,36 @@ test('receiptStageRows feeds stage-aggregate for #18 and rejects invalid or tamp
   valid:true,
   source:'github-hosted',
   rows:[{id:'gh-555-1-verify-main',repositoryId:1471342715,stage:'verify-main',at:2000,duration:90,source:'github-hosted'}]
+ });
+
+ // Primary-stage durationMs is preserved in projected rows when stages[stage] is null or omitted
+ const nullStageReceipt=createExecutionReceipt({
+  source:'github-hosted',repositoryId:1471342715,receiptId:'gh-556-1',observedMs:2100,
+  stage:'reconcile',outcome:'eligible',reason:'NONE',durationMs:42,stages:{reconcile:null}
+ });
+ assert.deepEqual(receiptStageRows(nullStageReceipt),{
+  valid:true,
+  source:'github-hosted',
+  rows:[{id:'gh-556-1-reconcile',repositoryId:1471342715,stage:'reconcile',at:2100,duration:42,source:'github-hosted'}]
+ });
+ const omittedPrimaryReceipt=createExecutionReceipt({
+  source:'github-hosted',repositoryId:1471342715,receiptId:'gh-557-1',observedMs:2200,
+  stage:'review',outcome:'eligible',reason:'NONE',durationMs:75,stages:{reconcile:12}
+ });
+ assert.deepEqual(receiptStageRows(omittedPrimaryReceipt),{
+  valid:true,
+  source:'github-hosted',
+  rows:[
+   {id:'gh-557-1-reconcile',repositoryId:1471342715,stage:'reconcile',at:2200,duration:12,source:'github-hosted'},
+   {id:'gh-557-1-review',repositoryId:1471342715,stage:'review',at:2200,duration:75,source:'github-hosted'}
+  ]
+ });
+ const unmeasuredPrimaryReceipt=createExecutionReceipt({
+  source:'synthetic',repositoryId:1471342715,receiptId:'syn-558',observedMs:2300,
+  stage:'review',outcome:'unknown',reason:'NONE',durationMs:null,stages:{review:null}
+ });
+ assert.deepEqual(receiptStageRows(unmeasuredPrimaryReceipt),{
+  valid:true,source:'synthetic',rows:[]
  });
 
  for(const invalid of [

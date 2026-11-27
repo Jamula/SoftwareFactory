@@ -145,6 +145,7 @@ test('runner emits sanitized laptop-free receipts across commands without requir
  const clock=()=>{now+=15;return now;};
  const hostedEnv={
   GITHUB_ACTIONS:'true',
+  RUNNER_ENVIRONMENT:'github-hosted',
   GITHUB_REPOSITORY_ID:'1471342715',
   GITHUB_RUN_ID:'778899',
   GITHUB_RUN_ATTEMPT:'2',
@@ -215,7 +216,8 @@ test('runner emits sanitized laptop-free receipts across commands without requir
 
  const sideReceipts=[];
  assert.equal(await run(['--inventory'],{
-  clock,env:{GITHUB_ACTIONS:'true',GITHUB_REPOSITORY_ID:'1471342715',GITHUB_RUN_ID:'101'},
+  clock,
+  env:{GITHUB_ACTIONS:'true',RUNNER_ENVIRONMENT:'github-hosted',GITHUB_REPOSITORY_ID:'1471342715',GITHUB_RUN_ID:'101'},
   inventory:async()=>({shadow:true,issues:[9],pulls:[],evidenceComplete:false,liveDispatch:false,liveMerge:false}),
   write:v=>inventoryOut.push(JSON.parse(v)),
   writeReceipt:r=>{sideReceipts.push(r);throw Error('sink failure ignored');}
@@ -225,11 +227,30 @@ test('runner emits sanitized laptop-free receipts across commands without requir
  assert.equal(sideReceipts[0].receiptId,'gh-101-1-inventory');
  assert.equal(sideReceipts[0].source,'github-hosted');
 
- // Untrusted hosted env, clock failure, and command throws fail closed without leaking details
+ // Maximum supported readInventory capacity (499 issues + 499 pulls) produces a valid receipt
+ const maxInventoryReceipts=[];
+ assert.equal(await run(['--inventory','--receipt'],{
+  clock,env:hostedEnv,
+  inventory:async()=>({
+   shadow:true,
+   repository:'Jamula/SoftwareFactory',
+   issues:Array.from({length:499},(_,i)=>i+1),
+   pulls:Array.from({length:499},(_,i)=>i+1001),
+   evidenceComplete:false,
+   liveDispatch:false,
+   liveMerge:false
+  }),
+  write:v=>maxInventoryReceipts.push(JSON.parse(v))
+ }),0);
+ assert.equal(maxInventoryReceipts[0].valid,true);
+
+ // Self-hosted or untrusted hosted env, clock failure, and command throws fail closed without leaking details
  for(const badEnv of [
-  {GITHUB_ACTIONS:'true',GITHUB_REPOSITORY_ID:'999',GITHUB_RUN_ID:'101'},
-  {GITHUB_ACTIONS:'true',GITHUB_REPOSITORY_ID:'1471342715',GITHUB_RUN_ID:'bad_id'},
-  {GITHUB_ACTIONS:'true',GITHUB_REPOSITORY_ID:'1471342715',GITHUB_RUN_ID:'101',GITHUB_RUN_ATTEMPT:'0'}
+  {GITHUB_ACTIONS:'true',GITHUB_REPOSITORY_ID:'1471342715',GITHUB_RUN_ID:'101'},
+  {GITHUB_ACTIONS:'true',RUNNER_ENVIRONMENT:'self-hosted',GITHUB_REPOSITORY_ID:'1471342715',GITHUB_RUN_ID:'101'},
+  {GITHUB_ACTIONS:'true',RUNNER_ENVIRONMENT:'github-hosted',GITHUB_REPOSITORY_ID:'999',GITHUB_RUN_ID:'101'},
+  {GITHUB_ACTIONS:'true',RUNNER_ENVIRONMENT:'github-hosted',GITHUB_REPOSITORY_ID:'1471342715',GITHUB_RUN_ID:'bad_id'},
+  {GITHUB_ACTIONS:'true',RUNNER_ENVIRONMENT:'github-hosted',GITHUB_REPOSITORY_ID:'1471342715',GITHUB_RUN_ID:'101',GITHUB_RUN_ATTEMPT:'0'}
  ]){
   const badHosted=[];
   assert.equal(await run(['--reconcile-pull','--receipt'],{

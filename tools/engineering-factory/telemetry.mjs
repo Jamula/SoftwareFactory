@@ -92,11 +92,12 @@ function plainResultValue(value,budget={remaining:2048},depth=0) {
   if(value===null||['string','number','boolean'].includes(typeof value)) return true;
   if(typeof value!=='object') return false;
   if(Array.isArray(value)) {
-    if(Object.getPrototypeOf(value)!==Array.prototype||value.length>256||
+    if(Object.getPrototypeOf(value)!==Array.prototype||value.length>500||
        Reflect.ownKeys(value).length!==value.length+1) return false;
     for(let i=0;i<value.length;i++) {
       const descriptor=Object.getOwnPropertyDescriptor(value,i);
-      if(!Object.hasOwn(descriptor,'value')||!plainResultValue(descriptor.value,budget,depth+1)) return false;
+      if(!descriptor||!Object.hasOwn(descriptor,'value')||!plainResultValue(descriptor.value,budget,depth+1))
+        return false;
     }
     return true;
   }
@@ -303,8 +304,11 @@ export function receiptStageRows(receipt) {
      !validStoredQuota(receipt.quota)||!validStoredCost(receipt.cost)||
      !validStoredTouches(receipt.humanTouches)||!normalizeCorrelation(receipt.correlation))
     return {valid:false,reason:'INVALID_RECEIPT',rows:[]};
+  const effectiveStages=receipt.durationMs===null
+    ?stageCheck.stages
+    :{...stageCheck.stages,[receipt.stage]:receipt.durationMs};
   const rows=[];
-  for(const [stageName,duration] of Object.entries(stageCheck.stages)) {
+  for(const [stageName,duration] of Object.entries(effectiveStages)) {
     const mapped=scorecardStageMap.get(stageName);
     if(mapped&&duration!==null) {
       rows.push({

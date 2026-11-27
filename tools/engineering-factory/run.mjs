@@ -45,16 +45,19 @@ function safeClock(clock) {
 }
 
 function resolveReceiptSource(env,spec,finishedAt,injectedReceiptId) {
+  const hostedRunner=env?.RUNNER_ENVIRONMENT==='github-hosted';
   const runId=typeof env?.GITHUB_RUN_ID==='string'&&/^[1-9][0-9]{0,19}$/.test(env.GITHUB_RUN_ID)?env.GITHUB_RUN_ID:null;
   const rawAttempt=env?.GITHUB_RUN_ATTEMPT??'1';
   const attempt=typeof rawAttempt==='string'&&/^[1-9][0-9]{0,3}$/.test(rawAttempt)?rawAttempt:null;
   const discriminator=()=>finishedAt!==null?`${finishedAt}-${nextLocalSequence()}`:`${nextLocalSequence()}`;
   if(spec.syntheticOnly) {
-    const defaultId=runId&&attempt?`gh-${runId}-${attempt}-${spec.tag}`:`synthetic-${spec.tag}-${discriminator()}`;
+    const defaultId=hostedRunner&&runId&&attempt
+      ?`gh-${runId}-${attempt}-${spec.tag}`
+      :`synthetic-${spec.tag}-${discriminator()}`;
     return {source:'synthetic',receiptId:injectedReceiptId??defaultId};
   }
   if(env?.GITHUB_ACTIONS==='true') {
-    if(env.GITHUB_REPOSITORY_ID!==String(repositoryId)||!runId||!attempt)
+    if(!hostedRunner||env.GITHUB_REPOSITORY_ID!==String(repositoryId)||!runId||!attempt)
       return {source:'invalid',receiptId:'invalid'};
     return {source:'github-hosted',receiptId:injectedReceiptId??`gh-${runId}-${attempt}-${spec.tag}`};
   }
