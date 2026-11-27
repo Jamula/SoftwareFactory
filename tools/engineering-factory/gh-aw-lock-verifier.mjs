@@ -777,6 +777,9 @@ function inspectFrontmatterPolicy(frontmatter, isNewerVerified, headers, options
     return {ok: false, reason: 'INVALID_FRONTMATTER'};
   }
 
+  const frontmatterGuards = verifyEvaluationGuards(frontmatter.if);
+  if (!frontmatterGuards.ok) return frontmatterGuards;
+
   const headerProtocol = headers['gh-aw-work-queue-protocol'];
   const requestedProtocol = options.workQueueProtocol;
   if (requestedProtocol !== undefined && headerProtocol !== undefined && requestedProtocol !== headerProtocol) {
@@ -934,13 +937,15 @@ export function verifyGhAwWorkflowLock(input) {
 
     if (isSafeOutput) {
       if (!isMapObject(job.permissions)) return deny('EXCESSIVE_SAFE_OUTPUT_PERMISSION');
+      let hasWriteScope = false;
       for (const [scope, level] of Object.entries(job.permissions)) {
         if (!ALLOWED_SAFE_OUTPUT_SCOPES.has(scope) || (level !== 'read' && level !== 'write') ||
             (level === 'write' && FORBIDDEN_SAFE_OUTPUT_WRITES.has(scope))) {
           return deny('EXCESSIVE_SAFE_OUTPUT_PERMISSION');
         }
+        if (level === 'write') hasWriteScope = true;
       }
-      safeOutputJobs.push({jobId, job});
+      safeOutputJobs.push({jobId, job, hasWriteScope});
     } else {
       const jobPerms = isReadOnlyPermissions(job.permissions);
       if (!jobPerms.ok) return deny('AGENT_JOB_WRITE_PERMISSION');
@@ -950,9 +955,11 @@ export function verifyGhAwWorkflowLock(input) {
 
     if (job.uses === undefined) {
       if (!Array.isArray(job.steps) || job.steps.length === 0) return deny('INVALID_LOCK_YAML');
+      let hasThreatScanRunStep = false;
       for (const step of job.steps) {
         if (!isMapObject(step)) return deny('INVALID_LOCK_YAML');
         if (!isSafeOutput && toleratesError(step)) return deny('MISSING_THREAT_SCAN_GATE');
+        if (isThreatScan && step.if !== undefined) return deny('MISSING_THREAT_SCAN_GATE');
         if (stepAttemptsMainMerge(step)) return deny('MAIN_MERGE_FORBIDDEN_IN_GHAW');
         if (step.uses !== undefined) {
           if (!isPinnedUses(step.uses)) return deny('UNPINNED_ACTION_REFERENCE');
@@ -976,8 +983,10 @@ export function verifyGhAwWorkflowLock(input) {
           if (typeof step.run !== 'string' || step.run.includes('${{')) {
             return deny('UNSAFE_RUN_INTERPOLATION');
           }
+          if (isThreatScan && step.run.trim().length > 0) hasThreatScanRunStep = true;
         }
       }
+      if (isThreatScan && !hasThreatScanRunStep) return deny('MISSING_THREAT_SCAN_GATE');
     }
   }
 
@@ -988,7 +997,7 @@ export function verifyGhAwWorkflowLock(input) {
   }
 
   if (threatScanJobs.length === 0) return deny('MISSING_THREAT_SCAN_GATE');
-  const threatScanIds = new Set(threatScanJobs.map(entry => entry.jobId));
+  const threatScanById = new Map(threatScanJobs.map(entry => [entry.jobId, entry.job]));
   for (const {job} of threatScanJobs) {
     const needs = normalizeNeeds(job.needs);
     if (needs === null || !evaluationJobIds.every(evalJob => needs.includes(evalJob.jobId))) {
@@ -1007,14 +1016,14 @@ export function verifyGhAwWorkflowLock(input) {
     }
   }
 
-  for (const {job} of safeOutputJobs) {
+  for (const {job, hasWriteScope} of safeOutputJobs) {
     const needs = normalizeNeeds(job.needs);
-    const matchingScans = needs === null ? [] : needs.filter(dep => threatScanIds.has(dep));
+    const matchingScans = needs === null ? [] : needs.filter(dep => threatScanById.has(dep));
     if (needs === null || matchingScans.length === 0) {
       return deny('MISSING_THREAT_SCAN_GATE');
     }
     if (job.if === undefined) {
-      if (!evaluationJobIds.every(evalJob => needs.includes(evalJob.jobId))) {
+      if (hasWriteScope || !evaluationJobIds.every(evalJob => needs.includes(evalJob.jobId))) {
         return deny('MISSING_THREAT_SCAN_GATE');
       }
       continue;
@@ -1028,8 +1037,18 @@ export function verifyGhAwWorkflowLock(input) {
     const safeConjuncts = collectMandatoryConjuncts(safeAst);
     const allEvalSucceeded = evaluationJobIds.every(evalJob =>
       safeConjuncts.some(c => isIdentCompareLiteral(c, '==', `needs.${evalJob.jobId}.result`, 'success')));
-    const scanSucceeded = matchingScans.every(scanId =>
-      safeConjuncts.some(c => isIdentCompareLiteral(c, '==', `needs.${scanId}.result`, 'success')));
+    const scanSucceeded = matchingScans.every(scanId => {
+      const hasResultSuccess = safeConjuncts.some(c =>
+        isIdentCompareLiteral(c, '==', `needs.${scanId}.result`, 'success'));
+      if (!hasWriteScope) return hasResultSuccess;
+      const scanJob = threatScanById.get(scanId);
+      const declaresScanOutput = isMapObject(scanJob.outputs) &&
+        typeof scanJob.outputs.scan_verified === 'string' &&
+        scanJob.outputs.scan_verified.trim().length > 0;
+      const hasOutputVerified = safeConjuncts.some(c =>
+        isIdentCompareLiteral(c, '==', `needs.${scanId}.outputs.scan_verified`, 'true'));
+      return hasResultSuccess && declaresScanOutput && hasOutputVerified;
+    });
     if (!allEvalSucceeded || !scanSucceeded) {
       return deny('MISSING_THREAT_SCAN_GATE');
     }

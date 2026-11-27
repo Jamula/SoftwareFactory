@@ -1,4 +1,4 @@
-# gh-aw-metadata: {"schema_version":"v4","frontmatter_hash":"c4992f3687cb0f4ed1481610a239fef937ab6dbe23000bf7025a6809ec7e5981","body_hash":"4eea01b377888dd55ca770509760169d08d63159511b06725f78eb9364aedecb","compiler_version":"v1.2.2","strict":true,"agent_id":"copilot"}
+# gh-aw-metadata: {"schema_version":"v4","frontmatter_hash":"385658e6b1d02e5394faa5bb511e0ea73717a7dd8a26bbb68d80960909dc258f","body_hash":"4eea01b377888dd55ca770509760169d08d63159511b06725f78eb9364aedecb","compiler_version":"v1.2.2","strict":true,"agent_id":"copilot"}
 # gh-aw-manifest: {"version":1,"secrets":[],"actions":[{"repo":"actions/checkout","sha":"3d3c42e5aac5ba805825da76410c181273ba90b1","version":"v7.0.1"},{"repo":"actions/setup-node","sha":"949feb2413d6458794dcd2491c4babbbce0c15c1","version":"v7.1.0"}]}
 # gh-aw-commit: 399a445fe2d8926c616b54b1b82a16b5b2be4445
 # gh-aw-work-queue-protocol: v3
@@ -85,6 +85,8 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
+    outputs:
+      scan_verified: ${{ steps.policy_scan.outputs.scan_verified }}
     steps:
       - name: Checkout trusted default branch for policy scan
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -96,6 +98,7 @@ jobs:
           node-version: '26.13.1'
           package-manager-cache: false
       - name: Verify non-mutation and protected-control-plane posture
+        id: policy_scan
         run: |
           set -euo pipefail
           node --input-type=module -e '
@@ -108,6 +111,7 @@ jobs:
               process.exit(1);
             }
           '
+          echo "scan_verified=true" >> "$GITHUB_OUTPUT"
 
   safe-outputs-dry-run:
     needs: [evaluate, threat-and-policy-scan]

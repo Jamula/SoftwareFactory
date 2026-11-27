@@ -699,11 +699,12 @@ export async function renewWorkQueueLease(options) {
     if (options.nowMs >= entry.executionDeadlineMs) return {abort: true, result: denyMutation('EXECUTION_TTL_EXCEEDED')};
     if (options.nowMs >= entry.leaseExpiresAtMs) return {abort: true, result: denyMutation('LEASE_EXPIRED')};
 
+    const clampedExpiry = Math.min(entry.executionDeadlineMs, options.nowMs + options.leaseTtlMs);
     const updated = {
       ...entry,
       ownedPaths: [...entry.ownedPaths],
       leaseTtlMs: Math.min(options.leaseTtlMs, entry.maxExecutionMs),
-      leaseExpiresAtMs: Math.min(entry.executionDeadlineMs, options.nowMs + options.leaseTtlMs)
+      leaseExpiresAtMs: Math.max(entry.leaseExpiresAtMs, clampedExpiry)
     };
     const nextEntries = [...state.entries];
     nextEntries[index] = updated;
@@ -847,6 +848,9 @@ export async function reconcileWorkQueueRunStates(options) {
     const skipped = [];
 
     for (const entry of state.entries) {
+      if (options.nowMs < entry.claimedAtMs) {
+        return {abort: true, result: denyMutation('CLOCK_SKEW_REJECTED')};
+      }
       const retryLimit = Math.min(entry.maxAttempts, configuredCeiling);
       const persistedMaxAttempts = Math.max(entry.attempts, retryLimit);
       const obs = observationsByWorkId.get(entry.workId);

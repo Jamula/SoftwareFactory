@@ -27,6 +27,7 @@ function makeMetadataLine({frontmatterHash, bodyHash, version = PINNED_GHAW_RELE
 }
 
 function buildFixture({
+  frontmatterIf = "\"vars.FACTORY_GHAW_ENABLED == 'true' && !endsWith(github.actor, '[bot]')\"",
   frontmatterExtra = '',
   markdownBody = '# Synthetic orchestrator body',
   protocol = 'v3',
@@ -40,6 +41,7 @@ function buildFixture({
   runBody = '          echo "shadow ok"',
   threatNeeds = '[evaluate]',
   threatIf = "${{ vars.FACTORY_GHAW_ENABLED == 'true' && needs.evaluate.result == 'success' && !endsWith(github.actor, '[bot]') }}",
+  threatOutputs = '    outputs:\n      scan_verified: ${{ steps.scan.outputs.scan_verified }}',
   safeNeeds = '[evaluate, threat-and-policy-scan]',
   safeIf = '${{ false }}',
   safePerms = '      issues: write',
@@ -49,6 +51,7 @@ function buildFixture({
     '---',
     'name: Synthetic orchestrator',
     'engine: copilot',
+    frontmatterIf === null ? '' : `if: ${frontmatterIf}`,
     'on:',
     '  workflow_dispatch:',
     'permissions:',
@@ -97,9 +100,11 @@ function buildFixture({
     '    runs-on: ubuntu-latest',
     '    permissions:',
     '      contents: read',
+    threatOutputs,
     '    steps:',
     '      - name: Scan',
-    '        run: echo "scan"',
+    '        id: scan',
+    '        run: echo "scan_verified=true"',
     '  safe-outputs-comment:',
     `    needs: ${safeNeeds}`,
     `    if: ${safeIf}`,
@@ -109,7 +114,7 @@ function buildFixture({
     '    steps:',
     '      - name: Dry-run output',
     '        run: echo "noop"'
-  ].filter(line => line !== null).join('\n');
+  ].filter(line => line !== null && line !== '').join('\n');
 
   return {markdownSource, lockYamlSource, sha, bodySha};
 }
@@ -599,7 +604,7 @@ test('enforces SHA-pinned uses, persist-credentials:false, no ${{}} in run, perm
     lockYamlSource: threatWithoutEval.lockYamlSource
   }).reason, 'MISSING_THREAT_SCAN_GATE');
 
-  // Regression tests: safe-outputs with always(), failure(), cancelled(), disjunction, or continue-on-error MUST fail closed!
+  // Regression tests: safe-outputs with always(), failure(), cancelled(), disjunction, missing scan_verified output check, or skippable scan step MUST fail closed!
   for (const badSafeIf of [
     '${{ always() }}',
     "${{ always() && needs.threat-and-policy-scan.result == 'success' }}",
@@ -607,7 +612,8 @@ test('enforces SHA-pinned uses, persist-credentials:false, no ${{}} in run, perm
     '${{ cancelled() }}',
     '${{ true }}',
     "${{ needs.evaluate.result == 'success' || needs.threat-and-policy-scan.result == 'success' }}",
-    "${{ needs.threat-and-policy-scan.result == 'success' }}"
+    "${{ needs.threat-and-policy-scan.result == 'success' }}",
+    "${{ needs.evaluate.result == 'success' && needs.threat-and-policy-scan.result == 'success' }}"
   ]) {
     const f = buildFixture({safeIf: badSafeIf});
     assert.equal(verifyGhAwWorkflowLock({
@@ -617,12 +623,61 @@ test('enforces SHA-pinned uses, persist-credentials:false, no ${{}} in run, perm
   }
 
   const validEnabledSafe = buildFixture({
-    safeIf: "${{ needs.evaluate.result == 'success' && needs.threat-and-policy-scan.result == 'success' }}"
+    safeIf: "${{ needs.evaluate.result == 'success' && needs.threat-and-policy-scan.result == 'success' && needs.threat-and-policy-scan.outputs.scan_verified == 'true' }}"
   });
   assert.equal(verifyGhAwWorkflowLock({
     markdownSource: validEnabledSafe.markdownSource,
     lockYamlSource: validEnabledSafe.lockYamlSource
   }).valid, true);
+
+  // Enabled write-capable safe-outputs without scan_verified output declared on scan job MUST fail closed!
+  const missingScanOutputDecl = buildFixture({
+    threatOutputs: null,
+    safeIf: "${{ needs.evaluate.result == 'success' && needs.threat-and-policy-scan.result == 'success' && needs.threat-and-policy-scan.outputs.scan_verified == 'true' }}"
+  });
+  assert.equal(verifyGhAwWorkflowLock({
+    markdownSource: missingScanOutputDecl.markdownSource,
+    lockYamlSource: missingScanOutputDecl.lockYamlSource
+  }).reason, 'MISSING_THREAT_SCAN_GATE');
+
+  // Step-level if: on threat-and-policy-scan step (e.g. if: ${{ false }}) MUST fail closed!
+  const skippableScanStep = buildFixture();
+  assert.equal(verifyGhAwWorkflowLock({
+    markdownSource: skippableScanStep.markdownSource,
+    lockYamlSource: skippableScanStep.lockYamlSource.replace('      - name: Scan\n', '      - name: Scan\n        if: ${{ false }}\n')
+  }).reason, 'MISSING_THREAT_SCAN_GATE');
+
+  // Frontmatter missing or weakening mandatory guards MUST fail closed!
+  const missingFmIf = buildFixture({frontmatterIf: null});
+  assert.equal(verifyGhAwWorkflowLock({
+    markdownSource: missingFmIf.markdownSource,
+    lockYamlSource: missingFmIf.lockYamlSource
+  }).reason, 'MISSING_DEFAULT_OFF_GUARD');
+
+  const missingFmBot = buildFixture({
+    frontmatterIf: "\"vars.FACTORY_GHAW_ENABLED == 'true'\""
+  });
+  assert.equal(verifyGhAwWorkflowLock({
+    markdownSource: missingFmBot.markdownSource,
+    lockYamlSource: missingFmBot.lockYamlSource
+  }).reason, 'MISSING_BOT_LOOP_GUARD');
+
+  // Threat scan job without any run: step MUST fail closed!
+  const noRunStepScan = buildFixture();
+  assert.equal(verifyGhAwWorkflowLock({
+    markdownSource: noRunStepScan.markdownSource,
+    lockYamlSource: noRunStepScan.lockYamlSource.replace(
+      '      - name: Scan\n        id: scan\n        run: echo "scan_verified=true"',
+      `      - uses: actions/setup-node@${setupNodeSha}`
+    )
+  }).reason, 'MISSING_THREAT_SCAN_GATE');
+
+  // Write-capable safe-outputs with omitted if: MUST fail closed!
+  const omittedIfWriteSafe = buildFixture();
+  assert.equal(verifyGhAwWorkflowLock({
+    markdownSource: omittedIfWriteSafe.markdownSource,
+    lockYamlSource: omittedIfWriteSafe.lockYamlSource.replace('    if: ${{ false }}\n', '')
+  }).reason, 'MISSING_THREAT_SCAN_GATE');
 
   // continue-on-error: true on evaluate or threat-and-policy-scan job or step MUST fail closed!
   const evalJobContinue = buildFixture();
@@ -731,6 +786,7 @@ test('covers YAML edge cases: quoted keys, block scalars in sequences, empty map
     '---',
     '"name": "Quoted\\"Name"',
     "'description': 'Single''Quote'",
+    'if: "vars.FACTORY_GHAW_ENABLED == \'true\' && !endsWith(github.actor, \'[bot]\')"',
     'tools:',
     '  work-queue:',
     '    require-assignment: true',
@@ -836,6 +892,7 @@ test('covers YAML edge cases: quoted keys, block scalars in sequences, empty map
   const nestedSeqMd = [
     '---',
     'name: Nested Sequence',
+    'if: "vars.FACTORY_GHAW_ENABLED == \'true\' && !endsWith(github.actor, \'[bot]\')"',
     'items:',
     '  -',
     '    sub: val',
@@ -883,6 +940,7 @@ test('covers YAML edge cases: quoted keys, block scalars in sequences, empty map
   const nonMainMergeMd = [
     '---',
     'name: Feature Merge Only',
+    'if: "vars.FACTORY_GHAW_ENABLED == \'true\' && !endsWith(github.actor, \'[bot]\')"',
     'tools:',
     '  work-queue:',
     '    worker: true',

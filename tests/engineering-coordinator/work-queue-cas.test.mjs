@@ -434,6 +434,30 @@ test('enforces bounded execution TTL (1..3_600_000 ms), clamps renewals, fences 
   assert.equal(claim.lease.leaseExpiresAtMs, 60000);
   assert.equal(claim.lease.executionDeadlineMs, 100000);
 
+  // Renew at t=50000 with 40000ms TTL advances leaseExpiresAtMs to 90000;
+  // an out-of-order renewal at t=12000 with 50000ms TTL (62000) MUST NOT shorten leaseExpiresAtMs below 90000!
+  const midRenewed = await renewWorkQueueLease({
+    refStore,
+    workId: claim.lease.workId,
+    workerId: 'worker-alpha',
+    generation: claim.lease.generation,
+    leaseTtlMs: 40000,
+    nowMs: 50000
+  });
+  assert.equal(midRenewed.ok, true);
+  assert.equal(midRenewed.lease.leaseExpiresAtMs, 90000);
+
+  const outOfOrderRenewed = await renewWorkQueueLease({
+    refStore,
+    workId: claim.lease.workId,
+    workerId: 'worker-alpha',
+    generation: claim.lease.generation,
+    leaseTtlMs: 50000,
+    nowMs: 12000
+  });
+  assert.equal(outOfOrderRenewed.ok, true);
+  assert.equal(outOfOrderRenewed.lease.leaseExpiresAtMs, 90000);
+
   // Renew at t=55000 with 60000ms TTL clamps leaseExpiresAtMs to executionDeadlineMs (100000)
   const renewed = await renewWorkQueueLease({
     refStore,
@@ -553,6 +577,15 @@ test('reconcileWorkQueueRunStates handles launch_failed, worker_terminated, run_
   });
   assert.equal(stopped.ok, false);
   assert.equal(stopped.reason, 'STOPPED');
+
+  // Regression: nowMs < entry.claimedAtMs (500 < 1000) MUST fail closed with CLOCK_SKEW_REJECTED!
+  const clockSkewed = await reconcileWorkQueueRunStates({
+    refStore,
+    observedRuns: [{workId: c1.lease.workId, runId: 101, runAttempt: 1, leaseGeneration: c1.lease.generation, runState: 'launch_failed'}],
+    nowMs: 500
+  });
+  assert.equal(clockSkewed.ok, false);
+  assert.equal(clockSkewed.reason, 'CLOCK_SKEW_REJECTED');
 
   // Config-level stop also blocks crash recovery mutations; invalid config fails closed
   assert.equal((await reconcileWorkQueueRunStates({

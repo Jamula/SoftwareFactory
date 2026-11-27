@@ -2,6 +2,7 @@
 name: Factory gh-aw outer orchestrator
 description: Default-off GitHub Agentic Workflow outer orchestrator for SoftwareFactory
 engine: copilot
+if: "vars.FACTORY_GHAW_ENABLED == 'true' && github.repository == 'Jamula/SoftwareFactory' && github.ref == 'refs/heads/main' && github.ref_protected == true && !endsWith(github.actor, '[bot]')"
 on:
   workflow_dispatch:
     inputs:
@@ -30,10 +31,10 @@ tools:
       - actions
   work-queue: true
 safe-outputs:
-  add-comment:
+  staged: true
+  noop:
     max: 1
-  add-labels:
-    max: 3
+    report-as-issue: false
 max-ai-credits: 50
 max-daily-ai-credits: 200
 ---
