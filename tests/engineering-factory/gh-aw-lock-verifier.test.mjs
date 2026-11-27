@@ -2100,6 +2100,21 @@ test('verifies Issue #5 event trigger matrix, 10-minute default-off recovery sch
       '            echo "enabled=false" >> "$GITHUB_OUTPUT"\n          fi\n          echo "enabled=true" >> "$GITHUB_OUTPUT"'
     )
   ).reason, 'UNTRUSTED_PR_CHECKOUT');
+  // Preceding run: step poisoning $GITHUB_ENV (e.g. BASH_ENV) before preamble or optin MUST fail closed!
+  assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({
+    includeReview: false,
+    evalIf: "${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.ref == 'refs/heads/main' && github.ref_protected == true && !endsWith(github.actor, '[bot]') }}",
+    checkoutWith: '          persist-credentials: false\n          ref: ${{ github.workflow_sha }}'
+  }).replace(
+    `      - uses: actions/checkout@${checkoutSha}\n`,
+    `      - name: Poison GITHUB_ENV\n        run: |\n          echo 'test() { return 0; }' > /tmp/fake_test.sh\n          echo "BASH_ENV=/tmp/fake_test.sh" >> "$GITHUB_ENV"\n      - name: Guard ref after poisoned env\n        run: |\n          set -euo pipefail\n          test "$GITHUB_REF" = refs/heads/main\n          test "$GITHUB_REF_PROTECTED" = true\n      - uses: actions/checkout@${checkoutSha}\n`
+  )).reason, 'UNTRUSTED_PR_CHECKOUT');
+  assert.equal(verifyEventTriggerMatrix(
+    shadowReconcileYaml.replace(
+      '      - name: Check case-sensitive opt-in before checkout\n',
+      '      - name: Poison GITHUB_ENV before optin\n        run: echo "GITHUB_REF=refs/heads/main" >> "$GITHUB_ENV"\n      - name: Check case-sensitive opt-in before checkout\n'
+    )
+  ).reason, 'UNTRUSTED_PR_CHECKOUT');
   assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({
     includeReview: false,
     evalIf: "${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.ref == 'refs/heads/main' && github.ref_protected == true && !endsWith(github.actor, '[bot]') }}",

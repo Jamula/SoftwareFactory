@@ -1028,17 +1028,15 @@ function resolveJobProtectedBranchProvenance(job, jobAst, expectedBranchRef, out
       pendingInertCheckoutIndices.length = 0;
       continue;
     }
-    if (hasFailClosedPosixRefPreamble(step.run, expectedBranchRef)) {
+    if (onlyInertSetupSoFar && hasFailClosedPosixRefPreamble(step.run, expectedBranchRef)) {
       jobWideForDownstream = true;
       preambleCompleted = true;
-      if (onlyInertSetupSoFar) {
-        for (const pendingIdx of pendingInertCheckoutIndices) {
-          trustedCheckoutStepIndices.add(pendingIdx);
-          promotedInertCheckoutIndices.push(pendingIdx);
-        }
+      for (const pendingIdx of pendingInertCheckoutIndices) {
+        trustedCheckoutStepIndices.add(pendingIdx);
+        promotedInertCheckoutIndices.push(pendingIdx);
       }
     }
-    if (expectedBranchRef === 'refs/heads/main' && typeof step.id === 'string' &&
+    if (onlyInertSetupSoFar && expectedBranchRef === 'refs/heads/main' && typeof step.id === 'string' &&
         computeNormalizedScriptSha256(step.run) === PINNED_SHADOW_RECONCILE_OPTIN_RUN_SHA256) {
       guardOutputStepIds.add(step.id);
     }
