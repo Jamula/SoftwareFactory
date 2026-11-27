@@ -761,6 +761,125 @@ test('unified subcommands, parameterized repositoryId, and bounded JSON input en
  }),0);
  assert.equal(mismatchM01[0].reason,'IDENTITY_OR_PIN');
 
+ // Default repository binding (no options.repositoryId or FACTORY_EXPECTED_REPO_ID) also rejects
+ // cross-repository 200036 payloads fail-closed across all subcommands with and without --receipt
+ const defaultHostedEnv={
+  GITHUB_ACTIONS:'true',
+  RUNNER_ENVIRONMENT:'github-hosted',
+  GITHUB_REPOSITORY_ID:'1471342715',
+  GITHUB_RUN_ID:'991122',
+  GITHUB_RUN_ATTEMPT:'1'
+ };
+ assert.equal(evaluateProtectedSquash({intent:squashIntent,evidence:squashEvidence},0).reason,'PROVENANCE_MISMATCH');
+
+ const consumerSquashPayload={
+  scope:{repository:'Jamula/FamilyTree',repositoryId:consumerRepoId,branch:'main'},
+  intent:{...squashIntent,repository:'Jamula/FamilyTree',repositoryId:consumerRepoId},
+  evidence:{
+   ...squashEvidence,
+   repository:'Jamula/FamilyTree',
+   repositoryId:consumerRepoId,
+   protection:{...squashEvidence.protection,repository:'Jamula/FamilyTree',repositoryId:consumerRepoId},
+   policy:{...squashEvidence.policy,repository:'Jamula/FamilyTree',coverage:{line:95,branch:90}},
+   snapshot:{...squashEvidence.snapshot,repository:'Jamula/FamilyTree'}
+  }
+ };
+ for(const squashMismatchInput of [
+  consumerSquashPayload,
+  {intent:squashIntent,evidence:squashEvidence,scope:null},
+  {intent:{...squashIntent,repositoryId:consumerRepoId},evidence:squashEvidence},
+  {intent:squashIntent,evidence:{...squashEvidence,repositoryId:consumerRepoId}},
+  {intent:squashIntent,evidence:{...squashEvidence,protection:{...squashEvidence.protection,repositoryId:consumerRepoId}}},
+  {intent:squashIntent,evidence:{...squashEvidence,policy:{...squashEvidence.policy,repositoryId:consumerRepoId}}}
+ ]){
+  const rawOut=[],rcptOut=[];
+  assert.equal(await run(['--evaluate-squash'],{
+   env:defaultHostedEnv,input:squashMismatchInput,write:v=>rawOut.push(JSON.parse(v))
+  }),0);
+  assert.equal(rawOut[0].reason,'PROVENANCE_MISMATCH');
+  assert.equal(rawOut[0].liveMerge,false);
+
+  assert.equal(await run(['--evaluate-squash','--receipt'],{
+   clock,env:defaultHostedEnv,input:squashMismatchInput,write:v=>rcptOut.push(JSON.parse(v))
+  }),0);
+  assert.equal(rcptOut[0].valid,true);
+  assert.equal(rcptOut[0].repositoryId,1471342715);
+  assert.equal(rcptOut[0].outcome,'blocked');
+  assert.equal(rcptOut[0].reason,'SECURITY');
+ }
+
+ for(const admMismatchInput of [
+  {...admissionInput,repositoryId:consumerRepoId,approvedRepositoryId:consumerRepoId},
+  {...admissionInput,repositoryId:1471342715,approvedRepositoryId:consumerRepoId}
+ ]){
+  const rawOut=[],rcptOut=[];
+  assert.equal(await run(['--verify-admission'],{
+   env:defaultHostedEnv,input:admMismatchInput,write:v=>rawOut.push(JSON.parse(v))
+  }),0);
+  assert.equal(rawOut[0].admitted,false);
+  assert.equal(rawOut[0].reason,'PROVENANCE_MISMATCH');
+  assert.equal(rawOut[0].admissionCode,'REPOSITORY_SCOPE_MISMATCH');
+
+  assert.equal(await run(['--verify-admission','--receipt'],{
+   clock,env:defaultHostedEnv,input:admMismatchInput,write:v=>rcptOut.push(JSON.parse(v))
+  }),0);
+  assert.equal(rcptOut[0].valid,true);
+  assert.equal(rcptOut[0].repositoryId,1471342715);
+  assert.equal(rcptOut[0].outcome,'blocked');
+  assert.equal(rcptOut[0].reason,'SECURITY');
+ }
+
+ for(const m01MismatchInput of [
+  {
+   ...m01Input,
+   policy:{...m01Input.policy,repositoryId:consumerRepoId},
+   readiness:{...m01Input.readiness,repositoryId:consumerRepoId},
+   cycles:[makeCycle(1,{repositoryId:consumerRepoId}),makeCycle(2,{repositoryId:consumerRepoId}),makeCycle(3,{repositoryId:consumerRepoId})]
+  },
+  {...m01Input,repositoryId:consumerRepoId},
+  {...m01Input,readiness:{...m01Input.readiness,repositoryId:consumerRepoId}},
+  {...m01Input,cycles:[makeCycle(1),makeCycle(2,{repositoryId:consumerRepoId}),makeCycle(3)]}
+ ]){
+  const rawOut=[],rcptOut=[];
+  assert.equal(await run(['--verify-m01-readiness'],{
+   env:defaultHostedEnv,input:m01MismatchInput,
+   verifyM01Readiness:()=>assert.fail('must not reach M01 evaluator on cross-repo payload'),
+   write:v=>rawOut.push(JSON.parse(v))
+  }),0);
+  assert.equal(rawOut[0].ready,false);
+  assert.equal(rawOut[0].reason,'IDENTITY_OR_PIN');
+
+  assert.equal(await run(['--verify-m01-readiness','--receipt'],{
+   clock,env:defaultHostedEnv,input:m01MismatchInput,
+   verifyM01Readiness:()=>assert.fail('must not reach M01 evaluator on cross-repo payload'),
+   write:v=>rcptOut.push(JSON.parse(v))
+  }),0);
+  assert.equal(rcptOut[0].valid,true);
+  assert.equal(rcptOut[0].repositoryId,1471342715);
+  assert.equal(rcptOut[0].outcome,'blocked');
+  assert.equal(rcptOut[0].reason,'SECURITY');
+ }
+
+ for(const evtMismatchInput of [{repositoryId:consumerRepoId},{scope:{repositoryId:consumerRepoId}}]){
+  const rawOut=[],rcptOut=[];
+  assert.equal(await run(['--reconcile-event'],{
+   env:defaultHostedEnv,input:evtMismatchInput,
+   reconcileEvent:()=>assert.fail('must not reach reconcileEvent on cross-repo payload'),
+   write:v=>rawOut.push(JSON.parse(v))
+  }),0);
+  assert.equal(rawOut[0].reconciled,false);
+  assert.equal(rawOut[0].reason,'PROVENANCE_MISMATCH');
+
+  assert.equal(await run(['--reconcile-event','--receipt'],{
+   clock,env:defaultHostedEnv,input:evtMismatchInput,
+   reconcileEvent:()=>assert.fail('must not reach reconcileEvent on cross-repo payload'),
+   write:v=>rcptOut.push(JSON.parse(v))
+  }),0);
+  assert.equal(rcptOut[0].valid,true);
+  assert.equal(rcptOut[0].outcome,'blocked');
+  assert.equal(rcptOut[0].reason,'SECURITY');
+ }
+
  // Invalid/mismatched repositoryId & GITHUB_REPOSITORY_ID fail closed with exit code 1
  for(const badRepoOpts of [
   {repositoryId:0,env:{}},

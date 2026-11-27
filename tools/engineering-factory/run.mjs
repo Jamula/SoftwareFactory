@@ -227,7 +227,14 @@ function normalizePlanResult(raw) {
   return {shadow:true,liveDispatch:false,...raw,scheduled,reason};
 }
 
-export function evaluateProtectedSquash(input,repositoryId=DEFAULT_REPOSITORY_ID,explicit=false,evaluator=guardedSquashEvidence) {
+function hasMismatchedRepoId(value,repositoryId) {
+  return plainJsonObject(value)&&Object.hasOwn(value,'repositoryId')&&value.repositoryId!==repositoryId;
+}
+
+export function evaluateProtectedSquash(input,repositoryId=DEFAULT_REPOSITORY_ID,evaluator=guardedSquashEvidence) {
+  if(!positiveInt(repositoryId)) {
+    return {shadow:true,liveMerge:false,dependentWorkAllowed:false,reason:'PROVENANCE_MISMATCH'};
+  }
   if(!plainJsonObject(input)||!Object.keys(input).every(k=>SQUASH_INPUT_KEYS.has(k))||
      !Object.hasOwn(input,'intent')||!Object.hasOwn(input,'evidence')) {
     return {shadow:true,liveMerge:false,dependentWorkAllowed:false,reason:'INTENT_UNKNOWN'};
@@ -242,8 +249,15 @@ export function evaluateProtectedSquash(input,repositoryId=DEFAULT_REPOSITORY_ID
         ...(typeof input.intent.branch==='string'?{branch:input.intent.branch}:{})
       }
       :DEFAULT_FACTORY_SCOPE);
-  if(explicit&&((plainJsonObject(scope)&&Object.hasOwn(scope,'repositoryId')&&scope.repositoryId!==repositoryId)||
-     (plainJsonObject(input.intent)&&Object.hasOwn(input.intent,'repositoryId')&&input.intent.repositoryId!==repositoryId))) {
+  const mismatchedEvidenceNested=plainJsonObject(input.evidence)&&(
+    hasMismatchedRepoId(input.evidence.protection,repositoryId)||
+    hasMismatchedRepoId(input.evidence.policy,repositoryId)
+  );
+  if((hasScope&&(!plainJsonObject(scope)||scope.repositoryId!==repositoryId))||
+     hasMismatchedRepoId(scope,repositoryId)||
+     hasMismatchedRepoId(input.intent,repositoryId)||
+     hasMismatchedRepoId(input.evidence,repositoryId)||
+     mismatchedEvidenceNested) {
     return {shadow:true,liveMerge:false,dependentWorkAllowed:false,reason:'PROVENANCE_MISMATCH'};
   }
   return evaluator(input.intent,input.evidence,scope);
@@ -403,8 +417,8 @@ export async function run(args,options={}) {
           if(!Object.keys(parsedInput).every(k=>RECONCILE_EVENT_INPUT_KEYS.has(k))) {
             return {shadow:true,evidenceComplete:false,reconciled:false,liveDispatch:false,liveMerge:false,reason:'EVIDENCE_UNKNOWN'};
           }
-          if(repoBinding.explicit&&((Object.hasOwn(parsedInput,'repositoryId')&&parsedInput.repositoryId!==effectiveRepositoryId)||
-             (plainJsonObject(parsedInput.scope)&&Object.hasOwn(parsedInput.scope,'repositoryId')&&parsedInput.scope.repositoryId!==effectiveRepositoryId))) {
+          if(hasMismatchedRepoId(parsedInput,effectiveRepositoryId)||
+             hasMismatchedRepoId(parsedInput.scope,effectiveRepositoryId)) {
             return {shadow:true,evidenceComplete:false,reconciled:false,liveDispatch:false,liveMerge:false,reason:'PROVENANCE_MISMATCH'};
           }
           const eventOpts=!Object.hasOwn(parsedInput,'repositoryId')&&!Object.hasOwn(parsedInput,'scope')&&effectiveRepositoryId!==DEFAULT_REPOSITORY_ID
@@ -424,10 +438,10 @@ export async function run(args,options={}) {
         }
         return normalizePlanResult(await plan(parsedInput.config,parsedInput.tasks,parsedInput.active,parsedInput.policy));
       },
-      '--evaluate-squash':async()=>evaluateProtectedSquash(parsedInput,effectiveRepositoryId,repoBinding.explicit,evaluateSquash),
+      '--evaluate-squash':async()=>evaluateProtectedSquash(parsedInput,effectiveRepositoryId,evaluateSquash),
       '--verify-admission':async()=>{
-        if(repoBinding.explicit&&plainJsonObject(parsedInput)&&Object.hasOwn(parsedInput,'repositoryId')&&
-           parsedInput.repositoryId!==effectiveRepositoryId) {
+        if(plainJsonObject(parsedInput)&&(hasMismatchedRepoId(parsedInput,effectiveRepositoryId)||
+           (Object.hasOwn(parsedInput,'approvedRepositoryId')&&parsedInput.approvedRepositoryId!==effectiveRepositoryId))) {
           return {
             shadow:true,liveDispatch:false,admitted:false,state:'blocked',
             reason:'PROVENANCE_MISMATCH',admissionCode:'REPOSITORY_SCOPE_MISMATCH',
@@ -437,8 +451,11 @@ export async function run(args,options={}) {
         return verifyAdmission(parsedInput);
       },
       '--verify-m01-readiness':async()=>{
-        if(repoBinding.explicit&&plainJsonObject(parsedInput)&&plainJsonObject(parsedInput.policy)&&
-           Object.hasOwn(parsedInput.policy,'repositoryId')&&parsedInput.policy.repositoryId!==effectiveRepositoryId) {
+        if(plainJsonObject(parsedInput)&&(
+           hasMismatchedRepoId(parsedInput,effectiveRepositoryId)||
+           hasMismatchedRepoId(parsedInput.policy,effectiveRepositoryId)||
+           hasMismatchedRepoId(parsedInput.readiness,effectiveRepositoryId)||
+           (Array.isArray(parsedInput.cycles)&&parsedInput.cycles.some(c=>hasMismatchedRepoId(c,effectiveRepositoryId))))) {
           return {shadow:true,ready:false,liveActivation:false,accepted:false,reason:'IDENTITY_OR_PIN'};
         }
         return verifyM01Readiness(parsedInput);
