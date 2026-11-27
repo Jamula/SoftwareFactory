@@ -139,44 +139,126 @@ export ASPIRE_DASHBOARD_OTLP_HTTP_ENDPOINT_URL="https://127.0.0.1:18890"
 
 ## Single-command isolated AppHost start, verify, and stop
 
-Use `aspire start --apphost apphost.cs --isolated` so dynamic loopback ports and an isolated dashboard session prevent collisions with other local Aspire projects. Redirect CLI startup output to a private `0600` file so the one-time dashboard login token (`?t=...`) is never printed to shared logs:
+Use `aspire start --apphost apphost.cs --isolated` inside a subshell with an `EXIT` cleanup handler registered before startup so failure paths also attempt `aspire stop --apphost apphost.cs --non-interactive`. Remove `$work_dir` only after shutdown succeeds, retaining `$work_dir` (`ASPIRE_HOME` and private logs) for manual recovery if `aspire stop` fails:
 
 ```bash
-set -euo pipefail
-export DOTNET_CLI_TELEMETRY_OPTOUT=1
-export ASPIRE_CLI_TELEMETRY_OPTOUT=true
-export ASPIRE_DASHBOARD_TELEMETRY_OPTOUT=true
-export ASPIRE_ALLOW_UNSECURED_TRANSPORT=false
-export ASPIRE_DASHBOARD_UNSECURED_ALLOW_ANONYMOUS=false
-export ASPIRE_DASHBOARD_PERSISTENCE_MODE=Run
-export ASPIRE_DASHBOARD_DATA_DIRECTORY="$work_dir/dashboard-data"
-export ASPIRE_DASHBOARD_OTLP_HTTP_ENDPOINT_URL="https://127.0.0.1:18890"
-export ASPIRE_HOME="$work_dir/aspire-home"
-export PATH="<temp-root>/sf-aspire-tools:$PATH"
-mkdir -p "$ASPIRE_DASHBOARD_DATA_DIRECTORY"
+(
+  set -euo pipefail
+  export DOTNET_CLI_TELEMETRY_OPTOUT=1
+  export ASPIRE_CLI_TELEMETRY_OPTOUT=true
+  export ASPIRE_DASHBOARD_TELEMETRY_OPTOUT=true
+  export ASPIRE_ALLOW_UNSECURED_TRANSPORT=false
+  export ASPIRE_DASHBOARD_UNSECURED_ALLOW_ANONYMOUS=false
+  export ASPIRE_DASHBOARD_PERSISTENCE_MODE=Run
+  export ASPIRE_DASHBOARD_DATA_DIRECTORY="$work_dir/dashboard-data"
+  export ASPIRE_DASHBOARD_OTLP_HTTP_ENDPOINT_URL="https://127.0.0.1:18890"
+  export ASPIRE_HOME="$work_dir/aspire-home"
+  export PATH="<temp-root>/sf-aspire-tools:$PATH"
+  mkdir -p "$ASPIRE_DASHBOARD_DATA_DIRECTORY"
 
-# 1. Start isolated AppHost over authenticated loopback HTTPS
-aspire start --apphost apphost.cs --isolated --non-interactive --nologo >"$work_dir/startup.log" 2>&1
+  apphost_started=0
+  cleanup() {
+    local status=$?
+    set +e
+    local stop_ok=1
+    if [ "$apphost_started" -eq 1 ]; then
+      if ! aspire stop --apphost apphost.cs --non-interactive >/dev/null 2>&1; then
+        stop_ok=0
+        printf 'WARN: aspire stop failed; retaining work_dir for manual recovery\n' >&2
+        if [ "$status" -eq 0 ]; then
+          status=1
+        fi
+      fi
+    fi
+    if [ "$stop_ok" -eq 1 ]; then
+      rm -rf -- "$work_dir"
+    fi
+    exit "$status"
+  }
+  trap cleanup EXIT
 
-# 2. Extract loopback origin without printing the login token
-origin="$(grep -Eom1 'https://(localhost|127\.0\.0\.1|\[::1\]):[0-9]+' "$work_dir/startup.log")"
-curl --silent --show-error --noproxy '*' --max-time 10 --cacert "$cert_pem" \
-  --output /dev/null --write-out '%{http_code}\n' "$origin/resources"
-# Expected HTTP status: 302 (redirects unauthenticated requests to /login)
+  # 1. Start isolated AppHost over authenticated loopback HTTPS
+  apphost_started=1
+  aspire start --apphost apphost.cs --isolated --non-interactive --nologo >"$work_dir/startup.log" 2>&1
 
-# 3. Explicitly run the finite synthetic-shadow resource and verify clean OTel shutdown
-aspire resource synthetic-shadow start --apphost apphost.cs --non-interactive
-aspire wait synthetic-shadow --status down --timeout 20 --apphost apphost.cs
-aspire logs synthetic-shadow --apphost apphost.cs --non-interactive | \
-  grep -E 'STOPPED|LOCAL_SDK_SHUTDOWN_COMPLETE'
+  # 2. Extract loopback origin without printing the login token and verify 302 login challenge
+  origin="$(grep -Eom1 'https://(localhost|127\.0\.0\.1|\[::1\]):[0-9]+' "$work_dir/startup.log")"
+  status_code="$(curl --silent --show-error --noproxy '*' --max-time 10 --cacert "$cert_pem" \
+    --output /dev/null --write-out '%{http_code}' "$origin/resources")"
+  test "$status_code" = 302
 
-# 4. Optional telemetry archive export, followed by deterministic stop and cleanup
-aspire export --apphost apphost.cs --output "$work_dir/telemetry-export.zip" --non-interactive
-aspire stop --apphost apphost.cs --non-interactive
-rm -rf -- "$work_dir"
+  # 3. Explicitly run the finite synthetic-shadow resource and verify clean OTel shutdown
+  aspire resource synthetic-shadow start --apphost apphost.cs --non-interactive
+  aspire wait synthetic-shadow --status down --timeout 20 --apphost apphost.cs
+  aspire logs synthetic-shadow --apphost apphost.cs --non-interactive | \
+    grep -E 'STOPPED|LOCAL_SDK_SHUTDOWN_COMPLETE'
+
+  # 4. Optional telemetry archive export; EXIT trap handles deterministic stop and cleanup
+  aspire export --apphost apphost.cs --output "$work_dir/telemetry-export.zip" --non-interactive
+)
 ```
 
-On PowerShell (Windows 11), keep `$env:DOTNET_CLI_TELEMETRY_OPTOUT = '1'`, `$env:ASPIRE_CLI_TELEMETRY_OPTOUT = 'true'`, and `$env:ASPIRE_DASHBOARD_TELEMETRY_OPTOUT = 'true'` set before invoking the identical `aspire start --apphost apphost.cs --isolated --non-interactive --nologo`, `aspire resource synthetic-shadow start --apphost apphost.cs --non-interactive`, `aspire wait synthetic-shadow --status down --timeout 20 --apphost apphost.cs`, `aspire logs synthetic-shadow --apphost apphost.cs --non-interactive`, and `aspire stop --apphost apphost.cs --non-interactive` sequence inside a `try { ... } finally { ... }` block that removes `$workDir` and clears `NODE_EXTRA_CA_CERTS` on exit.
+On PowerShell (Windows 11), register the equivalent `try { ... } finally { ... }` handler before `aspire start` so failed checks still stop the isolated AppHost and retain `$workDir` if shutdown fails:
+
+```powershell
+$ErrorActionPreference = 'Stop'
+$env:DOTNET_CLI_TELEMETRY_OPTOUT = '1'
+$env:ASPIRE_CLI_TELEMETRY_OPTOUT = 'true'
+$env:ASPIRE_DASHBOARD_TELEMETRY_OPTOUT = 'true'
+$env:ASPIRE_ALLOW_UNSECURED_TRANSPORT = 'false'
+$env:ASPIRE_DASHBOARD_UNSECURED_ALLOW_ANONYMOUS = 'false'
+$env:ASPIRE_DASHBOARD_PERSISTENCE_MODE = 'Run'
+$env:ASPIRE_DASHBOARD_DATA_DIRECTORY = Join-Path $workDir 'dashboard-data'
+$env:ASPIRE_DASHBOARD_OTLP_HTTP_ENDPOINT_URL = 'https://127.0.0.1:18890'
+$env:ASPIRE_HOME = Join-Path $workDir 'aspire-home'
+New-Item -ItemType Directory -Path $env:ASPIRE_DASHBOARD_DATA_DIRECTORY -Force | Out-Null
+
+$appHostStarted = $false
+$runSucceeded = $false
+$stopSucceeded = $true
+try {
+  $appHostStarted = $true
+  aspire start --apphost apphost.cs --isolated --non-interactive --nologo *> (Join-Path $workDir 'startup.log')
+  if ($LASTEXITCODE -ne 0) { throw "aspire start failed ($LASTEXITCODE)" }
+
+  $startupText = Get-Content -Raw (Join-Path $workDir 'startup.log')
+  $originMatch = [regex]::Match($startupText, 'https://(?:localhost|127\.0\.0\.1|\[::1\]):[0-9]+')
+  if (-not $originMatch.Success) { throw 'Loopback HTTPS dashboard origin was not reported' }
+  $statusCode = & curl.exe --silent --show-error --noproxy '*' --max-time 10 --cacert $certPem `
+    --output NUL --write-out '%{http_code}' "$($originMatch.Value)/resources"
+  if ($LASTEXITCODE -ne 0 -or $statusCode -ne '302') { throw 'Dashboard did not require login over trusted TLS' }
+
+  aspire resource synthetic-shadow start --apphost apphost.cs --non-interactive
+  if ($LASTEXITCODE -ne 0) { throw "resource start failed ($LASTEXITCODE)" }
+
+  aspire wait synthetic-shadow --status down --timeout 20 --apphost apphost.cs
+  if ($LASTEXITCODE -ne 0) { throw "resource wait failed ($LASTEXITCODE)" }
+
+  $logs = aspire logs synthetic-shadow --apphost apphost.cs --non-interactive
+  if ($LASTEXITCODE -ne 0 -or -not ($logs -match 'STOPPED') -or -not ($logs -match 'LOCAL_SDK_SHUTDOWN_COMPLETE')) {
+    throw 'Expected STOPPED and LOCAL_SDK_SHUTDOWN_COMPLETE markers were not observed'
+  }
+
+  aspire export --apphost apphost.cs --output (Join-Path $workDir 'telemetry-export.zip') --non-interactive
+  if ($LASTEXITCODE -ne 0) { throw "aspire export failed ($LASTEXITCODE)" }
+  $runSucceeded = $true
+} finally {
+  Remove-Item Env:NODE_EXTRA_CA_CERTS -ErrorAction SilentlyContinue
+  if ($appHostStarted) {
+    aspire stop --apphost apphost.cs --non-interactive *> $null
+    if ($LASTEXITCODE -ne 0) {
+      $stopSucceeded = $false
+      Write-Warning 'aspire stop failed; retaining workDir for manual recovery'
+    }
+  }
+  if ($stopSucceeded) {
+    Remove-Item -LiteralPath $workDir -Recurse -Force -ErrorAction SilentlyContinue
+  }
+}
+if ($runSucceeded -and -not $stopSucceeded) {
+  throw 'aspire stop failed; retained workDir for manual recovery'
+}
+```
 
 ## `factory-board` Copilot CLI Extension Canvas preview
 
