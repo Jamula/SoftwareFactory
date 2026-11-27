@@ -1,0 +1,91 @@
+{
+  "schemaVersion": 1,
+  "milestone": "M03.02",
+  "issue": 36,
+  "recordedAt": "2026-11-27T10:05:16Z",
+  "syntheticOnly": true,
+  "version": "0.1.0",
+  "productReleaseEnabled": false,
+  "containsPrivateGenealogyData": false,
+  "productionDeploymentEnabled": false,
+  "sharedAdminTokenUsed": false,
+  "liveActivation": false,
+  "upstreamM01Accepted": false,
+  "familyTreeScopedAuthVerified": false,
+  "upstreamBlockers": [
+    {
+      "issue": 10,
+      "milestone": "M01.08",
+      "status": "open",
+      "requirement": "Three actual independently accepted unattended M01 SoftwareFactory cycles on GitHub"
+    },
+    {
+      "issue": 13,
+      "milestone": "M03.01",
+      "status": "open",
+      "requirement": "Shared immutable consumer onboarding contract acceptance"
+    },
+    {
+      "issue": 36,
+      "milestone": "M03.02",
+      "status": "gated",
+      "requirement": "Separate FamilyTree-scoped owner authorization and consumer readiness (#128/#120) prior to any live enrollment"
+    }
+  ],
+  "syntheticConsumerProfile": {
+    "repository": "example/family-tree",
+    "repositoryId": 900101,
+    "stackProfile": "web-genealogy-95-90",
+    "credentialId": "cred-shadow-family-tree",
+    "pinnedWorkflowSha": "afc3d223f287b029db32672908097efc67a259c9",
+    "pinnedCheckoutSha": "1208481843e73d1d2506085c654e84255303541d",
+    "baselineCoverage": {
+      "line": 95,
+      "branch": 90
+    },
+    "maxConcurrency": 1,
+    "reviewSemantics": "APPROVED_ONLY"
+  },
+  "shadowDenialProof": {
+    "shadow": true,
+    "valid": true,
+    "liveActivation": false,
+    "zeroLiveMutations": true,
+    "reason": "FAMILYTREE_SHADOW_DENIALS_PROVEN",
+    "repository": "example/family-tree",
+    "repositoryId": 900101,
+    "verifiedDenials": [
+      "staleReview",
+      "dismissedReview",
+      "commentedBotReview",
+      "wrongRepositoryId",
+      "wrongRepositorySlug",
+      "missingAiCreditQuota",
+      "estimatedAiCreditQuota",
+      "belowFloorLineCoverage",
+      "belowFloorBranchCoverage",
+      "emergencyStop",
+      "duplicateEvent"
+    ],
+    "rollback": {
+      "stoppedRepository": "example/family-tree",
+      "targetDecision": "STOPPED",
+      "unaffectedPeers": [
+        "example/spellbook",
+        "example/family-hub"
+      ],
+      "softwareFactoryUnaffected": true
+    }
+  },
+  "readinessEvaluation": {
+    "shadow": true,
+    "ready": false,
+    "liveActivation": false,
+    "upstreamM01Accepted": false,
+    "familyTreeScopedAuthVerified": false,
+    "onboardingContractVerified": true,
+    "shadowDenialsVerified": true,
+    "zeroLiveMutations": true,
+    "reason": "UPSTREAM_M01_NOT_ACCEPTED"
+  }
+}
