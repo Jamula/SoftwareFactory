@@ -6,6 +6,7 @@ export {
   createFactoryBoardCanvasSpec,
   initFactoryBoardClient,
   renderBoardHtml,
+  startFactoryBoardExtension,
   startLoopbackBoardServer,
 } from "../../../tools/engineering-factory/factory-board.mjs";
 

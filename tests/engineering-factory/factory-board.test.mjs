@@ -13,6 +13,7 @@ import {
   combineRestChecksAndStatus,
   createBoardPoller,
   extractMilestoneStep,
+  extractReferencedIssueNumbers,
   fetchFactoryBoardSnapshot,
   fetchViaGhGraphql,
   fetchViaPublicRest,
@@ -23,6 +24,7 @@ import {
   normalizeCheckRollup,
   normalizeMergeQueue,
   normalizeReviewStatus,
+  parseRateLimitHeaders,
   parseRepoSlug,
   readBoundedJson,
   summarizeSnapshot,
@@ -35,6 +37,7 @@ import {
   createBoardInstanceManager,
   createFactoryBoardCanvasSpec,
   renderBoardHtml,
+  startFactoryBoardExtension,
   startLoopbackBoardServer,
 } from "../../.github/extensions/factory-board/board-ui.mjs";
 
@@ -370,17 +373,51 @@ test("normalizeCheckRollup, combineRestChecksAndStatus, normalizeReviewStatus, a
     "APPROVED",
   );
 
-  assert.deepEqual(normalizeMergeQueue(null), { queued: false, state: null, position: null });
+  assert.deepEqual(normalizeMergeQueue(undefined), {
+    known: false,
+    queued: null,
+    state: "UNKNOWN",
+    position: null,
+  });
+  assert.deepEqual(normalizeMergeQueue("invalid"), {
+    known: false,
+    queued: null,
+    state: "UNKNOWN",
+    position: null,
+  });
+  assert.deepEqual(normalizeMergeQueue(null), {
+    known: true,
+    queued: false,
+    state: null,
+    position: null,
+  });
   assert.deepEqual(normalizeMergeQueue({ state: "AWAITING_CHECKS", position: 0 }), {
+    known: true,
     queued: true,
     state: "AWAITING_CHECKS",
     position: 0,
   });
   assert.deepEqual(normalizeMergeQueue({ state: "", position: -1 }), {
+    known: true,
     queued: true,
     state: "QUEUED",
     position: null,
   });
+
+  // Cross-repo vs local issue reference extraction
+  assert.deepEqual(
+    extractReferencedIssueNumbers(
+      "Pilot Jamula/FamilyTree#18 and Jamula/FamilyTree #19 and https://github.com/octo/x/issues/1#20; local (#5) and Jamula/SoftwareFactory#18",
+      [
+        { number: 4, repo: "Jamula/SoftwareFactory" },
+        { number: 99, repo: "Jamula/FamilyTree" },
+        { number: 77, repo: null },
+        { number: 0, repo: "Jamula/SoftwareFactory" },
+      ],
+      "Jamula/SoftwareFactory",
+    ),
+    [4, 5, 18],
+  );
 });
 
 test("buildFactoryBoardSnapshot, summarizeSnapshot, and buildUnavailableSnapshot aggregate milestones and PRs accurately", () => {
@@ -440,12 +477,16 @@ test("buildFactoryBoardSnapshot, summarizeSnapshot, and buildUnavailableSnapshot
         mergeStateStatus: "clean",
         autoMerge: true,
         mergeQueueEntry: { state: "QUEUED", position: 0 },
-        closingIssuesReferences: [{ number: 5 }, { number: 0 }],
+        closingIssuesReferences: [
+          { number: 5, repo: "Jamula/SoftwareFactory" },
+          { number: 18, repo: "Jamula/FamilyTree" },
+          { number: 0, repo: "Jamula/SoftwareFactory" },
+        ],
         checkRollup: { contexts: [{ status: "COMPLETED", conclusion: "SUCCESS" }] },
       },
       {
         number: 128,
-        title: "Add scorecard (#18)",
+        title: "Add scorecard (#18) after Jamula/Spellbook#1",
         isDraft: true,
         reviewDecision: "",
         mergeStateStatus: "",
@@ -461,12 +502,14 @@ test("buildFactoryBoardSnapshot, summarizeSnapshot, and buildUnavailableSnapshot
         milestoneTitle: "M01 - Autonomous SoftwareFactory",
         reviewDecision: undefined,
         reviews: undefined,
+        mergeQueueEntry: null,
         checkRollup: { contexts: [{ status: "COMPLETED", conclusion: "FAILURE" }] },
       },
       {
         number: 141,
         title: "Unchecked chore PR",
         isDraft: false,
+        mergeQueueEntry: null,
         checkRollup: null,
       },
     ],
@@ -477,7 +520,7 @@ test("buildFactoryBoardSnapshot, summarizeSnapshot, and buildUnavailableSnapshot
         title: "M02.04: Add throughput checkpoint (#18)",
         mergedAt: "2026-11-26T23:00:00Z",
         headRefName: "u/dev/m02",
-        closingIssuesReferences: [{ number: 18 }],
+        closingIssuesReferences: [{ number: 18, repo: "Jamula/SoftwareFactory" }],
       },
       {
         number: 121,
@@ -946,6 +989,117 @@ test("fetchViaGhGraphql, fetchViaPublicRest, and fetchFactoryBoardSnapshot handl
   assert.equal(fallbackSnap.openPulls[0].reviewStatus, "CHANGES_REQUESTED");
   assert.equal(fallbackSnap.openPulls[1].ci.state, "UNKNOWN");
   assert.equal(fallbackSnap.openPulls[1].reviewStatus, "UNKNOWN");
+  // REST snapshots report unknown queue status/counts rather than fabricating 0 queued
+  assert.equal(fallbackSnap.openPulls[0].mergeQueue.known, false);
+  assert.equal(fallbackSnap.openPulls[0].mergeQueue.queued, null);
+  assert.equal(fallbackSnap.totals.queuedPulls, null);
+  assert.equal(fallbackSnap.milestones.find((m) => m.id === "M02").queuedPulls, null);
+
+  // Rate-limit header parsing, low-remaining detail conservation, and hard 403/429 backoff
+  assert.deepEqual(
+    parseRateLimitHeaders(
+      new Headers({
+        "x-ratelimit-remaining": "8",
+        "x-ratelimit-reset": "1800000000",
+        "retry-after": "30",
+      }),
+      1_799_999_000_000,
+    ),
+    {
+      remaining: 8,
+      resetAtMs: 1_800_000_000_000,
+      retryAfterMs: 1_799_999_030_000,
+    },
+  );
+
+  let detailCallsWhenLow = 0;
+  const lowQuotaRaw = await fetchViaPublicRest({
+    owner: "Jamula",
+    name: "SoftwareFactory",
+    nowMs: 1_000_000,
+    request: async (url) => {
+      if (url.includes("/check-runs") || url.includes("/status") || url.includes("/reviews")) {
+        detailCallsWhenLow += 1;
+      }
+      if (url.includes("/pulls?state=open")) {
+        return new Response(
+          JSON.stringify([{ number: 1, title: "PR", head: { ref: "b", sha: "f".repeat(40) } }]),
+          { headers: { "x-ratelimit-remaining": "8", "x-ratelimit-reset": "2000" } },
+        );
+      }
+      return new Response("[]", {
+        headers: { "x-ratelimit-remaining": "8", "x-ratelimit-reset": "2000" },
+      });
+    },
+  });
+  assert.equal(detailCallsWhenLow, 0);
+  assert.equal(lowQuotaRaw.rateLimit.remaining, 8);
+  assert.ok(lowQuotaRaw.rateLimit.nextPollAtMs > 1_000_000);
+
+  const sharedRateState = { blockedUntilMs: 0, nextPollAtMs: 0 };
+  let rateLimitedRestHits = 0;
+  const rlSnap1 = await fetchFactoryBoardSnapshot({
+    repo: DEFAULT_REPO,
+    clock: () => "2026-11-27T01:00:00Z",
+    rateLimitState: sharedRateState,
+    execGh: async () => {
+      throw new Error("no gh");
+    },
+    request: async () => {
+      rateLimitedRestHits += 1;
+      return new Response("rate limit", {
+        status: 403,
+        headers: { "x-ratelimit-remaining": "0", "retry-after": "120" },
+      });
+    },
+  });
+  assert.equal(rlSnap1.ok, false);
+  assert.equal(rlSnap1.error.code, "REST_RATE_LIMITED");
+  assert.equal(rateLimitedRestHits, 1);
+
+  // Subsequent poll during backoff window makes zero HTTP requests
+  const rlSnap2 = await fetchFactoryBoardSnapshot({
+    repo: DEFAULT_REPO,
+    clock: () => "2026-11-27T01:00:30Z",
+    rateLimitState: sharedRateState,
+    execGh: async () => {
+      throw new Error("no gh");
+    },
+    request: async () => {
+      rateLimitedRestHits += 1;
+      throw new Error("should not call REST while backed off");
+    },
+  });
+  assert.equal(rlSnap2.error.code, "REST_RATE_LIMITED");
+  assert.equal(rateLimitedRestHits, 1);
+
+  // 200 OK exhausting last remaining quota unit sets blockedUntilMs on rateLimitState
+  const lastUnitState = { blockedUntilMs: 0, nextPollAtMs: 0 };
+  const lastUnitSnap = await fetchFactoryBoardSnapshot({
+    repo: DEFAULT_REPO,
+    clock: () => "2026-11-27T01:01:00Z",
+    rateLimitState: lastUnitState,
+    execGh: async () => {
+      throw new Error("no gh");
+    },
+    request: async () =>
+      new Response("[]", {
+        status: 200,
+        headers: { "x-ratelimit-remaining": "0" },
+      }),
+  });
+  assert.equal(lastUnitSnap.ok, true);
+  assert.ok(lastUnitState.blockedUntilMs > Date.parse("2026-11-27T01:01:00Z"));
+
+  // Authenticated gh success clears REST backoff state
+  const rlCleared = await fetchFactoryBoardSnapshot({
+    repo: DEFAULT_REPO,
+    clock: () => "2026-11-27T01:00:40Z",
+    rateLimitState: sharedRateState,
+    execGh: async () => JSON.stringify({ data: { repository: {} } }),
+  });
+  assert.equal(rlCleared.ok, true);
+  assert.equal(sharedRateState.blockedUntilMs, 0);
 
   // Truncated REST reviews fail closed to UNKNOWN; truncated issues mark partial
   const truncatedRestRaw = await fetchViaPublicRest({
@@ -1123,6 +1277,45 @@ test("createBoardPoller coalesces concurrent refreshes, reschedules intervals, p
   const afterClose = await poller.refresh();
   assert.equal(afterClose.config.intervalSeconds, 45);
   assert.equal(events.length, countBeforeClose);
+
+  // Rate-limit paced background timer skips early ticks until nextPollAtMs
+  let fakeNowMs = 10_000;
+  let pacedFetchCount = 0;
+  let pacedTick = null;
+  const pacedPoller = createBoardPoller({
+    repo: DEFAULT_REPO,
+    intervalSeconds: 10,
+    now: () => fakeNowMs,
+    timers: {
+      setInterval(fn) {
+        pacedTick = fn;
+        return { unref() {} };
+      },
+      clearInterval() {},
+    },
+    fetchSnapshot: async ({ repo }) => {
+      pacedFetchCount += 1;
+      return {
+        ...buildFactoryBoardSnapshot(
+          { milestones: [], issues: [], openPulls: [], mergedPulls: [] },
+          { repo, source: "github-rest", generatedAt: "2026-11-27T01:00:00Z" },
+        ),
+        rateLimit: { nextPollAtMs: 50_000, blockedUntilMs: 0 },
+      };
+    },
+  });
+  await pacedPoller.start();
+  assert.equal(pacedFetchCount, 1);
+  // Early tick at 20_000 (< 50_000) is skipped
+  fakeNowMs = 20_000;
+  pacedTick();
+  assert.equal(pacedFetchCount, 1);
+  // Tick at 50_000 proceeds
+  fakeNowMs = 50_000;
+  pacedTick();
+  await pacedPoller.refresh();
+  assert.equal(pacedFetchCount, 2);
+  pacedPoller.close();
 });
 
 test("board-ui loopback HTTP/SSE server and createFactoryBoardCanvasSpec satisfy Copilot CLI canvas rules", async () => {
@@ -1206,14 +1399,25 @@ test("board-ui loopback HTTP/SSE server and createFactoryBoardCanvasSpec satisfy
   assert.equal(opened.status, "Auto-refreshing (20s)");
   assert.match(opened.url, /^http:\/\/127\.0\.0\.1:\d+\/$/);
 
-  // Idempotent reopen returns same server URL and honors updated interval
+  // Idempotent reopen returns same server URL and honors updated interval (omitted or matching repo)
   const reopened = await spec.open({
     canvasId: "factory-board",
     instanceId: "inst-1",
-    input: { intervalSeconds: 25 },
+    input: { repo: DEFAULT_REPO, intervalSeconds: 25 },
   });
   assert.equal(reopened.url, opened.url);
   assert.equal(reopened.status, "Auto-refreshing (25s)");
+
+  // Reopening existing instanceId with a different explicit repo fails with repo_conflict
+  await assert.rejects(
+    () =>
+      spec.open({
+        canvasId: "factory-board",
+        instanceId: "inst-1",
+        input: { repo: "Jamula/FamilyTree" },
+      }),
+    (err) => err instanceof MockCanvasError && err.code === "repo_conflict",
+  );
 
   // Connect live SSE viewer to /events
   const sseAbort = new AbortController();
@@ -1405,6 +1609,14 @@ test("board-ui loopback HTTP/SSE server and createFactoryBoardCanvasSpec satisfy
     coalescedManager.openInstance({ instanceId: "race-1" }),
     coalescedManager.openInstance({ instanceId: "race-1", input: { intervalSeconds: 35 } }),
   ];
+  await assert.rejects(
+    () =>
+      coalescedManager.openInstance({
+        instanceId: "race-1",
+        input: { repo: "Jamula/FamilyTree" },
+      }),
+    (err) => err?.code === "repo_conflict",
+  );
   releaseStartup();
   const [resA, resB] = await Promise.all([concurrentA, concurrentB]);
   assert.equal(startCalls, 1);
@@ -1655,12 +1867,14 @@ test("initFactoryBoardClient renders verified, partial, stale, and cold-unavaila
   assert.match(client.reviewBadge("PENDING"), /PENDING/);
   assert.match(client.reviewBadge("UNKNOWN"), /UNKNOWN/);
 
-  assert.match(client.queueBadge({ mergeQueue: { queued: true, position: 1 } }), /QUEUED #2/);
-  assert.match(client.queueBadge({ mergeQueue: { queued: true, position: null } }), /QUEUED</);
-  assert.match(client.queueBadge({ isDraft: true, mergeQueue: { queued: false } }), /DRAFT/);
-  assert.match(client.queueBadge({ isDraft: false, mergeStateStatus: "DIRTY", autoMerge: true, mergeQueue: { queued: false } }), /DIRTY · AUTO/);
-  assert.match(client.queueBadge({ isDraft: false, mergeStateStatus: "CLEAN", autoMerge: false, mergeQueue: { queued: false } }), /CLEAN/);
-  assert.match(client.queueBadge({ isDraft: false, mergeStateStatus: "BLOCKED", autoMerge: false, mergeQueue: { queued: false } }), /BLOCKED/);
+  assert.match(client.queueBadge({ mergeQueue: { known: true, queued: true, position: 1 } }), /QUEUED #2/);
+  assert.match(client.queueBadge({ mergeQueue: { known: true, queued: true, position: null } }), /QUEUED</);
+  assert.match(client.queueBadge({ isDraft: true, mergeQueue: { known: true, queued: false } }), /DRAFT</);
+  assert.match(client.queueBadge({ isDraft: true, mergeQueue: { known: false, queued: null } }), /DRAFT · QUEUE UNKNOWN/);
+  assert.match(client.queueBadge({ isDraft: false, mergeStateStatus: "DIRTY", autoMerge: true, mergeQueue: { known: true, queued: false } }), /DIRTY · AUTO/);
+  assert.match(client.queueBadge({ isDraft: false, mergeStateStatus: "CLEAN", autoMerge: false, mergeQueue: { known: true, queued: false } }), /CLEAN</);
+  assert.match(client.queueBadge({ isDraft: false, mergeStateStatus: "CLEAN", autoMerge: false, mergeQueue: { known: false, queued: null } }), /CLEAN · QUEUE UNKNOWN/);
+  assert.match(client.queueBadge({ isDraft: false, mergeStateStatus: "BLOCKED", autoMerge: false, mergeQueue: { known: true, queued: false } }), /BLOCKED/);
 
   // Wait for /api/state initial promise
   await new Promise((r) => setTimeout(r, 10));
@@ -1787,4 +2001,92 @@ test("initFactoryBoardClient renders verified, partial, stale, and cold-unavaila
   });
   assert.match(elements.get("error-banner").textContent, /Degraded \(showing last verified snapshot\)/);
   assert.match(elements.get("kpi-grid").innerHTML, /activity proxy, not verified acceptance/);
+
+  // REST snapshot with unknown mergeQueue renders "Unknown queue" and "Queue unknown"
+  const restUnknownQueueSnap = buildFactoryBoardSnapshot(
+    {
+      milestones: [{ number: 2, title: "M01 - Auto", state: "OPEN" }],
+      issues: [],
+      openPulls: [{ number: 150, title: "[M01] REST PR", mergeQueueEntry: undefined }],
+      mergedPulls: [],
+    },
+    { repo: DEFAULT_REPO, source: "github-rest", generatedAt: "2026-11-27T02:50:00Z" },
+  );
+  sseHandlers.get("state")({
+    data: JSON.stringify({
+      config: { repo: DEFAULT_REPO, intervalSeconds: 20, paused: false, status: "Auto-refreshing (20s)" },
+      snapshot: restUnknownQueueSnap,
+    }),
+  });
+  assert.match(elements.get("kpi-grid").innerHTML, /Unknown queue/);
+  assert.match(elements.get("milestones-grid").innerHTML, /Queue unknown/);
+});
+
+test("startFactoryBoardExtension and extension.mjs register canvas, forward logs, and close on session end", async () => {
+  const sessionLogs = [];
+  let capturedJoinOptions = null;
+  let closeAllCalls = 0;
+  let capturedOnLog = null;
+
+  const boot = await startFactoryBoardExtension({
+    CanvasError: MockCanvasError,
+    createCanvas: (spec) => spec,
+    createManager: (opts) => {
+      capturedOnLog = opts.onLog;
+      // Calling onLog before joinSession resolves is a safe no-op
+      capturedOnLog("early message", { level: "info" });
+      return {
+        openInstance: async () => ({ title: CANVAS_DISPLAY_NAME, status: "Auto-refreshing (20s)", url: "http://127.0.0.1:1/" }),
+        closeInstance: async () => true,
+        closeAll: async () => {
+          closeAllCalls += 1;
+        },
+        refreshInstance: async () => null,
+        setInstanceInterval: () => ({ ok: false, code: "instance_not_found", message: "none" }),
+      };
+    },
+    joinSession: async (options) => {
+      capturedJoinOptions = options;
+      return {
+        log(msg, opts) {
+          sessionLogs.push({ msg, opts });
+        },
+      };
+    },
+  });
+
+  assert.equal(boot.canvas.id, CANVAS_ID);
+  assert.equal(capturedJoinOptions.canvases.definitions.length, 1);
+  capturedOnLog("runtime warning", { level: "warning", ephemeral: true });
+  assert.equal(sessionLogs.length, 1);
+  assert.equal(sessionLogs[0].msg, "runtime warning");
+
+  await capturedJoinOptions.hooks.handlers.onSessionEnd();
+  assert.equal(closeAllCalls, 1);
+
+  // Execute .github/extensions/factory-board/extension.mjs in a real Node subprocess with a stubbed @microsoft/copilot-sdk/extension module
+  const loaderSource = `
+    import { registerHooks } from "node:module";
+    registerHooks({
+      resolve(specifier, context, nextResolve) {
+        if (specifier === "@microsoft/copilot-sdk/extension") {
+          return { shortCircuit: true, url: "data:text/javascript," + encodeURIComponent(
+            "export class CanvasError extends Error { constructor(c,m){super(m);this.code=c;} }" +
+            "export const createCanvas = (s) => s;" +
+            "export const joinSession = async (o) => { await o.hooks.handlers.onSessionEnd(); process.stderr.write('EXT_JOINED:' + o.canvases.definitions[0].id); return { log(){} }; };"
+          )};
+        }
+        return nextResolve(specifier, context);
+      }
+    });
+  `;
+  const loaderDataUrl = `data:text/javascript,${encodeURIComponent(loaderSource)}`;
+  const extPath = join(process.cwd(), ".github", "extensions", "factory-board", "extension.mjs");
+  const { stdout, stderr } = await execFileAsync(process.execPath, [
+    "--import",
+    loaderDataUrl,
+    extPath,
+  ]);
+  assert.equal(stdout, "");
+  assert.match(stderr, /EXT_JOINED:factory-board/);
 });

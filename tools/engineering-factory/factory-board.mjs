@@ -27,7 +27,8 @@ export const CANONICAL_MILESTONES = Object.freeze([
 const REPO_SLUG_PATTERN = /^([A-Za-z0-9_.-]{1,100})\/([A-Za-z0-9_.-]{1,100})$/;
 const MILESTONE_CODE_PATTERN = /\b(M0[1-5])(?:\.(\d{2}(?:\.\d{2})?))?\b/i;
 const HISTORICAL_MILESTONE_PATTERN = /^historical\b/i;
-const ISSUE_REF_PATTERN = /#(\d+)\b/g;
+const ISSUE_REF_TOKEN_PATTERN =
+  /(?:([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\s+|(https?:\/\/[^\s#]+|[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+|[A-Za-z0-9_.-]+))?#(\d+)\b/g;
 
 const GRAPHQL_SNAPSHOT_QUERY = [
   "query($owner:String!,$name:String!){",
@@ -35,8 +36,8 @@ const GRAPHQL_SNAPSHOT_QUERY = [
   "milestones(first:100,states:[OPEN,CLOSED]){pageInfo{hasNextPage} nodes{number title state}}",
   "openIssues:issues(first:100,states:[OPEN],orderBy:{field:UPDATED_AT,direction:DESC}){pageInfo{hasNextPage endCursor} nodes{number title state url updatedAt labels(first:10){nodes{name}} milestone{number title}}}",
   "closedIssues:issues(first:100,states:[CLOSED],orderBy:{field:UPDATED_AT,direction:DESC}){pageInfo{hasNextPage endCursor} nodes{number title state url updatedAt labels(first:10){nodes{name}} milestone{number title}}}",
-  "openPulls:pullRequests(first:100,states:[OPEN],orderBy:{field:UPDATED_AT,direction:DESC}){pageInfo{hasNextPage} nodes{number title isDraft url updatedAt headRefName headRefOid reviewDecision mergeStateStatus autoMergeRequest{enabledAt} mergeQueueEntry{position state} milestone{number title} closingIssuesReferences(first:10){nodes{number milestone{title}}} commits(last:1){nodes{commit{statusCheckRollup{state contexts(first:100){totalCount pageInfo{hasNextPage} nodes{__typename ... on CheckRun{name status conclusion} ... on StatusContext{context state}}}}}}}}}",
-  "mergedPulls:pullRequests(first:12,states:[MERGED],orderBy:{field:UPDATED_AT,direction:DESC}){nodes{number title url mergedAt headRefName milestone{number title} closingIssuesReferences(first:5){nodes{number milestone{title}}}}}",
+  "openPulls:pullRequests(first:100,states:[OPEN],orderBy:{field:UPDATED_AT,direction:DESC}){pageInfo{hasNextPage} nodes{number title isDraft url updatedAt headRefName headRefOid reviewDecision mergeStateStatus autoMergeRequest{enabledAt} mergeQueueEntry{position state} milestone{number title} closingIssuesReferences(first:10){nodes{number repository{nameWithOwner}}} commits(last:1){nodes{commit{statusCheckRollup{state contexts(first:100){totalCount pageInfo{hasNextPage} nodes{__typename ... on CheckRun{name status conclusion} ... on StatusContext{context state}}}}}}}}}",
+  "mergedPulls:pullRequests(first:12,states:[MERGED],orderBy:{field:UPDATED_AT,direction:DESC}){nodes{number title url mergedAt headRefName milestone{number title} closingIssuesReferences(first:5){nodes{number repository{nameWithOwner}}}}}",
   "}}",
 ].join(" ");
 
@@ -102,18 +103,29 @@ function extractPriority(labels, title) {
   return match ? match[1] : null;
 }
 
-function extractReferencedIssueNumbers(title, closingRefs) {
+export function extractReferencedIssueNumbers(title, closingRefs, repo = DEFAULT_REPO) {
+  const targetRepo = typeof repo === "string" ? repo.trim().toLowerCase() : "";
   const seen = new Set();
   if (Array.isArray(closingRefs)) {
     for (const ref of closingRefs) {
-      if (Number.isSafeInteger(ref?.number) && ref.number > 0) {
+      const refRepo = typeof ref?.repo === "string" ? ref.repo.trim().toLowerCase() : "";
+      if (
+        Number.isSafeInteger(ref?.number) &&
+        ref.number > 0 &&
+        refRepo.length > 0 &&
+        refRepo === targetRepo
+      ) {
         seen.add(ref.number);
       }
     }
   }
   if (typeof title === "string") {
-    for (const match of title.matchAll(ISSUE_REF_PATTERN)) {
-      const parsed = Number.parseInt(match[1], 10);
+    for (const match of title.matchAll(ISSUE_REF_TOKEN_PATTERN)) {
+      const qualifier = match[1] ?? match[2];
+      if (qualifier !== undefined && qualifier.toLowerCase() !== targetRepo) {
+        continue;
+      }
+      const parsed = Number.parseInt(match[3], 10);
       if (Number.isSafeInteger(parsed) && parsed > 0) {
         seen.add(parsed);
       }
@@ -298,10 +310,17 @@ export function normalizeReviewStatus(reviewDecision, reviews) {
 }
 
 export function normalizeMergeQueue(entry) {
-  if (!entry || typeof entry !== "object") {
-    return { queued: false, state: null, position: null };
+  if (entry === undefined) {
+    return { known: false, queued: null, state: "UNKNOWN", position: null };
+  }
+  if (entry === null) {
+    return { known: true, queued: false, state: null, position: null };
+  }
+  if (typeof entry !== "object") {
+    return { known: false, queued: null, state: "UNKNOWN", position: null };
   }
   return {
+    known: true,
     queued: true,
     state: typeof entry.state === "string" && entry.state.length > 0 ? entry.state : "QUEUED",
     position: Number.isSafeInteger(entry.position) && entry.position >= 0 ? entry.position : null,
@@ -370,7 +389,11 @@ export function buildFactoryBoardSnapshot(raw, { repo, source, generatedAt }) {
     if (!Number.isSafeInteger(pr?.number) || pr.number < 1 || typeof pr.title !== "string") {
       continue;
     }
-    const linkedIssueNumbers = extractReferencedIssueNumbers(pr.title, pr.closingIssuesReferences);
+    const linkedIssueNumbers = extractReferencedIssueNumbers(
+      pr.title,
+      pr.closingIssuesReferences,
+      repo,
+    );
     const milestoneTitle = typeof pr.milestoneTitle === "string" ? pr.milestoneTitle : null;
     const candidate = {
       number: pr.number,
@@ -407,7 +430,11 @@ export function buildFactoryBoardSnapshot(raw, { repo, source, generatedAt }) {
     if (!Number.isSafeInteger(pr?.number) || pr.number < 1 || typeof pr.title !== "string") {
       continue;
     }
-    const linkedIssueNumbers = extractReferencedIssueNumbers(pr.title, pr.closingIssuesReferences);
+    const linkedIssueNumbers = extractReferencedIssueNumbers(
+      pr.title,
+      pr.closingIssuesReferences,
+      repo,
+    );
     const milestoneTitle = typeof pr.milestoneTitle === "string" ? pr.milestoneTitle : null;
     const entry = {
       number: pr.number,
@@ -439,6 +466,7 @@ export function buildFactoryBoardSnapshot(raw, { repo, source, generatedAt }) {
         ? Math.round((closedCount / totalIssues) * 100)
         : 0;
     const milestonePulls = openPulls.filter((pr) => pr.milestoneId === id);
+    const msQueueUnknown = milestonePulls.some((pr) => pr.mergeQueue.known === false);
 
     return {
       id,
@@ -453,7 +481,9 @@ export function buildFactoryBoardSnapshot(raw, { repo, source, generatedAt }) {
       ciPassingPulls: milestonePulls.filter((pr) => pr.ci.state === "PASS").length,
       ciPendingPulls: milestonePulls.filter((pr) => pr.ci.state === "PENDING").length,
       ciFailingPulls: milestonePulls.filter((pr) => pr.ci.state === "FAIL").length,
-      queuedPulls: milestonePulls.filter((pr) => pr.mergeQueue.queued).length,
+      queuedPulls: msQueueUnknown
+        ? null
+        : milestonePulls.filter((pr) => pr.mergeQueue.queued === true).length,
       issues: issues.map(({ milestoneTitle: _mt, ...rest }) => rest),
     };
   });
@@ -461,6 +491,7 @@ export function buildFactoryBoardSnapshot(raw, { repo, source, generatedAt }) {
   const issuesOpen = allIssues.filter((i) => i.state === "OPEN").length;
   const issuesClosed = allIssues.filter((i) => i.state === "CLOSED").length;
   const issuesTotal = issuesOpen + issuesClosed;
+  const queueUnknown = openPulls.some((pr) => pr.mergeQueue.known === false);
 
   return {
     repo,
@@ -472,6 +503,7 @@ export function buildFactoryBoardSnapshot(raw, { repo, source, generatedAt }) {
     stale: false,
     error: null,
     generatedAt,
+    rateLimit: raw?.rateLimit ?? null,
     totals: {
       milestonesOpen: milestones.filter((m) => m.state === "open").length,
       issuesOpen,
@@ -489,7 +521,9 @@ export function buildFactoryBoardSnapshot(raw, { repo, source, generatedAt }) {
       ciFailingPulls: openPulls.filter((pr) => pr.ci.state === "FAIL").length,
       ciUnknownPulls: openPulls.filter((pr) => pr.ci.state === "UNKNOWN").length,
       approvedPulls: openPulls.filter((pr) => pr.reviewStatus === "APPROVED").length,
-      queuedPulls: openPulls.filter((pr) => pr.mergeQueue.queued).length,
+      queuedPulls: queueUnknown
+        ? null
+        : openPulls.filter((pr) => pr.mergeQueue.queued === true).length,
       mergedRecentPulls: mergedPulls.length,
     },
     milestones,
@@ -739,6 +773,16 @@ export async function fetchViaGhGraphql({
     }),
   ]);
 
+function mapGraphqlClosingRefs(nodes) {
+  if (!Array.isArray(nodes)) {
+    return [];
+  }
+  return nodes.map((r) => ({
+    number: r?.number,
+    repo: r?.repository?.nameWithOwner ?? null,
+  }));
+}
+
   const openPullNodes = Array.isArray(repoNode.openPulls?.nodes) ? repoNode.openPulls.nodes : [];
   const openPulls = openPullNodes.map((node) => {
     const commitRollup = node?.commits?.nodes?.[0]?.commit?.statusCheckRollup;
@@ -761,9 +805,10 @@ export async function fetchViaGhGraphql({
       reviewDecision: node?.reviewDecision ?? null,
       mergeStateStatus: node?.mergeStateStatus,
       autoMerge: Boolean(node?.autoMergeRequest),
-      mergeQueueEntry: node?.mergeQueueEntry ?? null,
+      mergeQueueEntry:
+        node && Object.hasOwn(node, "mergeQueueEntry") ? node.mergeQueueEntry : undefined,
       milestoneTitle: node?.milestone?.title ?? null,
-      closingIssuesReferences: node?.closingIssuesReferences?.nodes ?? [],
+      closingIssuesReferences: mapGraphqlClosingRefs(node?.closingIssuesReferences?.nodes),
       checkRollup,
     };
   });
@@ -778,7 +823,7 @@ export async function fetchViaGhGraphql({
     mergedAt: node?.mergedAt,
     headRefName: node?.headRefName,
     milestoneTitle: node?.milestone?.title ?? null,
-    closingIssuesReferences: node?.closingIssuesReferences?.nodes ?? [],
+    closingIssuesReferences: mapGraphqlClosingRefs(node?.closingIssuesReferences?.nodes),
   }));
 
   const milestoneNodes = Array.isArray(repoNode.milestones?.nodes) ? repoNode.milestones.nodes : [];
@@ -869,6 +914,27 @@ export function combineRestChecksAndStatus(checksPayload, statusPayload) {
   };
 }
 
+export function parseRateLimitHeaders(headers, nowMs = Date.now()) {
+  const remRaw = headers?.get?.("x-ratelimit-remaining");
+  const resetRaw = headers?.get?.("x-ratelimit-reset");
+  const retryRaw = headers?.get?.("retry-after");
+
+  const remaining =
+    typeof remRaw === "string" && /^\d+$/.test(remRaw.trim())
+      ? Number.parseInt(remRaw.trim(), 10)
+      : null;
+  const resetAtMs =
+    typeof resetRaw === "string" && /^\d+$/.test(resetRaw.trim())
+      ? Number.parseInt(resetRaw.trim(), 10) * 1000
+      : null;
+  const retryAfterMs =
+    typeof retryRaw === "string" && /^\d+$/.test(retryRaw.trim())
+      ? nowMs + Number.parseInt(retryRaw.trim(), 10) * 1000
+      : null;
+
+  return { remaining, resetAtMs, retryAfterMs };
+}
+
 function hasNextRestPage(response, itemCount, perPage) {
   const linkHeader = response.headers?.get?.("link");
   if (typeof linkHeader === "string" && linkHeader.length > 0) {
@@ -887,9 +953,43 @@ export async function fetchViaPublicRest({
   maxPages = 5,
   maxReviewPages = 3,
   perPage = 100,
+  nowMs = Date.now(),
 }) {
   const baseUrl = `https://api.github.com/repos/${owner}/${name}`;
+  let requestsUsed = 0;
+  let minRemaining = null;
+  let latestResetAtMs = null;
+  let latestRetryAfterMs = null;
+
+  const recordRateLimit = (response) => {
+    const rl = parseRateLimitHeaders(response?.headers, nowMs);
+    if (rl.remaining !== null && (minRemaining === null || rl.remaining < minRemaining)) {
+      minRemaining = rl.remaining;
+    }
+    if (rl.resetAtMs !== null && (latestResetAtMs === null || rl.resetAtMs > latestResetAtMs)) {
+      latestResetAtMs = rl.resetAtMs;
+    }
+    if (
+      rl.retryAfterMs !== null &&
+      (latestRetryAfterMs === null || rl.retryAfterMs > latestRetryAfterMs)
+    ) {
+      latestRetryAfterMs = rl.retryAfterMs;
+    }
+    if (
+      response &&
+      (response.status === 429 ||
+        (response.status === 403 && (rl.remaining === 0 || rl.retryAfterMs !== null)))
+    ) {
+      const blockedUntilMs = rl.retryAfterMs ?? rl.resetAtMs ?? nowMs + 60_000;
+      throw Object.assign(new Error("REST_RATE_LIMITED"), {
+        code: "REST_RATE_LIMITED",
+        blockedUntilMs,
+      });
+    }
+  };
+
   const getResponseAndJson = async (path) => {
+    requestsUsed += 1;
     const response = await request(`${baseUrl}${path}`, {
       method: "GET",
       redirect: "error",
@@ -900,6 +1000,7 @@ export async function fetchViaPublicRest({
         "user-agent": "SoftwareFactory-Board-Canvas/0.1",
       },
     });
+    recordRateLimit(response);
     const json = await readBoundedJson(response, maxBytes);
     return { response, json };
   };
@@ -929,8 +1030,8 @@ export async function fetchViaPublicRest({
     return { items, truncated };
   };
 
-  const [milestonesPaged, issuesPaged, openPullsPaged, closedPullsJson] = await Promise.all([
-    getPaginatedArray("/milestones?state=all"),
+  const milestonesPaged = await getPaginatedArray("/milestones?state=all");
+  const [issuesPaged, openPullsPaged, closedPullsJson] = await Promise.all([
     getPaginatedArray("/issues?state=all"),
     getPaginatedArray("/pulls?state=open&sort=updated&direction=desc"),
     getJson("/pulls?state=closed&sort=updated&direction=desc&per_page=20"),
@@ -960,12 +1061,15 @@ export async function fetchViaPublicRest({
       milestoneTitle: item.milestone?.title ?? null,
     }));
 
+  const allowDetails = minRemaining === null || minRemaining > 10;
+
   const openPulls = await Promise.all(
     openPullsPaged.items.map(async (pr, index) => {
       const headSha = pr?.head?.sha;
       let checkRollup = null;
       let reviews = undefined;
       if (
+        allowDetails &&
         index < maxDetailPulls &&
         typeof headSha === "string" &&
         headSha.length > 0 &&
@@ -996,7 +1100,7 @@ export async function fetchViaPublicRest({
         reviews,
         mergeStateStatus: pr?.mergeable_state,
         autoMerge: Boolean(pr?.auto_merge),
-        mergeQueueEntry: null,
+        mergeQueueEntry: undefined,
         milestoneTitle: pr?.milestone?.title ?? null,
         closingIssuesReferences: [],
         checkRollup,
@@ -1020,7 +1124,31 @@ export async function fetchViaPublicRest({
   const truncated =
     milestonesPaged.truncated || issuesPaged.truncated || openPullsPaged.truncated;
 
-  return { milestones, issues, openPulls, mergedPulls, truncated };
+  let blockedUntilMs = latestRetryAfterMs ?? 0;
+  let nextPollAtMs = blockedUntilMs;
+  if (minRemaining === 0) {
+    blockedUntilMs = Math.max(blockedUntilMs, latestResetAtMs ?? nowMs + 60_000);
+    nextPollAtMs = blockedUntilMs;
+  } else if (minRemaining !== null && latestResetAtMs !== null && latestResetAtMs > nowMs) {
+    const windowMs = latestResetAtMs - nowMs;
+    const pollsLeft = Math.max(1, Math.floor(minRemaining / Math.max(1, requestsUsed)));
+    nextPollAtMs = Math.max(nextPollAtMs, nowMs + Math.ceil(windowMs / pollsLeft));
+  }
+
+  return {
+    milestones,
+    issues,
+    openPulls,
+    mergedPulls,
+    truncated,
+    rateLimit: {
+      remaining: minRemaining,
+      resetAtMs: latestResetAtMs,
+      blockedUntilMs,
+      nextPollAtMs,
+      requestsUsed,
+    },
+  };
 }
 
 export async function fetchFactoryBoardSnapshot({
@@ -1031,8 +1159,11 @@ export async function fetchFactoryBoardSnapshot({
   timeoutMs = DEFAULT_TIMEOUT_MS,
   maxBytes = DEFAULT_MAX_BYTES,
   previousSnapshot = null,
+  rateLimitState = null,
 } = {}) {
   const generatedAt = clock();
+  const parsedClockMs = Date.parse(generatedAt);
+  const nowMs = Number.isNaN(parsedClockMs) ? Date.now() : parsedClockMs;
   let parsedRepo;
   try {
     parsedRepo = parseRepoSlug(repo);
@@ -1052,12 +1183,27 @@ export async function fetchFactoryBoardSnapshot({
       execGh,
       timeoutMs,
     });
+    if (rateLimitState) {
+      rateLimitState.blockedUntilMs = 0;
+      rateLimitState.nextPollAtMs = 0;
+    }
     return buildFactoryBoardSnapshot(raw, {
       repo: parsedRepo.fullName,
       source: "gh-graphql",
       generatedAt,
     });
   } catch {
+    if (rateLimitState && rateLimitState.blockedUntilMs > nowMs) {
+      return buildUnavailableSnapshot({
+        repo: parsedRepo.fullName,
+        generatedAt,
+        error: {
+          code: "REST_RATE_LIMITED",
+          message: `Public GitHub REST rate limit active until ${new Date(rateLimitState.blockedUntilMs).toISOString()}.`,
+        },
+        previousSnapshot,
+      });
+    }
     try {
       const raw = await fetchViaPublicRest({
         owner: parsedRepo.owner,
@@ -1065,18 +1211,28 @@ export async function fetchFactoryBoardSnapshot({
         request,
         timeoutMs,
         maxBytes,
+        nowMs,
       });
+      if (rateLimitState && raw.rateLimit) {
+        rateLimitState.blockedUntilMs = raw.rateLimit.blockedUntilMs;
+        rateLimitState.nextPollAtMs = raw.rateLimit.nextPollAtMs;
+      }
       return buildFactoryBoardSnapshot(raw, {
         repo: parsedRepo.fullName,
         source: "github-rest",
         generatedAt,
       });
     } catch (restErr) {
+      const isRateLimited = restErr?.code === "REST_RATE_LIMITED";
+      if (isRateLimited && rateLimitState && Number.isFinite(restErr.blockedUntilMs)) {
+        rateLimitState.blockedUntilMs = restErr.blockedUntilMs;
+        rateLimitState.nextPollAtMs = restErr.blockedUntilMs;
+      }
       return buildUnavailableSnapshot({
         repo: parsedRepo.fullName,
         generatedAt,
         error: {
-          code: "SNAPSHOT_FETCH_FAILED",
+          code: isRateLimited ? "REST_RATE_LIMITED" : "SNAPSHOT_FETCH_FAILED",
           message:
             restErr instanceof Error && restErr.message
               ? restErr.message
@@ -1097,6 +1253,7 @@ export function createBoardPoller({
   intervalSeconds: initialInterval = DEFAULT_INTERVAL_SECONDS,
   fetchSnapshot = fetchFactoryBoardSnapshot,
   timers = { setInterval, clearInterval },
+  now = Date.now,
 } = {}) {
   const parsed = parseRepoSlug(repo);
   const validated = validateIntervalSeconds(initialInterval);
@@ -1110,6 +1267,7 @@ export function createBoardPoller({
   let snapshot = null;
   let inflight = null;
   let timerHandle = null;
+  const rateLimitState = { blockedUntilMs: 0, nextPollAtMs: 0 };
   const listeners = new Set();
 
   const buildEnvelope = () => ({
@@ -1142,6 +1300,9 @@ export function createBoardPoller({
       return;
     }
     timerHandle = timers.setInterval(() => {
+      if (now() < rateLimitState.nextPollAtMs) {
+        return;
+      }
       void refresh();
     }, currentInterval * 1000);
     if (timerHandle && typeof timerHandle.unref === "function") {
@@ -1161,7 +1322,11 @@ export function createBoardPoller({
         const next = await fetchSnapshot({
           repo: parsed.fullName,
           previousSnapshot: snapshot,
+          rateLimitState,
         });
+        if (next?.rateLimit?.nextPollAtMs > rateLimitState.nextPollAtMs) {
+          rateLimitState.nextPollAtMs = next.rateLimit.nextPollAtMs;
+        }
         if (!closed) {
           snapshot = next;
           notify();
@@ -1300,20 +1465,28 @@ export function initFactoryBoardClient(win) {
   }
 
   function queueBadge(pr) {
-    if (pr.mergeQueue && pr.mergeQueue.queued) {
+    if (pr.mergeQueue && pr.mergeQueue.queued === true) {
       const pos = pr.mergeQueue.position !== null ? " #" + (pr.mergeQueue.position + 1) : "";
       return '<span class="pill blue">QUEUED' + pos + "</span>";
     }
-    if (pr.isDraft) return '<span class="pill muted">DRAFT</span>';
+    const unknownQueue = !pr.mergeQueue || pr.mergeQueue.known === false;
+    if (pr.isDraft) {
+      return (
+        '<span class="pill muted">DRAFT' +
+        (unknownQueue ? " · QUEUE UNKNOWN" : "") +
+        "</span>"
+      );
+    }
     const ms = pr.mergeStateStatus || "UNKNOWN";
     const auto = pr.autoMerge ? " · AUTO" : "";
+    const suffix = unknownQueue ? " · QUEUE UNKNOWN" : "";
     if (ms === "DIRTY" || ms === "CONFLICTING") {
-      return '<span class="pill red">' + esc(ms + auto) + "</span>";
+      return '<span class="pill red">' + esc(ms + auto + suffix) + "</span>";
     }
-    if (ms === "CLEAN") {
+    if (ms === "CLEAN" && !unknownQueue) {
       return '<span class="pill blue">' + esc(ms + auto) + "</span>";
     }
-    return '<span class="pill muted">' + esc(ms + auto) + "</span>";
+    return '<span class="pill muted">' + esc(ms + auto + suffix) + "</span>";
   }
 
   function render() {
@@ -1431,7 +1604,7 @@ export function initFactoryBoardClient(win) {
       },
       {
         label: "Review & Merge Queue",
-        value: t.queuedPulls + " queued",
+        value: t.queuedPulls === null ? "Unknown queue" : t.queuedPulls + " queued",
         sub: t.approvedPulls + " approved open PRs",
       },
       {
@@ -1549,7 +1722,11 @@ export function initFactoryBoardClient(win) {
           (m.ciFailingPulls > 0
             ? '<span class="pill red">' + m.ciFailingPulls + " CI fail</span>"
             : "") +
-          (m.queuedPulls > 0 ? '<span class="pill blue">' + m.queuedPulls + " queued</span>" : "") +
+          (m.queuedPulls === null
+            ? '<span class="pill muted">Queue unknown</span>'
+            : m.queuedPulls > 0
+              ? '<span class="pill blue">' + m.queuedPulls + " queued</span>"
+              : "") +
           "</div>" +
           '<details class="issue-drawer" data-ms="' +
           esc(m.id) +
@@ -1577,7 +1754,12 @@ export function initFactoryBoardClient(win) {
       });
 
     const filteredPrs = snap.openPulls.filter((pr) => {
-      if (state.prFilter === "queue") return pr.mergeQueue && pr.mergeQueue.queued;
+      if (state.prFilter === "queue") {
+        return Boolean(
+          pr.mergeQueue &&
+            (pr.mergeQueue.queued === true || pr.mergeQueue.known === false),
+        );
+      }
       if (state.prFilter === "fail") return pr.ci.state === "FAIL";
       if (state.prFilter === "pending") return pr.ci.state === "PENDING";
       if (state.prFilter === "pass") return pr.ci.state === "PASS";
@@ -2252,17 +2434,38 @@ export function createBoardInstanceManager({
         throw Object.assign(new Error(check.message), { code: "invalid_interval" });
       }
     }
-    const requestedRepo = parseRepoSlug(ctx?.input?.repo ?? DEFAULT_REPO).fullName;
+    const explicitRepo =
+      ctx?.input?.repo !== undefined ? parseRepoSlug(ctx.input.repo).fullName : null;
 
     let entry = instances.get(instanceId);
-    if (!entry) {
+    if (entry) {
+      const boundRepo = entry.poller.getState().config.repo;
+      if (explicitRepo !== null && explicitRepo.toLowerCase() !== boundRepo.toLowerCase()) {
+        throw Object.assign(
+          new Error(
+            `Canvas instance "${instanceId}" is already bound to "${boundRepo}"; cannot reopen with "${explicitRepo}".`,
+          ),
+          { code: "repo_conflict" },
+        );
+      }
+    } else {
       let pending = pendingOpens.get(instanceId);
-      if (!pending) {
-        const record = { cancelled: false, promise: null };
+      if (pending) {
+        if (explicitRepo !== null && explicitRepo.toLowerCase() !== pending.repo.toLowerCase()) {
+          throw Object.assign(
+            new Error(
+              `Canvas instance "${instanceId}" is already opening for "${pending.repo}"; cannot open with "${explicitRepo}".`,
+            ),
+            { code: "repo_conflict" },
+          );
+        }
+      } else {
+        const targetRepo = explicitRepo ?? DEFAULT_REPO;
+        const record = { repo: targetRepo, cancelled: false, promise: null };
         record.promise = (async () => {
           try {
             const created = await startServer({
-              repo: requestedRepo,
+              repo: targetRepo,
               intervalSeconds: requestedInterval ?? DEFAULT_INTERVAL_SECONDS,
               fetchSnapshot,
               timers,
@@ -2444,4 +2647,37 @@ export function createFactoryBoardCanvasSpec({ CanvasError, manager }) {
       await manager.closeInstance(ctx.instanceId);
     },
   };
+}
+
+export async function startFactoryBoardExtension({
+  CanvasError,
+  createCanvas,
+  joinSession,
+  createManager = createBoardInstanceManager,
+}) {
+  let activeSession = null;
+  const manager = createManager({
+    onLog: (message, options) => {
+      if (activeSession && typeof activeSession.log === "function") {
+        activeSession.log(message, options);
+      }
+    },
+  });
+
+  const canvas = createCanvas(createFactoryBoardCanvasSpec({ CanvasError, manager }));
+
+  activeSession = await joinSession({
+    canvases: {
+      definitions: [canvas],
+    },
+    hooks: {
+      handlers: {
+        onSessionEnd: async () => {
+          await manager.closeAll();
+        },
+      },
+    },
+  });
+
+  return { session: activeSession, manager, canvas };
 }
