@@ -434,9 +434,27 @@ test('verifies healthy protected main alone and full protected main + candidate 
     conclusion: 'success'
   });
   copilotShortLogin.candidate.pullChecks.push({
+    name: 'Analyze (javascript-typescript)',
+    jobId: 8886,
+    appId: GITHUB_ACTIONS_APP_ID,
+    headSha: CAND_SHA,
+    event: 'dynamic',
+    status: 'completed',
+    conclusion: 'success'
+  });
+  copilotShortLogin.candidate.pullChecks.push({
     name: 'CodeQL',
     jobId: 8887,
     appId: GITHUB_ADVANCED_SECURITY_APP_ID,
+    headSha: CAND_SHA,
+    event: 'dynamic',
+    status: 'completed',
+    conclusion: 'success'
+  });
+  copilotShortLogin.candidate.pullChecks.push({
+    name: 'CodeQL',
+    jobId: 8885,
+    appId: GITHUB_ACTIONS_APP_ID,
     headSha: CAND_SHA,
     event: 'dynamic',
     status: 'completed',
@@ -963,6 +981,38 @@ test('fails closed on fork PR skipped runtime checks, summary-only review findin
 });
 
 test('enforces >=98% line and >=95% branch coverage on every JS and .NET 10 C# component without rounding up', () => {
+  // Exact fractional minimumCoverage (98.07% where 98.07 * 10000 === 980700.0000000001 in IEEE-754 float)
+  const exactFractionalTarget = makeHealthyMainInput();
+  exactFractionalTarget.ruleset.minimumCoverage = 98.07;
+  exactFractionalTarget.main.jsCoverage.components[0] = {
+    component: 'engineering-factory.core',
+    head: MAIN_SHA,
+    lines: 9807,
+    lineTotal: 10000,
+    branches: 95,
+    branchTotal: 100
+  };
+  exactFractionalTarget.main.dotnetCoverage.components[0] = {
+    component: 'SoftwareFactory.Agents',
+    head: MAIN_SHA,
+    lines: 9807,
+    lineTotal: 10000,
+    branches: 950,
+    branchTotal: 1000
+  };
+  assert.equal(auditProtectedMainAndCandidateGates(exactFractionalTarget).mainHealthy, true);
+
+  const subFractionalJs = cloneJson(exactFractionalTarget);
+  subFractionalJs.main.jsCoverage.components[0].lines = 9806;
+  assert.equal(auditProtectedMainAndCandidateGates(subFractionalJs).reason, 'JS_COVERAGE_BELOW_TARGET');
+
+  const subFractionalDotnet = cloneJson(exactFractionalTarget);
+  subFractionalDotnet.main.dotnetCoverage.components[0].lines = 9806;
+  assert.equal(
+    auditProtectedMainAndCandidateGates(subFractionalDotnet).reason,
+    'DOTNET_COVERAGE_BELOW_TARGET'
+  );
+
   // Exact boundary 97.999% (97999/100000) would round to 98.00% for display, must still fail closed!
   const jsSub98Main = makeHealthyMainInput();
   jsSub98Main.main.jsCoverage.components[0].lines = 97999;

@@ -183,6 +183,18 @@ function addReason(list, reason) {
   if (!list.includes(reason)) list.push(reason);
 }
 
+function meetsExactPercentFloor(covered, total, minPercent) {
+  const str = String(minPercent);
+  const dot = str.indexOf('.');
+  if (dot === -1) {
+    return BigInt(covered) * 100n >= BigInt(str) * BigInt(total);
+  }
+  const decimals = str.length - dot - 1;
+  const scale = 10n ** BigInt(decimals);
+  const minScaled = BigInt(str.slice(0, dot) + str.slice(dot + 1));
+  return BigInt(covered) * 100n * scale >= minScaled * BigInt(total);
+}
+
 function isExpectedCheckAppId(checkName, appId, requiredCheckMap, forceActionsOnly) {
   if (forceActionsOnly || builtInActionsJobSet.has(checkName)) {
     return appId === GITHUB_ACTIONS_APP_ID;
@@ -432,8 +444,8 @@ function auditJsCoverage(jsCov, expectedHead, lineMin, invalidReason, trustedSet
     }
   }
   const policy = hasBranchless
-    ? {repository: SOFTWARE_FACTORY_REPO, lineMin, branchMin: 95, branchless: jsCov.branchless}
-    : {repository: SOFTWARE_FACTORY_REPO, lineMin, branchMin: 95};
+    ? {repository: SOFTWARE_FACTORY_REPO, lineMin: 98, branchMin: 95, branchless: jsCov.branchless}
+    : {repository: SOFTWARE_FACTORY_REPO, lineMin: 98, branchMin: 95};
   const evidence = coverageEvidence(expectedHead, jsCov.expectedComponents, jsCov.components, policy);
   if (!evidence.valid) {
     return {
@@ -441,6 +453,12 @@ function auditJsCoverage(jsCov, expectedHead, lineMin, invalidReason, trustedSet
       reason: evidence.reason === 'COMPONENT_BELOW_TARGET' ? 'JS_COVERAGE_BELOW_TARGET' : invalidReason,
       summary: null
     };
+  }
+  for (let i = 0; i < jsCov.components.length; i++) {
+    const row = jsCov.components[i];
+    if (!meetsExactPercentFloor(row.lines, row.lineTotal, lineMin)) {
+      return {ok: false, reason: 'JS_COVERAGE_BELOW_TARGET', summary: null};
+    }
   }
   if (hasBranchless && trustedSet !== null) {
     for (let i = 0; i < jsCov.branchless.length; i++) {
@@ -500,7 +518,8 @@ function auditDotnetCoverage(dotnetCov, expectedHead, lineMin, invalidReason) {
       return {ok: false, reason: invalidReason, summary: null};
     }
     seen.add(row.component);
-    if (row.lines * 100 < lineMin * row.lineTotal || row.branches * 100 < 95 * row.branchTotal) {
+    if (!meetsExactPercentFloor(row.lines, row.lineTotal, lineMin) ||
+        !meetsExactPercentFloor(row.branches, row.branchTotal, 95)) {
       belowTarget = true;
     }
     lines += row.lines;
@@ -730,7 +749,6 @@ function validateCheckRecordArray(checks, seenJobIds) {
     const c = checks[i];
     if (!exactPlainObject(c, ['name', 'jobId', 'appId', 'headSha', 'event', 'status', 'conclusion'], []) ||
         !isSafeText(c.name, 120) ||
-        byName.has(c.name) ||
         !isPositiveInt(c.jobId) ||
         seenJobIds.has(c.jobId) ||
         !isPositiveInt(c.appId) ||
@@ -740,7 +758,9 @@ function validateCheckRecordArray(checks, seenJobIds) {
       return null;
     }
     seenJobIds.add(c.jobId);
-    byName.set(c.name, c);
+    const existing = byName.get(c.name);
+    if (existing === undefined) byName.set(c.name, [c]);
+    else existing.push(c);
   }
   return byName;
 }
@@ -902,9 +922,9 @@ function auditCandidateSection(candidate, mainHead, mainAudit, lineMin, required
   let anyRuntimeSkipped = false;
   let anyRuntimeMissing = false;
   for (let i = 0; i < REQUIRED_CANDIDATE_RUNTIME_CHECKS.length; i++) {
-    const check = pullByName.get(REQUIRED_CANDIDATE_RUNTIME_CHECKS[i]);
-    if (check === undefined) anyRuntimeMissing = true;
-    else if (check.conclusion === 'skipped') anyRuntimeSkipped = true;
+    const entries = pullByName.get(REQUIRED_CANDIDATE_RUNTIME_CHECKS[i]);
+    if (entries === undefined) anyRuntimeMissing = true;
+    else if (entries.some(e => e.conclusion === 'skipped')) anyRuntimeSkipped = true;
   }
 
   if (isForkOrigin) {
@@ -914,19 +934,25 @@ function auditCandidateSection(candidate, mainHead, mainAudit, lineMin, required
   }
 
   let pullAllGreen = REQUIRED_CANDIDATE_PULL_CHECKS.every(name => pullByName.has(name));
-  for (const [requiredContext] of requiredCheckMap) {
-    if (!pullByName.has(requiredContext)) pullAllGreen = false;
-  }
+  const satisfiedPullChecks = new Set();
   for (let i = 0; i < candidate.pullChecks.length; i++) {
     const c = candidate.pullChecks[i];
     if (c.headSha !== candidate.head) addReason(reasons, 'CANDIDATE_PULL_HEAD_MISMATCH');
-    if (!isExpectedCheckAppId(c.name, c.appId, requiredCheckMap, false)) {
+    const trustedApp = isExpectedCheckAppId(c.name, c.appId, requiredCheckMap, false);
+    if (!trustedApp) {
       addReason(reasons, 'UNTRUSTED_CHECK_APP');
     }
     const eventOk = requiredPullCheckSet.has(c.name)
       ? c.event === 'pull_request'
       : (c.event === 'pull_request' || c.event === 'dynamic');
     if (!eventOk || c.status !== 'completed' || c.conclusion !== 'success') {
+      pullAllGreen = false;
+    } else if (c.headSha === candidate.head && trustedApp) {
+      satisfiedPullChecks.add(`${c.name}\u0000${c.appId}`);
+    }
+  }
+  for (const [requiredContext, requiredIntegrationId] of requiredCheckMap) {
+    if (!satisfiedPullChecks.has(`${requiredContext}\u0000${requiredIntegrationId}`)) {
       pullAllGreen = false;
     }
   }
@@ -1030,17 +1056,25 @@ function auditCandidateSection(candidate, mainHead, mainAudit, lineMin, required
   }
 
   let mgAllGreen = REQUIRED_MERGE_GROUP_CHECKS.every(name => mgByName.has(name));
-  for (const [requiredContext] of requiredCheckMap) {
-    if (!mgByName.has(requiredContext)) mgAllGreen = false;
-  }
+  const satisfiedMgChecks = new Set();
   for (let i = 0; i < mg.checks.length; i++) {
     const c = mg.checks[i];
     if (c.headSha !== mg.head) addReason(reasons, 'MERGE_GROUP_SHA_MISMATCH');
-    if (!isExpectedCheckAppId(c.name, c.appId, requiredCheckMap, false)) {
+    const trustedApp = isExpectedCheckAppId(c.name, c.appId, requiredCheckMap, false);
+    if (!trustedApp) {
       addReason(reasons, 'UNTRUSTED_CHECK_APP');
     }
     if (c.event !== 'merge_group') addReason(reasons, 'MERGE_GROUP_EVENT_MISMATCH');
-    if (c.status !== 'completed' || c.conclusion !== 'success') mgAllGreen = false;
+    if (c.status !== 'completed' || c.conclusion !== 'success') {
+      mgAllGreen = false;
+    } else if (c.headSha === mg.head && trustedApp && c.event === 'merge_group') {
+      satisfiedMgChecks.add(`${c.name}\u0000${c.appId}`);
+    }
+  }
+  for (const [requiredContext, requiredIntegrationId] of requiredCheckMap) {
+    if (!satisfiedMgChecks.has(`${requiredContext}\u0000${requiredIntegrationId}`)) {
+      mgAllGreen = false;
+    }
   }
   if (!mgAllGreen) addReason(reasons, 'MERGE_GROUP_CHECKS_FAILED');
 
