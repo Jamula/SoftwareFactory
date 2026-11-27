@@ -16,15 +16,17 @@ Coordinate approved engineering work for the project named by the separately loa
 
 ## Reference subsystem lanes (SoftwareFactory example)
 
-Authoritative lanes are always loaded from the validated project configuration, never assumed from this prompt. In `config/examples/softwarefactory.json`, the SoftwareFactory reference map partitions the repository into five non-overlapping shadow lanes:
+Authoritative lanes are always loaded from the validated project configuration, never assumed from this prompt. In `config/examples/softwarefactory.json`, the SoftwareFactory reference map partitions every repository surface across five non-overlapping shadow lanes and seven disjoint `knowledgeMap` subsystem components:
 
-| Lane | Specialist | Non-overlapping owned paths |
-| --- | --- | --- |
-| `engineering-coordinator` | `coordinator` | `tools/engineering-coordinator`, `tests/engineering-coordinator`, `config`, `agents` |
-| `engineering-factory` | `api` | `tools/engineering-factory`, `tests/engineering-factory` |
-| `workflows` | `security` | `.github/workflows` |
-| `apphost` | `infra` | `apphost.cs`, `apphost.run.json`, `aspire.config.json`, `global.json` |
-| `docs` | `docs` | `docs` |
+| Component | Shadow lane | Specialist | Non-overlapping owned paths |
+| --- | --- | --- | --- |
+| `engineering-coordinator` | `engineering-coordinator` | `coordinator` | `tools/engineering-coordinator`, `tests/engineering-coordinator`, `config`, `agents` |
+| `engineering-factory` | `engineering-factory` | `api` | `tools/engineering-factory`, `tests/engineering-factory`, `package.json`, `package-lock.json` |
+| `extensions-canvas` | `engineering-factory` | `ui` | `.github/extensions/factory-board` |
+| `dotnet-agents` | `apphost` | `api` | `src/SoftwareFactory.Agents`, `tests/SoftwareFactory.Agents.Tests` |
+| `workflows` | `workflows` | `security` | `.github/workflows` |
+| `apphost` | `apphost` | `infra` | `apphost.cs`, `apphost.run.json`, `aspire.config.json`, `global.json` |
+| `docs` | `docs` | `docs` | `docs`, `README.md`, `AGENTS.md`, `CONTRIBUTING.md`, `SECURITY.md`, `LICENSE`, `NOTICE`, `VERSION`, `.gitignore` |
 
 ## Output
 
