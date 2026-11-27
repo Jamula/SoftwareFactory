@@ -44,14 +44,6 @@ const MAX_PATH_CHARS = 512;
 const SAFE_READ_FLAGS = constants.O_RDONLY | (constants.O_NOFOLLOW | 0) | (constants.O_NONBLOCK | 0);
 
 const FORBIDDEN_OBJECT_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
-const PLATFORM_ALIASES = new Map([
-  ['windows-11', 'windows-11'],
-  ['win32', 'windows-11'],
-  ['macos', 'macos'],
-  ['darwin', 'macos'],
-  ['linux', 'linux'],
-  ['wsl2', 'wsl2']
-]);
 const ARCH_SET = new Set(SUPPORTED_WORKSTATION_ARCHES);
 const PRIVACY_MODES = new Set(['strict', 'strip']);
 
@@ -88,6 +80,7 @@ const REQUIRED_OBSERVATION_KEYS = [
 ];
 
 const OPTIONAL_OBSERVATION_KEYS = [
+  'osRelease',
   'authoritativeLeaseStore',
   'hostedWorkerHost',
   'replacesHostedRunnerValidation',
@@ -191,21 +184,33 @@ const PRIVATE_KEY_SUFFIXES = ['PRIVATE KEY BLOCK-----', 'PRIVATE KEY-----'];
 const PEM_CERT_BEGIN = '-----BEGIN CERTIFICATE-----';
 const PEM_CERT_END = '-----END CERTIFICATE-----';
 
-const QUERY_TOKEN_RE = /([?&](?:t|token|access_token|api_key|apikey|key|secret)=)([^&\s#]{1,512})/gi;
+const QUERY_TOKEN_RE = /([?&](?:t|token|access_token|api_key|apikey|key|secret)=)([^&\s#"'\\]{1,512})/gi;
 const ENV_SECRET_ASSIGNMENT_RE =
-  /\b(DASHBOARD__API__(?:PRIMARY|SECONDARY)APIKEY|DASHBOARD__FRONTEND__BROWSERTOKEN|ASPIRE_DASHBOARD_FRONTEND_BROWSERTOKEN|GITHUB_TOKEN|GH_TOKEN|COPILOT_GITHUB_TOKEN|OPENAI_API_KEY|ANTHROPIC_API_KEY|AZURE_CLIENT_SECRET|AWS_SECRET_ACCESS_KEY|NPM_TOKEN|NUGET_API_KEY|OTEL_EXPORTER_OTLP_(?:[A-Z0-9_]+_)?HEADERS)\s*[:=]\s*([^\s,;]{1,512})/gi;
-const API_HEADER_SECRET_RE = /\b(x-api-key|x-otlp-api-key)\s*[:=]\s*([^\s,;]{1,512})/gi;
+  /\b(DASHBOARD__API__[A-Z0-9_]*APIKEY|DASHBOARD__FRONTEND__BROWSERTOKEN|ASPIRE_DASHBOARD_FRONTEND_BROWSERTOKEN|GITHUB_TOKEN|GH_TOKEN|COPILOT_GITHUB_TOKEN|OPENAI_API_KEY|ANTHROPIC_API_KEY|AZURE_CLIENT_SECRET|AWS_SECRET_ACCESS_KEY|NPM_TOKEN|NUGET_API_KEY|OTEL_EXPORTER_OTLP_(?:[A-Z0-9_]+_)?HEADERS)(?:\\?["'])?\s*[:=]\s*(?:\\?"[^"\\\r\n]{1,512}\\?"|\\?'[^'\\\r\n]{1,512}\\?'|[^\s"',;}\]]{1,512})/gi;
+const API_HEADER_SECRET_RE =
+  /\b(x-api-key|x-otlp-api-key|access_token|refresh_token|client_secret|api_key|apikey|password|passwd)(?:\\?["'])?\s*[:=]\s*(?:\\?"[^"\\\r\n]{1,512}\\?"|\\?'[^'\\\r\n]{1,512}\\?'|[^\s"',;}\]]{1,512})/gi;
+const AUTH_SCHEME_SECRET_RE =
+  /\b(?:Bearer|Basic)[ \t]+[A-Za-z0-9._~+/=-]{4,512}/gi;
 const CREDENTIAL_TOKEN_RE =
-  /(?<![A-Za-z0-9])(?:gh[pousr]_[A-Za-z0-9_]{4,255}|github_pat_[A-Za-z0-9_]{4,255}|npm_[A-Za-z0-9]{8,255}|sk-ant-[A-Za-z0-9_-]{4,255}|sk-[A-Za-z0-9_-]{8,255}|Bearer[ \t]+\S{1,512})/gi;
+  /(?<![A-Za-z0-9])(?:gh[pousr]_[A-Za-z0-9_]{4,255}|github_pat_[A-Za-z0-9_]{4,255}|npm_[A-Za-z0-9]{8,255}|sk-ant-[A-Za-z0-9_-]{4,255}|sk-[A-Za-z0-9_-]{8,255})/gi;
 
-const WSL_HOME_PATH_RE = /(?:\\\\|\/\/)(?:wsl\$|wsl\.localhost)[\\/][^\\/\s"':]{1,128}[\\/]home[\\/][^\\/\s"':]{1,128}/gi;
-const WSL_MOUNT_SPACED_WIN_HOME_RE =
-  /(?<![A-Za-z0-9_.-])\/mnt\/[a-zA-Z]\/Users\/[^\\/\r\n"':]{1,128}?(?=\/(?:AppData|Desktop|Documents|Downloads|\.local|\.cache|\.dotnet|\.aspire|\.nuget)(?:[/\s"':]|$))/gi;
+const FULL_BARE_HOME_PATH_RE =
+  /^(?:(?:\\\\|\/\/)(?:wsl\$|wsl\.localhost)[\\/][^\\/\s"':]{1,128}[\\/]home|[A-Za-z]:[\\/]Users|\/mnt\/[a-zA-Z]\/Users|(?:\/System\/Volumes\/Data)?\/Users|(?:\/var)?\/home)[\\/][^\\/\r\n"':]{1,128}$/i;
+
+const WSL_HOME_SUBDIR_RE =
+  /(?:\\\\|\/\/)(?:wsl\$|wsl\.localhost)[\\/][^\\/\s"':]{1,128}[\\/]home[\\/][^\\/\r\n"':]{1,128}(?=[\\/])/gi;
+const WSL_HOME_PATH_RE =
+  /(?:\\\\|\/\/)(?:wsl\$|wsl\.localhost)[\\/][^\\/\s"':]{1,128}[\\/]home[\\/][^\\/\s"':]{1,128}/gi;
+const WSL_MOUNT_WIN_HOME_SUBDIR_RE =
+  /(?<![A-Za-z0-9_.-])\/mnt\/[a-zA-Z]\/Users\/[^\\/\r\n"':]{1,128}(?=\/)/gi;
 const WSL_MOUNT_WIN_HOME_RE = /(?<![A-Za-z0-9_.-])\/mnt\/[a-zA-Z]\/Users\/[^/\s"':]{1,128}/gi;
-const WINDOWS_SPACED_HOME_PATH_RE =
-  /\b[A-Za-z]:[\\/]Users[\\/][^\\/\r\n"':]{1,128}?(?=[\\/](?:AppData|Desktop|Documents|Downloads|\.local|\.cache|\.dotnet|\.aspire|\.nuget)(?:[\\/\s"':]|$))/gi;
+const WINDOWS_HOME_SUBDIR_RE = /\b[A-Za-z]:[\\/]Users[\\/][^\\/\r\n"':]{1,128}(?=[\\/])/gi;
+const WINDOWS_HOME_QUOTED_RE = /(?<=["'])[A-Za-z]:[\\/]Users[\\/][^\\/\r\n"':]{1,128}(?=["'])/gi;
 const WINDOWS_HOME_PATH_RE = /\b[A-Za-z]:[\\/]Users[\\/][^\\/\s"':]{1,128}/gi;
+const MACOS_HOME_SUBDIR_RE =
+  /(?<![A-Za-z0-9_.-])(?:\/System\/Volumes\/Data)?\/Users\/[^/\r\n"':]{1,128}(?=\/)/gi;
 const MACOS_HOME_PATH_RE = /(?<![A-Za-z0-9_.-])(?:\/System\/Volumes\/Data)?\/Users\/[^/\s"':]{1,128}/gi;
+const LINUX_HOME_SUBDIR_RE = /(?<![A-Za-z0-9_.-])(?:\/var)?\/home\/[^/\r\n"':]{1,128}(?=\/)/g;
 const LINUX_HOME_PATH_RE = /(?<![A-Za-z0-9_.-])(?:\/var)?\/home\/[^/\s"':]{1,128}/g;
 const XDG_RUNTIME_UID_RE = /(?<![A-Za-z0-9_.-])\/run\/user\/[0-9]{1,12}/g;
 const DARWIN_USER_TMP_RE =
@@ -213,7 +218,8 @@ const DARWIN_USER_TMP_RE =
 
 const URL_USERINFO_RE = /(https?:\/\/)([^\s/?#@]{1,128}@)/gi;
 const EMAIL_CANDIDATE_RE = /\b[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+\b/g;
-const USER_ASSIGNMENT_RE = /\b(user(?:name)?|login)=([^\s,;]{1,128})/gi;
+const USER_ASSIGNMENT_RE =
+  /\b(user(?:name)?|login)(?:\\?["'])?\s*[:=]\s*(?:\\?"[^"\\\r\n]{1,128}\\?"|\\?'[^'\\\r\n]{1,128}\\?'|[^\s"',;}\]]{1,128})/gi;
 
 const MAC_COLON_RE =
   /(?<![0-9A-Fa-f]{2}:)(?<![0-9A-Fa-f])(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}(?![0-9A-Fa-f])(?![:][0-9A-Fa-f]{2})/g;
@@ -422,14 +428,20 @@ export function stripPrivateWorkstationIdentifiers(rawText) {
     stripped.add('token');
     return `${key}: [REDACTED_TOKEN]`;
   });
+  replaceTracking(AUTH_SCHEME_SECRET_RE, '[REDACTED_TOKEN]', 'token');
   replaceTracking(CREDENTIAL_TOKEN_RE, '[REDACTED_TOKEN]', 'token');
 
+  replaceTracking(FULL_BARE_HOME_PATH_RE, '<redacted-home>', 'home-directory');
+  replaceTracking(WSL_HOME_SUBDIR_RE, '<redacted-home>', 'home-directory');
   replaceTracking(WSL_HOME_PATH_RE, '<redacted-home>', 'home-directory');
-  replaceTracking(WSL_MOUNT_SPACED_WIN_HOME_RE, '<redacted-home>', 'home-directory');
+  replaceTracking(WSL_MOUNT_WIN_HOME_SUBDIR_RE, '<redacted-home>', 'home-directory');
   replaceTracking(WSL_MOUNT_WIN_HOME_RE, '<redacted-home>', 'home-directory');
-  replaceTracking(WINDOWS_SPACED_HOME_PATH_RE, '<redacted-home>', 'home-directory');
+  replaceTracking(WINDOWS_HOME_SUBDIR_RE, '<redacted-home>', 'home-directory');
+  replaceTracking(WINDOWS_HOME_QUOTED_RE, '<redacted-home>', 'home-directory');
   replaceTracking(WINDOWS_HOME_PATH_RE, '<redacted-home>', 'home-directory');
+  replaceTracking(MACOS_HOME_SUBDIR_RE, '<redacted-home>', 'home-directory');
   replaceTracking(MACOS_HOME_PATH_RE, '<redacted-home>', 'home-directory');
+  replaceTracking(LINUX_HOME_SUBDIR_RE, '<redacted-home>', 'home-directory');
   replaceTracking(LINUX_HOME_PATH_RE, '<redacted-home>', 'home-directory');
   replaceTracking(XDG_RUNTIME_UID_RE, '<redacted-runtime-dir>', 'home-directory');
   replaceTracking(DARWIN_USER_TMP_RE, '<redacted-temp>', 'home-directory');
@@ -660,6 +672,76 @@ function validatePemCertificateContent(pemCa) {
   return { ok: true, reason: 'OK', certificateCount: blocks.length };
 }
 
+function isSupportedWindows11Release(rawRelease) {
+  if (typeof rawRelease !== 'string' || rawRelease.length > 128 || CONTROL_CHAR_RE.test(rawRelease)) {
+    return false;
+  }
+  const match = /^(\d+)\.(\d+)\.(\d+)(?:[.-]|$)/.exec(rawRelease.trim());
+  if (!match) {
+    return false;
+  }
+  const major = Number(match[1]);
+  const minor = Number(match[2]);
+  const build = Number(match[3]);
+  return major > 10 || (major === 10 && minor === 0 && build >= 22000);
+}
+
+function isSupportedDarwinRelease(rawRelease) {
+  if (typeof rawRelease !== 'string' || rawRelease.length > 128 || CONTROL_CHAR_RE.test(rawRelease)) {
+    return false;
+  }
+  const match = /^(\d+)\.(\d+)(?:[.-]|$)/.exec(rawRelease.trim());
+  return Boolean(match && Number(match[1]) >= 20);
+}
+
+function resolveWorkstationOsFamily(rawPlatform, rawRelease, hasExplicitRelease) {
+  if (rawPlatform === 'win32') {
+    return hasExplicitRelease && isSupportedWindows11Release(rawRelease) ? 'windows-11' : null;
+  }
+  if (rawPlatform === 'windows-11') {
+    return !hasExplicitRelease || isSupportedWindows11Release(rawRelease) ? 'windows-11' : null;
+  }
+  if (rawPlatform === 'darwin') {
+    return hasExplicitRelease && isSupportedDarwinRelease(rawRelease) ? 'macos' : null;
+  }
+  if (rawPlatform === 'macos') {
+    return !hasExplicitRelease || isSupportedDarwinRelease(rawRelease) ? 'macos' : null;
+  }
+  if (rawPlatform === 'wsl2') {
+    if (!hasExplicitRelease) {
+      return 'wsl2';
+    }
+    if (
+      typeof rawRelease !== 'string' ||
+      rawRelease.length > 128 ||
+      CONTROL_CHAR_RE.test(rawRelease) ||
+      !/^\d+\.\d+/.test(rawRelease.trim()) ||
+      !/\bwsl2\b/i.test(rawRelease)
+    ) {
+      return null;
+    }
+    return 'wsl2';
+  }
+  if (rawPlatform === 'linux') {
+    if (!hasExplicitRelease) {
+      return 'linux';
+    }
+    if (
+      typeof rawRelease !== 'string' ||
+      rawRelease.length > 128 ||
+      CONTROL_CHAR_RE.test(rawRelease) ||
+      !/^\d+\.\d+/.test(rawRelease.trim())
+    ) {
+      return null;
+    }
+    if (/microsoft|wsl/i.test(rawRelease)) {
+      return /\bwsl2\b/i.test(rawRelease) ? 'wsl2' : null;
+    }
+    return 'linux';
+  }
+  return null;
+}
+
 function validateNoProxyValue(rawNoProxy) {
   if (typeof rawNoProxy !== 'string' || rawNoProxy.trim().length === 0 || rawNoProxy.length > 128) {
     return false;
@@ -695,6 +777,11 @@ export function evaluateWorkstationCompatibilityPreflight(observation) {
     !isPlainRecord(observation.env) ||
     !isPlainRecord(observation.pemCa)
   ) {
+    return blockedReceipt('INPUT_UNKNOWN');
+  }
+
+  const hasOsRelease = Object.hasOwn(observation, 'osRelease');
+  if (hasOsRelease && typeof observation.osRelease !== 'string') {
     return blockedReceipt('INPUT_UNKNOWN');
   }
 
@@ -786,13 +873,18 @@ export function evaluateWorkstationCompatibilityPreflight(observation) {
     return blockedReceipt('INCREMENTAL_SPEND_FORBIDDEN');
   }
 
-  const osFamily = PLATFORM_ALIASES.get(observation.platform);
+  const osFamily = resolveWorkstationOsFamily(
+    observation.platform,
+    hasOsRelease ? observation.osRelease : '',
+    hasOsRelease
+  );
   if (!osFamily || !ARCH_SET.has(observation.arch)) {
     return blockedReceipt('UNSUPPORTED_PLATFORM');
   }
 
-  const env = observation.env;
-  for (const [rawKey, rawValue] of Object.entries(env)) {
+  const effectiveEnv = {};
+  const seenWindowsKeys = new Set();
+  for (const [rawKey, rawValue] of Object.entries(observation.env)) {
     if (typeof rawValue !== 'string' || rawValue.length > MAX_TEXT_CHARS || CONTROL_CHAR_RE.test(rawValue)) {
       return blockedReceipt('INPUT_UNKNOWN');
     }
@@ -821,7 +913,18 @@ export function evaluateWorkstationCompatibilityPreflight(observation) {
     ) {
       return blockedReceipt('TELEMETRY_OPTOUT_MISSING');
     }
-    if (!ALLOWED_ENV_KEYS.has(rawKey)) {
+
+    if (osFamily === 'windows-11') {
+      if (!ALLOWED_ENV_KEYS.has(upperKey) || seenWindowsKeys.has(upperKey)) {
+        return blockedReceipt('INPUT_UNKNOWN');
+      }
+      seenWindowsKeys.add(upperKey);
+      effectiveEnv[upperKey] = rawValue;
+    } else if (rawKey === 'no_proxy') {
+      effectiveEnv.no_proxy = rawValue;
+    } else if (ALLOWED_ENV_KEYS.has(rawKey)) {
+      effectiveEnv[rawKey] = rawValue;
+    } else {
       return blockedReceipt('INPUT_UNKNOWN');
     }
 
@@ -896,21 +999,21 @@ export function evaluateWorkstationCompatibilityPreflight(observation) {
   }
 
   for (const [key, expectedValue] of Object.entries(REQUIRED_TELEMETRY_OPTOUTS)) {
-    if (env[key] !== expectedValue) {
+    if (effectiveEnv[key] !== expectedValue) {
       return blockedReceipt('TELEMETRY_OPTOUT_MISSING');
     }
   }
 
   if (
     observation.osRootTrustStoreModified !== false ||
-    (Object.hasOwn(env, 'ASPIRE_DCP_USE_DEVELOPER_CERTIFICATE') &&
-      env.ASPIRE_DCP_USE_DEVELOPER_CERTIFICATE !== 'false')
+    (Object.hasOwn(effectiveEnv, 'ASPIRE_DCP_USE_DEVELOPER_CERTIFICATE') &&
+      effectiveEnv.ASPIRE_DCP_USE_DEVELOPER_CERTIFICATE !== 'false')
   ) {
     return blockedReceipt('OS_ROOT_TRUST_MODIFIED');
   }
 
   for (const [key, expectedValue] of Object.entries(REQUIRED_SECURE_LOOPBACK_ENV)) {
-    if (env[key] !== expectedValue) {
+    if (effectiveEnv[key] !== expectedValue) {
       return blockedReceipt('INSECURE_LOOPBACK_POSTURE');
     }
   }
@@ -919,8 +1022,8 @@ export function evaluateWorkstationCompatibilityPreflight(observation) {
     'ASPIRE_DASHBOARD_OTLP_HTTP_ENDPOINT_URL',
     'ASPIRE_RESOURCE_SERVICE_ENDPOINT_URL'
   ]) {
-    if (Object.hasOwn(env, endpointEnvKey)) {
-      const status = classifyLoopbackHttpsEndpoint(env[endpointEnvKey]);
+    if (Object.hasOwn(effectiveEnv, endpointEnvKey)) {
+      const status = classifyLoopbackHttpsEndpoint(effectiveEnv[endpointEnvKey]);
       if (status !== 'OK') {
         return blockedReceipt(status);
       }
@@ -928,29 +1031,35 @@ export function evaluateWorkstationCompatibilityPreflight(observation) {
   }
 
   if (
-    Object.hasOwn(env, 'ASPIRE_DASHBOARD_PERSISTENCE_MODE') &&
-    env.ASPIRE_DASHBOARD_PERSISTENCE_MODE !== 'Run'
+    Object.hasOwn(effectiveEnv, 'ASPIRE_DASHBOARD_PERSISTENCE_MODE') &&
+    effectiveEnv.ASPIRE_DASHBOARD_PERSISTENCE_MODE !== 'Run'
   ) {
     return blockedReceipt('INSECURE_LOOPBACK_POSTURE');
   }
 
-  if (Object.hasOwn(env, 'ASPIRE_CLI_START_TIMEOUT')) {
-    const parsedTimeout = Number(env.ASPIRE_CLI_START_TIMEOUT);
+  if (Object.hasOwn(effectiveEnv, 'ASPIRE_CLI_START_TIMEOUT')) {
+    const parsedTimeout = Number(effectiveEnv.ASPIRE_CLI_START_TIMEOUT);
     if (
-      !/^[1-9][0-9]{0,2}$/.test(env.ASPIRE_CLI_START_TIMEOUT) ||
+      !/^[1-9][0-9]{0,2}$/.test(effectiveEnv.ASPIRE_CLI_START_TIMEOUT) ||
       parsedTimeout > 600
     ) {
       return blockedReceipt('INSECURE_LOOPBACK_POSTURE');
     }
   }
 
-  if (Object.hasOwn(env, 'NO_PROXY') && !validateNoProxyValue(env.NO_PROXY)) {
+  if (
+    (Object.hasOwn(effectiveEnv, 'NO_PROXY') && !validateNoProxyValue(effectiveEnv.NO_PROXY)) ||
+    (Object.hasOwn(effectiveEnv, 'no_proxy') && !validateNoProxyValue(effectiveEnv.no_proxy)) ||
+    (Object.hasOwn(effectiveEnv, 'NO_PROXY') &&
+      Object.hasOwn(effectiveEnv, 'no_proxy') &&
+      effectiveEnv.NO_PROXY !== effectiveEnv.no_proxy)
+  ) {
     return blockedReceipt('PROXY_INTERCEPTION_FORBIDDEN');
   }
 
   for (const dirEnvKey of ['ASPIRE_HOME', 'ASPIRE_DASHBOARD_DATA_DIRECTORY']) {
-    if (Object.hasOwn(env, dirEnvKey)) {
-      const dirCheck = validateScopedWorkstationPath(env[dirEnvKey], osFamily, false);
+    if (Object.hasOwn(effectiveEnv, dirEnvKey)) {
+      const dirCheck = validateScopedWorkstationPath(effectiveEnv[dirEnvKey], osFamily, false);
       if (!dirCheck.ok) {
         return blockedReceipt(
           dirCheck.reason === 'INVALID_PATH' ? 'INSECURE_LOOPBACK_POSTURE' : dirCheck.reason
@@ -962,8 +1071,12 @@ export function evaluateWorkstationCompatibilityPreflight(observation) {
     }
   }
 
+  if (!Object.hasOwn(effectiveEnv, 'NODE_EXTRA_CA_CERTS')) {
+    return blockedReceipt('INVALID_OR_UNREADABLE_PEM_CA');
+  }
+
   const caPathCheck = validateScopedWorkstationPath(
-    env.NODE_EXTRA_CA_CERTS,
+    effectiveEnv.NODE_EXTRA_CA_CERTS,
     osFamily,
     true
   );
@@ -1119,11 +1232,16 @@ export function inspectPemCaFile(caPath, fsDeps = DEFAULT_FS_DEPS) {
   }
 }
 
-function readOwnDataString(source, key) {
-  const descriptor = Object.getOwnPropertyDescriptor(source, key);
-  return descriptor && Object.hasOwn(descriptor, 'value') && typeof descriptor.value === 'string'
-    ? descriptor.value
-    : '';
+function readOwnDataString(source, targetUpperKey) {
+  for (const key of Reflect.ownKeys(source)) {
+    if (typeof key === 'string' && key.toUpperCase() === targetUpperKey) {
+      const descriptor = Object.getOwnPropertyDescriptor(source, key);
+      if (descriptor && Object.hasOwn(descriptor, 'value') && typeof descriptor.value === 'string') {
+        return descriptor.value;
+      }
+    }
+  }
+  return '';
 }
 
 function defaultExecVersion(binary, args, env) {
@@ -1188,11 +1306,11 @@ export function collectWorkstationPreflightObservation(options = {}) {
   const execVersion = Object.hasOwn(options, 'execVersion') ? options.execVersion : defaultExecVersion;
   const inspectCa = Object.hasOwn(options, 'inspectCa') ? options.inspectCa : inspectPemCaFile;
 
-  const resolvedPlatform =
-    platform === 'linux' && typeof kernelRelease === 'string' && /microsoft|wsl/i.test(kernelRelease)
-      ? 'wsl2'
-      : platform;
+  const resolvedOsFamily = resolveWorkstationOsFamily(platform, kernelRelease, true);
+  const resolvedPlatform = resolvedOsFamily === null ? 'unsupported' : resolvedOsFamily;
+  const isWindowsPlatform = resolvedPlatform === 'windows-11';
   const filteredEnv = {};
+  const seenWindowsCollectedKeys = new Set();
   for (const rawKey of Reflect.ownKeys(env)) {
     if (typeof rawKey !== 'string') {
       continue;
@@ -1213,7 +1331,15 @@ export function collectWorkstationPreflightObservation(options = {}) {
       (COLLECTED_ENV_KEY_SET.has(upperKey) || EXTERNAL_OTEL_KEY_RE.test(upperKey)) &&
       typeof descriptor.value === 'string'
     ) {
-      filteredEnv[upperKey] = descriptor.value;
+      if (isWindowsPlatform) {
+        if (seenWindowsCollectedKeys.has(upperKey)) {
+          return Object.freeze({ invalidOptions: true });
+        }
+        seenWindowsCollectedKeys.add(upperKey);
+        filteredEnv[upperKey] = descriptor.value;
+      } else {
+        filteredEnv[rawKey] = descriptor.value;
+      }
     }
   }
 
@@ -1223,7 +1349,8 @@ export function collectWorkstationPreflightObservation(options = {}) {
   const dotnetSdkVersion = execVersion('dotnet', ['--version'], env);
   const rawAspireVersion = execVersion('aspire', ['--version'], env);
   const aspireCliVersion = rawAspireVersion.split('+')[0].trim();
-  const caPath = typeof filteredEnv.NODE_EXTRA_CA_CERTS === 'string' ? filteredEnv.NODE_EXTRA_CA_CERTS : '';
+  const caPath =
+    typeof filteredEnv.NODE_EXTRA_CA_CERTS === 'string' ? filteredEnv.NODE_EXTRA_CA_CERTS : '';
   const pemCa = inspectCa(caPath);
 
   return Object.freeze({
@@ -1291,26 +1418,26 @@ export function runWorkstationPreflightCli(args, options = {}) {
     write(JSON.stringify(blockedReceipt('INPUT_UNKNOWN')));
     return 1;
   }
-  let observation;
-  if (args.length === 0) {
-    observation = collect();
-  } else if (args.length === 1 && args[0] === '--operational-orchestrator') {
-    observation = collect({ operationalOrchestratorMode: true });
-  } else if (args.length === 2 && args[0] === '--observation' && typeof args[1] === 'string') {
-    try {
+  try {
+    let observation;
+    if (args.length === 0) {
+      observation = collect();
+    } else if (args.length === 1 && args[0] === '--operational-orchestrator') {
+      observation = collect({ operationalOrchestratorMode: true });
+    } else if (args.length === 2 && args[0] === '--observation' && typeof args[1] === 'string') {
       observation = readBoundedObservationFile(args[1], fsDeps);
-    } catch {
+    } else {
       write(JSON.stringify(blockedReceipt('INPUT_UNKNOWN')));
       return 1;
     }
-  } else {
+
+    const receipt = evaluate(observation);
+    write(JSON.stringify(receipt));
+    return receipt.compatible ? 0 : 1;
+  } catch {
     write(JSON.stringify(blockedReceipt('INPUT_UNKNOWN')));
     return 1;
   }
-
-  const receipt = evaluate(observation);
-  write(JSON.stringify(receipt));
-  return receipt.compatible ? 0 : 1;
 }
 
 export function runCliIfDirect(

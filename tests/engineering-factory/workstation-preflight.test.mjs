@@ -141,12 +141,13 @@ test('verifies Windows 11, macOS, Linux, and WSL2 workstations and strips home-d
     },
     {
       platform: 'win32',
+      osRelease: '10.0.22631',
       expectedOs: 'windows-11',
       arch: 'arm64',
       caPath: 'D:/sf-temp/aspire-dev.crt',
       extraEnv: {
-        ASPIRE_HOME: 'D:/sf-temp/aspire-home',
-        NO_PROXY: '*'
+        aspire_home: 'D:/sf-temp/aspire-home',
+        no_proxy: '*'
       },
       expectHomeStripped: false
     },
@@ -158,12 +159,14 @@ test('verifies Windows 11, macOS, Linux, and WSL2 workstations and strips home-d
       extraEnv: {
         ASPIRE_RESOURCE_SERVICE_ENDPOINT_URL: 'https://localhost:18891',
         NODE_OPTIONS: '--max-old-space-size=4096',
-        OPENAI_AGENTS_DISABLE_TRACING: '1'
+        OPENAI_AGENTS_DISABLE_TRACING: '1',
+        no_proxy: 'localhost,127.0.0.1,::1'
       },
       expectHomeStripped: true
     },
     {
       platform: 'darwin',
+      osRelease: '24.1.0',
       expectedOs: 'macos',
       arch: 'x64',
       caPath: '/private/var/folders/ab/cd1234/T/sf-workstation.abcd/aspire-dev.pem',
@@ -172,6 +175,7 @@ test('verifies Windows 11, macOS, Linux, and WSL2 workstations and strips home-d
     },
     {
       platform: 'linux',
+      osRelease: '6.8.0-45-generic',
       expectedOs: 'linux',
       arch: 'x64',
       caPath: '/home/syntheticCarol/.cache/sf-workstation.99887766/aspire-dev.pem',
@@ -180,6 +184,7 @@ test('verifies Windows 11, macOS, Linux, and WSL2 workstations and strips home-d
     },
     {
       platform: 'wsl2',
+      osRelease: '5.15.167.4-microsoft-standard-WSL2',
       expectedOs: 'wsl2',
       arch: 'x64',
       caPath: '/run/user/1000/sf-workstation.55443322/aspire-dev.pem',
@@ -192,6 +197,7 @@ test('verifies Windows 11, macOS, Linux, and WSL2 workstations and strips home-d
   for (const scenario of cases) {
     const obs = buildValidObservation({
       platform: scenario.platform,
+      ...(scenario.osRelease ? { osRelease: scenario.osRelease } : {}),
       arch: scenario.arch,
       authoritativeLeaseStore: false,
       hostedWorkerHost: false,
@@ -353,6 +359,7 @@ test('enforces strict types.isProxy and plain-object own-enumerable-data-descrip
   sparseArray.length = 2;
   for (const invalidFields of [
     { platform: 123 },
+    { osRelease: 123 },
     { privacyMode: 'permissive' },
     { authoritativeLeaseStore: 'false' },
     { incrementalSpendUsdCents: -1 },
@@ -413,13 +420,39 @@ test('rejects operational orchestrator, authoritative lease store, worker host, 
 });
 
 test('enforces pinned Node v26.13.1, .NET SDK 10.0.404, Aspire CLI 17.0.0, and supported OS/arch', () => {
+  for (const unsupportedPlatformCase of [
+    { platform: 'windows-10' },
+    { platform: 'win32' },
+    { platform: 'win32', osRelease: '10.0.19045' },
+    { platform: 'win32', osRelease: 'not-a-version' },
+    { platform: 'win32', osRelease: '10.0.22631\u0000' },
+    { platform: 'windows-11', osRelease: '10.0.19045' },
+    { platform: 'darwin' },
+    { platform: 'darwin', osRelease: '19.6.0' },
+    { platform: 'darwin', osRelease: 'bad\u0000' },
+    { platform: 'macos', osRelease: '18.7.0' },
+    { platform: 'wsl2', osRelease: '4.4.0-19041-Microsoft' },
+    { platform: 'wsl2', osRelease: 'bad' },
+    { platform: 'linux', osRelease: '4.4.0-19041-Microsoft' },
+    { platform: 'linux', osRelease: '' },
+    { platform: 'linux', arch: 'ia32' }
+  ]) {
+    assert.equal(
+      evaluateWorkstationCompatibilityPreflight(buildValidObservation(unsupportedPlatformCase)).reason,
+      'UNSUPPORTED_PLATFORM'
+    );
+  }
   assert.equal(
-    evaluateWorkstationCompatibilityPreflight(buildValidObservation({ platform: 'windows-10' })).reason,
-    'UNSUPPORTED_PLATFORM'
+    evaluateWorkstationCompatibilityPreflight(
+      buildValidObservation({ platform: 'win32', osRelease: '11.0.28000', env: { ...buildValidObservation().env, NODE_EXTRA_CA_CERTS: 'C:\\Temp\\aspire-dev.pem' } })
+    ).osFamily,
+    'windows-11'
   );
   assert.equal(
-    evaluateWorkstationCompatibilityPreflight(buildValidObservation({ arch: 'ia32' })).reason,
-    'UNSUPPORTED_PLATFORM'
+    evaluateWorkstationCompatibilityPreflight(
+      buildValidObservation({ platform: 'linux', osRelease: '6.6.36.3-microsoft-standard-WSL2' })
+    ).osFamily,
+    'wsl2'
   );
   for (const badNode of ['26.13.1', 'v26.13.0', 'v22.14.0', '']) {
     assert.equal(
@@ -466,9 +499,12 @@ test('enforces telemetry opt-outs, loopback HTTPS posture, proxy restrictions, a
 
   for (const proxyBadEnv of [
     { ...baseEnv, HTTPS_PROXY: 'http://127.0.0.1:8080' },
+    { ...baseEnv, https_proxy: 'http://127.0.0.1:8080' },
     { ...baseEnv, NODE_USE_ENV_PROXY: '1' },
     { ...baseEnv, NODE_OPTIONS: '--use-env-proxy' },
     { ...baseEnv, NO_PROXY: '' },
+    { ...baseEnv, no_proxy: 'corp.internal' },
+    { ...baseEnv, NO_PROXY: 'localhost', no_proxy: '127.0.0.1' },
     { ...baseEnv, NO_PROXY: 'localhost,corp.internal' }
   ]) {
     assert.equal(
@@ -476,6 +512,34 @@ test('enforces telemetry opt-outs, loopback HTTPS posture, proxy restrictions, a
       'PROXY_INTERCEPTION_FORBIDDEN'
     );
   }
+
+  // POSIX rejects lowercase configuration settings while Windows rejects colliding keys
+  const { NODE_EXTRA_CA_CERTS: _omittedCa, ...envWithoutCa } = baseEnv;
+  assert.equal(
+    evaluateWorkstationCompatibilityPreflight(buildValidObservation({ env: envWithoutCa })).reason,
+    'INVALID_OR_UNREADABLE_PEM_CA'
+  );
+  assert.equal(
+    evaluateWorkstationCompatibilityPreflight(
+      buildValidObservation({
+        env: { ...envWithoutCa, node_extra_ca_certs: '/tmp/aspire-dev.pem' }
+      })
+    ).reason,
+    'INPUT_UNKNOWN'
+  );
+  assert.equal(
+    evaluateWorkstationCompatibilityPreflight(
+      buildValidObservation({
+        platform: 'windows-11',
+        env: {
+          ...baseEnv,
+          NODE_EXTRA_CA_CERTS: 'C:\\Temp\\aspire-dev.pem',
+          dotnet_cli_telemetry_optout: '0'
+        }
+      })
+    ).reason,
+    'INPUT_UNKNOWN'
+  );
 
   assert.equal(
     evaluateWorkstationCompatibilityPreflight(
@@ -649,6 +713,9 @@ test('rejects and strips private workstation identifiers, tokens, MACs, and non-
     { loopbackEndpoints: ['https://localhost:18888/login?t=secret123'] },
     { diagnosticNotes: ['Bearer secret_token_value'] },
     { diagnosticNotes: ['AZURE_CLIENT_SECRET=secret_az_val'] },
+    { diagnosticNotes: ['{"GITHUB_TOKEN":"synthetic-private-token-value"}'] },
+    { diagnosticNotes: ['{\\"GITHUB_TOKEN\\":\\"synthetic-private-token-value\\"}'] },
+    { diagnosticNotes: ['{"x-api-key":"secret_json_header"}'] },
     { diagnosticNotes: ['X-API-Key: secret_header_val'] },
     { diagnosticNotes: ['npm_1234567890abcdef1234567890abcdef'] },
     {
@@ -717,21 +784,25 @@ test('rejects and strips private workstation identifiers, tokens, MACs, and non-
     buildValidObservation({
       privacyMode: 'strip',
       diagnosticNotes: [
-        'Session user=syntheticDev email syntheticDev@example.org at /Users/syntheticDev/work',
-        'Spaced C:\\Users\\Jane Doe\\AppData\\Local\\Temp\\aspire-dev.pem',
-        'WSL /mnt/c/Users/Jane Doe/AppData/Local/Temp/aspire-dev.pem and //wsl.localhost/Ubuntu/home/alice/cert.pem',
-        'macOS /System/Volumes/Data/Users/alice/.cache/cert.pem and /users/alice/.cache/cert.pem',
-        'Linux /var/home/alice/.cache/cert.pem on ::1.'
+        'Session {"username":"syntheticDev"} email syntheticDev@example.org at /Users/syntheticDev/work',
+        'Spaced C:\\Users\\Jane Doe\\certs\\aspire-dev.pem and C:\\Users\\Jane Doe\\source\\repo and "C:\\Users\\Jane Doe"',
+        'WSL /mnt/c/Users/Jane Doe/source/repo and //wsl.localhost/Ubuntu/home/Jane Doe/source/repo',
+        'macOS /System/Volumes/Data/Users/Jane Doe/certs/cert.pem and /users/alice/.cache/cert.pem',
+        'Linux /var/home/jane doe/certs/cert.pem on ::1.'
       ]
     })
   );
   assert.equal(strippedMode.compatible, true);
   assert.deepEqual(strippedMode.strippedPrivateCategories, ['home-directory', 'username']);
   const strippedSerialized = JSON.stringify(strippedMode);
-  for (const forbidden of ['syntheticDev', 'Jane', 'Doe', 'alice']) {
+  for (const forbidden of ['syntheticDev', 'Jane', 'Doe', 'jane', 'doe', 'alice']) {
     assert.equal(strippedSerialized.includes(forbidden), false);
   }
 
+  assert.equal(
+    stripPrivateWorkstationIdentifiers('C:\\Users\\Jane Doe').sanitizedText,
+    '<redacted-home>'
+  );
   assert.equal(stripPrivateWorkstationIdentifiers(null), null);
   assert.equal(stripPrivateWorkstationIdentifiers('bad\u0007text'), null);
 
@@ -873,6 +944,7 @@ test('inspectPemCaFile, collectWorkstationPreflightObservation, and CLI remain r
       OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: 'https://collector.example.com',
       UNDEFINED_VAR: undefined,
       DOTNET_CLI_TELEMETRY_OPTOUT: '1',
+      dotnet_cli_telemetry_optout: '0',
       [Symbol('ignored')]: 'x'
     };
     const liveCollected = collectWorkstationPreflightObservation({
@@ -889,8 +961,52 @@ test('inspectPemCaFile, collectWorkstationPreflightObservation, and CLI remain r
     assert.equal(Object.hasOwn(liveCollected.env, 'USER'), false);
     assert.equal(Object.hasOwn(liveCollected.env, 'HOME'), false);
     assert.equal(liveCollected.env.GITHUB_TOKEN, '[PRESENT]');
-    assert.equal(liveCollected.env.HTTP_PROXY, 'http://10.0.0.5:8080');
+    assert.equal(liveCollected.env.http_proxy, 'http://10.0.0.5:8080');
+    assert.equal(liveCollected.env.DOTNET_CLI_TELEMETRY_OPTOUT, '1');
+    assert.equal(liveCollected.env.dotnet_cli_telemetry_optout, '0');
     assert.equal(liveCollected.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT, 'https://collector.example.com');
+
+    // WSL1 and Windows 10 releases are classified as unsupported during collection
+    assert.equal(
+      collectWorkstationPreflightObservation({
+        env: {},
+        platform: 'linux',
+        kernelRelease: '4.4.0-19041-Microsoft',
+        nodeVersion: 'v26.13.1',
+        execVersion: () => '10.0.404'
+      }).platform,
+      'unsupported'
+    );
+    assert.equal(
+      collectWorkstationPreflightObservation({
+        env: {},
+        platform: 'win32',
+        kernelRelease: '10.0.19045',
+        nodeVersion: 'v26.13.1',
+        execVersion: () => '10.0.404'
+      }).platform,
+      'unsupported'
+    );
+    const win11Collected = collectWorkstationPreflightObservation({
+      env: { node_extra_ca_certs: validPemPath },
+      platform: 'win32',
+      kernelRelease: '10.0.22631',
+      nodeVersion: 'v26.13.1',
+      execVersion: () => '10.0.404'
+    });
+    assert.equal(win11Collected.platform, 'windows-11');
+    assert.equal(win11Collected.env.NODE_EXTRA_CA_CERTS, validPemPath);
+
+    assert.deepEqual(
+      collectWorkstationPreflightObservation({
+        env: { DOTNET_CLI_TELEMETRY_OPTOUT: '1', dotnet_cli_telemetry_optout: '0' },
+        platform: 'win32',
+        kernelRelease: '10.0.22631',
+        nodeVersion: 'v26.13.1',
+        execVersion: () => '10.0.404'
+      }),
+      { invalidOptions: true }
+    );
 
     assert.deepEqual(collectWorkstationPreflightObservation(null), { invalidOptions: true });
     assert.deepEqual(collectWorkstationPreflightObservation(new Proxy({}, {})), { invalidOptions: true });
@@ -985,6 +1101,15 @@ test('inspectPemCaFile, collectWorkstationPreflightObservation, and CLI remain r
     );
     assert.equal(
       runWorkstationPreflightCli(['--unknown-flag'], { write: line => lines.push(line) }),
+      1
+    );
+    assert.equal(
+      runWorkstationPreflightCli([], {
+        collect: () => {
+          throw Error('simulated collector failure');
+        },
+        write: line => lines.push(line)
+      }),
       1
     );
     assert.equal(
