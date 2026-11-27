@@ -27,6 +27,7 @@ function buildSampleScorecard() {
     records: [
       {
         id: 'act-1',
+        issueNumber: 18,
         repositoryId: SF_REPO_ID,
         cohort: 'm02-kaizen',
         sourceKind: 'verified-autonomous',
@@ -86,7 +87,11 @@ function buildKnowledgeLanes() {
 function buildBaselineCohort(overrides = {}) {
   return {
     repositoryId: SF_REPO_ID,
+    cohortId: 'm02-small-comparable',
     sourceKind: 'verified-autonomous',
+    complete: true,
+    windowStartMs: 100_000,
+    windowEndMs: 200_000,
     acceptedOutcomes: 6,
     coveredLines: 990,
     totalLines: 1000,
@@ -101,6 +106,14 @@ function buildBaselineCohort(overrides = {}) {
     medianCycleTimeMs: 480_000,
     ...overrides
   };
+}
+
+function buildCandidateCohort(overrides = {}) {
+  return buildBaselineCohort({
+    windowStartMs: 200_000,
+    windowEndMs: 300_000,
+    ...overrides
+  });
 }
 
 test('proposeOptimisticImprovements generates isolated non-overlapping proposals across SoftwareFactory and enrolled products with human-approval gating', () => {
@@ -234,6 +247,50 @@ test('proposeOptimisticImprovements generates isolated non-overlapping proposals
   assert.ok(enrolled);
   assert.equal(enrolled.requiresHumanApproval, false);
   assert.equal(enrolled.targetHypothesis.expectedDirection, 'decrease');
+
+  // Directory-level lane containing governed/protected descendants (e.g. tools/engineering-factory) requires human approval
+  const broadDirectoryProposal = proposeOptimisticImprovements({
+    scorecard,
+    knowledgeLanes: [
+      {
+        laneId: 'broad-factory-dir',
+        repositoryId: SF_REPO_ID,
+        scope: 'factory-velocity',
+        ownedPaths: ['tools/engineering-factory']
+      }
+    ],
+    failureTaxonomy: [],
+    feedbackItems: []
+  });
+  assert.equal(broadDirectoryProposal.valid, true);
+  assert.equal(broadDirectoryProposal.proposals[0].requiresHumanApproval, true);
+
+  // Proposal targeting security-named path also sets requiresHumanApproval: true
+  const secPathProposal = proposeOptimisticImprovements({
+    scorecard: {...scorecard, bottlenecks: []},
+    knowledgeLanes: [
+      {
+        laneId: 'consumer-sec',
+        repositoryId: FAMILYTREE_REPO_ID,
+        scope: 'enrolled-product',
+        ownedPaths: ['src/security/auth.ts']
+      }
+    ],
+    failureTaxonomy: [],
+    feedbackItems: [
+      {
+        id: 'sec-tighten',
+        repositoryId: FAMILYTREE_REPO_ID,
+        laneId: 'consumer-sec',
+        source: 'operator',
+        metricName: 'authCheckMs',
+        baselineValue: 50,
+        targetValue: 25,
+        targetPaths: ['src/security/auth.ts']
+      }
+    ]
+  });
+  assert.equal(secPathProposal.proposals[0].requiresHumanApproval, true);
 });
 
 test('proposeOptimisticImprovements rejects historical-proxy scorecards, out-of-lane targets, proxies, and malformed inputs', () => {
@@ -480,7 +537,7 @@ test('verifyCohortImprovementOrRollback enforces >=5 comparable outcomes and tri
   // < 5 outcomes in beforeCohort or afterCohort -> INSUFFICIENT_COHORT, cohortComplete: false
   const shortBefore = verifyCohortImprovementOrRollback({
     beforeCohort: buildBaselineCohort({acceptedOutcomes: 4}),
-    afterCohort: buildBaselineCohort({acceptedOutcomes: 6, medianCycleTimeMs: 300_000})
+    afterCohort: buildCandidateCohort({acceptedOutcomes: 6, medianCycleTimeMs: 300_000})
   });
   assert.equal(shortBefore.status, 'INSUFFICIENT_COHORT');
   assert.equal(shortBefore.cohortComplete, false);
@@ -489,7 +546,7 @@ test('verifyCohortImprovementOrRollback enforces >=5 comparable outcomes and tri
 
   const shortAfter = verifyCohortImprovementOrRollback({
     beforeCohort: before,
-    afterCohort: buildBaselineCohort({acceptedOutcomes: 3, medianCycleTimeMs: 300_000})
+    afterCohort: buildCandidateCohort({acceptedOutcomes: 3, medianCycleTimeMs: 300_000})
   });
   assert.equal(shortAfter.status, 'INSUFFICIENT_COHORT');
   assert.equal(shortAfter.cohortComplete, false);
@@ -497,7 +554,7 @@ test('verifyCohortImprovementOrRollback enforces >=5 comparable outcomes and tri
   // Verified improvement when >= 5 outcomes and cycle time / rework / AI credits improve without regressions
   const improved = verifyCohortImprovementOrRollback({
     beforeCohort: before,
-    afterCohort: buildBaselineCohort({
+    afterCohort: buildCandidateCohort({
       acceptedOutcomes: 6,
       medianCycleTimeMs: 320_000,
       reworkRateBps: 900,
@@ -513,59 +570,67 @@ test('verifyCohortImprovementOrRollback enforces >=5 comparable outcomes and tri
   // Improvement by AI credits alone when cycle time and rework are flat
   const creditOnlyImproved = verifyCohortImprovementOrRollback({
     beforeCohort: before,
-    afterCohort: buildBaselineCohort({aiCreditsTotal: 150})
+    afterCohort: buildCandidateCohort({aiCreditsTotal: 150})
   });
   assert.equal(creditOnlyImproved.status, 'VERIFIED_IMPROVEMENT');
 
   // Improvement by rework alone when cycle time is flat
   const reworkOnlyImproved = verifyCohortImprovementOrRollback({
     beforeCohort: before,
-    afterCohort: buildBaselineCohort({reworkRateBps: 1000})
+    afterCohort: buildCandidateCohort({reworkRateBps: 1000})
   });
   assert.equal(reworkOnlyImproved.status, 'VERIFIED_IMPROVEMENT');
 
   // Neutral / identical cohorts -> NO_MATERIAL_GAIN (no premature claim, no rollback)
   const neutral = verifyCohortImprovementOrRollback({
     beforeCohort: before,
-    afterCohort: buildBaselineCohort()
+    afterCohort: buildCandidateCohort()
   });
   assert.equal(neutral.status, 'NO_MATERIAL_GAIN');
   assert.equal(neutral.verifiedImprovement, false);
   assert.equal(neutral.rollbackRequired, false);
 
-  // Deterministic rollback checks across all 6 failure triggers
+  // Deterministic rollback checks across floor violations, relative coverage regressions (e.g. 99% -> 98.5%), and safety/cost/rework
   const rollbackCases = [
     {
-      after: buildBaselineCohort({coveredLines: 970}), // 97% < 98% SoftwareFactory default
+      after: buildCandidateCohort({coveredLines: 970}), // 97% < 98% SoftwareFactory floor
       reason: 'COVERAGE_BELOW_THRESHOLD'
     },
     {
-      after: buildBaselineCohort({coveredBranches: 470}), // 94% < 95% SoftwareFactory default
+      after: buildCandidateCohort({coveredBranches: 470}), // 94% < 95% SoftwareFactory floor
       reason: 'COVERAGE_BELOW_THRESHOLD'
     },
     {
-      after: buildBaselineCohort({securityFindings: 1}),
+      after: buildCandidateCohort({coveredLines: 985, medianCycleTimeMs: 300_000}), // 98.5% >= 98% floor, but regressed from 99.0%!
+      reason: 'COVERAGE_REGRESSED'
+    },
+    {
+      after: buildCandidateCohort({coveredBranches: 480, medianCycleTimeMs: 300_000}), // 96.0% >= 95% floor, but regressed from 97.0%!
+      reason: 'COVERAGE_REGRESSED'
+    },
+    {
+      after: buildCandidateCohort({securityFindings: 1}),
       reason: 'SECURITY_FINDINGS_DETECTED'
     },
     {
-      after: buildBaselineCohort({mainFailures: 1}),
+      after: buildCandidateCohort({mainFailures: 1}),
       reason: 'MAIN_HEALTH_FAILURE'
     },
     {
-      after: buildBaselineCohort({routineHumanInterventions: 1}),
+      after: buildCandidateCohort({routineHumanInterventions: 1}),
       reason: 'HUMAN_INTERVENTION_REGRESSED'
     },
     {
-      after: buildBaselineCohort({reworkRateBps: 1650}),
+      after: buildCandidateCohort({reworkRateBps: 1650}),
       policy: {maxReworkRegressionBps: 200},
       reason: 'REWORK_RATE_REGRESSED'
     },
     {
-      after: buildBaselineCohort({aiCreditsTotal: 210}),
+      after: buildCandidateCohort({aiCreditsTotal: 210}),
       reason: 'AI_CREDIT_COST_REGRESSION'
     },
     {
-      after: buildBaselineCohort({incrementalBilledUsdCents: 1}),
+      after: buildCandidateCohort({incrementalBilledUsdCents: 1}),
       reason: 'AI_CREDIT_COST_REGRESSION'
     }
   ];
@@ -582,13 +647,13 @@ test('verifyCohortImprovementOrRollback enforces >=5 comparable outcomes and tri
     assert.equal(res.rollbackReasons.includes(rc.reason), true);
   }
 
-  // Stricter consumer policy (e.g. Spellbook 97% line / 92% branch) preserved and enforced
+  // Stricter consumer policy (e.g. Spellbook 97% line / 92% branch) preserved and enforced without regression
   const consumerPass = verifyCohortImprovementOrRollback({
     beforeCohort: buildBaselineCohort({repositoryId: FAMILYTREE_REPO_ID, coveredLines: 975, coveredBranches: 465}),
-    afterCohort: buildBaselineCohort({
+    afterCohort: buildCandidateCohort({
       repositoryId: FAMILYTREE_REPO_ID,
-      coveredLines: 970,
-      coveredBranches: 460,
+      coveredLines: 980,
+      coveredBranches: 468,
       medianCycleTimeMs: 400_000
     }),
     policy: {profile: 'consumer', minLinePercent: 97, minBranchPercent: 92}
@@ -597,34 +662,41 @@ test('verifyCohortImprovementOrRollback enforces >=5 comparable outcomes and tri
 
   const consumerDrop = verifyCohortImprovementOrRollback({
     beforeCohort: buildBaselineCohort({repositoryId: FAMILYTREE_REPO_ID, coveredLines: 975, coveredBranches: 465}),
-    afterCohort: buildBaselineCohort({repositoryId: FAMILYTREE_REPO_ID, coveredLines: 965, coveredBranches: 460}),
+    afterCohort: buildCandidateCohort({repositoryId: FAMILYTREE_REPO_ID, coveredLines: 965, coveredBranches: 465}),
     policy: {profile: 'consumer', minLinePercent: 97, minBranchPercent: 92}
   });
   assert.equal(consumerDrop.status, 'ROLLBACK_REQUIRED');
-  assert.deepEqual(consumerDrop.rollbackReasons, ['COVERAGE_BELOW_THRESHOLD']);
+  assert.deepEqual(consumerDrop.rollbackReasons, ['COVERAGE_BELOW_THRESHOLD', 'COVERAGE_REGRESSED']);
 
-  // Consumer default floors (95/90) when minLinePercent / minBranchPercent omitted
+  // Consumer default floors (95/90) when minLinePercent / minBranchPercent omitted and coverage does not regress
   const consumerDefaults = verifyCohortImprovementOrRollback({
-    beforeCohort: buildBaselineCohort({repositoryId: FAMILYTREE_REPO_ID, coveredLines: 960, coveredBranches: 460}),
-    afterCohort: buildBaselineCohort({
+    beforeCohort: buildBaselineCohort({repositoryId: FAMILYTREE_REPO_ID, coveredLines: 955, coveredBranches: 455}),
+    afterCohort: buildCandidateCohort({
       repositoryId: FAMILYTREE_REPO_ID,
-      coveredLines: 955,
-      coveredBranches: 455,
+      coveredLines: 960,
+      coveredBranches: 460,
       medianCycleTimeMs: 420_000
     }),
     policy: {profile: 'consumer'}
   });
   assert.equal(consumerDefaults.status, 'VERIFIED_IMPROVEMENT');
 
-  // Invalid inputs, proxies, mismatched repos, historical-proxy cohorts, and invalid policies fail closed
+  // Invalid inputs, proxies, mismatched repos/cohorts, overlapping/unequal windows, incomplete or weakened SF policy fail closed
+  const candidate = buildCandidateCohort();
   for (const invalid of [
     null,
-    new Proxy({beforeCohort: before, afterCohort: before}, {}),
-    {beforeCohort: before, afterCohort: {...before, repositoryId: FAMILYTREE_REPO_ID}},
-    {beforeCohort: before, afterCohort: {...before, sourceKind: 'historical-proxy'}},
-    {beforeCohort: before, afterCohort: before, policy: null},
-    {beforeCohort: before, afterCohort: before, policy: {profile: 'invalid'}},
-    {beforeCohort: before, afterCohort: before, policy: {minLinePercent: 90}}
+    new Proxy({beforeCohort: before, afterCohort: candidate}, {}),
+    {beforeCohort: before, afterCohort: {...candidate, repositoryId: FAMILYTREE_REPO_ID}},
+    {beforeCohort: before, afterCohort: {...candidate, cohortId: 'different-cohort'}},
+    {beforeCohort: before, afterCohort: {...candidate, sourceKind: 'historical-proxy'}},
+    {beforeCohort: before, afterCohort: {...candidate, complete: false}},
+    {beforeCohort: before, afterCohort: {...candidate, windowStartMs: 150_000, windowEndMs: 250_000}}, // overlapping window
+    {beforeCohort: before, afterCohort: {...candidate, windowStartMs: 200_000, windowEndMs: 350_000}}, // unequal duration
+    {beforeCohort: buildBaselineCohort({coveredLines: 960}), afterCohort: candidate}, // baseline below threshold
+    {beforeCohort: before, afterCohort: candidate, policy: null},
+    {beforeCohort: before, afterCohort: candidate, policy: {profile: 'invalid'}},
+    {beforeCohort: before, afterCohort: candidate, policy: {profile: 'consumer', minLinePercent: 97, minBranchPercent: 92}}, // SF repo cannot use consumer profile
+    {beforeCohort: before, afterCohort: candidate, policy: {minLinePercent: 90}}
   ]) {
     const res = verifyCohortImprovementOrRollback(invalid);
     assert.equal(res.valid, false);

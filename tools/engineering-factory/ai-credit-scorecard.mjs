@@ -165,7 +165,7 @@ function validMaf(maf) {
     nonnegInt(maf.innerRepairIterations);
 }
 
-function validAudit(audit) {
+function validAuditShape(audit) {
   if (audit === null) return true;
   return exactRecord(audit, ['fullProvenance', 'killSwitchTripped', 'violations']) &&
     typeof audit.fullProvenance === 'boolean' &&
@@ -173,6 +173,22 @@ function validAudit(audit) {
     denseDataArray(audit.violations, 16) &&
     audit.violations.every(code => knownViolationSet.has(code)) &&
     new Set(audit.violations).size === audit.violations.length;
+}
+
+function resolveWorkUnitKey(row) {
+  const hasIssue = hasOwnEnumerableData(row, 'issueNumber');
+  const hasUnit = hasOwnEnumerableData(row, 'workUnitId');
+  if (hasIssue && hasUnit) return {ok: false, reason: 'INVALID_RECORD'};
+  if (hasIssue) {
+    if (!positiveInt(row.issueNumber)) return {ok: false, reason: 'INVALID_RECORD'};
+    return {ok: true, key: `issue:${row.repositoryId}:${row.issueNumber}`};
+  }
+  if (hasUnit) {
+    if (!validId(row.workUnitId)) return {ok: false, reason: 'INVALID_RECORD'};
+    return {ok: true, key: `unit:${row.repositoryId}:${row.workUnitId}`};
+  }
+  if (row.accepted === true) return {ok: false, reason: 'MISSING_ACCEPTED_WORK_UNIT'};
+  return {ok: true, key: null};
 }
 
 function aggregateProxyScorecard(input) {
@@ -232,6 +248,7 @@ function aggregateProxyScorecard(input) {
       observedMs: input.observedMs
     }),
     acceptedOutcomes: null,
+    acceptedActionRows: null,
     aiCreditsTotal: null,
     aiCreditsUsdCents: null,
     aiCreditsPerAcceptedOutcome: null,
@@ -424,10 +441,11 @@ export function buildAiCreditAndAutonomyScorecard(input) {
   }
 
   const seenIds = new Set();
+  const acceptedWorkUnits = new Set();
   const queueDurations = [];
   let queueUnknownCount = 0;
   let totalActions = 0;
-  let acceptedOutcomes = 0;
+  let acceptedActionRows = 0;
   let estimatedOrMissingCount = 0;
   let sumAiCredits = 0;
   let sumIncrementalCents = 0;
@@ -453,25 +471,33 @@ export function buildAiCreditAndAutonomyScorecard(input) {
         row.sourceKind === 'historical-proxy' ? 'SOURCE_KIND_MIXING_FORBIDDEN' : 'INVALID_RECORD'
       );
     }
-    if (!exactRecord(row, AUTONOMOUS_RECORD_KEYS) ||
+    if (!exactRecord(row, AUTONOMOUS_RECORD_KEYS, ['issueNumber', 'workUnitId']) ||
         !validId(row.id) ||
         !nonnegInt(row.observedMs) || row.observedMs > input.observedMs ||
         typeof row.accepted !== 'boolean' ||
         (row.ghAwQueueLatencyMs !== null && !nonnegInt(row.ghAwQueueLatencyMs)) ||
         !validAccounting(row.accounting) ||
         !validMaf(row.maf) ||
-        !validAudit(row.audit)) {
+        !validAuditShape(row.audit)) {
       return invalidScorecard('INVALID_RECORD');
+    }
+    if (row.audit !== null && row.audit.violations.length > 0 && row.audit.killSwitchTripped !== true) {
+      return invalidScorecard('INCONSISTENT_AUDIT_RECORD');
     }
     if (row.repositoryId !== input.repositoryId || row.cohort !== input.cohort) {
       return invalidScorecard('REPOSITORY_OR_COHORT_MISMATCH');
     }
+    const workUnit = resolveWorkUnitKey(row);
+    if (!workUnit.ok) return invalidScorecard(workUnit.reason);
     if (seenIds.has(row.id)) return invalidScorecard('DUPLICATE_RECORD');
     seenIds.add(row.id);
     if (row.observedMs < input.fromMs || row.observedMs >= input.toMs) continue;
 
     totalActions++;
-    if (row.accepted) acceptedOutcomes++;
+    if (row.accepted) {
+      acceptedActionRows++;
+      acceptedWorkUnits.add(workUnit.key);
+    }
 
     if (row.accounting === null || row.accounting.status !== 'verified') {
       estimatedOrMissingCount++;
@@ -508,6 +534,7 @@ export function buildAiCreditAndAutonomyScorecard(input) {
 
   queueDurations.sort((a, b) => a - b);
 
+  const acceptedOutcomes = acceptedWorkUnits.size;
   const accountingComplete = totalActions > 0 && estimatedOrMissingCount === 0;
   const aiCreditsTotal = accountingComplete ? sumAiCredits : null;
   const aiCreditsUsdCents = aiCreditsTotal === null ? null : aiCreditsTotal * AI_CREDIT_USD_CENTS;
@@ -548,6 +575,7 @@ export function buildAiCreditAndAutonomyScorecard(input) {
 
   const assembled = {
     acceptedOutcomes,
+    acceptedActionRows,
     aiCreditsTotal,
     aiCreditsUsdCents,
     aiCreditsPerAcceptedOutcome,

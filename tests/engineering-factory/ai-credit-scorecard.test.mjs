@@ -14,6 +14,7 @@ const CONSUMER_REPO_ID = 2222222222;
 function makeAutonomousRecord(index, overrides = {}) {
   return {
     id: `run-${index}`,
+    issueNumber: 100 + index,
     repositoryId: REPO_ID,
     cohort: 'm02-baseline',
     sourceKind: 'verified-autonomous',
@@ -115,6 +116,33 @@ test('aggregates verified-autonomous AI credits, gh-aw queue latency, MAF supers
   assert.equal(sc.auditTraceability.provenanceCompletenessPct, 100);
   assert.equal(sc.auditTraceability.killSwitchTrips, 0);
   assert.deepEqual(sc.bottlenecks, []);
+
+  // 5 retries/actions on a single issueNumber/workUnitId deduplicate to 1 accepted outcome while summing all AI credits
+  const retryRecords = [
+    makeAutonomousRecord(1, {id: 'r1', issueNumber: 42, accepted: false}),
+    makeAutonomousRecord(2, {id: 'r2', issueNumber: 42, accepted: false}),
+    makeAutonomousRecord(3, {id: 'r3', issueNumber: 42, accepted: true}),
+    makeAutonomousRecord(4, {id: 'r4', issueNumber: 42, accepted: true}),
+    makeAutonomousRecord(5, {id: 'r5', issueNumber: 42, accepted: true})
+  ];
+  const retrySc = buildAiCreditAndAutonomyScorecard(makeBaseScorecardInput(retryRecords));
+  assert.equal(retrySc.valid, true);
+  assert.equal(retrySc.acceptedOutcomes, 1);
+  assert.equal(retrySc.acceptedActionRows, 3);
+  assert.equal(retrySc.aiCreditsTotal, 100);
+  assert.equal(retrySc.aiCreditsPerAcceptedOutcome, 100);
+  assert.equal(retrySc.autonomousClaimEligible, false);
+
+  // Also supports string workUnitId when issueNumber is omitted, and repo-level unaccepted rows with neither
+  const unitKeyRecords = [
+    makeAutonomousRecord(1, {issueNumber: undefined, workUnitId: 'wu-alpha'}),
+    makeAutonomousRecord(2, {issueNumber: undefined, accepted: false})
+  ];
+  delete unitKeyRecords[0].issueNumber;
+  delete unitKeyRecords[1].issueNumber;
+  const unitKeySc = buildAiCreditAndAutonomyScorecard(makeBaseScorecardInput(unitKeyRecords));
+  assert.equal(unitKeySc.valid, true);
+  assert.equal(unitKeySc.acceptedOutcomes, 1);
 });
 
 test('never substitutes 0 for missing, estimated, or empty-window metrics', () => {
@@ -399,10 +427,32 @@ test('isolates historical-proxy sourceKind and forbids mixing with verified-auto
     makeAutonomousRecord(1, {accounting: {status: 'bogus'}}),
     makeAutonomousRecord(1, {accounting: 'bad'}),
     makeAutonomousRecord(1, {maf: {supersteps: 0, checkpointResumes: 0, innerRepairIterations: 0}}),
-    makeAutonomousRecord(1, {audit: {fullProvenance: true, killSwitchTripped: false, violations: ['UNKNOWN']}})
+    makeAutonomousRecord(1, {audit: {fullProvenance: true, killSwitchTripped: false, violations: ['UNKNOWN']}}),
+    makeAutonomousRecord(1, {issueNumber: 0}),
+    makeAutonomousRecord(1, {workUnitId: 'both-keys-forbidden'})
   ]) {
     assert.equal(buildAiCreditAndAutonomyScorecard(makeBaseScorecardInput([badRow])).reason, 'INVALID_RECORD');
   }
+
+  const badWorkUnitId = makeAutonomousRecord(1, {workUnitId: 'bad id!'});
+  delete badWorkUnitId.issueNumber;
+  assert.equal(buildAiCreditAndAutonomyScorecard(makeBaseScorecardInput([badWorkUnitId])).reason, 'INVALID_RECORD');
+
+  const missingAcceptedUnit = makeAutonomousRecord(1);
+  delete missingAcceptedUnit.issueNumber;
+  assert.equal(
+    buildAiCreditAndAutonomyScorecard(makeBaseScorecardInput([missingAcceptedUnit])).reason,
+    'MISSING_ACCEPTED_WORK_UNIT'
+  );
+
+  // Non-empty violations with killSwitchTripped: false is rejected as inconsistent
+  const inconsistentAudit = makeAutonomousRecord(1, {
+    audit: {fullProvenance: true, killSwitchTripped: false, violations: ['OUT_OF_LANE_EDIT']}
+  });
+  assert.equal(
+    buildAiCreditAndAutonomyScorecard(makeBaseScorecardInput([inconsistentAudit])).reason,
+    'INCONSISTENT_AUDIT_RECORD'
+  );
 
   for (const badProxy of [
     null,

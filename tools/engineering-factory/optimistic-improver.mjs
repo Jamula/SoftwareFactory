@@ -3,6 +3,8 @@
 // Never mutates main or policy directly; deterministic gates stay outside agent loops.
 import {types} from 'node:util';
 import {
+  EXACT_PROTECTED_CONTROL_PLANE_PATHS,
+  SOFTWARE_FACTORY_REPOSITORY_ID,
   isProtectedControlPlanePath,
   isSafeRepoRelativePath,
   isWithinOwnedPaths
@@ -60,7 +62,11 @@ const FEEDBACK_KEYS = [
 ];
 const COHORT_KEYS = [
   'repositoryId',
+  'cohortId',
   'sourceKind',
+  'complete',
+  'windowStartMs',
+  'windowEndMs',
   'acceptedOutcomes',
   'coveredLines',
   'totalLines',
@@ -111,13 +117,19 @@ const nonnegInt = n => Number.isSafeInteger(n) && n >= 0;
 const finiteNonNeg = n => Number.isFinite(n) && n >= 0;
 const token = s => typeof s === 'string' && /^[A-Za-z0-9._:-]{1,96}$/.test(s);
 
+const GOVERNED_PREFIX_ANCHORS = [
+  ...EXACT_PROTECTED_CONTROL_PLANE_PATHS,
+  '.github/workflows',
+  '.github/rulesets'
+];
+
 function pathsOverlap(left, right) {
   return left === right || left.startsWith(`${right}/`) || right.startsWith(`${left}/`);
 }
 
 function touchesGovernedContractPath(path) {
   if (isProtectedControlPlanePath(path)) return true;
-  if (path === 'tools/engineering-factory/budget.mjs') return true;
+  if (GOVERNED_PREFIX_ANCHORS.some(anchor => pathsOverlap(path, anchor))) return true;
   return /(^|\/)(governance|policy|security|budget|workflows?)(\/|\.|-|_|$)/i.test(path);
 }
 
@@ -397,10 +409,16 @@ export function proposeOptimisticImprovements(input) {
   });
 }
 
+const validCohortId = s => typeof s === 'string' && /^[a-z0-9][a-z0-9._-]{0,63}$/.test(s);
+
 function validCohortRecord(cohort) {
   return exactRecord(cohort, COHORT_KEYS) &&
     positiveInt(cohort.repositoryId) &&
+    validCohortId(cohort.cohortId) &&
     cohort.sourceKind === 'verified-autonomous' &&
+    cohort.complete === true &&
+    nonnegInt(cohort.windowStartMs) && nonnegInt(cohort.windowEndMs) &&
+    cohort.windowEndMs > cohort.windowStartMs &&
     nonnegInt(cohort.acceptedOutcomes) &&
     nonnegInt(cohort.coveredLines) && positiveInt(cohort.totalLines) &&
     cohort.coveredLines <= cohort.totalLines && cohort.totalLines <= 100000000 &&
@@ -415,7 +433,8 @@ function validCohortRecord(cohort) {
     positiveInt(cohort.medianCycleTimeMs);
 }
 
-function resolveRollbackPolicy(raw) {
+function resolveRollbackPolicy(raw, repositoryId) {
+  const isFactory = repositoryId === SOFTWARE_FACTORY_REPOSITORY_ID;
   if (raw === undefined) {
     return {
       ok: true,
@@ -437,8 +456,9 @@ function resolveRollbackPolicy(raw) {
   }
   const profile = raw.profile === undefined ? 'software-factory' : raw.profile;
   if (profile !== 'software-factory' && profile !== 'consumer') return {ok: false};
-  const floorLine = profile === 'software-factory' ? 98 : 95;
-  const floorBranch = profile === 'software-factory' ? 95 : 90;
+  if (isFactory && profile !== 'software-factory') return {ok: false};
+  const floorLine = isFactory || profile === 'software-factory' ? 98 : 95;
+  const floorBranch = isFactory || profile === 'software-factory' ? 95 : 90;
   const minLinePercent = raw.minLinePercent === undefined ? floorLine : raw.minLinePercent;
   const minBranchPercent = raw.minBranchPercent === undefined ? floorBranch : raw.minBranchPercent;
   const maxReworkRegressionBps = raw.maxReworkRegressionBps === undefined ? 0 : raw.maxReworkRegressionBps;
@@ -460,33 +480,45 @@ function resolveRollbackPolicy(raw) {
   };
 }
 
+function invalidCohortResponse(reason) {
+  return Object.freeze({
+    valid: false,
+    shadow: true,
+    status: 'INVALID_COHORT_EVIDENCE',
+    reason,
+    cohortComplete: false,
+    verifiedImprovement: false,
+    rollbackRequired: false,
+    rollbackReasons: Object.freeze([])
+  });
+}
+
 export function verifyCohortImprovementOrRollback(input) {
   if (!exactRecord(input, ['beforeCohort', 'afterCohort'], ['policy'])) {
-    return Object.freeze({
-      valid: false,
-      shadow: true,
-      status: 'INVALID_COHORT_EVIDENCE',
-      cohortComplete: false,
-      verifiedImprovement: false,
-      rollbackRequired: false,
-      rollbackReasons: Object.freeze([])
-    });
+    return invalidCohortResponse('INVALID_INPUT');
   }
-  const policy = resolveRollbackPolicy(input.policy);
-  if (!policy.ok || !validCohortRecord(input.beforeCohort) || !validCohortRecord(input.afterCohort) ||
-      input.beforeCohort.repositoryId !== input.afterCohort.repositoryId) {
-    return Object.freeze({
-      valid: false,
-      shadow: true,
-      status: 'INVALID_COHORT_EVIDENCE',
-      cohortComplete: false,
-      verifiedImprovement: false,
-      rollbackRequired: false,
-      rollbackReasons: Object.freeze([])
-    });
+  if (!validCohortRecord(input.beforeCohort) || !validCohortRecord(input.afterCohort)) {
+    return invalidCohortResponse('INVALID_COHORT_RECORD');
+  }
+  const {beforeCohort, afterCohort} = input;
+  if (beforeCohort.repositoryId !== afterCohort.repositoryId ||
+      beforeCohort.cohortId !== afterCohort.cohortId) {
+    return invalidCohortResponse('COHORT_MISMATCH');
+  }
+  if (beforeCohort.windowEndMs > afterCohort.windowStartMs ||
+      beforeCohort.windowEndMs - beforeCohort.windowStartMs !==
+      afterCohort.windowEndMs - afterCohort.windowStartMs) {
+    return invalidCohortResponse('WINDOWS_NOT_COMPARABLE');
+  }
+  const policy = resolveRollbackPolicy(input.policy, beforeCohort.repositoryId);
+  if (!policy.ok) {
+    return invalidCohortResponse('INVALID_POLICY');
+  }
+  if (beforeCohort.coveredLines * 100 < policy.minLinePercent * beforeCohort.totalLines ||
+      beforeCohort.coveredBranches * 100 < policy.minBranchPercent * beforeCohort.totalBranches) {
+    return invalidCohortResponse('BASELINE_COVERAGE_BELOW_THRESHOLD');
   }
 
-  const {beforeCohort, afterCohort} = input;
   if (beforeCohort.acceptedOutcomes < MIN_COHORT_ACCEPTED_OUTCOMES ||
       afterCohort.acceptedOutcomes < MIN_COHORT_ACCEPTED_OUTCOMES) {
     return Object.freeze({
@@ -508,6 +540,12 @@ export function verifyCohortImprovementOrRollback(input) {
   if (afterCohort.coveredLines * 100 < policy.minLinePercent * afterCohort.totalLines ||
       afterCohort.coveredBranches * 100 < policy.minBranchPercent * afterCohort.totalBranches) {
     rollbackReasons.push('COVERAGE_BELOW_THRESHOLD');
+  }
+  if (BigInt(afterCohort.coveredLines) * BigInt(beforeCohort.totalLines) <
+      BigInt(beforeCohort.coveredLines) * BigInt(afterCohort.totalLines) ||
+      BigInt(afterCohort.coveredBranches) * BigInt(beforeCohort.totalBranches) <
+      BigInt(beforeCohort.coveredBranches) * BigInt(afterCohort.totalBranches)) {
+    rollbackReasons.push('COVERAGE_REGRESSED');
   }
   if (afterCohort.securityFindings > 0) {
     rollbackReasons.push('SECURITY_FINDINGS_DETECTED');

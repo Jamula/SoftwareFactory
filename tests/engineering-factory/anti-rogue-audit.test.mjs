@@ -17,6 +17,7 @@ const LOCK_SHA256 = 'a'.repeat(64);
 const COMMIT_SHA = '1'.repeat(40);
 const SQUASH_SHA = '2'.repeat(40);
 const OTHER_SHA = '3'.repeat(40);
+const CONSUMER_REPO_ID = 2222222222;
 
 function spanHex(index) {
   return index.toString(16).padStart(16, '0');
@@ -71,6 +72,25 @@ function buildValidChain() {
         ciReceiptId: 'ci-rcpt-1',
         codeqlReceiptId: 'codeql-rcpt-1',
         coverageReceiptId: 'cov-rcpt-1',
+        expectedComponents: ['engineering-factory.stage-latency', 'engineering-factory.telemetry'],
+        coverageReports: [
+          {
+            component: 'engineering-factory.stage-latency',
+            head: COMMIT_SHA,
+            lines: 99,
+            lineTotal: 100,
+            branches: 48,
+            branchTotal: 50
+          },
+          {
+            component: 'engineering-factory.telemetry',
+            head: COMMIT_SHA,
+            lines: 99,
+            lineTotal: 100,
+            branches: 48,
+            branchTotal: 50
+          }
+        ],
         lines: 198,
         lineTotal: 200,
         branches: 96,
@@ -83,7 +103,10 @@ function buildValidChain() {
         reviewId: 'review-9001',
         reviewedHeadSha: COMMIT_SHA,
         reviewerIdentity: 'copilot-pull-request-reviewer[bot]',
-        authorIdentity: 'copilot-swe-agent[bot]',
+        authorIdentity: 'cyrusjamula',
+        implementationAgentIdentity: 'copilot-swe-agent[bot]',
+        authorizedReviewers: ['copilot-pull-request-reviewer[bot]', 'senior-maintainer'],
+        reviewState: 'COMMENTED',
         unresolvedThreads: 0,
         summaryFindingsResolved: true,
         observedMs: 1400
@@ -120,7 +143,10 @@ function buildValidCircuitBreakerInput() {
     maxBurnSpikeBps: 2500,
     incrementalBilledUsdCents: 0,
     safeOutputsThreatDetected: false,
-    authorIdentity: 'copilot-swe-agent[bot]',
+    accountingVerified: true,
+    isEstimated: false,
+    authorIdentity: 'cyrusjamula',
+    implementationAgentIdentity: 'copilot-swe-agent[bot]',
     reviewerIdentity: 'copilot-pull-request-reviewer[bot]',
     mainHealthy: true
   };
@@ -200,18 +226,29 @@ test('verifyCausalProvenanceChain validates completed 9-link chain and supports 
   assert.equal(full.lastVerifiedStage, 'verifiedMain');
   assert.equal(full.traceId, TRACE_ID);
 
-  // Supports consumer coverage policy >=95/90 and stricter SoftwareFactory policy
+  // Supports consumer coverage policy >=95/90 ONLY for non-SoftwareFactory repositories with formal APPROVED review
   const consumerChain = buildValidChain();
+  consumerChain.stages.eventDelivery.repositoryId = CONSUMER_REPO_ID;
   consumerChain.coveragePolicy = {profile: 'consumer', minLinePercent: 97, minBranchPercent: 92};
+  consumerChain.stages.exactHeadValidation.expectedComponents = ['consumer.app'];
+  consumerChain.stages.exactHeadValidation.coverageReports = [
+    {component: 'consumer.app', head: COMMIT_SHA, lines: 97, lineTotal: 100, branches: 92, branchTotal: 100}
+  ];
   consumerChain.stages.exactHeadValidation.lines = 97;
   consumerChain.stages.exactHeadValidation.lineTotal = 100;
   consumerChain.stages.exactHeadValidation.branches = 92;
   consumerChain.stages.exactHeadValidation.branchTotal = 100;
+  consumerChain.stages.independentReview.reviewerIdentity = 'senior-maintainer';
+  consumerChain.stages.independentReview.reviewState = 'APPROVED';
   assert.equal(verifyCausalProvenanceChain(consumerChain).valid, true);
+
+  // SoftwareFactory repository ID 1471342715 rejects profile: 'consumer' even when coverage is 97/92
+  const weakenedSfChain = buildValidChain();
+  weakenedSfChain.coveragePolicy = {profile: 'consumer', minLinePercent: 97, minBranchPercent: 92};
+  assert.equal(verifyCausalProvenanceChain(weakenedSfChain).code, 'INVALID_COVERAGE_POLICY');
 
   const strictSfChain = buildValidChain();
   strictSfChain.coveragePolicy = {minLinePercent: 99, minBranchPercent: 96};
-  strictSfChain.stages.exactHeadValidation.lines = 198;
   assert.equal(verifyCausalProvenanceChain(strictSfChain).valid, true);
 
   // Partial in-flight chain up to candidateCommit
@@ -266,12 +303,15 @@ test('verifyCausalProvenanceChain fails closed across broken spans, timestamps, 
     null,
     {profile: 'unknown', minLinePercent: 98, minBranchPercent: 95},
     {minLinePercent: 97, minBranchPercent: 95},
-    {minLinePercent: 98, minBranchPercent: 94},
-    {profile: 'consumer', minLinePercent: 94, minBranchPercent: 90}
+    {minLinePercent: 98, minBranchPercent: 94}
   ];
   for (const coveragePolicy of badPolicyList) {
     assert.equal(verifyCausalProvenanceChain({...buildValidChain(), coveragePolicy}).code, 'INVALID_COVERAGE_POLICY');
   }
+  const badConsumerPolicy = buildValidChain();
+  badConsumerPolicy.stages.eventDelivery.repositoryId = CONSUMER_REPO_ID;
+  badConsumerPolicy.coveragePolicy = {profile: 'consumer', minLinePercent: 94, minBranchPercent: 90};
+  assert.equal(verifyCausalProvenanceChain(badConsumerPolicy).code, 'INVALID_COVERAGE_POLICY');
 
   assert.equal(
     verifyCausalProvenanceChain({...buildValidChain(), allowInFlightUpToStage: 'notAStage'}).code,
@@ -361,25 +401,67 @@ test('verifyCausalProvenanceChain fails closed across broken spans, timestamps, 
   headMismatch.stages.exactHeadValidation.headSha = OTHER_SHA;
   assert.equal(verifyCausalProvenanceChain(headMismatch).code, 'EXACT_HEAD_MISMATCH');
 
-  const lowLineCoverage = buildValidChain();
-  lowLineCoverage.stages.exactHeadValidation.lines = 195;
-  assert.equal(verifyCausalProvenanceChain(lowLineCoverage).code, 'COVERAGE_BELOW_THRESHOLD');
+  // Large component at 100% cannot mask an under-covered component (per-component coverageEvidence check)
+  const hiddenComponentDrop = buildValidChain();
+  hiddenComponentDrop.stages.exactHeadValidation.coverageReports = [
+    {component: 'engineering-factory.stage-latency', head: COMMIT_SHA, lines: 1000, lineTotal: 1000, branches: 500, branchTotal: 500},
+    {component: 'engineering-factory.telemetry', head: COMMIT_SHA, lines: 90, lineTotal: 100, branches: 48, branchTotal: 50}
+  ];
+  hiddenComponentDrop.stages.exactHeadValidation.lines = 1090;
+  hiddenComponentDrop.stages.exactHeadValidation.lineTotal = 1100;
+  hiddenComponentDrop.stages.exactHeadValidation.branches = 548;
+  hiddenComponentDrop.stages.exactHeadValidation.branchTotal = 550;
+  assert.equal(verifyCausalProvenanceChain(hiddenComponentDrop).code, 'COVERAGE_BELOW_THRESHOLD');
 
-  const lowBranchCoverage = buildValidChain();
-  lowBranchCoverage.stages.exactHeadValidation.branches = 94;
-  assert.equal(verifyCausalProvenanceChain(lowBranchCoverage).code, 'COVERAGE_BELOW_THRESHOLD');
+  const mismatchedComponentInventory = buildValidChain();
+  mismatchedComponentInventory.stages.exactHeadValidation.expectedComponents = ['engineering-factory.stage-latency'];
+  assert.equal(verifyCausalProvenanceChain(mismatchedComponentInventory).code, 'INVALID_EXACT_HEAD_VALIDATION');
+
+  const summaryCountsMismatch = buildValidChain();
+  summaryCountsMismatch.stages.exactHeadValidation.lines = 199;
+  assert.equal(verifyCausalProvenanceChain(summaryCountsMismatch).code, 'COVERAGE_COUNTS_MISMATCH');
 
   const badReviewRecord = buildValidChain();
   badReviewRecord.stages.independentReview.unresolvedThreads = -1;
   assert.equal(verifyCausalProvenanceChain(badReviewRecord).code, 'INVALID_INDEPENDENT_REVIEW');
 
+  const badRequireFormal = buildValidChain();
+  badRequireFormal.stages.independentReview.requireFormalApproval = 'yes';
+  assert.equal(verifyCausalProvenanceChain(badRequireFormal).code, 'INVALID_INDEPENDENT_REVIEW');
+
   const reviewHeadMismatch = buildValidChain();
   reviewHeadMismatch.stages.independentReview.reviewedHeadSha = OTHER_SHA;
   assert.equal(verifyCausalProvenanceChain(reviewHeadMismatch).code, 'REVIEW_HEAD_MISMATCH');
 
-  const selfReview = buildValidChain();
-  selfReview.stages.independentReview.reviewerIdentity = 'Copilot-SWE-Agent[bot]';
-  assert.equal(verifyCausalProvenanceChain(selfReview).code, 'SELF_REVIEW_FORBIDDEN');
+  // Self-review forbidden for both commit author AND implementation agent
+  const selfAuthorReview = buildValidChain();
+  selfAuthorReview.stages.independentReview.reviewerIdentity = 'CyrusJamula';
+  assert.equal(verifyCausalProvenanceChain(selfAuthorReview).code, 'SELF_REVIEW_FORBIDDEN');
+
+  const selfAgentReview = buildValidChain();
+  selfAgentReview.stages.independentReview.reviewerIdentity = 'Copilot-SWE-Agent[bot]';
+  assert.equal(verifyCausalProvenanceChain(selfAgentReview).code, 'SELF_REVIEW_FORBIDDEN');
+
+  const unauthorizedReviewer = buildValidChain();
+  unauthorizedReviewer.stages.independentReview.reviewerIdentity = 'unlisted-user';
+  assert.equal(verifyCausalProvenanceChain(unauthorizedReviewer).code, 'UNAUTHORIZED_REVIEWER');
+
+  const dismissedReview = buildValidChain();
+  dismissedReview.stages.independentReview.reviewState = 'DISMISSED';
+  assert.equal(verifyCausalProvenanceChain(dismissedReview).code, 'REVIEW_NOT_ACCEPTABLE');
+
+  const changesRequestedReview = buildValidChain();
+  changesRequestedReview.stages.independentReview.reviewState = 'CHANGES_REQUESTED';
+  assert.equal(verifyCausalProvenanceChain(changesRequestedReview).code, 'REVIEW_NOT_ACCEPTABLE');
+
+  const humanCommentOnly = buildValidChain();
+  humanCommentOnly.stages.independentReview.reviewerIdentity = 'senior-maintainer';
+  humanCommentOnly.stages.independentReview.reviewState = 'COMMENTED';
+  assert.equal(verifyCausalProvenanceChain(humanCommentOnly).code, 'REVIEW_NOT_ACCEPTABLE');
+
+  const formalRequiredComment = buildValidChain();
+  formalRequiredComment.stages.independentReview.requireFormalApproval = true;
+  assert.equal(verifyCausalProvenanceChain(formalRequiredComment).code, 'REVIEW_NOT_ACCEPTABLE');
 
   const unresolvedSummary = buildValidChain();
   unresolvedSummary.stages.independentReview.summaryFindingsResolved = false;
@@ -425,7 +507,7 @@ test('evaluateAntiRogueCircuitBreaker passes clean bounded runs and integrates w
     outOfLanePaths: []
   });
 
-  // Optional fields omitted also work cleanly, and humanOwnerSignOffVerified permits explicitly approved control-plane edit
+  // Optional non-accounting fields omitted work when accountingVerified: true is explicit, and humanOwnerSignOffVerified permits explicitly approved control-plane edit
   const minimal = evaluateAntiRogueCircuitBreaker({
     repositoryId: 1471342715,
     ownedPaths: ['SECURITY.md'],
@@ -438,6 +520,7 @@ test('evaluateAntiRogueCircuitBreaker passes clean bounded runs and integrates w
     maxBurnSpikeBps: 2000,
     incrementalBilledUsdCents: 0,
     safeOutputsThreatDetected: false,
+    accountingVerified: true,
     humanOwnerSignOffVerified: true
   });
   assert.equal(minimal.allowed, true);
@@ -460,11 +543,48 @@ test('evaluateAntiRogueCircuitBreaker trips kill switch on all 7 anti-rogue viol
   const cases = [
     {
       mutate: v => {
-        v.ownedPaths = ['.github/workflows'];
-        v.touchedPaths = ['.github/workflows/orchestrator.lock.yml'];
+        v.ownedPaths = ['tools/engineering-factory/platform-merge-gates.mjs'];
+        v.touchedPaths = ['tools/engineering-factory/platform-merge-gates.mjs'];
       },
       expectedViolation: 'PROTECTED_CONTROL_PLANE_TOUCH',
       expectedReason: 'SECURITY'
+    },
+    {
+      mutate: v => {
+        v.ownedPaths = ['tools/engineering-factory/coverage-evidence.mjs'];
+        v.touchedPaths = ['tools/engineering-factory/coverage-evidence.mjs'];
+      },
+      expectedViolation: 'PROTECTED_CONTROL_PLANE_TOUCH',
+      expectedReason: 'SECURITY'
+    },
+    {
+      mutate: v => {
+        v.ownedPaths = ['tools/engineering-factory/budget.mjs'];
+        v.touchedPaths = ['tools/engineering-factory/budget.mjs'];
+      },
+      expectedViolation: 'PROTECTED_CONTROL_PLANE_TOUCH',
+      expectedReason: 'SECURITY'
+    },
+    {
+      mutate: v => {
+        delete v.accountingVerified;
+      },
+      expectedViolation: 'AI_CREDIT_ANOMALY',
+      expectedReason: 'QUOTA'
+    },
+    {
+      mutate: v => {
+        v.isEstimated = true;
+      },
+      expectedViolation: 'AI_CREDIT_ANOMALY',
+      expectedReason: 'QUOTA'
+    },
+    {
+      mutate: v => {
+        v.reviewerIdentity = 'cyrusjamula';
+      },
+      expectedViolation: 'SELF_APPROVAL_FORBIDDEN',
+      expectedReason: 'REVIEW'
     },
     {
       mutate: v => {
@@ -593,6 +713,15 @@ test('evaluateAntiRogueCircuitBreaker rejects proxies, non-enumerable/getter pro
 
   const badIdentity = {...valid, reviewerIdentity: 'bad identity!'};
   assert.equal(evaluateAntiRogueCircuitBreaker(badIdentity).primaryViolation, 'INVALID_CIRCUIT_BREAKER_INPUT');
+
+  const badAgentOnly = {...valid, authorIdentity: null, reviewerIdentity: null, implementationAgentIdentity: 'copilot-swe-agent[bot]'};
+  assert.equal(evaluateAntiRogueCircuitBreaker(badAgentOnly).primaryViolation, 'INVALID_CIRCUIT_BREAKER_INPUT');
+
+  const badAccountingType = {...valid, accountingVerified: 'yes'};
+  assert.equal(evaluateAntiRogueCircuitBreaker(badAccountingType).primaryViolation, 'INVALID_CIRCUIT_BREAKER_INPUT');
+
+  const badEstimatedType = {...valid, isEstimated: 'no'};
+  assert.equal(evaluateAntiRogueCircuitBreaker(badEstimatedType).primaryViolation, 'INVALID_CIRCUIT_BREAKER_INPUT');
 
   const traversalTouched = {...valid, touchedPaths: ['docs/../SECURITY.md']};
   const travRes = evaluateAntiRogueCircuitBreaker(traversalTouched);

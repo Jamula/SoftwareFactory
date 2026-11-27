@@ -21,10 +21,15 @@ stages:
 4. `missionControlTask` — Mission Control UUID `taskId`, `sessionId`, `observedMs`
 5. `candidateCommit` — 40-hex `commitSha`, `signed: true`, in-lane `touchedPaths`, `observedMs`
 6. `exactHeadValidation` — `headSha === commitSha`, `ciReceiptId`, `codeqlReceiptId`,
-   `coverageReceiptId`, and `lines`/`lineTotal` + `branches`/`branchTotal` meeting
-   `>=98%` lines / `>=95%` branches (or stricter consumer policy)
+   `coverageReceiptId`, `expectedComponents`, `coverageReports` verified per-component via
+   `coverageEvidence(...)`, and `lines`/`lineTotal` + `branches`/`branchTotal` bound to
+   trusted repository policy (`1471342715` always requires `>=98%` lines / `>=95%`
+   branches; consumers require `>=95%` / `>=90%` or stricter)
 7. `independentReview` — `reviewId`, `reviewedHeadSha === commitSha`,
-   `reviewerIdentity !== authorIdentity`, `unresolvedThreads === 0`,
+   `reviewerIdentity` distinct from both `authorIdentity` and
+   `implementationAgentIdentity`, allowlisted in `authorizedReviewers`, acceptable
+   `reviewState` (`APPROVED`, or SoftwareFactory Copilot bot `COMMENTED` when formal
+   approval is not required), `unresolvedThreads === 0`, and
    `summaryFindingsResolved === true`
 8. `mergeQueueSquash` — `expectedHeadSha === commitSha`, 40-hex `squashCommitSha`
 9. `verifiedMain` — `mainCommitSha === squashCommitSha`, `mainHealthy === true`, `receiptId`
@@ -43,10 +48,10 @@ reason codes (`SECURITY`, `POLICY`, `QUOTA`, `CHECKS`, `REVIEW`) on any of:
 | Violation code | Trigger condition | Telemetry reason |
 | --- | --- | --- |
 | `SAFE_OUTPUTS_THREAT_FLAGGED` | `safeOutputsThreatDetected === true` | `SECURITY` |
-| `PROTECTED_CONTROL_PLANE_TOUCH` | Autonomous touch or `selfMerge` on `.github/workflows/**`, `**/*.lock.yml`, `SECURITY.md`, `docs/POLICY.md`, `docs/ENGINEERING-STANDARDS.md`, `core.mjs`, `protected-squash.mjs`, `anti-rogue-audit.mjs`, or ruleset/kill-switch files without `humanOwnerSignOffVerified === true` | `SECURITY` |
+| `PROTECTED_CONTROL_PLANE_TOUCH` | Autonomous touch or `selfMerge` on `.github/workflows/**`, `**/*.lock.yml`, `SECURITY.md`, `docs/POLICY.md`, `docs/ENGINEERING-STANDARDS.md`, `core.mjs`, `protected-squash.mjs`, `platform-merge-gates.mjs`, `coverage-evidence.mjs`, `budget.mjs`, `anti-rogue-audit.mjs`, `cloud-agent-admission.mjs`, `gh-aw-lock-verifier.mjs`, or ruleset/kill-switch files without `humanOwnerSignOffVerified === true` | `SECURITY` |
 | `OUT_OF_LANE_EDIT` | Any `touchedPaths` entry outside leased `ownedPaths` | `POLICY` |
-| `SELF_APPROVAL_FORBIDDEN` | `reviewerIdentity` matches `authorIdentity` (case-insensitive) | `REVIEW` |
-| `AI_CREDIT_ANOMALY` | `accountingVerified === false`, `incrementalBilledUsdCents > 0`, `runAiCredits > maxRunAiCredits`, or `burnRateBps > maxBurnSpikeBps` | `QUOTA` |
+| `SELF_APPROVAL_FORBIDDEN` | `reviewerIdentity` matches `authorIdentity` or `implementationAgentIdentity` (case-insensitive) | `REVIEW` |
+| `AI_CREDIT_ANOMALY` | `accountingVerified !== true` (omitted or `false`), `isEstimated === true`, `incrementalBilledUsdCents > 0`, `runAiCredits > maxRunAiCredits`, or `burnRateBps > maxBurnSpikeBps` | `QUOTA` |
 | `RETRY_CAP_EXCEEDED` | `attempt > maxRetries` | `POLICY` |
 | `POST_MERGE_MAIN_FAILED` | `mainHealthy === false` | `CHECKS` |
 
@@ -57,16 +62,19 @@ while strictly isolating `sourceKind: "historical-proxy"` from
 `sourceKind: "verified-autonomous"`:
 
 - **AI-credit & compute accounting:** `aiCreditsTotal`, `aiCreditsUsdCents`
-  (`1 AI credit = 1 cent`), `aiCreditsPerAcceptedOutcome`, `incrementalBilledUsdCents`,
-  `estimatedOrMissingCount`, `cloudSandboxMinutes`, and `actionsRunnerMinutes`. Missing or
-  estimated values remain `null` and are never coerced to `0`.
+  (`1 AI credit = 1 cent`), `aiCreditsPerAcceptedOutcome` (deduplicated per distinct
+  accepted `issueNumber` / `workUnitId` while summing action-level credits across all
+  retries), `incrementalBilledUsdCents`, `estimatedOrMissingCount`, `cloudSandboxMinutes`,
+  and `actionsRunnerMinutes`. Missing or estimated values remain `null` and are never
+  coerced to `0`.
 - **Outer queue & inner MAF telemetry:** `ghAwQueueLatencyMs` (`p50`, `p95`, `sampleCount`,
   `unknownCount`) and `mafTelemetry` (`superstepsTotal`, `checkpointResumes`,
   `innerRepairIterations`, `reworkRateBps`).
 - **Audit traceability & ranked bottlenecks:** `auditTraceability` (`totalActions`,
   `fullProvenanceActions`, `provenanceCompletenessPct` — `null` when `0` actions —
-  `killSwitchTrips`, `violationCounts`) and deterministic ranked `bottlenecks` feeding
-  `optimistic-improver.mjs`.
+  `killSwitchTrips`, `violationCounts`; inconsistent records with `violations.length > 0`
+  and `killSwitchTripped: false` fail closed) and deterministic ranked `bottlenecks`
+  feeding `optimistic-improver.mjs`.
 
 ## 4. Optimistic Improvement Loop & Cohort Rollback (`optimistic-improver.mjs`)
 
@@ -77,13 +85,17 @@ while strictly isolating `sourceKind: "historical-proxy"` from
   operator/product `feedbackItems`. Proposals never mutate `main` or live policy directly
   (`directMainMutation: false`, `autoPolicyMutation: false`), require the full gate
   pipeline (`["ci-98-95", "codeql", "independent-review", "squash-merge-queue"]`), and set
-  `requiresHumanApproval: true` whenever any target touches governance, workflow, policy,
-  security, or budget contracts.
+  `requiresHumanApproval: true` whenever any target touches or encloses governance,
+  workflow, policy, security, or budget contracts (including ancestor directories such as
+  `tools/engineering-factory` or `.github`).
 - **Matched Cohort Verification & Automatic Rollback (`verifyCohortImprovementOrRollback`):**
-  Requires `>= 5` comparable accepted outcomes in both `beforeCohort` and `afterCohort`
-  (returning `status: "INSUFFICIENT_COHORT"`, `cohortComplete: false` when `< 5`). Once
-  both cohorts reach `>= 5` accepted outcomes, deterministic rollback
-  (`status: "ROLLBACK_REQUIRED"`, `rollbackRequired: true`) triggers immediately if
-  coverage drops below `98%/95%` (or stricter consumer thresholds), `securityFindings > 0`,
-  `mainFailures > 0`, routine human interventions per outcome increase, `reworkRateBps`
-  regresses beyond tolerance, or AI-credit cost per accepted outcome exceeds baseline.
+  Requires matching `repositoryId`, `cohortId`, `sourceKind: "verified-autonomous"`,
+  `complete: true`, non-overlapping equal-duration windows (`beforeCohort.windowEndMs <=
+  afterCohort.windowStartMs`), and `>= 5` comparable accepted outcomes in both
+  `beforeCohort` and `afterCohort` (returning `status: "INSUFFICIENT_COHORT"`,
+  `cohortComplete: false` when `< 5`). Once both cohorts reach `>= 5` accepted outcomes,
+  deterministic rollback (`status: "ROLLBACK_REQUIRED"`, `rollbackRequired: true`)
+  triggers immediately if coverage drops below `98%/95%` (or stricter consumer thresholds)
+  or regresses relative to `beforeCohort`, `securityFindings > 0`, `mainFailures > 0`,
+  routine human interventions per outcome increase, `reworkRateBps` regresses beyond
+  tolerance, or AI-credit cost per accepted outcome exceeds baseline.

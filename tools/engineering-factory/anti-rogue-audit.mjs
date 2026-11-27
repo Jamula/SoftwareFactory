@@ -1,6 +1,9 @@
 // Deterministic W3C traceparent 9-link causal provenance verifier and external
 // anti-rogue circuit breaker. Metadata-only, read-only, fail-closed, outside agent loops.
 import {types} from 'node:util';
+import {coverageEvidence} from './coverage-evidence.mjs';
+
+export const SOFTWARE_FACTORY_REPOSITORY_ID = 1471342715;
 
 export const CANONICAL_PROVENANCE_STAGES = Object.freeze([
   'eventDelivery',
@@ -23,7 +26,12 @@ export const EXACT_PROTECTED_CONTROL_PLANE_PATHS = Object.freeze([
   'docs/ENGINEERING-STANDARDS.md',
   'tools/engineering-factory/core.mjs',
   'tools/engineering-factory/protected-squash.mjs',
-  'tools/engineering-factory/anti-rogue-audit.mjs'
+  'tools/engineering-factory/platform-merge-gates.mjs',
+  'tools/engineering-factory/coverage-evidence.mjs',
+  'tools/engineering-factory/budget.mjs',
+  'tools/engineering-factory/anti-rogue-audit.mjs',
+  'tools/engineering-factory/cloud-agent-admission.mjs',
+  'tools/engineering-factory/gh-aw-lock-verifier.mjs'
 ]);
 
 const exactProtectedSet = new Set(EXACT_PROTECTED_CONTROL_PLANE_PATHS);
@@ -57,9 +65,11 @@ const CIRCUIT_BREAKER_OPTIONAL_KEYS = [
   'humanOwnerSignOffVerified',
   'selfMerge',
   'authorIdentity',
+  'implementationAgentIdentity',
   'reviewerIdentity',
   'mainHealthy',
-  'accountingVerified'
+  'accountingVerified',
+  'isEstimated'
 ];
 
 function isPlainObject(value) {
@@ -140,13 +150,21 @@ function validUniquePathList(list, maxLen) {
   return new Set(list).size === list.length;
 }
 
-function resolveCoveragePolicy(policy) {
+const REVIEW_STATES = new Set(['APPROVED', 'COMMENTED', 'CHANGES_REQUESTED', 'DISMISSED']);
+const COPILOT_BOT_REVIEWERS = new Set([
+  'copilot-pull-request-reviewer',
+  'copilot-pull-request-reviewer[bot]'
+]);
+
+function resolveCoveragePolicy(policy, repositoryId) {
+  const isFactory = repositoryId === SOFTWARE_FACTORY_REPOSITORY_ID;
   if (policy === undefined) return {ok: true, minLinePercent: 98, minBranchPercent: 95};
   if (!exactRecord(policy, ['minLinePercent', 'minBranchPercent'], ['profile'])) return {ok: false};
   const profile = policy.profile === undefined ? 'software-factory' : policy.profile;
   if (profile !== 'software-factory' && profile !== 'consumer') return {ok: false};
-  const floorLine = profile === 'software-factory' ? 98 : 95;
-  const floorBranch = profile === 'software-factory' ? 95 : 90;
+  if (isFactory && profile !== 'software-factory') return {ok: false};
+  const floorLine = isFactory || profile === 'software-factory' ? 98 : 95;
+  const floorBranch = isFactory || profile === 'software-factory' ? 95 : 90;
   if (!Number.isFinite(policy.minLinePercent) || policy.minLinePercent < floorLine || policy.minLinePercent > 100 ||
       !Number.isFinite(policy.minBranchPercent) || policy.minBranchPercent < floorBranch || policy.minBranchPercent > 100) {
     return {ok: false};
@@ -177,8 +195,6 @@ export function verifyCausalProvenanceChain(chain) {
       !isPlainObject(chain.stages)) {
     return provenanceFail('INVALID_EVIDENCE', 'INVALID_CHAIN_INPUT');
   }
-  const policy = resolveCoveragePolicy(chain.coveragePolicy);
-  if (!policy.ok) return provenanceFail('POLICY', 'INVALID_COVERAGE_POLICY');
 
   let targetIndex = CANONICAL_PROVENANCE_STAGES.length - 1;
   if (chain.allowInFlightUpToStage !== undefined) {
@@ -206,6 +222,7 @@ export function verifyCausalProvenanceChain(chain) {
   let prevObservedMs = -1;
   const seenSpans = new Set();
   let repositoryId = null;
+  let policy = null;
   let deliveryId = null;
   let laneId = null;
   let ownedPaths = null;
@@ -245,6 +262,9 @@ export function verifyCausalProvenanceChain(chain) {
       }
       repositoryId = stage.repositoryId;
       deliveryId = stage.deliveryId;
+      const resolvedPolicy = resolveCoveragePolicy(chain.coveragePolicy, repositoryId);
+      if (!resolvedPolicy.ok) return provenanceFail('POLICY', 'INVALID_COVERAGE_POLICY', stageName);
+      policy = resolvedPolicy;
     } else if (stageName === 'ghAwLock') {
       if (!exactRecord(stage, ['traceparent', 'parentSpanId', 'lockSha256', 'observedMs']) ||
           !hex64(stage.lockSha256)) {
@@ -278,32 +298,68 @@ export function verifyCausalProvenanceChain(chain) {
     } else if (stageName === 'exactHeadValidation') {
       if (!exactRecord(stage, [
         'traceparent', 'parentSpanId', 'headSha', 'ciReceiptId', 'codeqlReceiptId',
-        'coverageReceiptId', 'lines', 'lineTotal', 'branches', 'branchTotal', 'observedMs'
+        'coverageReceiptId', 'expectedComponents', 'coverageReports',
+        'lines', 'lineTotal', 'branches', 'branchTotal', 'observedMs'
       ]) || !hex40(stage.headSha) || !token(stage.ciReceiptId) || !token(stage.codeqlReceiptId) ||
-          !token(stage.coverageReceiptId) || !validCounts(stage.lines, stage.lineTotal) ||
+          !token(stage.coverageReceiptId) || !denseDataArray(stage.expectedComponents, 250) ||
+          !denseDataArray(stage.coverageReports, 250) ||
+          !stage.coverageReports.every(r => exactRecord(r, [
+            'component', 'head', 'lines', 'lineTotal', 'branches', 'branchTotal'
+          ])) || !validCounts(stage.lines, stage.lineTotal) ||
           !validCounts(stage.branches, stage.branchTotal)) {
         return provenanceFail('INVALID_EVIDENCE', 'INVALID_EXACT_HEAD_VALIDATION', stageName);
       }
       if (stage.headSha !== commitSha) return provenanceFail('STALE', 'EXACT_HEAD_MISMATCH', stageName);
-      if (stage.lines * 100 < policy.minLinePercent * stage.lineTotal ||
-          stage.branches * 100 < policy.minBranchPercent * stage.branchTotal) {
-        return provenanceFail('COVERAGE', 'COVERAGE_BELOW_THRESHOLD', stageName);
+      const cov = coverageEvidence(commitSha, stage.expectedComponents, stage.coverageReports, {
+        repository: repositoryId === SOFTWARE_FACTORY_REPOSITORY_ID
+          ? 'Jamula/SoftwareFactory'
+          : 'consumer/repository',
+        lineMin: policy.minLinePercent,
+        branchMin: policy.minBranchPercent
+      });
+      if (!cov.valid) {
+        return cov.reason === 'COMPONENT_BELOW_TARGET'
+          ? provenanceFail('COVERAGE', 'COVERAGE_BELOW_THRESHOLD', stageName)
+          : provenanceFail('INVALID_EVIDENCE', 'INVALID_EXACT_HEAD_VALIDATION', stageName);
+      }
+      if (stage.lines !== cov.lines || stage.lineTotal !== cov.lineTotal ||
+          stage.branches !== cov.branches || stage.branchTotal !== cov.branchTotal) {
+        return provenanceFail('COVERAGE', 'COVERAGE_COUNTS_MISMATCH', stageName);
       }
     } else if (stageName === 'independentReview') {
       if (!exactRecord(stage, [
         'traceparent', 'parentSpanId', 'reviewId', 'reviewedHeadSha', 'reviewerIdentity',
-        'authorIdentity', 'unresolvedThreads', 'summaryFindingsResolved', 'observedMs'
-      ]) || !token(stage.reviewId) || !hex40(stage.reviewedHeadSha) ||
+        'authorIdentity', 'implementationAgentIdentity', 'authorizedReviewers', 'reviewState',
+        'unresolvedThreads', 'summaryFindingsResolved', 'observedMs'
+      ], ['requireFormalApproval']) || !token(stage.reviewId) || !hex40(stage.reviewedHeadSha) ||
           !identityToken(stage.reviewerIdentity) || !identityToken(stage.authorIdentity) ||
+          !identityToken(stage.implementationAgentIdentity) ||
+          !denseDataArray(stage.authorizedReviewers, 64) || stage.authorizedReviewers.length === 0 ||
+          !stage.authorizedReviewers.every(identityToken) ||
+          new Set(stage.authorizedReviewers.map(r => r.toLowerCase())).size !== stage.authorizedReviewers.length ||
+          !REVIEW_STATES.has(stage.reviewState) ||
+          (stage.requireFormalApproval !== undefined && typeof stage.requireFormalApproval !== 'boolean') ||
           !nonnegInt(stage.unresolvedThreads) || typeof stage.summaryFindingsResolved !== 'boolean') {
         return provenanceFail('INVALID_EVIDENCE', 'INVALID_INDEPENDENT_REVIEW', stageName);
       }
       if (stage.reviewedHeadSha !== commitSha) return provenanceFail('STALE', 'REVIEW_HEAD_MISMATCH', stageName);
-      if (stage.reviewerIdentity.toLowerCase() === stage.authorIdentity.toLowerCase()) {
+      const reviewerLower = stage.reviewerIdentity.toLowerCase();
+      if (reviewerLower === stage.authorIdentity.toLowerCase() ||
+          reviewerLower === stage.implementationAgentIdentity.toLowerCase()) {
         return provenanceFail('REVIEW', 'SELF_REVIEW_FORBIDDEN', stageName);
+      }
+      const allowlist = new Set(stage.authorizedReviewers.map(r => r.toLowerCase()));
+      if (!allowlist.has(reviewerLower)) {
+        return provenanceFail('REVIEW', 'UNAUTHORIZED_REVIEWER', stageName);
       }
       if (stage.unresolvedThreads !== 0 || stage.summaryFindingsResolved !== true) {
         return provenanceFail('REVIEW', 'REVIEW_FINDINGS_UNRESOLVED', stageName);
+      }
+      const formalRequired = repositoryId !== SOFTWARE_FACTORY_REPOSITORY_ID || stage.requireFormalApproval === true;
+      const stateAcceptable = stage.reviewState === 'APPROVED' ||
+        (!formalRequired && stage.reviewState === 'COMMENTED' && COPILOT_BOT_REVIEWERS.has(reviewerLower));
+      if (!stateAcceptable) {
+        return provenanceFail('REVIEW', 'REVIEW_NOT_ACCEPTABLE', stageName);
       }
     } else if (stageName === 'mergeQueueSquash') {
       if (!exactRecord(stage, ['traceparent', 'parentSpanId', 'expectedHeadSha', 'squashCommitSha', 'observedMs']) ||
@@ -382,15 +438,19 @@ export function evaluateAntiRogueCircuitBreaker(input) {
   const humanSignOff = input.humanOwnerSignOffVerified === undefined ? false : input.humanOwnerSignOffVerified;
   const selfMerge = input.selfMerge === undefined ? false : input.selfMerge;
   const author = input.authorIdentity === undefined ? null : input.authorIdentity;
+  const agent = input.implementationAgentIdentity === undefined ? null : input.implementationAgentIdentity;
   const reviewer = input.reviewerIdentity === undefined ? null : input.reviewerIdentity;
   const mainHealthy = input.mainHealthy === undefined ? null : input.mainHealthy;
-  const accountingVerified = input.accountingVerified === undefined ? true : input.accountingVerified;
+  const accountingVerified = input.accountingVerified;
+  const isEstimated = input.isEstimated === undefined ? false : input.isEstimated;
 
   if (typeof humanSignOff !== 'boolean' || typeof selfMerge !== 'boolean' ||
-      typeof accountingVerified !== 'boolean' ||
+      (accountingVerified !== undefined && typeof accountingVerified !== 'boolean') ||
+      typeof isEstimated !== 'boolean' ||
       (mainHealthy !== null && typeof mainHealthy !== 'boolean') ||
       (author === null) !== (reviewer === null) ||
-      (author !== null && (!identityToken(author) || !identityToken(reviewer)))) {
+      (author !== null && (!identityToken(author) || !identityToken(reviewer))) ||
+      (agent !== null && (reviewer === null || !identityToken(agent)))) {
     return circuitBreakerDeny('INVALID_EVIDENCE', ['INVALID_CIRCUIT_BREAKER_INPUT']);
   }
 
@@ -416,10 +476,12 @@ export function evaluateAntiRogueCircuitBreaker(input) {
   if (outOfLanePaths.length > 0) {
     violations.push('OUT_OF_LANE_EDIT');
   }
-  if (author !== null && reviewer.toLowerCase() === author.toLowerCase()) {
+  if (reviewer !== null && (reviewer.toLowerCase() === author.toLowerCase() ||
+      (agent !== null && reviewer.toLowerCase() === agent.toLowerCase()))) {
     violations.push('SELF_APPROVAL_FORBIDDEN');
   }
-  if (accountingVerified === false ||
+  if (accountingVerified !== true ||
+      isEstimated === true ||
       input.incrementalBilledUsdCents > 0 ||
       input.runAiCredits > input.maxRunAiCredits ||
       input.burnRateBps > input.maxBurnSpikeBps) {
