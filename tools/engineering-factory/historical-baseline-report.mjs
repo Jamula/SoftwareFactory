@@ -910,6 +910,16 @@ function isPostCutoffIssue(issue, toMs) {
     (issue.createdAt === null || issue.readyAt >= issue.createdAt);
 }
 
+function isPreWindowTerminalIssue(issue, evaluated, fromMs) {
+  return !issue.acceptanceVerified &&
+    issue.acceptedAt === null &&
+    (evaluated.classification === 'unaccepted-closed' ||
+     evaluated.classification === 'reopened-unaccepted' ||
+     evaluated.classification === 'partial-only') &&
+    issue.closedAt !== null &&
+    issue.closedAt < fromMs;
+}
+
 function buildCorrelationAndThroughput(issues, pulls, linkGraph, query, hasOtel) {
   const multiPrIssueNumbers = [];
   const multiIssuePullNumbers = [];
@@ -1487,12 +1497,14 @@ function parseOutcomeBindings(
   inWindowReceiptsById,
   completedPullHeadRuns,
   issues,
+  evaluatedByIssue,
   otelAcceptedInWindow,
   interventionsByIssue,
   interventionsSummary,
   inWindowHumanTouchSum,
   pullsByNumber,
   linkGraph,
+  queryFromMs,
   queryToMs
 ) {
   if (rawBindings === null) {
@@ -1565,13 +1577,17 @@ function parseOutcomeBindings(
         resolvedReceipts.some(r => r.humanTouches.state !== 'verified')) {
       continue;
     }
+    const reqPulls = issue.requiredPullNumbers !== null
+      ? issue.requiredPullNumbers.map(num => pullsByNumber.get(num))
+      : linkGraph.pullsByIssue.get(issue.number);
+    const earliestPrCreatedAt = Math.min(...reqPulls.map(p => p.createdAt));
+    if (dispatchRec.observedMs > earliestPrCreatedAt) {
+      continue;
+    }
     acceptedTraceIds.add(binding.traceId);
     for (const rec of resolvedReceipts) {
       acceptedTraceReceipts.set(rec.receiptId, rec);
     }
-    const reqPulls = issue.requiredPullNumbers !== null
-      ? issue.requiredPullNumbers.map(num => pullsByNumber.get(num))
-      : linkGraph.pullsByIssue.get(issue.number);
     const ciAndMainReceiptsVerified = reqPulls.every(p => {
       if (p.headSha === null || mainRec.observedMs < p.mainVerifiedAt) return false;
       const runs = completedPullHeadRuns.get(`${p.number}:${p.headSha}`) ?? [];
@@ -1590,13 +1606,17 @@ function parseOutcomeBindings(
       acceptedTraceReceipts.set(rec.receiptId, rec);
     }
   }
-  let acceptedTraceHasUnknownTouches = false;
+  let acceptedTraceIncomplete = false;
   let acceptedTouchSum = 0;
   for (const rec of acceptedTraceReceipts.values()) {
-    if (rec.humanTouches.state === 'verified') {
-      acceptedTouchSum += rec.humanTouches.count;
+    if (rec.humanTouches.state !== 'verified' ||
+        rec.quota.state !== 'verified-included' ||
+        rec.cost.state !== 'verified-zero' ||
+        rec.outcome === 'failed' ||
+        rec.outcome === 'unknown') {
+      acceptedTraceIncomplete = true;
     } else {
-      acceptedTraceHasUnknownTouches = true;
+      acceptedTouchSum += rec.humanTouches.count;
     }
   }
 
@@ -1606,7 +1626,10 @@ function parseOutcomeBindings(
     if (acceptedTouchSum > allowedCohortTouches) {
       return {ok: false, reason: 'CONFLICTING_INTERVENTION_EVIDENCE'};
     }
-    const inScopeIssues = issues.filter(iss => !isPostCutoffIssue(iss, queryToMs));
+    const inScopeIssues = issues.filter(
+      iss => !isPostCutoffIssue(iss, queryToMs) &&
+        !isPreWindowTerminalIssue(iss, evaluatedByIssue.get(iss.number), queryFromMs)
+    );
     const everyIssueVerified = inScopeIssues.length > 0 && inScopeIssues.every(iss => {
       const row = interventionsByIssue.get(iss.number);
       return row !== undefined && row.verified;
@@ -1622,7 +1645,7 @@ function parseOutcomeBindings(
     }
   }
 
-  const allAcceptedBound = !acceptedTraceHasUnknownTouches &&
+  const allAcceptedBound = !acceptedTraceIncomplete &&
     otelAcceptedInWindow.length > 0 &&
     verifiedCount === otelAcceptedInWindow.length;
   return {
@@ -1997,6 +2020,7 @@ function buildAutonomousOtelSection(rawOtel, issues, pulls, linkGraph, correlati
     }
 
     // issueReadyToOutcomeMs
+    if (isPreWindowTerminalIssue(issue, evaluated, query.fromMs)) continue;
     if (issue.readyAt === null || (issue.createdAt !== null && issue.readyAt < issue.createdAt)) {
       outcomeCounts.unknown++;
     } else if (evaluated.classification === 'censored-open') {
@@ -2085,12 +2109,14 @@ function buildAutonomousOtelSection(rawOtel, issues, pulls, linkGraph, correlati
     receiptResult.inWindowReceiptsById,
     ciResult.completedPullHeadRuns,
     issues,
+    correlationResult.evaluatedByIssue,
     otelAcceptedInWindow,
     interventionsResult.byIssue,
     interventionsResult.summary,
     receiptResult.receiptEvidence.humanTouches.totalCount,
     pullsByNumber,
     linkGraph,
+    query.fromMs,
     query.toMs
   );
   if (!outcomeBindingResult.ok) return outcomeBindingResult;
