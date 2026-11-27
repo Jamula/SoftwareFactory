@@ -1475,14 +1475,22 @@ test('verifies compiler-shaped multi-job lock (activation -> agent -> detection 
       detectionSteps: upstreamGuardScriptSteps
     })
   }).valid, true);
-  // Upstream guard script WITHOUT OUTPUT_TYPES/HAS_PATCH bindings MUST fail closed!
-  assert.equal(verifyGhAwWorkflowLock({
-    markdownSource: md,
-    lockYamlSource: buildCompilerLock({
-      detectionHousekeeping: '',
-      detectionSteps: upstreamGuardScriptSteps.replace('          OUTPUT_TYPES: ${{ needs.agent.outputs.output_types }}\n', '')
-    })
-  }).reason, 'MISSING_THREAT_SCAN_GATE');
+  // Upstream guard script WITHOUT OUTPUT_TYPES/HAS_PATCH bindings, mismatched deps, or bound to helper job (needs.activation) MUST fail closed!
+  for (const invalidGuardSteps of [
+    upstreamGuardScriptSteps.replace('          OUTPUT_TYPES: ${{ needs.agent.outputs.output_types }}\n', ''),
+    upstreamGuardScriptSteps.replace('needs.agent.outputs.has_patch', 'needs.other.outputs.has_patch'),
+    upstreamGuardScriptSteps
+      .replace('needs.agent.outputs.output_types', 'needs.activation.outputs.output_types')
+      .replace('needs.agent.outputs.has_patch', 'needs.activation.outputs.has_patch')
+  ]) {
+    assert.equal(verifyGhAwWorkflowLock({
+      markdownSource: md,
+      lockYamlSource: buildCompilerLock({
+        detectionHousekeeping: '',
+        detectionSteps: invalidGuardSteps
+      })
+    }).reason, 'MISSING_THREAT_SCAN_GATE');
+  }
 
   // Case-folded checkout keys (Repository / Ref) and INPUT_* env overrides inside write-capable safe_outputs MUST fail closed!
   assert.equal(verifyGhAwWorkflowLock({
@@ -1598,7 +1606,27 @@ test('enforces exact SHA-256 normalized script digest on run: scan-output produc
     validSafeBase.lockYamlSource.replace(
       '      - name: Scan\n',
       '      - name: Tamper workspace\n        run: echo "evil"\n      - name: Scan\n'
-    )
+    ),
+    // Preceding actions/github-script (or setup-node with cache/unknown inputs) before policy_scan MUST fail closed!
+    validSafeBase.lockYamlSource.replace(
+      '      - name: Scan\n',
+      '      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3\n        with:\n          script: require("fs").writeFileSync("tools/engineering-factory/gh-aw-lock-verifier.mjs", "export const verifyGhAwWorkflowLock = () => ({valid:true,liveDispatch:false,liveMerge:false});");\n      - name: Scan\n'
+    ),
+    validSafeBase.lockYamlSource.replace(
+      '      - name: Scan\n',
+      `      - uses: actions/setup-node@${setupNodeSha}\n        with:\n          node-version: '26.13.1'\n          package-manager-cache: true\n      - name: Scan\n`
+    ),
+    // Omitted ref in scan-job actions/checkout on workflow_dispatch WITHOUT case-sensitive protected default-branch provenance (with or without job.if) MUST fail closed!
+    validSafeBase.lockYamlSource.replace(
+      '      - name: Scan\n',
+      `      - uses: actions/checkout@${checkoutSha}\n        with:\n          persist-credentials: false\n      - name: Scan\n`
+    ),
+    validSafeBase.lockYamlSource
+      .replace("    if: ${{ vars.FACTORY_GHAW_ENABLED == 'true' && needs.evaluate.result == 'success' && !endsWith(github.actor, '[bot]') }}\n", '')
+      .replace(
+        '      - name: Scan\n',
+        `      - uses: actions/checkout@${checkoutSha}\n        with:\n          persist-credentials: false\n      - name: Scan\n`
+      )
   ]) {
     assert.equal(verifyGhAwWorkflowLock({
       markdownSource: validSafeBase.markdownSource,
@@ -1884,6 +1912,12 @@ test('verifies Issue #5 event trigger matrix, 10-minute default-off recovery sch
   assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({
     stepIf: "${{ github.event_name != 'it''s_github.event.pull_request.body' }}"
   })).valid, true);
+  // Sequence string elements (e.g. strategy.matrix.payload array) containing untrusted PR text MUST fail closed!
+  const matrixSequenceSpoof = buildMatrixYaml().replace(
+    '    runs-on: ubuntu-latest',
+    '    strategy:\n      matrix:\n        payload: ["${{ github.event.pull_request.title }}"]\n    runs-on: ubuntu-latest'
+  );
+  assert.equal(verifyEventTriggerMatrix(matrixSequenceSpoof).reason, 'UNTRUSTED_PR_TEXT_INTERPOLATION');
 
   // Run interpolation, unpinned uses, credentials, untrusted PR checkout, permissions, merge ban, default-off, and concurrency
   assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({
@@ -1952,7 +1986,7 @@ test('verifies Issue #5 event trigger matrix, 10-minute default-off recovery sch
     `      - uses: actions/checkout@${checkoutSha}\n`,
     `      - uses: actions/checkout@${checkoutSha}\n        env:\n          INPUT_REF: refs/pull/42/head\n`
   )).reason, 'UNTRUSTED_PR_CHECKOUT');
-  // Pinned github/gh-aw and allowlisted trustedControlPlaneShas checkouts pass!
+  // Pinned github/gh-aw and allowlisted trustedControlPlaneShas checkouts pass; github.workflow_sha without protected provenance fails closed!
   const allowlistedMatrixSha = 'e'.repeat(40);
   assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({
     checkoutWith: `          persist-credentials: false\n          repository: github/gh-aw\n          ref: ${PINNED_GHAW_RELEASE.commit}`
@@ -1962,6 +1996,16 @@ test('verifies Issue #5 event trigger matrix, 10-minute default-off recovery sch
   }), {trustedControlPlaneShas: [allowlistedMatrixSha]}).valid, true);
   assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({
     checkoutWith: '          persist-credentials: false\n          ref: ${{ github.workflow_sha }}'
+  })).reason, 'UNTRUSTED_PR_CHECKOUT');
+  assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({
+    includeReview: false,
+    checkoutWith: '          persist-credentials: false\n          ref: ${{ github.workflow_sha }}'
+  })).reason, 'UNTRUSTED_PR_CHECKOUT');
+  assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({
+    includeReview: false,
+    evalIf: "${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.ref == 'refs/heads/main' && github.ref_protected == true && !endsWith(github.actor, '[bot]') }}",
+    checkoutWith: '          persist-credentials: false\n          ref: ${{ github.workflow_sha }}',
+    stepRun: '          test "$GITHUB_REF" = refs/heads/main\n          test "$GITHUB_REF_PROTECTED" = true\n          echo "ok"'
   })).valid, true);
 
   // Linear-time O(N) guard against long .github identifier chains (no polynomial ReDoS)
@@ -1994,23 +2038,43 @@ test('verifies Issue #5 event trigger matrix, 10-minute default-off recovery sch
     extraJobs: '  merge-pull-request:\n    needs: [evaluate]\n    if: ${{ false }}\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo x'
   })).reason, 'MAIN_MERGE_FORBIDDEN_IN_GHAW');
 
-  // Concurrency non-overlap enforcement (including downstream jobs when top-level concurrency is omitted)
-  assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({topConcurrency: ''})).reason, 'MISSING_CONCURRENCY_GUARD');
+  // Concurrency non-overlap enforcement (including downstream jobs and rejecting per-run identifiers in concurrency.group)
+  for (const badTopConcurrency of [
+    '',
+    'concurrency:\n  group: g\n  cancel-in-progress: true',
+    'concurrency:\n  group: "   "\n  cancel-in-progress: false',
+    'concurrency:\n  group: reconcile-${{ github.run_id }}\n  cancel-in-progress: false',
+    'concurrency:\n  group: reconcile-${{ github.run_number }}\n  cancel-in-progress: false',
+    'concurrency:\n  group: reconcile-${{ github.run_attempt }}\n  cancel-in-progress: false',
+    'concurrency:\n  group: reconcile-${{ github.sha }}\n  cancel-in-progress: false',
+    'concurrency:\n  group: reconcile-${{ inputs.issue_number }}\n  cancel-in-progress: false',
+    'concurrency:\n  group: reconcile-${{ 1 == 1 }}\n  cancel-in-progress: false'
+  ]) {
+    assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({topConcurrency: badTopConcurrency})).reason, 'MISSING_CONCURRENCY_GUARD');
+  }
   assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({
     topConcurrency: '',
     evalConcurrency: '    concurrency:\n      group: g\n      cancel-in-progress: false'
   })).reason, 'MISSING_CONCURRENCY_GUARD');
   assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({
-    topConcurrency: 'concurrency:\n  group: g\n  cancel-in-progress: true'
-  })).reason, 'MISSING_CONCURRENCY_GUARD');
-  assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({
     evalConcurrency: '    concurrency:\n      group: g\n      cancel-in-progress: true'
   })).reason, 'MISSING_CONCURRENCY_GUARD');
 
-  // Default-off & github.ref guard downstream inheritance enforcement (including implicit needs success & reverse topological order)
+  // Case-insensitive github.ref == 'refs/heads/main' ALONE does NOT make omitted checkout ref trusted (requires github.ref_protected + case-sensitive shell guard)
+  const caseInsensitiveOnlyDispatch = buildMatrixYaml({
+    includeReview: false,
+    evalIf: "${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.ref == 'refs/heads/main' && !endsWith(github.actor, '[bot]') }}"
+  }).replace(/  pull_request_target:\n    branches: \[main\]\n    types: \[[^\]]+\]\n/, '');
+  assert.equal(verifyEventTriggerMatrix(
+    caseInsensitiveOnlyDispatch.replace('          ref: refs/heads/main', '').replace(/\n\n+/g, '\n'),
+    {allowPartialTriggers: true}
+  ).reason, 'UNTRUSTED_PR_CHECKOUT');
+
+  // Default-off & case-sensitive protected-ref provenance downstream inheritance (including implicit needs success & reverse topological order)
   const implicitAndReverseDownstream = buildMatrixYaml({
     includeReview: false,
-    evalIf: "${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.ref == 'refs/heads/main' && !endsWith(github.actor, '[bot]') }}",
+    evalIf: "${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.ref == 'refs/heads/main' && github.ref_protected == true && !endsWith(github.actor, '[bot]') }}",
+    stepRun: '          test "$GITHUB_REF" = refs/heads/main\n          test "$GITHUB_REF_PROTECTED" = true\n          echo "eval"',
     extraJobs: [
       '  downstream_implicit:',
       '    needs: [mid_step]',
@@ -2026,8 +2090,8 @@ test('verifies Issue #5 event trigger matrix, 10-minute default-off recovery sch
       '    steps:',
       '      - run: echo "mid"'
     ].join('\n')
-  });
-  assert.equal(verifyEventTriggerMatrix(implicitAndReverseDownstream).valid, true);
+  }).replace(/  pull_request_target:\n    branches: \[main\]\n    types: \[[^\]]+\]\n/, '');
+  assert.equal(verifyEventTriggerMatrix(implicitAndReverseDownstream, {allowPartialTriggers: true}).valid, true);
 
   for (const unguardedMatrix of [
     buildMatrixYaml({evalIf: null}),

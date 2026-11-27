@@ -784,8 +784,8 @@ function astHasUnsafeStatusOverride(node, negated = false) {
 const STEP_OUTPUT_REF_RE = /^\$\{\{\s*steps\.([A-Za-z_][A-Za-z0-9_-]*)\.outputs\.[A-Za-z_][A-Za-z0-9_-]*\s*\}\}$/;
 const STEP_OUTCOME_REF_RE = /^\$\{\{\s*steps\.([A-Za-z_][A-Za-z0-9_-]*)\.outcome\s*\}\}$/;
 const DETECTION_GUARD_REF_RE = /^\$\{\{\s*steps\.detection_guard\.outputs\.run_detection\s*\}\}$/;
-const NEEDS_OUTPUT_TYPES_REF_RE = /^\$\{\{\s*needs\.[A-Za-z_][A-Za-z0-9_-]*\.outputs\.output_types\s*\}\}$/;
-const NEEDS_HAS_PATCH_REF_RE = /^\$\{\{\s*needs\.[A-Za-z_][A-Za-z0-9_-]*\.outputs\.has_patch\s*\}\}$/;
+const NEEDS_OUTPUT_TYPES_REF_RE = /^\$\{\{\s*needs\.([A-Za-z_][A-Za-z0-9_-]*)\.outputs\.output_types\s*\}\}$/;
+const NEEDS_HAS_PATCH_REF_RE = /^\$\{\{\s*needs\.([A-Za-z_][A-Za-z0-9_-]*)\.outputs\.has_patch\s*\}\}$/;
 const PINNED_GHAW_DETECTION_GUARD_RUN_SHA256 =
   'cd263ee1576f187c6631de7e4e336dfadb2b8f71404f70dfccaa319b2530af44';
 const UNCONDITIONAL_DETECTION_GUARD_RUN_SHA256 =
@@ -852,16 +852,107 @@ function normalizeCheckoutWith(withMap) {
   return normalized;
 }
 
-function isValidDetectionGuardStep(step) {
+function resolveValidDetectionGuardDep(step) {
   const guardDigest = computeNormalizedScriptSha256(step.run);
-  if (guardDigest === UNCONDITIONAL_DETECTION_GUARD_RUN_SHA256) return true;
-  return guardDigest === PINNED_GHAW_DETECTION_GUARD_RUN_SHA256 &&
-    isMapObject(step.env) &&
-    Object.keys(step.env).length === 2 &&
-    typeof step.env.OUTPUT_TYPES === 'string' &&
-    NEEDS_OUTPUT_TYPES_REF_RE.test(step.env.OUTPUT_TYPES.trim()) &&
-    typeof step.env.HAS_PATCH === 'string' &&
-    NEEDS_HAS_PATCH_REF_RE.test(step.env.HAS_PATCH.trim());
+  if (guardDigest === UNCONDITIONAL_DETECTION_GUARD_RUN_SHA256) return '*';
+  if (guardDigest !== PINNED_GHAW_DETECTION_GUARD_RUN_SHA256 ||
+      !isMapObject(step.env) ||
+      Object.keys(step.env).length !== 2 ||
+      typeof step.env.OUTPUT_TYPES !== 'string' ||
+      typeof step.env.HAS_PATCH !== 'string') {
+    return null;
+  }
+  const outMatch = NEEDS_OUTPUT_TYPES_REF_RE.exec(step.env.OUTPUT_TYPES.trim());
+  const patchMatch = NEEDS_HAS_PATCH_REF_RE.exec(step.env.HAS_PATCH.trim());
+  if (outMatch === null || patchMatch === null || outMatch[1] !== patchMatch[1]) {
+    return null;
+  }
+  return outMatch[1];
+}
+
+const ALLOWED_SETUP_NODE_WITH_KEYS = new Set(['node-version', 'package-manager-cache', 'check-latest']);
+
+function isSafeSetupStepBeforePolicyScan(step, usesLower) {
+  if (step.if !== undefined || step.env !== undefined) return false;
+  if (usesLower.startsWith('actions/checkout@')) return true;
+  if (!usesLower.startsWith('actions/setup-node@')) return false;
+  if (step.with === undefined) return true;
+  if (!isMapObject(step.with)) return false;
+  const seen = new Set();
+  for (const [key, value] of Object.entries(step.with)) {
+    const lower = key.toLowerCase();
+    if (!ALLOWED_SETUP_NODE_WITH_KEYS.has(lower) || seen.has(lower)) return false;
+    if (lower === 'package-manager-cache' && value !== false) return false;
+    seen.add(lower);
+  }
+  return true;
+}
+
+function escapeRegExp(literal) {
+  return literal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function resolveJobProtectedBranchProvenance(job, jobAst, expectedBranchRef) {
+  if (jobAst === null || astHasBypassCall(jobAst) || !Array.isArray(job.steps)) {
+    return {jobWide: false, gatedStepIds: new Set()};
+  }
+  const conjuncts = collectMandatoryConjuncts(jobAst);
+  const hasRef = conjuncts.some(c => isIdentCompareLiteral(c, '==', 'github.ref', expectedBranchRef));
+  const hasProtected = conjuncts.some(c =>
+    isIdentCompareLiteral(c, '==', 'github.ref_protected', true) ||
+    isIdentCompareLiteral(c, '==', 'github.ref_protected', 'true')
+  );
+  if (!hasRef || !hasProtected) {
+    return {jobWide: false, gatedStepIds: new Set()};
+  }
+  const escapedRef = escapeRegExp(expectedBranchRef);
+  const posixRefRe = new RegExp(`(?:^|\\n)\\s*test\\s+"\\$GITHUB_REF"\\s*=\\s*${escapedRef}(?:\\s|$)`);
+  const posixProtRe = /(?:^|\n)\s*test\s+"\$GITHUB_REF_PROTECTED"\s*=\s*true(?:\s|$)/;
+  const bashRefRe = new RegExp(`\\[\\[[^\\]]*"\\$GITHUB_REF"\\s*==\\s*${escapedRef}(?:\\s|\\]\\])`);
+  const bashProtRe = /\[\[[^\]]*"\$GITHUB_REF_PROTECTED"\s*==\s*true(?:\s|\]\])/;
+
+  let jobWide = false;
+  const guardOutputStepIds = new Set();
+  const gatedCheckoutIndices = new Set();
+  for (let idx = 0; idx < job.steps.length; idx++) {
+    const step = job.steps[idx];
+    if (!isMapObject(step)) continue;
+    if (typeof step.uses === 'string' && step.uses.toLowerCase().startsWith('actions/checkout@') &&
+        typeof step.if === 'string') {
+      const stepAst = parseIfExpression(step.if);
+      if (stepAst !== null && !astHasBypassCall(stepAst)) {
+        const stepConjuncts = collectMandatoryConjuncts(stepAst);
+        const gatedByPriorOptin = [...guardOutputStepIds].some(guardId =>
+          stepConjuncts.some(c => {
+            if (c.kind !== 'Compare' || c.op !== '==') return false;
+            const identPath = c.left.kind === 'Ident' && c.right.kind === 'Literal' && c.right.value === 'true'
+              ? c.left.path
+              : (c.right.kind === 'Ident' && c.left.kind === 'Literal' && c.left.value === 'true' ? c.right.path : null);
+            return identPath !== null && identPath.startsWith(`steps.${guardId}.outputs.`);
+          })
+        );
+        if (gatedByPriorOptin) gatedCheckoutIndices.add(idx);
+      }
+    }
+    if (typeof step.run !== 'string' || step.if !== undefined ||
+        step['working-directory'] !== undefined ||
+        (step.shell !== undefined && step.shell !== 'bash') ||
+        !isSafeScanEnv(step.env)) {
+      continue;
+    }
+    const refMatch = posixRefRe.exec(step.run);
+    const protMatch = posixProtRe.exec(step.run);
+    if (refMatch !== null && protMatch !== null) {
+      const nodeIdx = step.run.search(/\bnode\b/);
+      if (nodeIdx === -1 || (refMatch.index < nodeIdx && protMatch.index < nodeIdx)) {
+        jobWide = true;
+      }
+    }
+    if (typeof step.id === 'string' && bashRefRe.test(step.run) && bashProtRe.test(step.run)) {
+      guardOutputStepIds.add(step.id);
+    }
+  }
+  return {jobWide, gatedStepIds: gatedCheckoutIndices};
 }
 
 function isValidRedactionStep(step, usesLower) {
@@ -1103,11 +1194,17 @@ function isTrustedControlPlaneCheckout(withMap, releaseCommit, trustedShas) {
 }
 
 function isTrustedScanJobCheckout(checkoutWith, releaseCommit, trustedShas, lockOn) {
-  if (checkoutWith.path !== undefined) return false;
+  if (checkoutWith.path !== undefined) return {ok: false, needsUpstreamRefProvenance: false};
   if (checkoutWith.ref === undefined && checkoutWith.repository === undefined) {
-    return !Object.hasOwn(lockOn, 'pull_request') && !Object.hasOwn(lockOn, 'pull_request_review');
+    const safeTriggerSet = !Object.hasOwn(lockOn, 'pull_request') &&
+      !Object.hasOwn(lockOn, 'pull_request_target') &&
+      !Object.hasOwn(lockOn, 'pull_request_review');
+    return {ok: safeTriggerSet, needsUpstreamRefProvenance: true};
   }
-  return isTrustedControlPlaneCheckout(checkoutWith, releaseCommit, trustedShas);
+  return {
+    ok: isTrustedControlPlaneCheckout(checkoutWith, releaseCommit, trustedShas),
+    needsUpstreamRefProvenance: false
+  };
 }
 function normalizeNeeds(needsField) {
   if (typeof needsField === 'string') return [needsField];
@@ -1252,12 +1349,15 @@ export function verifyGhAwWorkflowLock(input) {
     }
 
     const validScanOutputStepIds = new Set();
+    const actionConclusionGuardDeps = new Map();
     const precedingUnconditionalScanStepIds = new Set();
     const precedingDetectionPrereqs = {
       hasValidGuard: false,
+      guardEvalDep: null,
       hasRedactLogs: false,
       hasRedactArtifacts: false
     };
+    let scanNeedsRefProvenance = false;
     let jobHasWriteScope = false;
     if (isSafeOutput) {
       if (!isMapObject(job.permissions)) return deny('EXCESSIVE_SAFE_OUTPUT_PERMISSION');
@@ -1275,14 +1375,23 @@ export function verifyGhAwWorkflowLock(input) {
     } else {
       const jobPerms = isReadOnlyPermissions(job.permissions);
       if (!jobPerms.ok) return deny('AGENT_JOB_WRITE_PERMISSION');
-      if (isThreatScan) threatScanJobs.push({jobId, job, validScanOutputStepIds});
-      else evaluationJobIds.push({jobId, job});
+      if (isThreatScan) {
+        threatScanJobs.push({
+          jobId,
+          job,
+          validScanOutputStepIds,
+          actionConclusionGuardDeps,
+          getNeedsRefProvenance: () => scanNeedsRefProvenance
+        });
+      } else {
+        evaluationJobIds.push({jobId, job});
+      }
     }
 
     if (job.uses === undefined) {
       if (!Array.isArray(job.steps) || job.steps.length === 0) return deny('INVALID_LOCK_YAML');
       let hasUnconditionalThreatScanRunStep = false;
-      let hasAnyPriorScanRunStep = false;
+      let canRegisterPolicyScanProducer = true;
       for (const step of job.steps) {
         if (!isMapObject(step)) return deny('INVALID_LOCK_YAML');
         if (!isSafeOutput && toleratesError(step)) return deny('MISSING_THREAT_SCAN_GATE');
@@ -1316,11 +1425,21 @@ export function verifyGhAwWorkflowLock(input) {
                  !isTrustedControlPlaneCheckout(checkoutWith, releaseCheck.release.commit, trustedShas))) {
               return deny('UNTRUSTED_SAFE_OUTPUT_CHECKOUT');
             }
-            if (isThreatScan && !isTrustedScanJobCheckout(checkoutWith, releaseCheck.release.commit, trustedShas, lockDoc.on)) {
-              return deny('MISSING_THREAT_SCAN_GATE');
+            if (isThreatScan) {
+              const scanCheckout = isTrustedScanJobCheckout(
+                checkoutWith,
+                releaseCheck.release.commit,
+                trustedShas,
+                lockDoc.on
+              );
+              if (!scanCheckout.ok) return deny('MISSING_THREAT_SCAN_GATE');
+              if (scanCheckout.needsUpstreamRefProvenance) scanNeedsRefProvenance = true;
             }
           }
           if (isThreatScan) {
+            if (!isSafeSetupStepBeforePolicyScan(step, usesLower)) {
+              canRegisterPolicyScanProducer = false;
+            }
             if (step.id === 'redact_detection_logs' && isValidRedactionStep(step, usesLower)) {
               precedingDetectionPrereqs.hasRedactLogs = true;
             } else if (step.id === 'redact_detection_artifacts' && isValidRedactionStep(step, usesLower)) {
@@ -1332,6 +1451,7 @@ export function verifyGhAwWorkflowLock(input) {
               trustedDetectionDigests
             )) {
               validScanOutputStepIds.add(step.id);
+              actionConclusionGuardDeps.set(step.id, precedingDetectionPrereqs.guardEvalDep);
             }
           }
         }
@@ -1344,14 +1464,18 @@ export function verifyGhAwWorkflowLock(input) {
                 (step.shell !== undefined && step.shell !== 'bash')) {
               return deny('MISSING_THREAT_SCAN_GATE');
             }
-            if (step.id === 'detection_guard' && isValidDetectionGuardStep(step)) {
-              precedingDetectionPrereqs.hasValidGuard = true;
+            if (step.id === 'detection_guard') {
+              const guardDep = resolveValidDetectionGuardDep(step);
+              if (guardDep !== null) {
+                precedingDetectionPrereqs.hasValidGuard = true;
+                precedingDetectionPrereqs.guardEvalDep = guardDep;
+              }
             }
             if (step.if === undefined && step.run.trim().length > 0) {
               hasUnconditionalThreatScanRunStep = true;
               if (typeof step.id === 'string' && /^[A-Za-z_][A-Za-z0-9_-]*$/.test(step.id)) {
                 precedingUnconditionalScanStepIds.add(step.id);
-                if (!hasAnyPriorScanRunStep) {
+                if (canRegisterPolicyScanProducer) {
                   const runDigest = computeNormalizedScriptSha256(step.run);
                   if (trustedPolicyScanDigests.has(runDigest)) {
                     validScanOutputStepIds.add(step.id);
@@ -1359,7 +1483,7 @@ export function verifyGhAwWorkflowLock(input) {
                 }
               }
             }
-            hasAnyPriorScanRunStep = true;
+            canRegisterPolicyScanProducer = false;
           }
         }
       }
@@ -1400,12 +1524,37 @@ export function verifyGhAwWorkflowLock(input) {
   }
 
   if (threatScanJobs.length === 0) return deny('MISSING_THREAT_SCAN_GATE');
+  const evalJobIdSet = new Set(evaluationJobIds.map(entry => entry.jobId));
+  const evalRefProvenanceIds = new Set(
+    evaluationJobIds
+      .filter(({job}) => resolveJobProtectedBranchProvenance(job, parseIfExpression(job.if), 'refs/heads/main').jobWide)
+      .map(({jobId}) => jobId)
+  );
   const threatScanById = new Map(threatScanJobs.map(entry => [entry.jobId, entry]));
-  for (const {job} of threatScanJobs) {
+  for (const scanEntry of threatScanJobs) {
+    const {job, validScanOutputStepIds, actionConclusionGuardDeps, getNeedsRefProvenance} = scanEntry;
+    for (const [stepId, guardDep] of actionConclusionGuardDeps.entries()) {
+      if (guardDep !== '*' && !evalJobIdSet.has(guardDep)) {
+        validScanOutputStepIds.delete(stepId);
+      }
+    }
+    if (job.outputs !== undefined) {
+      for (const verifiedKey of VERIFIED_SCAN_OUTPUT_KEYS) {
+        if (Object.hasOwn(job.outputs, verifiedKey) &&
+            !declaresVerifiedStepOutput(job, verifiedKey, validScanOutputStepIds)) {
+          return deny('MISSING_THREAT_SCAN_GATE');
+        }
+      }
+    }
     const needs = normalizeNeeds(job.needs);
     if (needs === null || !evaluationJobIds.every(evalJob => needs.includes(evalJob.jobId))) {
       return deny('MISSING_THREAT_SCAN_GATE');
     }
+    const scanSelfProvenance = resolveJobProtectedBranchProvenance(
+      job,
+      job.if === undefined ? null : parseIfExpression(job.if),
+      'refs/heads/main'
+    ).jobWide;
     if (job.if !== undefined) {
       const scanAst = parseIfExpression(job.if);
       if (scanAst === null || (scanAst.kind === 'Literal' && scanAst.value === false) ||
@@ -1426,6 +1575,15 @@ export function verifyGhAwWorkflowLock(input) {
       if (!validEvalGate) {
         return deny('MISSING_THREAT_SCAN_GATE');
       }
+      if (getNeedsRefProvenance() && !scanSelfProvenance &&
+          !evaluationJobIds.some(evalJob =>
+            evalRefProvenanceIds.has(evalJob.jobId) &&
+            scanConjuncts.some(c => isIdentCompareLiteral(c, '==', `needs.${evalJob.jobId}.result`, 'success'))
+          )) {
+        return deny('MISSING_THREAT_SCAN_GATE');
+      }
+    } else if (getNeedsRefProvenance() && !evaluationJobIds.every(evalJob => evalRefProvenanceIds.has(evalJob.jobId))) {
+      return deny('MISSING_THREAT_SCAN_GATE');
     }
   }
 
@@ -1725,6 +1883,9 @@ function stringHasUntrustedInterpolation(rawValue, isIfField) {
 }
 
 function nodeHasUntrustedInterpolation(node, inStep = false) {
+  if (typeof node === 'string') {
+    return stringHasUntrustedInterpolation(node, false);
+  }
   if (Array.isArray(node)) {
     return node.some(item => nodeHasUntrustedInterpolation(item, false));
   }
@@ -1742,10 +1903,31 @@ function nodeHasUntrustedInterpolation(node, inStep = false) {
   return false;
 }
 
+const ALLOWED_CONCURRENCY_GROUP_IDENTS = new Set([
+  'github.repository',
+  'github.repository_id',
+  'github.ref',
+  'github.workflow',
+  'github.job',
+  'github.base_ref'
+]);
+
+function isScopeStableConcurrencyGroup(group) {
+  if (typeof group !== 'string' || group.trim().length === 0) return false;
+  for (const expr of scanTemplateExpressions(group)) {
+    const tokens = tokenizeIfExpression(expr.content.trim());
+    if (tokens === null || tokens.length !== 1 || tokens[0].type !== 'ident' ||
+        !ALLOWED_CONCURRENCY_GROUP_IDENTS.has(tokens[0].value.toLowerCase())) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function isValidNonCancellingConcurrency(concurrency) {
   return isMapObject(concurrency) &&
-    typeof concurrency.group === 'string' &&
-    concurrency.group.trim().length > 0 &&
+    Object.keys(concurrency).length === 2 &&
+    isScopeStableConcurrencyGroup(concurrency.group) &&
     concurrency['cancel-in-progress'] === false;
 }
 
@@ -1754,23 +1936,25 @@ function isTrustedCheckoutRefValueNode(node, expectedBranchRef) {
     (node.kind === 'Literal' && node.value === expectedBranchRef);
 }
 
-function isTrustedEventMatrixCheckoutRef(rawRef, targetBranch, trustedShas) {
-  if (typeof rawRef !== 'string') return false;
+function classifyEventMatrixCheckoutRef(rawRef, targetBranch, trustedShas) {
+  if (typeof rawRef !== 'string') return 'untrusted';
   const trimmed = rawRef.trim();
   const expectedBranchRef = `refs/heads/${targetBranch}`;
   if (trimmed === expectedBranchRef || trustedShas.has(trimmed)) {
-    return true;
+    return 'static_trusted';
   }
   if (!trimmed.startsWith('${{') || !trimmed.endsWith('}}')) {
-    return false;
+    return 'untrusted';
   }
   const ast = parseIfExpression(trimmed);
-  if (ast === null || astHasBypassCall(ast)) return false;
-  if (isTrustedCheckoutRefValueNode(ast, expectedBranchRef)) return true;
+  if (ast === null || astHasBypassCall(ast)) return 'untrusted';
+  if (isTrustedCheckoutRefValueNode(ast, expectedBranchRef)) return 'workflow_sha';
   return ast.kind === 'Or' &&
     isTrustedCheckoutRefValueNode(ast.right, expectedBranchRef) &&
     ast.left.kind === 'And' &&
-    isTrustedCheckoutRefValueNode(ast.left.right, expectedBranchRef);
+    isTrustedCheckoutRefValueNode(ast.left.right, expectedBranchRef)
+    ? 'workflow_sha'
+    : 'untrusted';
 }
 
 export function verifyEventTriggerMatrix(lockYamlSource, options) {
@@ -1842,8 +2026,9 @@ export function verifyEventTriggerMatrix(lockYamlSource, options) {
 
   const hasTopLevelConcurrency = lockDoc.concurrency !== undefined;
   const hasPullRequestReviewTrigger = Object.hasOwn(lockDoc.on, 'pull_request_review');
+  const hasPullRequestTargetTrigger = Object.hasOwn(lockDoc.on, 'pull_request_target');
   const expectedBranchRef = `refs/heads/${targetBranch}`;
-  const jobsWithOmittedCheckoutRef = new Set();
+  const checkoutProvenanceReqs = [];
   const jobEntries = Object.entries(lockDoc.jobs);
 
   for (const [jobId, job] of jobEntries) {
@@ -1872,7 +2057,8 @@ export function verifyEventTriggerMatrix(lockYamlSource, options) {
       if (!isPinnedUses(job.uses)) return deny('UNPINNED_ACTION_REFERENCE');
     } else {
       if (!Array.isArray(job.steps) || job.steps.length === 0) return deny('INVALID_LOCK_YAML');
-      for (const step of job.steps) {
+      for (let stepIdx = 0; stepIdx < job.steps.length; stepIdx++) {
+        const step = job.steps[stepIdx];
         if (!isMapObject(step)) return deny('INVALID_LOCK_YAML');
         if (stepAttemptsMainMerge(step)) return deny('MAIN_MERGE_FORBIDDEN_IN_GHAW');
         if (step.run !== undefined && (typeof step.run !== 'string' || step.run.includes('${{'))) {
@@ -1904,10 +2090,17 @@ export function verifyEventTriggerMatrix(lockYamlSource, options) {
                 return deny('UNTRUSTED_PR_CHECKOUT');
               }
             } else if (checkoutWith.ref === undefined) {
-              if (hasPullRequestReviewTrigger) return deny('UNTRUSTED_PR_CHECKOUT');
-              jobsWithOmittedCheckoutRef.add(jobId);
-            } else if (!isTrustedEventMatrixCheckoutRef(checkoutWith.ref, targetBranch, trustedShas)) {
-              return deny('UNTRUSTED_PR_CHECKOUT');
+              if (hasPullRequestReviewTrigger || hasPullRequestTargetTrigger) {
+                return deny('UNTRUSTED_PR_CHECKOUT');
+              }
+              checkoutProvenanceReqs.push({jobId, stepIdx});
+            } else {
+              const refKind = classifyEventMatrixCheckoutRef(checkoutWith.ref, targetBranch, trustedShas);
+              if (refKind === 'untrusted') return deny('UNTRUSTED_PR_CHECKOUT');
+              if (refKind === 'workflow_sha') {
+                if (hasPullRequestReviewTrigger) return deny('UNTRUSTED_PR_CHECKOUT');
+                checkoutProvenanceReqs.push({jobId, stepIdx});
+              }
             }
           }
         }
@@ -1926,6 +2119,7 @@ export function verifyEventTriggerMatrix(lockYamlSource, options) {
   const disabledJobIds = new Set();
   const guardedJobIds = new Set();
   const refGuardedJobIds = new Set();
+  const stepGatedProvenanceByJob = new Map();
   const matchedEnableVars = new Set();
   const parsedJobIfs = new Map();
 
@@ -1950,9 +2144,9 @@ export function verifyEventTriggerMatrix(lockYamlSource, options) {
           matchedEnableVars.add(enableVar.slice('vars.'.length));
         }
       }
-      if (conjuncts.some(c => isIdentCompareLiteral(c, '==', 'github.ref', expectedBranchRef))) {
-        refGuardedJobIds.add(jobId);
-      }
+      const refProv = resolveJobProtectedBranchProvenance(job, jobAst, expectedBranchRef);
+      if (refProv.jobWide) refGuardedJobIds.add(jobId);
+      if (refProv.gatedStepIds.size > 0) stepGatedProvenanceByJob.set(jobId, refProv.gatedStepIds);
     }
     if (job.needs === undefined && !guardedJobIds.has(jobId)) {
       return deny('MISSING_DEFAULT_OFF_GUARD');
@@ -2015,8 +2209,10 @@ export function verifyEventTriggerMatrix(lockYamlSource, options) {
     return deny('MISSING_DEFAULT_OFF_GUARD');
   }
 
-  for (const jobId of jobsWithOmittedCheckoutRef) {
-    if (!disabledJobIds.has(jobId) && !refGuardedJobIds.has(jobId)) {
+  for (const {jobId, stepIdx} of checkoutProvenanceReqs) {
+    if (disabledJobIds.has(jobId)) continue;
+    const stepGated = stepGatedProvenanceByJob.get(jobId)?.has(stepIdx) === true;
+    if (!refGuardedJobIds.has(jobId) && !stepGated) {
       return deny('UNTRUSTED_PR_CHECKOUT');
     }
   }
