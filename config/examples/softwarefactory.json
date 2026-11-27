@@ -27,8 +27,13 @@
     },
     {
       "id": "engineering-factory",
-      "specialist": "api",
-      "owners": ["tools/engineering-factory", "tests/engineering-factory"],
+      "owners": [
+        "tools/engineering-factory",
+        "tests/engineering-factory",
+        ".github/extensions/factory-board",
+        "package.json",
+        "package-lock.json"
+      ],
       "prompt": "agents/engineering-coordinator.md"
     },
     {
@@ -39,14 +44,30 @@
     },
     {
       "id": "apphost",
-      "specialist": "infra",
-      "owners": ["apphost.cs", "apphost.run.json", "aspire.config.json", "global.json"],
+      "owners": [
+        "apphost.cs",
+        "apphost.run.json",
+        "aspire.config.json",
+        "global.json",
+        "src/SoftwareFactory.Agents",
+        "tests/SoftwareFactory.Agents.Tests"
+      ],
       "prompt": "agents/engineering-coordinator.md"
     },
     {
       "id": "docs",
       "specialist": "docs",
-      "owners": ["docs"],
+      "owners": [
+        "docs",
+        "README.md",
+        "AGENTS.md",
+        "CONTRIBUTING.md",
+        "SECURITY.md",
+        "LICENSE",
+        "NOTICE",
+        "VERSION",
+        ".gitignore"
+      ],
       "prompt": "agents/engineering-coordinator.md"
     }
   ],
@@ -84,7 +105,7 @@
         "id": "engineering-factory",
         "lane": "engineering-factory",
         "specialist": "api",
-        "owners": ["tools/engineering-factory", "tests/engineering-factory"],
+        "owners": ["tools/engineering-factory", "tests/engineering-factory", "package.json", "package-lock.json"],
         "interfaces": [
           "tools/engineering-factory/core.mjs",
           "tools/engineering-factory/contract-routing.mjs",
@@ -103,12 +124,38 @@
         "dependsOn": []
       },
       {
+        "id": "dotnet-agents",
+        "lane": "apphost",
+        "specialist": "api",
+        "owners": ["src/SoftwareFactory.Agents", "tests/SoftwareFactory.Agents.Tests"],
+        "interfaces": [
+          "src/SoftwareFactory.Agents/SoftwareFactory.Agents.csproj",
+          "src/SoftwareFactory.Agents/MafCli.cs",
+          "src/SoftwareFactory.Agents/Contracts/WorkItemContract.cs",
+          "src/SoftwareFactory.Agents/Workflows/SpecialistWorkflowEngine.cs"
+        ],
+        "decisions": [
+          "docs/MAF-INNER-ORCHESTRATION.md",
+          "docs/ROADMAP.md",
+          "docs/ENGINEERING-STANDARDS.md"
+        ],
+        "tests": [
+          "tests/SoftwareFactory.Agents.Tests/ContractAndOwnershipTests.cs",
+          "tests/SoftwareFactory.Agents.Tests/CheckpointStoreTests.cs",
+          "tests/SoftwareFactory.Agents.Tests/TelemetryAndAdapterTests.cs",
+          "tests/SoftwareFactory.Agents.Tests/SpecialistWorkflowAndCliTests.cs"
+        ],
+        "dependsOn": ["engineering-coordinator", "engineering-factory"]
+      },
+      {
         "id": "workflows",
         "lane": "workflows",
         "specialist": "security",
         "owners": [".github/workflows"],
         "interfaces": [
           ".github/workflows/validate.yml",
+          ".github/workflows/windows-aspire.yml",
+          ".github/workflows/dotnet-agents.yml",
           ".github/workflows/shadow-tests.yml",
           ".github/workflows/shadow-reconcile.yml"
         ],
@@ -121,7 +168,7 @@
           "tests/engineering-factory/coverage-evidence.test.mjs",
           "tests/engineering-factory/platform-merge-gates.test.mjs"
         ],
-        "dependsOn": ["engineering-coordinator", "engineering-factory"]
+        "dependsOn": ["engineering-coordinator", "engineering-factory", "dotnet-agents"]
       },
       {
         "id": "apphost",
@@ -142,17 +189,46 @@
           "tests/engineering-factory/aspire-telemetry-smoke.test.mjs",
           "tests/engineering-factory/local-otel-sdk.test.mjs"
         ],
+        "dependsOn": ["engineering-factory", "dotnet-agents"]
+      },
+      {
+        "id": "extensions-canvas",
+        "lane": "engineering-factory",
+        "specialist": "ui",
+        "owners": [".github/extensions/factory-board"],
+        "interfaces": [
+          ".github/extensions/factory-board/extension.mjs",
+          ".github/extensions/factory-board/board-ui.mjs"
+        ],
+        "decisions": [
+          "docs/FACTORY-BOARD-CANVAS.md",
+          "docs/ENGINEERING-STANDARDS.md"
+        ],
+        "tests": [
+          "tests/engineering-factory/factory-board.test.mjs"
+        ],
         "dependsOn": ["engineering-factory"]
       },
       {
         "id": "docs",
         "lane": "docs",
         "specialist": "docs",
-        "owners": ["docs"],
+        "owners": [
+          "docs",
+          "README.md",
+          "AGENTS.md",
+          "CONTRIBUTING.md",
+          "SECURITY.md",
+          "LICENSE",
+          "NOTICE",
+          "VERSION",
+          ".gitignore"
+        ],
         "interfaces": [
           "docs/README.md",
           "docs/CONSUMER-ADOPTION-CONTRACT.md",
-          "docs/ENGINEERING-METRIC-CONTRACT.md"
+          "docs/ENGINEERING-METRIC-CONTRACT.md",
+          "docs/MAF-INNER-ORCHESTRATION.md"
         ],
         "decisions": [
           "docs/ROADMAP.md",
@@ -163,7 +239,7 @@
           "tests/engineering-factory/profiles.test.mjs",
           "tests/engineering-coordinator/project-config.test.mjs"
         ],
-        "dependsOn": ["engineering-coordinator", "engineering-factory"]
+        "dependsOn": ["engineering-coordinator", "engineering-factory", "dotnet-agents", "extensions-canvas"]
       }
     ]
   }
