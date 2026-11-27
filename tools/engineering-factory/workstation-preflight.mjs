@@ -1141,7 +1141,7 @@ const DEFAULT_FS_DEPS = Object.freeze({
   openFlags: SAFE_READ_FLAGS
 });
 
-function hasSymlinkedAncestor(rawPath, resolvedPath) {
+function hasSymlinkedAncestor(rawPath, resolvedPath, platform = process.platform) {
   const rawNorm = rawPath.replaceAll('\\', '/').replace(/\/+$/, '');
   const realNorm = resolvedPath.replaceAll('\\', '/').replace(/\/+$/, '');
   if (/^[A-Za-z]:\//.test(rawNorm)) {
@@ -1151,6 +1151,7 @@ function hasSymlinkedAncestor(rawPath, resolvedPath) {
     return false;
   }
   if (
+    (platform === 'darwin' || platform === 'macos') &&
     (rawNorm.startsWith('/tmp/') || rawNorm.startsWith('/var/')) &&
     realNorm === `/private${rawNorm}`
   ) {
@@ -1221,11 +1222,12 @@ export function inspectPemCaFile(caPath, fsDeps = DEFAULT_FS_DEPS) {
     if (typeof fsDeps.realpath === 'function') {
       const resolvedPath = fsDeps.realpath(caPath);
       const resolvedStat = fsDeps.lstat(resolvedPath);
+      const targetPlatform = typeof fsDeps.platform === 'string' ? fsDeps.platform : process.platform;
       if (
         resolvedStat.isSymbolicLink() ||
         resolvedStat.dev !== info.dev ||
         resolvedStat.ino !== info.ino ||
-        hasSymlinkedAncestor(caPath, resolvedPath) ||
+        hasSymlinkedAncestor(caPath, resolvedPath, targetPlatform) ||
         isOsRootTrustStorePath(resolvedPath)
       ) {
         return Object.freeze({
@@ -1414,7 +1416,7 @@ export function collectWorkstationPreflightObservation(options = {}) {
           effectiveOsRootTrustStoreModified = true;
         } else if (
           pathKey !== 'NODE_EXTRA_CA_CERTS' &&
-          hasSymlinkedAncestor(filteredEnv[pathKey], resolvedTarget)
+          hasSymlinkedAncestor(filteredEnv[pathKey], resolvedTarget, resolvedPlatform)
         ) {
           filteredEnv[pathKey] = '';
         }
@@ -1432,7 +1434,10 @@ export function collectWorkstationPreflightObservation(options = {}) {
   const aspireCliVersion = rawAspireVersion.split('+')[0].trim();
   const caPath =
     typeof filteredEnv.NODE_EXTRA_CA_CERTS === 'string' ? filteredEnv.NODE_EXTRA_CA_CERTS : '';
-  const pemCa = inspectCa(caPath);
+  const pemCa =
+    inspectCa === inspectPemCaFile
+      ? inspectPemCaFile(caPath, { ...DEFAULT_FS_DEPS, platform: resolvedPlatform })
+      : inspectCa(caPath);
 
   return Object.freeze({
     platform: resolvedPlatform,

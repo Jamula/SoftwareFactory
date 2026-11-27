@@ -928,9 +928,10 @@ test('inspectPemCaFile, collectWorkstationPreflightObservation, and CLI remain r
     assert.equal(aliasInspected.readable, false);
     assert.equal(aliasInspected.isSymbolicLink, true);
 
-    // macOS /tmp -> /private/tmp firmlink allowance and Windows drive-path ancestor check
+    // macOS /tmp -> /private/tmp firmlink allowance only applies on darwin/macos, rejected on linux/wsl2
     assert.equal(
       inspectPemCaFile('/tmp/sf-mac/aspire-dev.pem', {
+        platform: 'darwin',
         open: () => 9,
         fstat: () => ({ isFile: () => true, dev: 1, ino: 1, size: VALID_PEM_CERT.length, mode: 0o600 }),
         lstat: () => ({ isSymbolicLink: () => false, isFile: () => true, dev: 1, ino: 1 }),
@@ -943,6 +944,29 @@ test('inspectPemCaFile, collectWorkstationPreflightObservation, and CLI remain r
         openFlags: 0
       }).readable,
       true
+    );
+    assert.equal(
+      inspectPemCaFile('/tmp/sf-linux/aspire-dev.pem', {
+        platform: 'linux',
+        open: () => 9,
+        fstat: () => ({ isFile: () => true, dev: 1, ino: 1, size: VALID_PEM_CERT.length, mode: 0o600 }),
+        lstat: () => ({ isSymbolicLink: () => false, isFile: () => true, dev: 1, ino: 1 }),
+        realpath: () => '/private/tmp/sf-linux/aspire-dev.pem',
+        read: () => 0,
+        close() {},
+        openFlags: 0
+      }).isSymbolicLink,
+      true
+    );
+    assert.equal(
+      collectWorkstationPreflightObservation({
+        env: { NODE_EXTRA_CA_CERTS: '/tmp/nonexistent-sf-cert.pem' },
+        platform: 'linux',
+        kernelRelease: '6.8.0-generic',
+        nodeVersion: 'v26.13.1',
+        execVersion: () => '10.0.404'
+      }).pemCa.readable,
+      false
     );
     assert.equal(
       inspectPemCaFile('C:\\Temp\\alias\\aspire-dev.pem', {
