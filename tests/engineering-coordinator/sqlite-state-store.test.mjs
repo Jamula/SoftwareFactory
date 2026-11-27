@@ -432,18 +432,37 @@ test('rejects tampered digests and malformed or internally inconsistent snapshot
     for (let i = 0; i < 17; i++) deep = {next: deep};
     const getterSnap = JSON.parse(JSON.stringify(valid));
     Object.defineProperty(getterSnap, 'schemaVersion', {get: () => 1, enumerable: true});
+    const hiddenAccessorSnap = JSON.parse(JSON.stringify(valid));
+    delete hiddenAccessorSnap.schemaVersion;
+    hiddenAccessorSnap.padding = 1;
+    Object.defineProperty(hiddenAccessorSnap, 'schemaVersion', {
+      get() { throw Error('hidden accessor must not run'); },
+      enumerable: false
+    });
+    const revokedArray = Proxy.revocable([], {});
+    revokedArray.revoke();
+    const revokedObject = Proxy.revocable({}, {});
+    revokedObject.revoke();
+    const activeClaim = source.get('api');
+    assert.equal(source.checkpoint('api', activeClaim.generation, 'worker-a',
+      {bad: revokedArray.proxy}, 1600, 'example/alpha#9', 1), false);
+    assert.equal(source.checkpoint('api', activeClaim.generation, 'worker-a',
+      revokedArray.proxy, 1600, 'example/alpha#9', 1), false);
+    assert.equal(source.observeReserved(revokedArray.proxy, 1600, 1000), false);
     const sparseLanes = new Array(1);
     const nonDataArray = [valid.lanes[0]];
     Object.defineProperty(nonDataArray, '0', {get: () => valid.lanes[0], enumerable: true});
 
     for (const malformed of [
-      null, [], new Proxy(valid, {}), getterSnap,
+      null, [], new Proxy(valid, {}), revokedObject.proxy, revokedArray.proxy, getterSnap, hiddenAccessorSnap,
       {...valid, extra: true}, {...valid, schemaVersion: 2}, {...valid, snapshotGeneration: 0},
       {...valid, exportedAt: -1}, {...valid, digest: 'bad'},
       {...valid, lanes: sparseLanes}, {...valid, lanes: nonDataArray},
       {...valid, lanes: [{...valid.lanes[0], laneId: '../bad'}]},
       {...valid, lanes: [valid.lanes[0], valid.lanes[0]]},
       {...valid, lanes: [{...valid.lanes[0], payload: deep}]},
+      {...valid, lanes: [{...valid.lanes[0], payload: {bad: revokedArray.proxy}}]},
+      {...valid, lanes: [{...valid.lanes[0], payload: {bad: [revokedArray.proxy]}}]},
       {...valid, lanes: [{...valid.lanes[0], payload: {bad: Number.NaN}}]},
       {...valid, lanes: [{...valid.lanes[0], payload: {bad: [undefined]}}]},
       {...valid, lanes: [{...valid.lanes[0], payload: {bad: new Array(1)}}]},

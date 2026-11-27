@@ -1,4 +1,3 @@
-import {performance} from 'node:perf_hooks';
 import {planLanes} from './planner.mjs';
 
 const failed = reason => ({shadow: true, completed: [], reason});

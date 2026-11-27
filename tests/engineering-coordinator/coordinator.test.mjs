@@ -3,7 +3,6 @@ import assert from 'node:assert/strict';
 import {mkdtempSync, rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {performance} from 'node:perf_hooks';
 import {runTick as executeTick} from '../../tools/engineering-coordinator/coordinator.mjs';
 import {createSQLiteStateStore} from '../../tools/engineering-coordinator/sqlite-state-store.mjs';
 
@@ -594,7 +593,7 @@ test('enforces timer-bounded deadline when clock stalls and handles pre/post-ins
 test('enforces a single lane-wide deadline across sequential partial waits and synchronous monotonic overruns', async t => {
   t.mock.timers.enable({apis: ['setInterval']});
   let monoNow = 0;
-  t.mock.method(performance, 'now', () => monoNow);
+  t.mock.method(globalThis.performance, 'now', () => monoNow);
   const backingStore = store();
 
   // Three sequential 250ms phases (750ms total) with stalled clock must fail at exact 600ms maxExecutionMs.

@@ -14,15 +14,17 @@ const validAssociation = (workKey, workGeneration) =>
   (validWorkKey(workKey) && positive(workGeneration));
 const hasDataProps = (value, keys) => keys.every(key => {
   const descriptor = Object.getOwnPropertyDescriptor(value, key);
-  return Boolean(descriptor && Object.hasOwn(descriptor, 'value'));
+  return Boolean(descriptor && Object.hasOwn(descriptor, 'value') && descriptor.enumerable === true);
 });
-const plainObject = value => value !== null && typeof value === 'object' && !types.isProxy(value) &&
-  !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype &&
-  !Object.hasOwn(value, '__proto__') &&
-  Reflect.ownKeys(value).every(key => typeof key === 'string') &&
-  hasDataProps(value, Object.keys(value));
+const plainObject = value => {
+  if (value === null || typeof value !== 'object' || types.isProxy(value) ||
+      Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype ||
+      Object.hasOwn(value, '__proto__')) return false;
+  const ownKeys = Reflect.ownKeys(value);
+  return ownKeys.every(key => typeof key === 'string') && hasDataProps(value, ownKeys);
+};
 const exactRecord = (value, keys) => plainObject(value) &&
-  Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));
+  Reflect.ownKeys(value).length === keys.length && hasDataProps(value, keys);
 const denseDataArray = (value, limit) => !types.isProxy(value) && Array.isArray(value) &&
   Object.getPrototypeOf(value) === Array.prototype && value.length <= limit &&
   Reflect.ownKeys(value).length === value.length + 1 &&
@@ -36,6 +38,7 @@ function canonicalValue(value, depth = 0) {
   if (depth > 16) return undefined;
   if (value === null || typeof value === 'boolean' || typeof value === 'string') return value;
   if (typeof value === 'number') return Number.isFinite(value) ? value : undefined;
+  if (typeof value !== 'object' || types.isProxy(value)) return undefined;
   if (Array.isArray(value)) {
     if (!denseDataArray(value, 1000)) return undefined;
     const items = [];
@@ -199,7 +202,7 @@ export function createSQLiteStateStore(filename) {
   const checkpointWork = db.prepare('SELECT 1 AS active FROM coordinator_work_claims WHERE work_key=? AND lane_id=? AND generation=? AND owner=? AND lease_until>?');
   return Object.freeze({
     observeReserved(reserved, now, leaseMs) {
-      if (!Array.isArray(reserved) || reserved.length > maxActiveReservations || !time(now) ||
+      if (types.isProxy(reserved) || !Array.isArray(reserved) || reserved.length > maxActiveReservations || !time(now) ||
           !Number.isSafeInteger(leaseMs) || leaseMs < 1000 || leaseMs > 3600000 || !time(now + leaseMs)) return false;
       try {
         const lanes = Array.from(reserved);
