@@ -711,6 +711,55 @@ test('enforces a single lane-wide deadline across sequential partial waits and s
   assert.equal(overrunFinalRenew.completed[0].reason, 'EXECUTION_TIMEOUT');
   assert.equal(lateCheckpoints, 0);
   assert.equal(lateReleases, 1);
+
+  // Partial synchronous claim (80ms of 100ms budget) caps initial timer to remaining 20ms on a hung read.
+  let partialReleases = 0;
+  const partialSetup = runTick({
+    config: config(), tasks: [tasks()[0]], workerId: 'worker', now: 1000, maxExecutionMs: 100,
+    store: {
+      ...backingStore,
+      claim: (...args) => {
+        const claimed = backingStore.claim(...args);
+        monoNow += 80;
+        return claimed;
+      },
+      release: () => { partialReleases++; return true; }
+    },
+    tracker: {readTask: () => new Promise(() => {})},
+    agent
+  });
+  await Promise.resolve();
+  monoNow += 20;
+  t.mock.timers.tick(20);
+  assert.equal((await partialSetup).completed[0].reason, 'EXECUTION_TIMEOUT');
+  assert.equal(partialReleases, 1);
+
+  // Two-lane interleaving: lane 2's synchronous pre-inspection renew exhausts lane 1's deadline
+  // after lane 1 queued its inspect callback; neither lane invokes agent.inspect and both release cleanly.
+  let interleavedInspections = 0;
+  let interleavedReleases = 0;
+  const interleaved = await runTick({
+    config: config(), tasks: tasks(), workerId: 'worker', now: 1000, maxExecutionMs: 100,
+    tracker,
+    store: {
+      ...backingStore,
+      renew: (lane, ...rest) => {
+        if (lane === 'web') monoNow += 120;
+        return backingStore.renew(lane, ...rest);
+      },
+      release: () => { interleavedReleases++; return true; }
+    },
+    agent: {inspect: async () => {
+      interleavedInspections++;
+      return {shadow: true, accepted: true, findings: []};
+    }}
+  });
+  assert.deepEqual(interleaved.completed, [
+    {lane: 'api', taskId: 1, state: 'blocked', reason: 'EXECUTION_TIMEOUT'},
+    {lane: 'web', taskId: 2, state: 'blocked', reason: 'EXECUTION_TIMEOUT'}
+  ]);
+  assert.equal(interleavedInspections, 0);
+  assert.equal(interleavedReleases, 2);
 });
 
 test('recovers cross-run state across stateless SQLite stores via fenced snapshots', async () => {
