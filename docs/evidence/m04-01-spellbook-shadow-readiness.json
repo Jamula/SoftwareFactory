@@ -1,0 +1,1589 @@
+{
+  "schemaVersion": 1,
+  "milestone": "M04.01",
+  "issue": 11,
+  "repository": "Jamula/SoftwareFactory",
+  "syntheticConsumerProfile": "example/spellbook",
+  "syntheticOnly": true,
+  "mutatesConsumerRepository": false,
+  "liveActivation": false,
+  "recordedAt": "2026-11-27T10:05:08Z",
+  "upstreamGateStatus": {
+    "m01AutonomousIssue10": {
+      "issue": 10,
+      "state": "OPEN",
+      "accepted": false
+    },
+    "familyTreePilotIssue36": {
+      "issue": 36,
+      "state": "OPEN",
+      "accepted": false
+    },
+    "onboardingContractIssue13": {
+      "issue": 13,
+      "state": "OPEN",
+      "accepted": false,
+      "contractVersionVerified": 1
+    },
+    "spellbookReadinessIssue103": {
+      "consumerIssue": "Jamula/Spellbook#103",
+      "accepted": false,
+      "consumerUntouched": true
+    },
+    "scopedOwnerAuthorization": {
+      "ownerAuthorized": false,
+      "zeroIncrementalSpendVerified": false,
+      "productionReleaseEnabled": false
+    }
+  },
+  "stricterLocalGates": {
+    "appLineCoverageMin": 97,
+    "appBranchCoverageMin": 90,
+    "genericConsumerBaselineLineRejected": 95,
+    "maxConcurrentAgents": 2,
+    "scalingAboveTwoRequiresSeparateApproval": true,
+    "requiredCheckRoles": {
+      "webkit": {
+        "name": "fictional-webkit-gate",
+        "appId": 34567
+      },
+      "ios": {
+        "name": "fictional-ios-gate",
+        "appId": 34568
+      },
+      "releaseReadiness": {
+        "name": "fictional-release-readiness",
+        "appId": 34569
+      }
+    },
+    "independentReviewStateRequired": "APPROVED",
+    "commentedBotReviewAllowed": false,
+    "singlePrIndependentRollbackVerified": true,
+    "dependsOnFamilyHub": false,
+    "dependsOnM02Speed": false
+  },
+  "shadowDenialMatrix": [
+    {
+      "scenario": "lower-policy-line-coverage-to-generic-95-baseline",
+      "expectedReason": "SPELLBOOK_COVERAGE_FLOOR_VIOLATION"
+    },
+    {
+      "scenario": "raise-concurrent-agents-to-3-without-scaling-approval",
+      "expectedReason": "SPELLBOOK_CONCURRENCY_CAP_EXCEEDED"
+    },
+    {
+      "scenario": "omit-webkit-ios-or-release-readiness-check-role",
+      "expectedReason": "SPELLBOOK_REQUIRED_CHECKS_MISSING"
+    },
+    {
+      "scenario": "candidate-stale-head",
+      "expectedReason": "STALE_HEAD_OR_BASE"
+    },
+    {
+      "scenario": "candidate-95-percent-line-coverage-below-97-floor",
+      "expectedReason": "COVERAGE_INCOMPLETE"
+    },
+    {
+      "scenario": "candidate-89-percent-branch-coverage-below-90-floor",
+      "expectedReason": "COVERAGE_INCOMPLETE"
+    },
+    {
+      "scenario": "candidate-webkit-check-failed",
+      "expectedReason": "CHECKS_INCOMPLETE"
+    },
+    {
+      "scenario": "candidate-ios-check-failed",
+      "expectedReason": "CHECKS_INCOMPLETE"
+    },
+    {
+      "scenario": "candidate-release-readiness-check-missing",
+      "expectedReason": "CHECKS_INCOMPLETE"
+    },
+    {
+      "scenario": "candidate-concurrency-cap-at-2-active-agents",
+      "expectedReason": "BUDGET_OR_CONCURRENCY"
+    },
+    {
+      "scenario": "candidate-stale-or-dismissed-or-commented-bot-review",
+      "expectedReason": "REVIEW_MISSING"
+    },
+    {
+      "scenario": "candidate-wrong-repository",
+      "expectedReason": "UNTRUSTED_POLICY"
+    },
+    {
+      "scenario": "candidate-missing-quota",
+      "expectedReason": "BUDGET_OR_CONCURRENCY"
+    },
+    {
+      "scenario": "duplicate-open-pr-for-same-issue-or-head",
+      "expectedReason": "DUPLICATE_EXISTING_PR"
+    },
+    {
+      "scenario": "stop-switch-active-or-kill-switch-tripped",
+      "expectedReason": "STOPPED"
+    },
+    {
+      "scenario": "couple-spellbook-to-familyhub-or-m02-speed",
+      "expectedReason": "FORBIDDEN_CROSS_MILESTONE_DEPENDENCY"
+    },
+    {
+      "scenario": "enable-production-release",
+      "expectedReason": "PRODUCTION_RELEASE_FORBIDDEN"
+    }
+  ],
+  "fixture": {
+    "m01AutonomousAccepted": false,
+    "familyTreePilotAccepted": false,
+    "onboardingContractAccepted": false,
+    "spellbookRepoReadinessAccepted": false,
+    "dependsOnFamilyHub": false,
+    "dependsOnM02Speed": false,
+    "stopSwitchActive": false,
+    "maxConcurrentAgents": 2,
+    "scalingApproval": null,
+    "authorization": {
+      "ownerAuthorized": false,
+      "repository": "example/spellbook",
+      "repositoryId": 900202,
+      "pinnedWorkflowSha": "afc3d223f287b029db32672908097efc67a259c9",
+      "pinnedCheckoutSha": "1208481843e73d1d2506085c654e84255303541d",
+      "zeroIncrementalSpendVerified": false,
+      "productionReleaseEnabled": false
+    },
+    "onboardingPackage": {
+      "contractVersion": 1,
+      "repositoryId": 900202,
+      "stackProfile": "ios-webkit-97-90",
+      "ownerAuthorized": true,
+      "migrationFreezeClear": true,
+      "autoActivate": false,
+      "productionDeployEnabled": false,
+      "workflowPin": {
+        "uses": "Jamula/SoftwareFactory/.github/workflows/shadow-tests.yml@afc3d223f287b029db32672908097efc67a259c9",
+        "reviewedWorkflowSha": "afc3d223f287b029db32672908097efc67a259c9",
+        "checkoutRef": "1208481843e73d1d2506085c654e84255303541d",
+        "reviewedCheckoutSha": "1208481843e73d1d2506085c654e84255303541d",
+        "permissions": "contents:read",
+        "persistCredentials": false
+      },
+      "policy": {
+        "version": 1,
+        "repository": "example/spellbook",
+        "defaultBranch": "main",
+        "mergeMethod": "squash",
+        "mode": "disabled",
+        "killSwitch": true,
+        "checks": [
+          { "name": "fictional-webkit-gate", "appId": 34567 },
+          { "name": "fictional-ios-gate", "appId": 34568 },
+          { "name": "fictional-release-readiness", "appId": 34569 }
+        ],
+        "reviewers": ["synthetic-spellbook-reviewer"],
+        "coverage": { "line": 97, "branch": 90 },
+        "owners": [
+          { "prefix": "ios/", "owner": "synthetic-ios-owner" },
+          { "prefix": "src/", "owner": "synthetic-spellbook-owner" }
+        ],
+        "maxActive": 2,
+        "creditLimit": 100,
+        "riskClasses": ["low", "high"]
+      },
+      "localGates": {
+        "minLineCoverage": 97,
+        "minBranchCoverage": 90,
+        "maxConcurrency": 2,
+        "requiredChecks": [
+          { "name": "fictional-webkit-gate", "appId": 34567 },
+          { "name": "fictional-ios-gate", "appId": 34568 },
+          { "name": "fictional-release-readiness", "appId": 34569 }
+        ],
+        "requireExplicitApproval": true,
+        "requireStrictUpToDate": true
+      },
+      "credentials": {
+        "credentialId": "cred-shadow-spellbook",
+        "scope": "repo-read-only-shadow",
+        "allowedRepositories": ["example/spellbook"],
+        "sharedAdminToken": false,
+        "persistedInCheckout": false
+      },
+      "replaySuite": {
+        "eligibleCandidate": {
+          "policySource": "trusted-default-branch",
+          "repository": "example/spellbook",
+          "issue": 103,
+          "pr": 204,
+          "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "observedHead": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "base": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "observedBase": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "baseBranch": "main",
+          "rateLimited": false,
+          "remainingCredits": 40,
+          "activeCount": 1,
+          "providerReady": true,
+          "risk": "low",
+          "priority": 1,
+          "paths": ["ios/SpellbookBridge.swift", "src/spellbook-ui.ts"],
+          "dependencies": [],
+          "acceptanceComplete": true,
+          "baseCompatible": true,
+          "mainHealthy": true,
+          "threadsResolved": true,
+          "securityClear": true,
+          "coverage": {
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "line": 98,
+            "branch": 92,
+            "complete": true
+          },
+          "checks": [
+            {
+              "name": "fictional-webkit-gate",
+              "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "appId": 34567,
+              "status": "completed",
+              "conclusion": "success"
+            },
+            {
+              "name": "fictional-ios-gate",
+              "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "appId": 34568,
+              "status": "completed",
+              "conclusion": "success"
+            },
+            {
+              "name": "fictional-release-readiness",
+              "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "appId": 34569,
+              "status": "completed",
+              "conclusion": "success"
+            }
+          ],
+          "author": "synthetic-spellbook-author",
+          "agent": "copilot-swe-agent[bot]",
+          "reviews": [
+            {
+              "reviewer": "synthetic-spellbook-reviewer",
+              "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "state": "APPROVED"
+            }
+          ]
+        },
+        "staleReview": {
+          "policySource": "trusted-default-branch",
+          "repository": "example/spellbook",
+          "issue": 103,
+          "pr": 204,
+          "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "observedHead": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "base": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "observedBase": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "baseBranch": "main",
+          "rateLimited": false,
+          "remainingCredits": 40,
+          "activeCount": 1,
+          "providerReady": true,
+          "risk": "low",
+          "priority": 1,
+          "paths": ["ios/SpellbookBridge.swift", "src/spellbook-ui.ts"],
+          "dependencies": [],
+          "acceptanceComplete": true,
+          "baseCompatible": true,
+          "mainHealthy": true,
+          "threadsResolved": true,
+          "securityClear": true,
+          "coverage": {
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "line": 98,
+            "branch": 92,
+            "complete": true
+          },
+          "checks": [
+            {
+              "name": "fictional-webkit-gate",
+              "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "appId": 34567,
+              "status": "completed",
+              "conclusion": "success"
+            },
+            {
+              "name": "fictional-ios-gate",
+              "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "appId": 34568,
+              "status": "completed",
+              "conclusion": "success"
+            },
+            {
+              "name": "fictional-release-readiness",
+              "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "appId": 34569,
+              "status": "completed",
+              "conclusion": "success"
+            }
+          ],
+          "author": "synthetic-spellbook-author",
+          "agent": "copilot-swe-agent[bot]",
+          "reviews": [
+            {
+              "reviewer": "synthetic-spellbook-reviewer",
+              "head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "state": "APPROVED"
+            }
+          ]
+        },
+        "dismissedReview": {
+          "policySource": "trusted-default-branch",
+          "repository": "example/spellbook",
+          "issue": 103,
+          "pr": 204,
+          "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "observedHead": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "base": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "observedBase": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "baseBranch": "main",
+          "rateLimited": false,
+          "remainingCredits": 40,
+          "activeCount": 1,
+          "providerReady": true,
+          "risk": "low",
+          "priority": 1,
+          "paths": ["ios/SpellbookBridge.swift", "src/spellbook-ui.ts"],
+          "dependencies": [],
+          "acceptanceComplete": true,
+          "baseCompatible": true,
+          "mainHealthy": true,
+          "threadsResolved": true,
+          "securityClear": true,
+          "coverage": {
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "line": 98,
+            "branch": 92,
+            "complete": true
+          },
+          "checks": [
+            {
+              "name": "fictional-webkit-gate",
+              "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "appId": 34567,
+              "status": "completed",
+              "conclusion": "success"
+            },
+            {
+              "name": "fictional-ios-gate",
+              "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "appId": 34568,
+              "status": "completed",
+              "conclusion": "success"
+            },
+            {
+              "name": "fictional-release-readiness",
+              "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "appId": 34569,
+              "status": "completed",
+              "conclusion": "success"
+            }
+          ],
+          "author": "synthetic-spellbook-author",
+          "agent": "copilot-swe-agent[bot]",
+          "reviews": [
+            {
+              "reviewer": "synthetic-spellbook-reviewer",
+              "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "state": "DISMISSED"
+            }
+          ]
+        },
+        "commentedBotReview": {
+          "policySource": "trusted-default-branch",
+          "repository": "example/spellbook",
+          "issue": 103,
+          "pr": 204,
+          "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "observedHead": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "base": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "observedBase": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "baseBranch": "main",
+          "rateLimited": false,
+          "remainingCredits": 40,
+          "activeCount": 1,
+          "providerReady": true,
+          "risk": "low",
+          "priority": 1,
+          "paths": ["ios/SpellbookBridge.swift", "src/spellbook-ui.ts"],
+          "dependencies": [],
+          "acceptanceComplete": true,
+          "baseCompatible": true,
+          "mainHealthy": true,
+          "threadsResolved": true,
+          "securityClear": true,
+          "coverage": {
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "line": 98,
+            "branch": 92,
+            "complete": true
+          },
+          "checks": [
+            {
+              "name": "fictional-webkit-gate",
+              "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "appId": 34567,
+              "status": "completed",
+              "conclusion": "success"
+            },
+            {
+              "name": "fictional-ios-gate",
+              "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "appId": 34568,
+              "status": "completed",
+              "conclusion": "success"
+            },
+            {
+              "name": "fictional-release-readiness",
+              "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "appId": 34569,
+              "status": "completed",
+              "conclusion": "success"
+            }
+          ],
+          "author": "synthetic-spellbook-author",
+          "agent": "copilot-swe-agent[bot]",
+          "reviews": [
+            {
+              "reviewer": "copilot-pull-request-reviewer[bot]",
+              "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "state": "COMMENTED",
+              "summaryDisposition": "clear"
+            }
+          ]
+        },
+        "wrongRepository": {
+          "policySource": "trusted-default-branch",
+          "repository": "example/foreign-repository",
+          "issue": 103,
+          "pr": 204,
+          "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "observedHead": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "base": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "observedBase": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "baseBranch": "main",
+          "rateLimited": false,
+          "remainingCredits": 40,
+          "activeCount": 1,
+          "providerReady": true,
+          "risk": "low",
+          "priority": 1,
+          "paths": ["ios/SpellbookBridge.swift", "src/spellbook-ui.ts"],
+          "dependencies": [],
+          "acceptanceComplete": true,
+          "baseCompatible": true,
+          "mainHealthy": true,
+          "threadsResolved": true,
+          "securityClear": true,
+          "coverage": {
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "line": 98,
+            "branch": 92,
+            "complete": true
+          },
+          "checks": [
+            {
+              "name": "fictional-webkit-gate",
+              "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "appId": 34567,
+              "status": "completed",
+              "conclusion": "success"
+            },
+            {
+              "name": "fictional-ios-gate",
+              "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "appId": 34568,
+              "status": "completed",
+              "conclusion": "success"
+            },
+            {
+              "name": "fictional-release-readiness",
+              "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "appId": 34569,
+              "status": "completed",
+              "conclusion": "success"
+            }
+          ],
+          "author": "synthetic-spellbook-author",
+          "agent": "copilot-swe-agent[bot]",
+          "reviews": [
+            {
+              "reviewer": "synthetic-spellbook-reviewer",
+              "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "state": "APPROVED"
+            }
+          ]
+        },
+        "missingQuota": {
+          "policySource": "trusted-default-branch",
+          "repository": "example/spellbook",
+          "issue": 103,
+          "pr": 204,
+          "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "observedHead": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "base": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "observedBase": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "baseBranch": "main",
+          "rateLimited": false,
+          "remainingCredits": 0,
+          "activeCount": 1,
+          "providerReady": true,
+          "risk": "low",
+          "priority": 1,
+          "paths": ["ios/SpellbookBridge.swift", "src/spellbook-ui.ts"],
+          "dependencies": [],
+          "acceptanceComplete": true,
+          "baseCompatible": true,
+          "mainHealthy": true,
+          "threadsResolved": true,
+          "securityClear": true,
+          "coverage": {
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "line": 98,
+            "branch": 92,
+            "complete": true
+          },
+          "checks": [
+            {
+              "name": "fictional-webkit-gate",
+              "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "appId": 34567,
+              "status": "completed",
+              "conclusion": "success"
+            },
+            {
+              "name": "fictional-ios-gate",
+              "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "appId": 34568,
+              "status": "completed",
+              "conclusion": "success"
+            },
+            {
+              "name": "fictional-release-readiness",
+              "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "appId": 34569,
+              "status": "completed",
+              "conclusion": "success"
+            }
+          ],
+          "author": "synthetic-spellbook-author",
+          "agent": "copilot-swe-agent[bot]",
+          "reviews": [
+            {
+              "reviewer": "synthetic-spellbook-reviewer",
+              "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "state": "APPROVED"
+            }
+          ]
+        },
+        "killSwitchPolicy": {
+          "version": 1,
+          "repository": "example/spellbook",
+          "defaultBranch": "main",
+          "mergeMethod": "squash",
+          "mode": "shadow",
+          "killSwitch": true,
+          "checks": [
+            { "name": "fictional-webkit-gate", "appId": 34567 },
+            { "name": "fictional-ios-gate", "appId": 34568 },
+            { "name": "fictional-release-readiness", "appId": 34569 }
+          ],
+          "reviewers": ["synthetic-spellbook-reviewer"],
+          "coverage": { "line": 97, "branch": 90 },
+          "owners": [
+            { "prefix": "ios/", "owner": "synthetic-ios-owner" },
+            { "prefix": "src/", "owner": "synthetic-spellbook-owner" }
+          ],
+          "maxActive": 2,
+          "creditLimit": 100,
+          "riskClasses": ["low", "high"]
+        }
+      },
+      "rollback": {
+        "disableMode": "disabled",
+        "killSwitch": true,
+        "revokeCredentialId": "cred-shadow-spellbook",
+        "revertWorkflowPinPrRequired": true,
+        "queuedLiveMutations": 0
+      }
+    },
+    "requiredCheckRoles": {
+      "webkit": { "name": "fictional-webkit-gate", "appId": 34567 },
+      "ios": { "name": "fictional-ios-gate", "appId": 34568 },
+      "releaseReadiness": { "name": "fictional-release-readiness", "appId": 34569 }
+    },
+    "candidate": {
+      "policySource": "trusted-default-branch",
+      "repository": "example/spellbook",
+      "issue": 103,
+      "pr": 204,
+      "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "observedHead": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "base": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "observedBase": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "baseBranch": "main",
+      "rateLimited": false,
+      "remainingCredits": 40,
+      "activeCount": 1,
+      "providerReady": true,
+      "risk": "low",
+      "priority": 1,
+      "paths": ["ios/SpellbookBridge.swift", "src/spellbook-ui.ts"],
+      "dependencies": [],
+      "acceptanceComplete": true,
+      "baseCompatible": true,
+      "mainHealthy": true,
+      "threadsResolved": true,
+      "securityClear": true,
+      "coverage": {
+        "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "line": 98,
+        "branch": 92,
+        "complete": true
+      },
+      "checks": [
+        {
+          "name": "fictional-webkit-gate",
+          "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "appId": 34567,
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "name": "fictional-ios-gate",
+          "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "appId": 34568,
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "name": "fictional-release-readiness",
+          "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "appId": 34569,
+          "status": "completed",
+          "conclusion": "success"
+        }
+      ],
+      "author": "synthetic-spellbook-author",
+      "agent": "copilot-swe-agent[bot]",
+      "reviews": [
+        {
+          "reviewer": "synthetic-spellbook-reviewer",
+          "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "state": "APPROVED"
+        }
+      ]
+    },
+    "appCoverage": {
+      "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "expectedComponents": ["ios.bridge", "app.ui"],
+      "reports": [
+        {
+          "component": "ios.bridge",
+          "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "lines": 98,
+          "lineTotal": 100,
+          "branches": 46,
+          "branchTotal": 50
+        },
+        {
+          "component": "app.ui",
+          "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "lines": 98,
+          "lineTotal": 100,
+          "branches": 46,
+          "branchTotal": 50
+        }
+      ]
+    },
+    "openPullRequests": [
+      {
+        "pr": 204,
+        "issue": 103,
+        "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    ],
+    "spellbookShadowDenials": {
+      "staleHead": {
+        "policySource": "trusted-default-branch",
+        "repository": "example/spellbook",
+        "issue": 103,
+        "pr": 204,
+        "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "observedHead": "cccccccccccccccccccccccccccccccccccccccc",
+        "base": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "observedBase": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "baseBranch": "main",
+        "rateLimited": false,
+        "remainingCredits": 40,
+        "activeCount": 1,
+        "providerReady": true,
+        "risk": "low",
+        "priority": 1,
+        "paths": ["ios/SpellbookBridge.swift", "src/spellbook-ui.ts"],
+        "dependencies": [],
+        "acceptanceComplete": true,
+        "baseCompatible": true,
+        "mainHealthy": true,
+        "threadsResolved": true,
+        "securityClear": true,
+        "coverage": {
+          "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "line": 98,
+          "branch": 92,
+          "complete": true
+        },
+        "checks": [
+          {
+            "name": "fictional-webkit-gate",
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "appId": 34567,
+            "status": "completed",
+            "conclusion": "success"
+          },
+          {
+            "name": "fictional-ios-gate",
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "appId": 34568,
+            "status": "completed",
+            "conclusion": "success"
+          },
+          {
+            "name": "fictional-release-readiness",
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "appId": 34569,
+            "status": "completed",
+            "conclusion": "success"
+          }
+        ],
+        "author": "synthetic-spellbook-author",
+        "agent": "copilot-swe-agent[bot]",
+        "reviews": [
+          {
+            "reviewer": "synthetic-spellbook-reviewer",
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "APPROVED"
+          }
+        ]
+      },
+      "lowered95LineCoverage": {
+        "policySource": "trusted-default-branch",
+        "repository": "example/spellbook",
+        "issue": 103,
+        "pr": 204,
+        "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "observedHead": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "base": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "observedBase": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "baseBranch": "main",
+        "rateLimited": false,
+        "remainingCredits": 40,
+        "activeCount": 1,
+        "providerReady": true,
+        "risk": "low",
+        "priority": 1,
+        "paths": ["ios/SpellbookBridge.swift", "src/spellbook-ui.ts"],
+        "dependencies": [],
+        "acceptanceComplete": true,
+        "baseCompatible": true,
+        "mainHealthy": true,
+        "threadsResolved": true,
+        "securityClear": true,
+        "coverage": {
+          "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "line": 95,
+          "branch": 92,
+          "complete": true
+        },
+        "checks": [
+          {
+            "name": "fictional-webkit-gate",
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "appId": 34567,
+            "status": "completed",
+            "conclusion": "success"
+          },
+          {
+            "name": "fictional-ios-gate",
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "appId": 34568,
+            "status": "completed",
+            "conclusion": "success"
+          },
+          {
+            "name": "fictional-release-readiness",
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "appId": 34569,
+            "status": "completed",
+            "conclusion": "success"
+          }
+        ],
+        "author": "synthetic-spellbook-author",
+        "agent": "copilot-swe-agent[bot]",
+        "reviews": [
+          {
+            "reviewer": "synthetic-spellbook-reviewer",
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "APPROVED"
+          }
+        ]
+      },
+      "loweredBranchCoverage": {
+        "policySource": "trusted-default-branch",
+        "repository": "example/spellbook",
+        "issue": 103,
+        "pr": 204,
+        "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "observedHead": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "base": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "observedBase": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "baseBranch": "main",
+        "rateLimited": false,
+        "remainingCredits": 40,
+        "activeCount": 1,
+        "providerReady": true,
+        "risk": "low",
+        "priority": 1,
+        "paths": ["ios/SpellbookBridge.swift", "src/spellbook-ui.ts"],
+        "dependencies": [],
+        "acceptanceComplete": true,
+        "baseCompatible": true,
+        "mainHealthy": true,
+        "threadsResolved": true,
+        "securityClear": true,
+        "coverage": {
+          "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "line": 98,
+          "branch": 89,
+          "complete": true
+        },
+        "checks": [
+          {
+            "name": "fictional-webkit-gate",
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "appId": 34567,
+            "status": "completed",
+            "conclusion": "success"
+          },
+          {
+            "name": "fictional-ios-gate",
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "appId": 34568,
+            "status": "completed",
+            "conclusion": "success"
+          },
+          {
+            "name": "fictional-release-readiness",
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "appId": 34569,
+            "status": "completed",
+            "conclusion": "success"
+          }
+        ],
+        "author": "synthetic-spellbook-author",
+        "agent": "copilot-swe-agent[bot]",
+        "reviews": [
+          {
+            "reviewer": "synthetic-spellbook-reviewer",
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "APPROVED"
+          }
+        ]
+      },
+      "webkitCheckFailed": {
+        "policySource": "trusted-default-branch",
+        "repository": "example/spellbook",
+        "issue": 103,
+        "pr": 204,
+        "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "observedHead": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "base": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "observedBase": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "baseBranch": "main",
+        "rateLimited": false,
+        "remainingCredits": 40,
+        "activeCount": 1,
+        "providerReady": true,
+        "risk": "low",
+        "priority": 1,
+        "paths": ["ios/SpellbookBridge.swift", "src/spellbook-ui.ts"],
+        "dependencies": [],
+        "acceptanceComplete": true,
+        "baseCompatible": true,
+        "mainHealthy": true,
+        "threadsResolved": true,
+        "securityClear": true,
+        "coverage": {
+          "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "line": 98,
+          "branch": 92,
+          "complete": true
+        },
+        "checks": [
+          {
+            "name": "fictional-webkit-gate",
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "appId": 34567,
+            "status": "completed",
+            "conclusion": "failure"
+          },
+          {
+            "name": "fictional-ios-gate",
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "appId": 34568,
+            "status": "completed",
+            "conclusion": "success"
+          },
+          {
+            "name": "fictional-release-readiness",
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "appId": 34569,
+            "status": "completed",
+            "conclusion": "success"
+          }
+        ],
+        "author": "synthetic-spellbook-author",
+        "agent": "copilot-swe-agent[bot]",
+        "reviews": [
+          {
+            "reviewer": "synthetic-spellbook-reviewer",
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "APPROVED"
+          }
+        ]
+      },
+      "iosCheckFailed": {
+        "policySource": "trusted-default-branch",
+        "repository": "example/spellbook",
+        "issue": 103,
+        "pr": 204,
+        "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "observedHead": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "base": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "observedBase": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "baseBranch": "main",
+        "rateLimited": false,
+        "remainingCredits": 40,
+        "activeCount": 1,
+        "providerReady": true,
+        "risk": "low",
+        "priority": 1,
+        "paths": ["ios/SpellbookBridge.swift", "src/spellbook-ui.ts"],
+        "dependencies": [],
+        "acceptanceComplete": true,
+        "baseCompatible": true,
+        "mainHealthy": true,
+        "threadsResolved": true,
+        "securityClear": true,
+        "coverage": {
+          "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "line": 98,
+          "branch": 92,
+          "complete": true
+        },
+        "checks": [
+          {
+            "name": "fictional-webkit-gate",
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "appId": 34567,
+            "status": "completed",
+            "conclusion": "success"
+          },
+          {
+            "name": "fictional-ios-gate",
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "appId": 34568,
+            "status": "completed",
+            "conclusion": "failure"
+          },
+          {
+            "name": "fictional-release-readiness",
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "appId": 34569,
+            "status": "completed",
+            "conclusion": "success"
+          }
+        ],
+        "author": "synthetic-spellbook-author",
+        "agent": "copilot-swe-agent[bot]",
+        "reviews": [
+          {
+            "reviewer": "synthetic-spellbook-reviewer",
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "APPROVED"
+          }
+        ]
+      },
+      "releaseCheckFailed": {
+        "policySource": "trusted-default-branch",
+        "repository": "example/spellbook",
+        "issue": 103,
+        "pr": 204,
+        "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "observedHead": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "base": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "observedBase": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "baseBranch": "main",
+        "rateLimited": false,
+        "remainingCredits": 40,
+        "activeCount": 1,
+        "providerReady": true,
+        "risk": "low",
+        "priority": 1,
+        "paths": ["ios/SpellbookBridge.swift", "src/spellbook-ui.ts"],
+        "dependencies": [],
+        "acceptanceComplete": true,
+        "baseCompatible": true,
+        "mainHealthy": true,
+        "threadsResolved": true,
+        "securityClear": true,
+        "coverage": {
+          "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "line": 98,
+          "branch": 92,
+          "complete": true
+        },
+        "checks": [
+          {
+            "name": "fictional-webkit-gate",
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "appId": 34567,
+            "status": "completed",
+            "conclusion": "success"
+          },
+          {
+            "name": "fictional-ios-gate",
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "appId": 34568,
+            "status": "completed",
+            "conclusion": "success"
+          }
+        ],
+        "author": "synthetic-spellbook-author",
+        "agent": "copilot-swe-agent[bot]",
+        "reviews": [
+          {
+            "reviewer": "synthetic-spellbook-reviewer",
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "APPROVED"
+          }
+        ]
+      },
+      "concurrencyCapReached": {
+        "policySource": "trusted-default-branch",
+        "repository": "example/spellbook",
+        "issue": 103,
+        "pr": 204,
+        "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "observedHead": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "base": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "observedBase": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "baseBranch": "main",
+        "rateLimited": false,
+        "remainingCredits": 40,
+        "activeCount": 2,
+        "providerReady": true,
+        "risk": "low",
+        "priority": 1,
+        "paths": ["ios/SpellbookBridge.swift", "src/spellbook-ui.ts"],
+        "dependencies": [],
+        "acceptanceComplete": true,
+        "baseCompatible": true,
+        "mainHealthy": true,
+        "threadsResolved": true,
+        "securityClear": true,
+        "coverage": {
+          "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "line": 98,
+          "branch": 92,
+          "complete": true
+        },
+        "checks": [
+          {
+            "name": "fictional-webkit-gate",
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "appId": 34567,
+            "status": "completed",
+            "conclusion": "success"
+          },
+          {
+            "name": "fictional-ios-gate",
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "appId": 34568,
+            "status": "completed",
+            "conclusion": "success"
+          },
+          {
+            "name": "fictional-release-readiness",
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "appId": 34569,
+            "status": "completed",
+            "conclusion": "success"
+          }
+        ],
+        "author": "synthetic-spellbook-author",
+        "agent": "copilot-swe-agent[bot]",
+        "reviews": [
+          {
+            "reviewer": "synthetic-spellbook-reviewer",
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "APPROVED"
+          }
+        ]
+      }
+    },
+    "rollback": {
+      "receipt": {
+        "repository": "example/spellbook",
+        "postPolicy": {
+          "version": 1,
+          "repository": "example/spellbook",
+          "defaultBranch": "main",
+          "mergeMethod": "squash",
+          "mode": "disabled",
+          "killSwitch": true,
+          "checks": [
+            { "name": "fictional-webkit-gate", "appId": 34567 },
+            { "name": "fictional-ios-gate", "appId": 34568 },
+            { "name": "fictional-release-readiness", "appId": 34569 }
+          ],
+          "reviewers": ["synthetic-spellbook-reviewer"],
+          "coverage": { "line": 97, "branch": 90 },
+          "owners": [
+            { "prefix": "ios/", "owner": "synthetic-ios-owner" },
+            { "prefix": "src/", "owner": "synthetic-spellbook-owner" }
+          ],
+          "maxActive": 2,
+          "creditLimit": 100,
+          "riskClasses": ["low", "high"]
+        },
+        "revokedCredentialId": "cred-shadow-spellbook",
+        "pinRevertedViaReviewedPr": true,
+        "queuedLiveMutations": 0
+      },
+      "peerPackages": [
+        {
+          "contractVersion": 1,
+          "repositoryId": 900101,
+          "stackProfile": "web-genealogy-95-90",
+          "ownerAuthorized": true,
+          "migrationFreezeClear": true,
+          "autoActivate": false,
+          "productionDeployEnabled": false,
+          "workflowPin": {
+            "uses": "Jamula/SoftwareFactory/.github/workflows/shadow-tests.yml@afc3d223f287b029db32672908097efc67a259c9",
+            "reviewedWorkflowSha": "afc3d223f287b029db32672908097efc67a259c9",
+            "checkoutRef": "1208481843e73d1d2506085c654e84255303541d",
+            "reviewedCheckoutSha": "1208481843e73d1d2506085c654e84255303541d",
+            "permissions": "contents:read",
+            "persistCredentials": false
+          },
+          "policy": {
+            "version": 1,
+            "repository": "example/family-tree",
+            "defaultBranch": "main",
+            "mergeMethod": "squash",
+            "mode": "disabled",
+            "killSwitch": true,
+            "checks": [{ "name": "build-test", "appId": 12345 }],
+            "reviewers": ["synthetic-reviewer"],
+            "coverage": { "line": 95, "branch": 90 },
+            "owners": [{ "prefix": "src/", "owner": "synthetic-owner" }],
+            "maxActive": 1,
+            "creditLimit": 100,
+            "riskClasses": ["low", "high"]
+          },
+          "localGates": {
+            "minLineCoverage": 95,
+            "minBranchCoverage": 90,
+            "maxConcurrency": 1,
+            "requiredChecks": [{ "name": "build-test", "appId": 12345 }],
+            "requireExplicitApproval": true,
+            "requireStrictUpToDate": true
+          },
+          "credentials": {
+            "credentialId": "cred-shadow-family-tree",
+            "scope": "repo-read-only-shadow",
+            "allowedRepositories": ["example/family-tree"],
+            "sharedAdminToken": false,
+            "persistedInCheckout": false
+          },
+          "replaySuite": {
+            "eligibleCandidate": {
+              "policySource": "trusted-default-branch",
+              "repository": "example/family-tree",
+              "issue": 10,
+              "pr": 20,
+              "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "observedHead": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "base": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "observedBase": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "baseBranch": "main",
+              "rateLimited": false,
+              "remainingCredits": 25,
+              "activeCount": 0,
+              "providerReady": true,
+              "risk": "low",
+              "priority": 1,
+              "paths": ["src/index.ts"],
+              "dependencies": [],
+              "acceptanceComplete": true,
+              "baseCompatible": true,
+              "mainHealthy": true,
+              "threadsResolved": true,
+              "securityClear": true,
+              "coverage": {
+                "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "line": 95,
+                "branch": 90,
+                "complete": true
+              },
+              "checks": [
+                {
+                  "name": "build-test",
+                  "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "appId": 12345,
+                  "status": "completed",
+                  "conclusion": "success"
+                }
+              ],
+              "author": "synthetic-author",
+              "agent": "synthetic-agent",
+              "reviews": [
+                {
+                  "reviewer": "synthetic-reviewer",
+                  "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "state": "APPROVED"
+                }
+              ]
+            },
+            "staleReview": {
+              "policySource": "trusted-default-branch",
+              "repository": "example/family-tree",
+              "issue": 10,
+              "pr": 20,
+              "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "observedHead": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "base": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "observedBase": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "baseBranch": "main",
+              "rateLimited": false,
+              "remainingCredits": 25,
+              "activeCount": 0,
+              "providerReady": true,
+              "risk": "low",
+              "priority": 1,
+              "paths": ["src/index.ts"],
+              "dependencies": [],
+              "acceptanceComplete": true,
+              "baseCompatible": true,
+              "mainHealthy": true,
+              "threadsResolved": true,
+              "securityClear": true,
+              "coverage": {
+                "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "line": 95,
+                "branch": 90,
+                "complete": true
+              },
+              "checks": [
+                {
+                  "name": "build-test",
+                  "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "appId": 12345,
+                  "status": "completed",
+                  "conclusion": "success"
+                }
+              ],
+              "author": "synthetic-author",
+              "agent": "synthetic-agent",
+              "reviews": [
+                {
+                  "reviewer": "synthetic-reviewer",
+                  "head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  "state": "APPROVED"
+                }
+              ]
+            },
+            "dismissedReview": {
+              "policySource": "trusted-default-branch",
+              "repository": "example/family-tree",
+              "issue": 10,
+              "pr": 20,
+              "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "observedHead": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "base": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "observedBase": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "baseBranch": "main",
+              "rateLimited": false,
+              "remainingCredits": 25,
+              "activeCount": 0,
+              "providerReady": true,
+              "risk": "low",
+              "priority": 1,
+              "paths": ["src/index.ts"],
+              "dependencies": [],
+              "acceptanceComplete": true,
+              "baseCompatible": true,
+              "mainHealthy": true,
+              "threadsResolved": true,
+              "securityClear": true,
+              "coverage": {
+                "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "line": 95,
+                "branch": 90,
+                "complete": true
+              },
+              "checks": [
+                {
+                  "name": "build-test",
+                  "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "appId": 12345,
+                  "status": "completed",
+                  "conclusion": "success"
+                }
+              ],
+              "author": "synthetic-author",
+              "agent": "synthetic-agent",
+              "reviews": [
+                {
+                  "reviewer": "synthetic-reviewer",
+                  "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "state": "DISMISSED"
+                }
+              ]
+            },
+            "commentedBotReview": {
+              "policySource": "trusted-default-branch",
+              "repository": "example/family-tree",
+              "issue": 10,
+              "pr": 20,
+              "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "observedHead": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "base": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "observedBase": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "baseBranch": "main",
+              "rateLimited": false,
+              "remainingCredits": 25,
+              "activeCount": 0,
+              "providerReady": true,
+              "risk": "low",
+              "priority": 1,
+              "paths": ["src/index.ts"],
+              "dependencies": [],
+              "acceptanceComplete": true,
+              "baseCompatible": true,
+              "mainHealthy": true,
+              "threadsResolved": true,
+              "securityClear": true,
+              "coverage": {
+                "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "line": 95,
+                "branch": 90,
+                "complete": true
+              },
+              "checks": [
+                {
+                  "name": "build-test",
+                  "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "appId": 12345,
+                  "status": "completed",
+                  "conclusion": "success"
+                }
+              ],
+              "author": "synthetic-author",
+              "agent": "synthetic-agent",
+              "reviews": [
+                {
+                  "reviewer": "copilot-pull-request-reviewer[bot]",
+                  "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "state": "COMMENTED",
+                  "summaryDisposition": "clear"
+                }
+              ]
+            },
+            "wrongRepository": {
+              "policySource": "trusted-default-branch",
+              "repository": "example/foreign-repository",
+              "issue": 10,
+              "pr": 20,
+              "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "observedHead": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "base": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "observedBase": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "baseBranch": "main",
+              "rateLimited": false,
+              "remainingCredits": 25,
+              "activeCount": 0,
+              "providerReady": true,
+              "risk": "low",
+              "priority": 1,
+              "paths": ["src/index.ts"],
+              "dependencies": [],
+              "acceptanceComplete": true,
+              "baseCompatible": true,
+              "mainHealthy": true,
+              "threadsResolved": true,
+              "securityClear": true,
+              "coverage": {
+                "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "line": 95,
+                "branch": 90,
+                "complete": true
+              },
+              "checks": [
+                {
+                  "name": "build-test",
+                  "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "appId": 12345,
+                  "status": "completed",
+                  "conclusion": "success"
+                }
+              ],
+              "author": "synthetic-author",
+              "agent": "synthetic-agent",
+              "reviews": [
+                {
+                  "reviewer": "synthetic-reviewer",
+                  "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "state": "APPROVED"
+                }
+              ]
+            },
+            "missingQuota": {
+              "policySource": "trusted-default-branch",
+              "repository": "example/family-tree",
+              "issue": 10,
+              "pr": 20,
+              "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "observedHead": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "base": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "observedBase": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "baseBranch": "main",
+              "rateLimited": false,
+              "remainingCredits": 0,
+              "activeCount": 0,
+              "providerReady": true,
+              "risk": "low",
+              "priority": 1,
+              "paths": ["src/index.ts"],
+              "dependencies": [],
+              "acceptanceComplete": true,
+              "baseCompatible": true,
+              "mainHealthy": true,
+              "threadsResolved": true,
+              "securityClear": true,
+              "coverage": {
+                "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "line": 95,
+                "branch": 90,
+                "complete": true
+              },
+              "checks": [
+                {
+                  "name": "build-test",
+                  "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "appId": 12345,
+                  "status": "completed",
+                  "conclusion": "success"
+                }
+              ],
+              "author": "synthetic-author",
+              "agent": "synthetic-agent",
+              "reviews": [
+                {
+                  "reviewer": "synthetic-reviewer",
+                  "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "state": "APPROVED"
+                }
+              ]
+            },
+            "killSwitchPolicy": {
+              "version": 1,
+              "repository": "example/family-tree",
+              "defaultBranch": "main",
+              "mergeMethod": "squash",
+              "mode": "shadow",
+              "killSwitch": true,
+              "checks": [{ "name": "build-test", "appId": 12345 }],
+              "reviewers": ["synthetic-reviewer"],
+              "coverage": { "line": 95, "branch": 90 },
+              "owners": [{ "prefix": "src/", "owner": "synthetic-owner" }],
+              "maxActive": 1,
+              "creditLimit": 100,
+              "riskClasses": ["low", "high"]
+            }
+          },
+          "rollback": {
+            "disableMode": "disabled",
+            "killSwitch": true,
+            "revokeCredentialId": "cred-shadow-family-tree",
+            "revertWorkflowPinPrRequired": true,
+            "queuedLiveMutations": 0
+          }
+        }
+      ],
+      "revertPrCount": 1,
+      "crossRepoMutations": 0
+    }
+  },
+  "currentReadinessResult": {
+    "shadow": true,
+    "valid": false,
+    "ready": false,
+    "shadowVerified": true,
+    "upstreamReady": false,
+    "liveActivation": false,
+    "reason": "UPSTREAM_M01_NOT_ACCEPTED",
+    "blockingGates": [
+      "M01_AUTONOMOUS_ISSUE_10",
+      "FAMILYTREE_PILOT_ISSUE_36",
+      "ONBOARDING_CONTRACT_ISSUE_13",
+      "SPELLBOOK_READINESS_ISSUE_103",
+      "SPELLBOOK_SCOPED_OWNER_AUTHORIZATION",
+      "ZERO_INCREMENTAL_SPEND_VERIFICATION"
+    ],
+    "repository": "example/spellbook",
+    "repositoryId": 900202,
+    "pinnedWorkflowSha": "afc3d223f287b029db32672908097efc67a259c9",
+    "pinnedCheckoutSha": "1208481843e73d1d2506085c654e84255303541d",
+    "maxConcurrentAgents": 2,
+    "scalingApproved": false,
+    "unaffectedRollbackPeers": ["example/family-tree"],
+    "appCoverage": {
+      "lines": 196,
+      "lineTotal": 200,
+      "branches": 92,
+      "branchTotal": 100
+    }
+  },
+  "syntheticAllGatesGrantedResult": {
+    "shadow": true,
+    "valid": true,
+    "ready": true,
+    "shadowVerified": true,
+    "upstreamReady": true,
+    "liveActivation": false,
+    "reason": "SPELLBOOK_SHADOW_READY_ONLY",
+    "blockingGates": [],
+    "repository": "example/spellbook",
+    "repositoryId": 900202,
+    "pinnedWorkflowSha": "afc3d223f287b029db32672908097efc67a259c9",
+    "pinnedCheckoutSha": "1208481843e73d1d2506085c654e84255303541d",
+    "maxConcurrentAgents": 2,
+    "scalingApproved": false,
+    "unaffectedRollbackPeers": ["example/family-tree"],
+    "appCoverage": {
+      "lines": 196,
+      "lineTotal": 200,
+      "branches": 92,
+      "branchTotal": 100
+    }
+  }
+}

@@ -1,0 +1,582 @@
+// Deterministic, metadata-only M04 Spellbook pre-activation gate and stricter-policy shadow verifier.
+import { types } from 'node:util';
+import { evaluate } from './core.mjs';
+import { coverageEvidence } from './coverage-evidence.mjs';
+import {
+  verifyConsumerOnboardingPackage,
+  verifyIndependentRollback
+} from './consumer-onboarding.mjs';
+
+export const SPELLBOOK_MIN_LINE_COVERAGE = 97;
+export const SPELLBOOK_MIN_BRANCH_COVERAGE = 90;
+export const SPELLBOOK_DEFAULT_MAX_CONCURRENT_AGENTS = 2;
+export const SPELLBOOK_SCALING_CEILING = 12;
+export const SPELLBOOK_REQUIRED_CHECK_ROLES = Object.freeze([
+  'webkit',
+  'ios',
+  'releaseReadiness'
+]);
+export const FORBIDDEN_NON_SPELLBOOK_REPOSITORIES = Object.freeze([
+  'jamula/softwarefactory',
+  'jamula/familytree',
+  'example/family-tree',
+  'jamula/familyhub',
+  'example/family-hub'
+]);
+
+const REQUIRED_INPUT_KEYS = Object.freeze([
+  'm01AutonomousAccepted',
+  'familyTreePilotAccepted',
+  'onboardingContractAccepted',
+  'spellbookRepoReadinessAccepted',
+  'dependsOnFamilyHub',
+  'dependsOnM02Speed',
+  'stopSwitchActive',
+  'maxConcurrentAgents',
+  'authorization',
+  'onboardingPackage',
+  'requiredCheckRoles',
+  'candidate',
+  'appCoverage',
+  'openPullRequests',
+  'spellbookShadowDenials',
+  'rollback'
+]);
+const OPTIONAL_INPUT_KEYS = Object.freeze(['scalingApproval', 'peerRegistry']);
+
+const ROLE_PATTERNS = Object.freeze({
+  webkit: /webkit/i,
+  ios: /(?:^|[^a-z0-9])ios(?:$|[^a-z0-9])/i,
+  releaseReadiness: /(?:^|[^a-z0-9])release(?:$|[^a-z0-9])/i
+});
+
+const UPSTREAM_REASON_BY_GATE = Object.freeze({
+  M01_AUTONOMOUS_ISSUE_10: 'UPSTREAM_M01_NOT_ACCEPTED',
+  FAMILYTREE_PILOT_ISSUE_36: 'UPSTREAM_FAMILYTREE_PILOT_NOT_ACCEPTED',
+  ONBOARDING_CONTRACT_ISSUE_13: 'UPSTREAM_ONBOARDING_CONTRACT_NOT_ACCEPTED',
+  SPELLBOOK_READINESS_ISSUE_103: 'SPELLBOOK_REPO_READINESS_INCOMPLETE',
+  SPELLBOOK_SCOPED_OWNER_AUTHORIZATION: 'SPELLBOOK_AUTHORIZATION_REQUIRED',
+  ZERO_INCREMENTAL_SPEND_VERIFICATION: 'ZERO_SPEND_UNVERIFIED'
+});
+
+const ownData = (obj, key) => {
+  const desc = Object.getOwnPropertyDescriptor(obj, key);
+  return Boolean(desc && desc.enumerable && Object.hasOwn(desc, 'value'));
+};
+
+const isPlainObject = value =>
+  value !== null &&
+  typeof value === 'object' &&
+  !types.isProxy(value) &&
+  !Array.isArray(value) &&
+  Object.getPrototypeOf(value) === Object.prototype;
+
+const exact = (value, keys) =>
+  isPlainObject(value) &&
+  Reflect.ownKeys(value).length === keys.length &&
+  keys.every(key => ownData(value, key));
+
+const plainWithOptional = (value, requiredKeys, optionalKeys) => {
+  if (!isPlainObject(value)) return false;
+  const allowed = new Set([...requiredKeys, ...optionalKeys]);
+  const ownKeys = Reflect.ownKeys(value);
+  return (
+    ownKeys.every(key => typeof key === 'string' && allowed.has(key) && ownData(value, key)) &&
+    requiredKeys.every(key => ownData(value, key))
+  );
+};
+
+const dense = (value, max = 64) =>
+  value !== null &&
+  typeof value === 'object' &&
+  !types.isProxy(value) &&
+  Array.isArray(value) &&
+  Object.getPrototypeOf(value) === Array.prototype &&
+  value.length <= max &&
+  Reflect.ownKeys(value).length === value.length + 1 &&
+  Array.from({ length: value.length }, (_, i) => ownData(value, i)).every(Boolean);
+
+const text = (value, max = 200) =>
+  typeof value === 'string' && value.length > 0 && value.length <= max && value.trim() === value;
+
+const posInt = value => Number.isSafeInteger(value) && value > 0;
+const sha40 = value => typeof value === 'string' && /^[0-9a-f]{40}$/.test(value);
+
+const validSnapshotReview = r =>
+  exact(r, ['reviewer', 'head', 'state']) ||
+  (exact(r, ['reviewer', 'head', 'state', 'summaryDisposition']) &&
+    r.state === 'COMMENTED' &&
+    typeof r.summaryDisposition === 'string');
+
+const strictSnapshotShape = s =>
+  exact(s, [
+    'policySource', 'repository', 'issue', 'pr', 'head', 'observedHead',
+    'base', 'observedBase', 'baseBranch', 'rateLimited', 'remainingCredits',
+    'activeCount', 'providerReady', 'risk', 'priority', 'paths',
+    'dependencies', 'acceptanceComplete', 'baseCompatible', 'mainHealthy',
+    'threadsResolved', 'securityClear', 'coverage', 'checks', 'author',
+    'agent', 'reviews'
+  ]) &&
+  exact(s.coverage, ['head', 'line', 'branch', 'complete']) &&
+  dense(s.paths) &&
+  dense(s.dependencies) &&
+  s.dependencies.every(d => exact(d, ['issue', 'accepted'])) &&
+  dense(s.checks) &&
+  s.checks.every(c => exact(c, ['name', 'head', 'appId', 'status', 'conclusion'])) &&
+  dense(s.reviews) &&
+  s.reviews.every(validSnapshotReview) &&
+  text(s.author, 120) &&
+  text(s.agent, 120);
+
+function sameData(candidateVal, expectedVal) {
+  if (!expectedVal || typeof expectedVal !== 'object') {
+    return Object.is(candidateVal, expectedVal);
+  }
+  if (Array.isArray(expectedVal)) {
+    return (
+      dense(candidateVal) &&
+      candidateVal.length === expectedVal.length &&
+      expectedVal.every((item, i) => sameData(candidateVal[i], item))
+    );
+  }
+  const keys = Object.keys(expectedVal);
+  return (
+    exact(candidateVal, keys) &&
+    keys.every(key => sameData(candidateVal[key], expectedVal[key]))
+  );
+}
+
+const singleMutation = (baseSnap, candidate, field) => {
+  const keys = Object.keys(baseSnap);
+  return (
+    exact(candidate, keys) &&
+    keys.every(key => key === field || sameData(candidate[key], baseSnap[key]))
+  );
+};
+
+function singleCheckMutation(baseSnap, scenario, targetCheckName) {
+  if (
+    !singleMutation(baseSnap, scenario, 'checks') ||
+    !dense(scenario.checks) ||
+    !scenario.checks.every(c => exact(c, ['name', 'head', 'appId', 'status', 'conclusion']))
+  ) {
+    return false;
+  }
+  const expectedOthers = baseSnap.checks.filter(c => c.name !== targetCheckName);
+  const candidateOthers = scenario.checks.filter(c => c.name !== targetCheckName);
+  if (!sameData(candidateOthers, expectedOthers)) return false;
+
+  const expectedTarget = baseSnap.checks.find(c => c.name === targetCheckName);
+  const candidateTargets = scenario.checks.filter(c => c.name === targetCheckName);
+  if (candidateTargets.length === 0) return true;
+  return candidateTargets.length === 1 && !sameData(candidateTargets[0], expectedTarget);
+}
+
+function validScalingApprovalShape(rawScaling) {
+  return (
+    rawScaling === null ||
+    (exact(rawScaling, [
+      'approved',
+      'approvedMaxConcurrentAgents',
+      'measuredCapacityVerified',
+      'includedQuotaVerified',
+      'zeroIncrementalSpendVerified',
+      'approver'
+    ]) &&
+      typeof rawScaling.approved === 'boolean' &&
+      posInt(rawScaling.approvedMaxConcurrentAgents) &&
+      typeof rawScaling.measuredCapacityVerified === 'boolean' &&
+      typeof rawScaling.includedQuotaVerified === 'boolean' &&
+      typeof rawScaling.zeroIncrementalSpendVerified === 'boolean' &&
+      text(rawScaling.approver, 80))
+  );
+}
+
+function validAuthorizationShape(auth) {
+  return (
+    exact(auth, [
+      'ownerAuthorized',
+      'repository',
+      'repositoryId',
+      'pinnedWorkflowSha',
+      'pinnedCheckoutSha',
+      'zeroIncrementalSpendVerified',
+      'productionReleaseEnabled'
+    ]) &&
+    typeof auth.ownerAuthorized === 'boolean' &&
+    text(auth.repository) &&
+    posInt(auth.repositoryId) &&
+    sha40(auth.pinnedWorkflowSha) &&
+    sha40(auth.pinnedCheckoutSha) &&
+    typeof auth.zeroIncrementalSpendVerified === 'boolean' &&
+    typeof auth.productionReleaseEnabled === 'boolean'
+  );
+}
+
+function verifyRequiredCheckRoles(roles, localGates) {
+  if (!exact(roles, SPELLBOOK_REQUIRED_CHECK_ROLES)) return false;
+  const seenNames = new Set();
+  for (const roleKey of SPELLBOOK_REQUIRED_CHECK_ROLES) {
+    const role = roles[roleKey];
+    if (
+      !exact(role, ['name', 'appId']) ||
+      !text(role.name, 120) ||
+      !posInt(role.appId) ||
+      !ROLE_PATTERNS[roleKey].test(role.name)
+    ) {
+      return false;
+    }
+    const lowerName = role.name.toLowerCase();
+    if (seenNames.has(lowerName)) return false;
+    seenNames.add(lowerName);
+    if (!localGates.requiredChecks.some(c => c.name === role.name && c.appId === role.appId)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function verifySpellbookShadowDenials(denials, baseSnap, shadowPolicy, roles) {
+  if (
+    !exact(denials, [
+      'staleHead',
+      'lowered95LineCoverage',
+      'loweredBranchCoverage',
+      'webkitCheckFailed',
+      'iosCheckFailed',
+      'releaseCheckFailed',
+      'concurrencyCapReached'
+    ])
+  ) {
+    return false;
+  }
+
+  const validStaleHead =
+    singleMutation(baseSnap, denials.staleHead, 'observedHead') &&
+    sha40(denials.staleHead.observedHead) &&
+    denials.staleHead.observedHead !== baseSnap.head;
+
+  const validLowered95 =
+    singleMutation(baseSnap, denials.lowered95LineCoverage, 'coverage') &&
+    exact(denials.lowered95LineCoverage.coverage, ['head', 'line', 'branch', 'complete']) &&
+    denials.lowered95LineCoverage.coverage.head === baseSnap.head &&
+    denials.lowered95LineCoverage.coverage.complete === true &&
+    denials.lowered95LineCoverage.coverage.branch === baseSnap.coverage.branch &&
+    Number.isFinite(denials.lowered95LineCoverage.coverage.line) &&
+    denials.lowered95LineCoverage.coverage.line >= 95 &&
+    denials.lowered95LineCoverage.coverage.line < SPELLBOOK_MIN_LINE_COVERAGE;
+
+  const validLoweredBranch =
+    singleMutation(baseSnap, denials.loweredBranchCoverage, 'coverage') &&
+    exact(denials.loweredBranchCoverage.coverage, ['head', 'line', 'branch', 'complete']) &&
+    denials.loweredBranchCoverage.coverage.head === baseSnap.head &&
+    denials.loweredBranchCoverage.coverage.complete === true &&
+    denials.loweredBranchCoverage.coverage.line === baseSnap.coverage.line &&
+    Number.isFinite(denials.loweredBranchCoverage.coverage.branch) &&
+    denials.loweredBranchCoverage.coverage.branch >= 0 &&
+    denials.loweredBranchCoverage.coverage.branch < SPELLBOOK_MIN_BRANCH_COVERAGE;
+
+  const validConcurrencyCap =
+    singleMutation(baseSnap, denials.concurrencyCapReached, 'activeCount') &&
+    Number.isSafeInteger(denials.concurrencyCapReached.activeCount) &&
+    denials.concurrencyCapReached.activeCount === shadowPolicy.maxActive;
+
+  if (
+    !validStaleHead ||
+    !validLowered95 ||
+    !validLoweredBranch ||
+    !validConcurrencyCap ||
+    !singleCheckMutation(baseSnap, denials.webkitCheckFailed, roles.webkit.name) ||
+    !singleCheckMutation(baseSnap, denials.iosCheckFailed, roles.ios.name) ||
+    !singleCheckMutation(baseSnap, denials.releaseCheckFailed, roles.releaseReadiness.name)
+  ) {
+    return false;
+  }
+
+  const expectedReasons = [
+    [denials.staleHead, 'STALE_HEAD_OR_BASE'],
+    [denials.lowered95LineCoverage, 'COVERAGE_INCOMPLETE'],
+    [denials.loweredBranchCoverage, 'COVERAGE_INCOMPLETE'],
+    [denials.webkitCheckFailed, 'CHECKS_INCOMPLETE'],
+    [denials.iosCheckFailed, 'CHECKS_INCOMPLETE'],
+    [denials.releaseCheckFailed, 'CHECKS_INCOMPLETE'],
+    [denials.concurrencyCapReached, 'BUDGET_OR_CONCURRENCY']
+  ];
+  return expectedReasons.every(([snap, reason]) => evaluate(shadowPolicy, snap).reason === reason);
+}
+
+const shadowDeny = reason =>
+  Object.freeze({
+    shadow: true,
+    valid: false,
+    ready: false,
+    shadowVerified: false,
+    upstreamReady: false,
+    liveActivation: false,
+    reason,
+    blockingGates: Object.freeze([reason])
+  });
+
+export function evaluateSpellbookShadowReadiness(input) {
+  if (!plainWithOptional(input, REQUIRED_INPUT_KEYS, OPTIONAL_INPUT_KEYS)) {
+    return shadowDeny('INPUT_SCHEMA_INVALID');
+  }
+
+  const rawScaling = Object.hasOwn(input, 'scalingApproval') ? input.scalingApproval : null;
+  if (
+    typeof input.m01AutonomousAccepted !== 'boolean' ||
+    typeof input.familyTreePilotAccepted !== 'boolean' ||
+    typeof input.onboardingContractAccepted !== 'boolean' ||
+    typeof input.spellbookRepoReadinessAccepted !== 'boolean' ||
+    typeof input.dependsOnFamilyHub !== 'boolean' ||
+    typeof input.dependsOnM02Speed !== 'boolean' ||
+    typeof input.stopSwitchActive !== 'boolean' ||
+    !posInt(input.maxConcurrentAgents) ||
+    !validScalingApprovalShape(rawScaling) ||
+    !validAuthorizationShape(input.authorization)
+  ) {
+    return shadowDeny('INPUT_SCHEMA_INVALID');
+  }
+
+  if (input.stopSwitchActive) {
+    return shadowDeny('STOPPED');
+  }
+  if (input.dependsOnFamilyHub || input.dependsOnM02Speed) {
+    return shadowDeny('FORBIDDEN_CROSS_MILESTONE_DEPENDENCY');
+  }
+  if (input.authorization.productionReleaseEnabled) {
+    return shadowDeny('PRODUCTION_RELEASE_FORBIDDEN');
+  }
+
+  if (!strictSnapshotShape(input.candidate)) {
+    return shadowDeny('CANDIDATE_SNAPSHOT_INVALID');
+  }
+
+  const scalingFlagsValid = Boolean(
+    rawScaling !== null &&
+      rawScaling.approved &&
+      rawScaling.approvedMaxConcurrentAgents >= 3 &&
+      rawScaling.approvedMaxConcurrentAgents <= SPELLBOOK_SCALING_CEILING &&
+      rawScaling.measuredCapacityVerified &&
+      rawScaling.includedQuotaVerified &&
+      rawScaling.zeroIncrementalSpendVerified &&
+      !rawScaling.approver.toLowerCase().endsWith('[bot]') &&
+      rawScaling.approver.toLowerCase() !== input.candidate.author.toLowerCase() &&
+      rawScaling.approver.toLowerCase() !== input.candidate.agent.toLowerCase()
+  );
+  const preAllowedConcurrencyCap = scalingFlagsValid
+    ? rawScaling.approvedMaxConcurrentAgents
+    : SPELLBOOK_DEFAULT_MAX_CONCURRENT_AGENTS;
+
+  if (input.maxConcurrentAgents > preAllowedConcurrencyCap) {
+    return shadowDeny('SPELLBOOK_CONCURRENCY_CAP_EXCEEDED');
+  }
+
+  const peerRegistry = Object.hasOwn(input, 'peerRegistry') ? input.peerRegistry : [];
+  const pkg = input.onboardingPackage;
+  const onboarding = verifyConsumerOnboardingPackage(pkg, peerRegistry);
+  if (!onboarding.valid) {
+    if (onboarding.reason === 'BASELINE_COVERAGE_BELOW_MINIMUM') {
+      return shadowDeny('SPELLBOOK_COVERAGE_FLOOR_VIOLATION');
+    }
+    if (onboarding.reason === 'LOCAL_GATE_WEAKENED') {
+      if (pkg.policy.coverage.line < SPELLBOOK_MIN_LINE_COVERAGE) {
+        return shadowDeny('SPELLBOOK_COVERAGE_FLOOR_VIOLATION');
+      }
+      if (pkg.policy.maxActive > input.maxConcurrentAgents) {
+        return shadowDeny('SPELLBOOK_CONCURRENCY_CAP_EXCEEDED');
+      }
+    }
+    return shadowDeny(onboarding.reason);
+  }
+
+  const repoLower = pkg.policy.repository.toLowerCase();
+  if (
+    FORBIDDEN_NON_SPELLBOOK_REPOSITORIES.includes(repoLower) ||
+    !pkg.stackProfile.startsWith('ios-webkit-')
+  ) {
+    return shadowDeny('SPELLBOOK_PROFILE_MISMATCH');
+  }
+
+  if (
+    pkg.policy.coverage.line < SPELLBOOK_MIN_LINE_COVERAGE ||
+    pkg.localGates.minLineCoverage < SPELLBOOK_MIN_LINE_COVERAGE ||
+    pkg.localGates.minBranchCoverage < SPELLBOOK_MIN_BRANCH_COVERAGE
+  ) {
+    return shadowDeny('SPELLBOOK_COVERAGE_FLOOR_VIOLATION');
+  }
+
+  const scalingApproved =
+    scalingFlagsValid &&
+    pkg.policy.owners.some(o => o.owner.toLowerCase() === rawScaling.approver.toLowerCase());
+  const allowedConcurrencyCap = scalingApproved
+    ? rawScaling.approvedMaxConcurrentAgents
+    : SPELLBOOK_DEFAULT_MAX_CONCURRENT_AGENTS;
+
+  if (
+    input.maxConcurrentAgents > allowedConcurrencyCap ||
+    pkg.policy.maxActive > input.maxConcurrentAgents ||
+    pkg.localGates.maxConcurrency > input.maxConcurrentAgents
+  ) {
+    return shadowDeny('SPELLBOOK_CONCURRENCY_CAP_EXCEEDED');
+  }
+
+  if (
+    input.authorization.repository !== pkg.policy.repository ||
+    input.authorization.repositoryId !== pkg.repositoryId ||
+    input.authorization.pinnedWorkflowSha !== onboarding.pinnedWorkflowSha ||
+    input.authorization.pinnedCheckoutSha !== onboarding.pinnedCheckoutSha
+  ) {
+    return shadowDeny('AUTHORIZATION_SCOPE_MISMATCH');
+  }
+
+  if (!verifyRequiredCheckRoles(input.requiredCheckRoles, pkg.localGates)) {
+    return shadowDeny('SPELLBOOK_REQUIRED_CHECKS_MISSING');
+  }
+
+  if (
+    !dense(input.openPullRequests) ||
+    !input.openPullRequests.every(
+      p => exact(p, ['pr', 'issue', 'head']) && posInt(p.pr) && posInt(p.issue) && sha40(p.head)
+    ) ||
+    new Set(input.openPullRequests.map(p => p.pr)).size !== input.openPullRequests.length ||
+    !input.openPullRequests.some(p => p.pr === input.candidate.pr)
+  ) {
+    return shadowDeny('OPEN_PR_INVENTORY_INVALID');
+  }
+
+  for (const openPr of input.openPullRequests) {
+    if (openPr.pr === input.candidate.pr) {
+      if (openPr.issue !== input.candidate.issue || openPr.head !== input.candidate.head) {
+        return shadowDeny('STALE_HEAD_OR_BASE');
+      }
+    } else if (openPr.issue === input.candidate.issue || openPr.head === input.candidate.head) {
+      return shadowDeny('DUPLICATE_EXISTING_PR');
+    }
+  }
+
+  const shadowPolicy = { ...pkg.policy, mode: 'shadow', killSwitch: false };
+  const candidateDecision = evaluate(shadowPolicy, input.candidate);
+  if (candidateDecision.reason !== 'SHADOW_ELIGIBLE') {
+    return shadowDeny(candidateDecision.reason);
+  }
+
+  if (!exact(input.appCoverage, ['head', 'expectedComponents', 'reports']) || !sha40(input.appCoverage.head)) {
+    return shadowDeny('APP_COVERAGE_INVALID');
+  }
+  if (input.appCoverage.head !== input.candidate.head) {
+    return shadowDeny('STALE_HEAD_OR_BASE');
+  }
+
+  const cov = coverageEvidence(
+    input.candidate.head,
+    input.appCoverage.expectedComponents,
+    input.appCoverage.reports,
+    {
+      repository: pkg.policy.repository,
+      existingLineMin: SPELLBOOK_MIN_LINE_COVERAGE,
+      existingBranchMin: SPELLBOOK_MIN_BRANCH_COVERAGE,
+      lineMin: pkg.policy.coverage.line,
+      branchMin: pkg.policy.coverage.branch
+    }
+  );
+  if (!cov.valid) {
+    return shadowDeny('APP_COVERAGE_BELOW_SPELLBOOK_TARGET');
+  }
+
+  const measuredLinePct = (cov.lines * 100) / cov.lineTotal;
+  const measuredBranchPct = (cov.branches * 100) / cov.branchTotal;
+  if (
+    Math.abs(input.candidate.coverage.line - measuredLinePct) > 0.01 ||
+    Math.abs(input.candidate.coverage.branch - measuredBranchPct) > 0.01
+  ) {
+    return shadowDeny('APP_COVERAGE_MISMATCH');
+  }
+
+  if (
+    !verifySpellbookShadowDenials(
+      input.spellbookShadowDenials,
+      pkg.replaySuite.eligibleCandidate,
+      shadowPolicy,
+      input.requiredCheckRoles
+    )
+  ) {
+    return shadowDeny('SPELLBOOK_SHADOW_REPLAY_INCOMPLETE');
+  }
+
+  if (
+    !exact(input.rollback, ['receipt', 'peerPackages', 'revertPrCount', 'crossRepoMutations']) ||
+    !dense(input.rollback.peerPackages) ||
+    input.rollback.peerPackages.length === 0 ||
+    input.rollback.revertPrCount !== 1 ||
+    !Object.is(input.rollback.crossRepoMutations, 0)
+  ) {
+    return shadowDeny('SINGLE_PR_ROLLBACK_INVALID');
+  }
+
+  const rbResult = verifyIndependentRollback(
+    pkg.policy.repository,
+    input.rollback.receipt,
+    [pkg, ...input.rollback.peerPackages]
+  );
+  if (!rbResult.valid) {
+    return shadowDeny('SINGLE_PR_ROLLBACK_INVALID');
+  }
+
+  const blockingGates = [];
+  if (!input.m01AutonomousAccepted) blockingGates.push('M01_AUTONOMOUS_ISSUE_10');
+  if (!input.familyTreePilotAccepted) blockingGates.push('FAMILYTREE_PILOT_ISSUE_36');
+  if (!input.onboardingContractAccepted) blockingGates.push('ONBOARDING_CONTRACT_ISSUE_13');
+  if (!input.spellbookRepoReadinessAccepted) blockingGates.push('SPELLBOOK_READINESS_ISSUE_103');
+  if (!input.authorization.ownerAuthorized) blockingGates.push('SPELLBOOK_SCOPED_OWNER_AUTHORIZATION');
+  if (!input.authorization.zeroIncrementalSpendVerified) {
+    blockingGates.push('ZERO_INCREMENTAL_SPEND_VERIFICATION');
+  }
+
+  const appCoverageSummary = Object.freeze({
+    lines: cov.lines,
+    lineTotal: cov.lineTotal,
+    branches: cov.branches,
+    branchTotal: cov.branchTotal
+  });
+
+  if (blockingGates.length > 0) {
+    return Object.freeze({
+      shadow: true,
+      valid: false,
+      ready: false,
+      shadowVerified: true,
+      upstreamReady: false,
+      liveActivation: false,
+      reason: UPSTREAM_REASON_BY_GATE[blockingGates[0]],
+      blockingGates: Object.freeze(blockingGates),
+      repository: pkg.policy.repository,
+      repositoryId: pkg.repositoryId,
+      pinnedWorkflowSha: onboarding.pinnedWorkflowSha,
+      pinnedCheckoutSha: onboarding.pinnedCheckoutSha,
+      maxConcurrentAgents: input.maxConcurrentAgents,
+      scalingApproved,
+      unaffectedRollbackPeers: rbResult.unaffectedPeers,
+      appCoverage: appCoverageSummary
+    });
+  }
+
+  return Object.freeze({
+    shadow: true,
+    valid: true,
+    ready: true,
+    shadowVerified: true,
+    upstreamReady: true,
+    liveActivation: false,
+    reason: 'SPELLBOOK_SHADOW_READY_ONLY',
+    blockingGates: Object.freeze([]),
+    repository: pkg.policy.repository,
+    repositoryId: pkg.repositoryId,
+    pinnedWorkflowSha: onboarding.pinnedWorkflowSha,
+    pinnedCheckoutSha: onboarding.pinnedCheckoutSha,
+    maxConcurrentAgents: input.maxConcurrentAgents,
+    scalingApproved,
+    unaffectedRollbackPeers: rbResult.unaffectedPeers,
+    appCoverage: appCoverageSummary
+  });
+}
