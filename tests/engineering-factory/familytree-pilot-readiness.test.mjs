@@ -740,10 +740,38 @@ test('proveFamilyTreeShadowDenials rejects invalid suite shapes, broken scenario
   const cand = suite.eligibleCandidate;
   const snap = cand.snapshot;
   const d = suite.denials;
+  const callableQuotaProxy = new Proxy(() => {}, {
+    ownKeys: trap,
+    get: trap,
+    getOwnPropertyDescriptor: trap
+  });
+  const nullQuotaCand = { ...cand, aiCreditQuota: null };
+  const callableProxyQuotaCand = { ...cand, aiCreditQuota: callableQuotaProxy };
 
   for (const badScenarioSuite of [
     { ...suite, eligibleCandidate: null },
     { ...suite, eligibleCandidate: { ...cand, snapshot: null } },
+    {
+      ...suite,
+      eligibleCandidate: nullQuotaCand,
+      denials: {
+        ...d,
+        missingAiCreditQuota: { ...nullQuotaCand, aiCreditQuota: { ...cand.aiCreditQuota, remainingAiCredits: null } }
+      }
+    },
+    {
+      ...suite,
+      eligibleCandidate: callableProxyQuotaCand,
+      denials: {
+        ...d,
+        missingAiCreditQuota: {
+          ...callableProxyQuotaCand,
+          aiCreditQuota: { ...cand.aiCreditQuota, remainingAiCredits: null }
+        }
+      }
+    },
+    makePrioritySuite(callableQuotaProxy, callableQuotaProxy),
+    makePrioritySuite(1, callableQuotaProxy),
     makePrioritySuite(throwingExpectedPriority, { bad: 1 }),
     makePrioritySuite(throwingExpectedArray, [1]),
     makePrioritySuite(proxyExpectedPriority, { bad: 1 }),

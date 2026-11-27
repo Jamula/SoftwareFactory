@@ -205,11 +205,12 @@ const strictSnapshotShape = s =>
   s.reviews.every(validReviewShape);
 
 function sameDataAtDepth(candidateVal, expectedVal, depth) {
-  if (depth > MAX_EQUAL_DEPTH) return false;
+  if (depth > MAX_EQUAL_DEPTH || types.isProxy(expectedVal) || types.isProxy(candidateVal)) {
+    return false;
+  }
   if (!expectedVal || typeof expectedVal !== 'object') {
     return Object.is(candidateVal, expectedVal);
   }
-  if (types.isProxy(expectedVal)) return false;
   if (Array.isArray(expectedVal)) {
     return dense(expectedVal) &&
       dense(candidateVal) &&
@@ -463,7 +464,9 @@ export function proveFamilyTreeShadowDenials(suite) {
   }
 
   const baseCand = suite.eligibleCandidate;
-  if (!exact(baseCand, CANDIDATE_KEYS) || !strictSnapshotShape(baseCand.snapshot)) {
+  if (!exact(baseCand, CANDIDATE_KEYS) ||
+      !exact(baseCand.aiCreditQuota, AI_QUOTA_KEYS) ||
+      !strictSnapshotShape(baseCand.snapshot)) {
     return denySuite('SHADOW_DENIAL_SCENARIO_INVALID');
   }
 
