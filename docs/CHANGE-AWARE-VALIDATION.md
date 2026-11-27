@@ -1,16 +1,46 @@
 # Change-aware validation candidates
 
-The evaluator exposes three offline, shadow-only hints for change-aware feedback, build reuse, and synthetic integration-train comparison. They do not modify workflow selection, execute tests, read or write a cache, retry jobs, or approve integration.
+The evaluator exposes pure, offline, shadow-only metadata helpers for repository-wide change-graph fast feedback, exact-input CI cache derivation/verification, bounded validation failure repair, and synthetic integration-train comparison. They do not modify workflow selection, execute tests, read or write a cache, retry jobs, or approve integration.
 
-## Fast feedback
+## Fast feedback and repository change graph
 
 `planFastFeedback` accepts a complete path inventory only when its repository, candidate head, base revision, and `trusted-ci` producer marker match the expected snapshot and the evidence is marked verified. The component catalog must name the same repository and base revision, have non-overlapping ownership roots, and provide valid dependency edges and test paths. Missing, stale, incomplete, ambiguous, or unmapped evidence blocks the suggestion.
 
-The `trusted-ci` marker is a data contract, not an authentication mechanism. A future protected workflow adapter must bind it to authoritative GitHub metadata before supplying the evidence. Until that adapter exists, this API is a synthetic evaluator only. Suggested tests are additional fast feedback; `requiredValidation` remains `full` for every result.
+`softwareFactoryCatalog` and `planChangeGraphFastFeedback` in `tools/engineering-factory/contract-routing.mjs` expand change-graph fast-feedback selection across all `Jamula/SoftwareFactory` repository paths:
+- `tools/engineering-factory` and `tests/engineering-factory` (selecting the full `tests/engineering-factory/*.test.mjs` inventory so intra-component consumers such as `capacity-scale.mjs` importing `budget.mjs` are never skipped, plus dependent `apphost-runtime` checks)
+- `tools/engineering-coordinator` and `tests/engineering-coordinator` (propagating into `engineering-factory` and `apphost-runtime` because `local-shadow-host.mjs` consumes `event-journal.mjs`)
+- `apphost.cs` (plus `global.json` and `aspire.config.json`)
+- `.github/workflows` (plus `apphost.run.json`)
+- `config` and `agents` (propagating to dependent `engineering-coordinator`, `engineering-factory`, and `apphost-runtime` lanes)
+- `docs` and root governance files (`README.md`, `SECURITY.md`, `AGENTS.md`, `CONTRIBUTING.md`, `LICENSE`, `NOTICE`, `VERSION`, `.gitignore`)
+- `package.json` and `package-lock.json`
 
-## Build reuse
+Every mapped or blocked result strictly preserves `fullValidationRequired: true`, `requiredValidation: 'full'`, `skipRequiredChecks: false`, and mandatory required gates (`98%` line coverage, `95%` branch coverage, security checks, and Linux/Windows runtime verification). `planChangeGraphFastFeedback` reconciles selection against a trusted candidate-head `testInventory` (and optional `deletedPaths`), automatically including newly added or renamed `.test.mjs` suites, excluding deleted suites, and blocking fail-closed (`TEST_INVENTORY_UNKNOWN` or `TEST_INVENTORY_UNALIGNED`) when inventory alignment cannot be established. Unmapped, incomplete, duplicate, or untrusted change inventories also fail closed.
 
-`planBuildReuse` returns a candidate only when a verified `trusted-ci` receipt matches the repository, source head, workflow, dependency, toolchain, and input digests. It never reads or writes cache data. A caller must not treat a candidate as permission to skip any required check; full validation remains required.
+The `trusted-ci` marker is a data contract, not an authentication mechanism. A protected workflow adapter must bind it to authoritative GitHub metadata before supplying the evidence.
+
+## Locked CI cache derivation and anti-poisoning verification
+
+`planBuildReuse` in `tools/engineering-factory/validation-diagnosis.mjs` returns a candidate only when a verified `trusted-ci` receipt matches the repository, source head, workflow, dependency, toolchain, and input digests.
+
+`hashLockedContent`, `deriveCiCacheKeys`, and `verifyCiCacheEntry` in `tools/engineering-factory/locked-build-cache.mjs` model exact-input cache keys and fail-closed verification for SoftwareFactory's three hosted CI restore/build bottlenecks per OS RID (`linux-x64` and `win-x64`):
+- **`npmCi`**: `package.json` + `package-lock.json` SHA-256 digests + effective install flags (`--ignore-scripts`) + Node.js `26.13.1`
+- **`nugetApphost`**: `apphost.cs` + `global.json` SHA-256 digests + AppHost build configuration (`Release`) + pinned NuGet v3 feed + .NET SDK `10.0.404`
+- **`aspireCli`**: `Aspire.Cli 17.0.0` tool binary + .NET SDK `10.0.404` + pinned NuGet v3 feed per OS RID (`linux-x64` / `win-x64`)
+
+`deriveCiCacheKeys` and `verifyCiCacheEntry` fail closed on fork or untrusted writer provenance (`isFork !== false`, `writerIsFork !== false`, `writerBranchProtected !== true`), OS/toolchain/install-flag drift, input digest mismatch, or cache poisoning (spoofed cache key, tampered observed artifact digest vs. expected writer receipt digest, or unclean archive layout). Even when an entry is verified (`verified: true`, `candidate: true`), `fullVerificationRequired: true` and `skipRequiredChecks: false` remain mandatory.
+
+## Deterministic failure classification and bounded repair
+
+`classifyValidationFailure` in `tools/engineering-factory/validation-diagnosis.mjs` deterministically classifies exact-head `trusted-ci` failure signals across six operational categories:
+- `test` (`test-failure`, `assertion-failed`, `runtime-smoke-failed`) -> `repair-code-or-test`
+- `coverage` (`coverage-below-target` -> `add-targeted-coverage-tests`; `coverage-missing` and `coverage-head-mismatch` -> `diagnose-coverage-evidence` so evidence-collection or candidate-head mismatches are diagnosed rather than misrouted to test authoring)
+- `security` (`codeql-alert`, `secret-detected`, `untrusted-provenance`, `cache-poisoning`, `tls-or-certificate`) -> `block-and-security-remediate`
+- `infra` / `runner-timeout` (`runner-timeout`, `runner-lost`, `github-api-5xx`, `network-reset` when transient vs. deterministic `job-step-timeout` or `transient: false`) -> `bounded-infra-retry` up to `retryLimit <= 2` for verified transient runner faults, or `diagnose-stage-timeout` without retry for deterministic stage hangs
+- `dependency-lock` (`npm-lock-mismatch`, `nuget-restore-mismatch`, `toolchain-version-drift`) -> `reconcile-locked-dependencies`
+- `permission` (`http-401-unauthorized`, `http-403-forbidden`, `missing-workflow-permission`, `fork-restriction`) -> `escalate-permission-review`
+
+Blind retries are explicitly rejected (`allowRetry: false`, `blindRetryRejected: true`) on all deterministic failures (`test`, `coverage`, `security`, `dependency-lock`, `permission`, and non-transient `infra` / `job-step-timeout` hangs), and bounded code/test repair attempts escalate once `maxRepairAttempts <= 2` is exhausted.
 
 ## Experiment comparison
 
@@ -18,5 +48,5 @@ The `trusted-ci` marker is a data contract, not an authentication mechanism. A f
 
 ## Acceptance status
 
-This slice is not wired into GitHub Actions. It makes no claim about workflow latency, trusted change evidence, cache-poisoning resistance in a cache service, or end-to-end cost. Those require separate exact-head integration, security review, and measured hosted runs while retaining all required platform, security, coverage, review, and merge-group gates.
+These pure evaluator components do not execute GitHub Actions workflows directly or claim measured hosted CI latency improvements on their own. Workflow wiring in `.github/workflows/validate.yml` and `.github/workflows/windows-aspire.yml`, security review, and matched cold/warm hosted p50/p95 benchmarks remain separate exact-head evidence requirements while retaining all required platform, security, coverage, review, and merge-group gates.
 

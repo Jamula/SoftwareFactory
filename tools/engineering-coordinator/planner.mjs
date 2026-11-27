@@ -14,6 +14,8 @@ const blocked = reason => ({shadow: true, scheduled: [], reason});
 const riskLevels = new Map([['low', 0], ['medium', 1], ['high', 2]]);
 const nonnegative = value => Number.isSafeInteger(value) && value >= 0;
 
+export const pathsOverlap = (left, right) => validPath(left) && validPath(right) && overlaps(left, right);
+
 function schedulingEvidence(policy, byId) {
   if (!exact(policy, ['now', 'agingMs', 'riskCeiling', 'ready']) ||
       !nonnegative(policy.now) || !positive(policy.agingMs) || !riskLevels.has(policy.riskCeiling) ||
@@ -25,7 +27,9 @@ function schedulingEvidence(policy, byId) {
         entry.readySince > policy.now) return null;
     evidence.set(entry.id, {
       readySince: entry.readySince,
+      riskLabel: entry.risk,
       risk: riskLevels.get(entry.risk),
+      waitMs: policy.now - entry.readySince,
       priority: Math.max(0, byId.get(entry.id).priority - Math.floor((policy.now - entry.readySince) / policy.agingMs))
     });
   }
@@ -33,7 +37,7 @@ function schedulingEvidence(policy, byId) {
   return evidence;
 }
 
-export function planLanes(config, tasks, active = [], policy) {
+function evaluatePlan(config, tasks, active = [], policy) {
   if (!validateProjectConfig(config)) return blocked('INVALID_PROJECT_CONFIG');
   if (!dense(tasks) || tasks.length > 250 || !dense(active) || active.length > 32) return blocked('INVALID_INVENTORY');
   const lanes = new Map(config.lanes.map(lane => [lane.id, lane]));
@@ -83,13 +87,13 @@ export function planLanes(config, tasks, active = [], policy) {
   if (reservations.length > 32 || new Set(reservations.map(item => item.id)).size !== reservations.length ||
       new Set(reservations.map(item => item.lane)).size !== reservations.length)
     return blocked('INVALID_ACTIVE_LANE');
-  const laneCounts = new Map();
-  const ownedPaths = [];
+  const laneHolder = new Map();
+  const ownedEntries = [];
   for (const item of reservations) {
-    laneCounts.set(item.lane, (laneCounts.get(item.lane) ?? 0) + 1);
-    if (item.paths.some(path => ownedPaths.some(owned => overlaps(path, owned))))
+    laneHolder.set(item.lane, item.id);
+    if (item.paths.some(path => ownedEntries.some(entry => overlaps(path, entry.path))))
       return blocked('ACTIVE_PATH_CONFLICT');
-    ownedPaths.push(...item.paths);
+    for (const path of item.paths) ownedEntries.push({taskId: item.id, path});
   }
   // Reject a reservation inconsistent with the authoritative lane inventory.
   for (const item of reservations) {
@@ -100,7 +104,7 @@ export function planLanes(config, tasks, active = [], policy) {
       return blocked('INVALID_ACTIVE_LANE');
   }
   const accepted = new Set(tasks.filter(task => task.state === 'accepted').map(task => task.id));
-  // Longest unfinished downstream chain, computed only after DAG validation.
+  // Longest unfinished downstream chain and transitive unfinished fan-out, computed only after DAG validation.
   const downstream = new Map(tasks.map(task => [task.id, []]));
   for (const task of tasks) {
     if (task.state !== 'accepted') for (const dependency of task.dependencies) downstream.get(dependency).push(task.id);
@@ -110,19 +114,43 @@ export function planLanes(config, tasks, active = [], policy) {
     if (!depths.has(id)) depths.set(id, downstream.get(id).reduce((best, child) => Math.max(best, 1 + depth(child)), 0));
     return depths.get(id);
   }
+  const descendantSets = new Map();
+  function unfinishedDescendants(id) {
+    if (!descendantSets.has(id)) {
+      const seen = new Set();
+      for (const child of downstream.get(id)) {
+        seen.add(child);
+        for (const nested of unfinishedDescendants(child)) seen.add(nested);
+      }
+      descendantSets.set(id, seen);
+    }
+    return descendantSets.get(id);
+  }
   const blockedTasks = [];
+  const decisions = new Map();
   const denyTask = (task, reason) => { if (policyEvidence) blockedTasks.push({id: task.id, reason}); };
   const candidates = tasks.filter(task => {
-    if (task.state !== 'approved') {
-      if (task.state === 'blocked') denyTask(task, 'TASK_BLOCKED');
+    if (task.state === 'accepted') {
+      decisions.set(task.id, {outcome: 'accepted', reason: 'ALREADY_ACCEPTED', overlappingPaths: [], conflictingTaskIds: []});
+      return false;
+    }
+    if (task.state === 'active') {
+      decisions.set(task.id, {outcome: 'active', reason: 'ACTIVE_RESERVATION', overlappingPaths: [], conflictingTaskIds: []});
+      return false;
+    }
+    if (task.state === 'blocked') {
+      denyTask(task, 'TASK_BLOCKED');
+      decisions.set(task.id, {outcome: 'blocked', reason: 'TASK_BLOCKED', overlappingPaths: [], conflictingTaskIds: []});
       return false;
     }
     if (policyEvidence && policyEvidence.get(task.id).risk > riskLevels.get(policy.riskCeiling)) {
       denyTask(task, 'RISK_ABOVE_CEILING');
+      decisions.set(task.id, {outcome: 'blocked', reason: 'RISK_ABOVE_CEILING', overlappingPaths: [], conflictingTaskIds: []});
       return false;
     }
     if (!task.dependencies.every(dependency => accepted.has(dependency))) {
       denyTask(task, 'DEPENDENCY_UNACCEPTED');
+      decisions.set(task.id, {outcome: 'blocked', reason: 'DEPENDENCY_UNACCEPTED', overlappingPaths: [], conflictingTaskIds: []});
       return false;
     }
     return true;
@@ -131,27 +159,93 @@ export function planLanes(config, tasks, active = [], policy) {
       const a = policyEvidence.get(left.id);
       const b = policyEvidence.get(right.id);
       return a.priority - b.priority || a.readySince - b.readySince ||
-        depth(right.id) - depth(left.id) || left.id - right.id;
+        depth(right.id) - depth(left.id) ||
+        unfinishedDescendants(right.id).size - unfinishedDescendants(left.id).size ||
+        left.id - right.id;
     }
-    return left.priority - right.priority || depth(right.id) - depth(left.id) || left.id - right.id;
+    return left.priority - right.priority ||
+      depth(right.id) - depth(left.id) ||
+      unfinishedDescendants(right.id).size - unfinishedDescendants(left.id).size ||
+      left.id - right.id;
   });
-  const counts = new Map(laneCounts);
   const scheduled = [];
   for (const task of candidates) {
-    if ((counts.get(task.lane) ?? 0) >= 1 ||
-        task.paths.some(path => ownedPaths.some(owned => overlaps(path, owned)))) {
+    const overlappingPaths = [...new Set(task.paths.filter(path =>
+      ownedEntries.some(entry => overlaps(path, entry.path))))].sort();
+    const holder = laneHolder.get(task.lane);
+    if (holder !== undefined || overlappingPaths.length > 0) {
       denyTask(task, 'LANE_OR_PATH_RESERVED');
+      const pathConflicts = ownedEntries
+        .filter(entry => task.paths.some(path => overlaps(path, entry.path)))
+        .map(entry => entry.taskId);
+      const conflictingTaskIds = [...new Set(holder === undefined ? pathConflicts : [holder, ...pathConflicts])]
+        .sort((a, b) => a - b);
+      decisions.set(task.id, {
+        outcome: 'blocked',
+        reason: overlappingPaths.length > 0 ? 'PATH_OVERLAP' : 'LANE_RESERVED',
+        overlappingPaths,
+        conflictingTaskIds
+      });
       continue;
     }
     if (scheduled.length + reservations.length >= config.limits.maxConcurrentLanes) {
-      if (!policyEvidence) break;
       denyTask(task, 'CAPACITY_FULL');
+      decisions.set(task.id, {outcome: 'blocked', reason: 'CAPACITY_FULL', overlappingPaths: [], conflictingTaskIds: []});
       continue;
     }
     scheduled.push({id: task.id, lane: task.lane, paths: [...task.paths]});
-    counts.set(task.lane, (counts.get(task.lane) ?? 0) + 1);
-    ownedPaths.push(...task.paths);
+    laneHolder.set(task.lane, task.id);
+    for (const path of task.paths) ownedEntries.push({taskId: task.id, path});
+    decisions.set(task.id, {outcome: 'scheduled', reason: 'SCHEDULED', overlappingPaths: [], conflictingTaskIds: []});
   }
+  const diagnosticRows = [...tasks].sort((a, b) => a.id - b.id).map(task => {
+    const meta = policyEvidence?.get(task.id);
+    const effectivePriority = meta ? meta.priority : task.priority;
+    const decision = decisions.get(task.id);
+    return {
+      id: task.id,
+      lane: task.lane,
+      state: task.state,
+      outcome: decision.outcome,
+      reason: decision.reason,
+      basePriority: task.priority,
+      effectivePriority,
+      agingBoost: task.priority - effectivePriority,
+      waitMs: meta ? meta.waitMs : null,
+      risk: meta ? meta.riskLabel : null,
+      criticalPathDepth: task.state === 'accepted' ? 0 : depth(task.id),
+      unfinishedDescendants: task.state === 'accepted' ? 0 : unfinishedDescendants(task.id).size,
+      unacceptedDependencies: task.dependencies.filter(dependency => !accepted.has(dependency)).sort((a, b) => a - b),
+      overlappingPaths: decision.overlappingPaths,
+      conflictingTaskIds: decision.conflictingTaskIds
+    };
+  });
   const result = {shadow: true, scheduled, reason: scheduled.length ? 'SHADOW_PLAN' : 'NO_READY_WORK'};
-  return policyEvidence ? {...result, blockedTasks: blockedTasks.sort((a, b) => a.id - b.id)} : result;
+  return {
+    plan: policyEvidence ? {...result, blockedTasks: blockedTasks.sort((a, b) => a.id - b.id)} : result,
+    diagnostics: {
+      utilization: {
+        configuredLanes: config.lanes.length,
+        maxConcurrentLanes: config.limits.maxConcurrentLanes,
+        reservedLanes: reservations.length,
+        scheduledLanes: scheduled.length,
+        availableLanes: Math.max(0, config.limits.maxConcurrentLanes - reservations.length - scheduled.length)
+      },
+      criticalPath: {
+        maxUnfinishedDepth: diagnosticRows.reduce((best, row) => Math.max(best, row.criticalPathDepth), 0),
+        maxUnfinishedDescendants: diagnosticRows.reduce((best, row) => Math.max(best, row.unfinishedDescendants), 0)
+      },
+      tasks: diagnosticRows
+    }
+  };
+}
+
+export function planLanes(config, tasks, active = [], policy) {
+  const evaluated = evaluatePlan(config, tasks, active, policy);
+  return evaluated.plan ?? evaluated;
+}
+
+export function diagnosePlan(config, tasks, active = [], policy) {
+  const evaluated = evaluatePlan(config, tasks, active, policy);
+  return evaluated.plan ? {...evaluated.plan, diagnostics: evaluated.diagnostics} : {...evaluated, diagnostics: null};
 }

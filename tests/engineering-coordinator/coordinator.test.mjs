@@ -411,3 +411,382 @@ test('contains claim and release exceptions to their own lane', async () => {
     tracker, agent, workerId: 'worker', now: 1});
   assert.equal(releaseFailure.completed[0].reason, 'LANE_FAILED');
 });
+
+test('aborts a hung inspection at the bounded execution deadline, stops renewals, and lets another worker reclaim after expiry', async t => {
+  t.mock.timers.enable({apis: ['setInterval']});
+  const state = createSQLiteStateStore(':memory:');
+  const settings = config();
+  settings.limits.leaseMs = 1000;
+  const entered = Promise.withResolvers();
+  let time = 1000;
+  let signal;
+  const hung = runTick({
+    config: settings, tasks: [{...tasks()[0], id: 9}], store: state, tracker,
+    workerId: 'worker-a', now: time, clock: () => time, maxExecutionMs: 2000,
+    agent: {inspect: (_task, context) => {
+      signal = context.signal;
+      entered.resolve();
+      return new Promise(() => {});
+    }}
+  });
+  try {
+    await entered.promise;
+    time = 1800;
+    t.mock.timers.tick(333);
+    time = 2600;
+    t.mock.timers.tick(333);
+    assert.equal(state.get('api').leaseUntil, 3600);
+    time = 3000;
+    t.mock.timers.tick(333);
+    assert.deepEqual((await hung).completed, [{lane: 'api', taskId: 9, state: 'blocked', reason: 'EXECUTION_TIMEOUT'}]);
+    assert.equal(signal.aborted, true);
+    time = 3500;
+    t.mock.timers.tick(2000);
+    assert.equal(state.get('api').leaseUntil, 3600, 'no further renewals occur after timeout');
+    const beforeExpiry = await runTick({
+      config: settings, tasks: [{...tasks()[1], id: 9}], store: state, tracker,
+      workerId: 'worker-b', now: 3500, agent
+    });
+    assert.equal(beforeExpiry.completed[0].reason, 'LEASE_HELD', 'uncertain hung claim is not released early');
+    const reclaimed = await runTick({
+      config: settings, tasks: [{...tasks()[0], id: 9}], store: state, tracker,
+      workerId: 'worker-b', now: 3600, agent
+    });
+    assert.equal(reclaimed.completed[0].state, 'shadow-reviewed');
+    assert.equal(state.get('api').generation, 2);
+  } finally {
+    state.close();
+  }
+});
+
+test('enforces timer-bounded deadline when clock stalls and handles pre/post-inspection timeouts and policy validation', async t => {
+  t.mock.timers.enable({apis: ['setInterval']});
+  let renewals = 0;
+  let releases = 0;
+  let signal;
+  const entered = Promise.withResolvers();
+  const backingStore = store();
+  const stalledClock = runTick({
+    config: config(), tasks: [tasks()[0]], tracker, workerId: 'worker', now: 1000, maxExecutionMs: 500,
+    store: {
+      ...backingStore,
+      renew: (...args) => { renewals++; return backingStore.renew(...args); },
+      release: () => { releases++; return true; }
+    },
+    agent: {inspect: (_task, context) => {
+      signal = context.signal;
+      entered.resolve();
+      return new Promise(() => {});
+    }}
+  });
+  await entered.promise;
+  t.mock.timers.tick(500);
+  assert.equal((await stalledClock).completed[0].reason, 'EXECUTION_TIMEOUT');
+  assert.equal(signal.aborted, true);
+  assert.equal(renewals, 1);
+  assert.equal(releases, 0);
+
+  // Sub-interval rescheduling near deadline: leaseMs = 3000 (base step 1000ms), maxExecutionMs = 1001ms.
+  const subEntered = Promise.withResolvers();
+  let subSignal;
+  let subTime = 1000;
+  const subSettings = config();
+  subSettings.limits.leaseMs = 3000;
+  const subDeadline = runTick({
+    config: subSettings, tasks: [tasks()[0]], store: backingStore, tracker, workerId: 'worker',
+    now: subTime, clock: () => subTime, maxExecutionMs: 1001,
+    agent: {inspect: (_task, context) => {
+      subSignal = context.signal;
+      subEntered.resolve();
+      return new Promise(() => {});
+    }}
+  });
+  await subEntered.promise;
+  subTime = 2000;
+  t.mock.timers.tick(1000);
+  assert.equal(subSignal.aborted, false);
+  t.mock.timers.tick(1);
+  assert.equal(subSignal.aborted, true);
+  assert.equal((await subDeadline).completed[0].reason, 'EXECUTION_TIMEOUT');
+
+  let preInspections = 0;
+  let preReleases = 0;
+  const preTimeout = await runTick({
+    config: config(), tasks: [tasks()[0]], tracker, workerId: 'worker', now: 1000,
+    clock: () => 16000,
+    store: {...backingStore, release: () => { preReleases++; return true; }},
+    agent: {inspect: async () => { preInspections++; return {shadow: true, accepted: true}; }}
+  });
+  assert.equal(preTimeout.completed[0].reason, 'EXECUTION_TIMEOUT');
+  assert.equal(preInspections, 0);
+  assert.equal(preReleases, 1);
+
+  let postCheckpoints = 0;
+  let postReleases = 0;
+  const samples = [1100, 16000];
+  const postTimeout = await runTick({
+    config: config(), tasks: [tasks()[0]], tracker, agent, workerId: 'worker', now: 1000,
+    clock: () => samples.shift(),
+    store: {
+      ...backingStore,
+      checkpoint: () => { postCheckpoints++; return true; },
+      release: () => { postReleases++; return true; }
+    }
+  });
+  assert.equal(postTimeout.completed[0].reason, 'EXECUTION_TIMEOUT');
+  assert.equal(postCheckpoints, 0);
+  assert.equal(postReleases, 1);
+
+  // Hung first tracker.readTask and hung second tracker.readTask both time out via timer and release cleanly.
+  let hungFirstReleases = 0;
+  let hungFirstInspections = 0;
+  const hungFirstRead = runTick({
+    config: config(), tasks: [tasks()[0]], agent: {inspect: async () => { hungFirstInspections++; }},
+    workerId: 'worker', now: 1000, maxExecutionMs: 500,
+    tracker: {readTask: () => new Promise(() => {})},
+    store: {...backingStore, release: () => { hungFirstReleases++; return true; }}
+  });
+  await Promise.resolve();
+  t.mock.timers.tick(500);
+  assert.equal((await hungFirstRead).completed[0].reason, 'EXECUTION_TIMEOUT');
+  assert.equal(hungFirstInspections, 0);
+  assert.equal(hungFirstReleases, 1);
+
+  let hungSecondReleases = 0;
+  let hungSecondCheckpoints = 0;
+  let readAttempt = 0;
+  const hungSecondRead = runTick({
+    config: config(), tasks: [tasks()[0]], agent, workerId: 'worker', now: 1000, maxExecutionMs: 500,
+    tracker: {readTask: id => ++readAttempt === 1 ?
+      Promise.resolve({accepted: true, task: {id, state: 'approved'}}) :
+      new Promise(() => {})},
+    store: {
+      ...backingStore,
+      checkpoint: () => { hungSecondCheckpoints++; return true; },
+      release: () => { hungSecondReleases++; return true; }
+    }
+  });
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+  t.mock.timers.tick(500);
+  assert.equal((await hungSecondRead).completed[0].reason, 'EXECUTION_TIMEOUT');
+  assert.equal(hungSecondCheckpoints, 0);
+  assert.equal(hungSecondReleases, 1);
+
+  for (const invalidMax of [0, -1, 1.5, 10800001]) {
+    assert.equal((await runTick({
+      config: config(), tasks: tasks(), store: backingStore, tracker, agent,
+      workerId: 'worker', now: 1, maxExecutionMs: invalidMax
+    })).reason, 'INVALID_RUNTIME');
+  }
+  assert.equal((await runTick({
+    config: config(), tasks: tasks(), store: backingStore, tracker, agent,
+    workerId: 'worker', now: Number.MAX_SAFE_INTEGER - 1000
+  })).reason, 'INVALID_RUNTIME');
+  assert.equal((await runTick({
+    config: config(), tasks: tasks(), store: backingStore, tracker, agent,
+    workerId: 'worker', now: 1000, policy: null
+  })).reason, 'SCHEDULING_POLICY_UNKNOWN');
+});
+
+test('enforces a single lane-wide deadline across sequential partial waits and synchronous monotonic overruns', async t => {
+  t.mock.timers.enable({apis: ['setInterval']});
+  let monoNow = 0;
+  t.mock.method(globalThis.performance, 'now', () => monoNow);
+  const backingStore = store();
+
+  // Three sequential 250ms phases (750ms total) with stalled clock must fail at exact 600ms maxExecutionMs.
+  const read1 = Promise.withResolvers();
+  const inspectPhase = Promise.withResolvers();
+  const read2 = Promise.withResolvers();
+  let phaseReads = 0;
+  let seqCheckpoints = 0;
+  let seqReleases = 0;
+  const sequential = runTick({
+    config: config(), tasks: [tasks()[0]], workerId: 'worker', now: 1000, maxExecutionMs: 600,
+    tracker: {readTask: () => ++phaseReads === 1 ? read1.promise : read2.promise},
+    agent: {inspect: () => inspectPhase.promise},
+    store: {
+      ...backingStore,
+      checkpoint: () => { seqCheckpoints++; return true; },
+      release: () => { seqReleases++; return true; }
+    }
+  });
+  await Promise.resolve();
+  monoNow += 250;
+  t.mock.timers.tick(250);
+  read1.resolve({accepted: true, task: {id: 1, state: 'approved'}});
+  await Promise.resolve();
+  await Promise.resolve();
+  monoNow += 250;
+  t.mock.timers.tick(250);
+  inspectPhase.resolve({shadow: true, accepted: true, findings: []});
+  await Promise.resolve();
+  await Promise.resolve();
+  monoNow += 100;
+  t.mock.timers.tick(100);
+  assert.equal((await sequential).completed[0].reason, 'EXECUTION_TIMEOUT');
+  assert.equal(seqCheckpoints, 0);
+  assert.equal(seqReleases, 1);
+
+  // Synchronous monotonic overrun during claim (before firstRead) and during inspect (before accepting review).
+  let syncReads = 0;
+  const syncPreRead = await runTick({
+    config: config(), tasks: [tasks()[0]], workerId: 'worker', now: 1000, maxExecutionMs: 100,
+    store: {
+      ...backingStore,
+      claim: (...args) => {
+        const claimed = backingStore.claim(...args);
+        monoNow += 200;
+        return claimed;
+      }
+    },
+    tracker: {readTask: async id => { syncReads++; return {accepted: true, task: {id, state: 'approved'}}; }},
+    agent
+  });
+  assert.equal(syncPreRead.completed[0].reason, 'EXECUTION_TIMEOUT');
+  assert.equal(syncReads, 0);
+
+  let postInspectReads = 0;
+  const syncInspect = await runTick({
+    config: config(), tasks: [tasks()[0]], workerId: 'worker', now: 1000, maxExecutionMs: 100,
+    store: backingStore,
+    tracker: {readTask: async id => { postInspectReads++; return {accepted: true, task: {id, state: 'approved'}}; }},
+    agent: {inspect: async () => {
+      monoNow += 200;
+      return {shadow: true, accepted: true, findings: []};
+    }}
+  });
+  assert.equal(syncInspect.completed[0].reason, 'EXECUTION_TIMEOUT');
+  assert.equal(postInspectReads, 1);
+
+  // Synchronous overrun inside store.renew() during heartbeat aborts cancellation without releasing early,
+  // and during beforeCheckpoint blocks checkpointing and releases cleanly instead of returning shadow-reviewed.
+  let heartbeatRenewCount = 0;
+  let heartbeatReleases = 0;
+  let renewAbortSignal;
+  const renewEntered = Promise.withResolvers();
+  const overrunHeartbeatRenew = runTick({
+    config: {...config(), limits: {...config().limits, leaseMs: 1000}},
+    tasks: [tasks()[0]], workerId: 'worker', now: 1000, maxExecutionMs: 1000,
+    tracker,
+    store: {
+      ...backingStore,
+      renew: (...args) => {
+        if (++heartbeatRenewCount === 2) monoNow += 1200;
+        return backingStore.renew(...args);
+      },
+      release: () => { heartbeatReleases++; return true; }
+    },
+    agent: {inspect: (_task, context) => {
+      renewAbortSignal = context.signal;
+      renewEntered.resolve();
+      return new Promise(() => {});
+    }}
+  });
+  await renewEntered.promise;
+  t.mock.timers.tick(333);
+  assert.equal((await overrunHeartbeatRenew).completed[0].reason, 'EXECUTION_TIMEOUT');
+  assert.equal(renewAbortSignal.aborted, true);
+  assert.equal(heartbeatReleases, 0);
+
+  let checkpointRenewCount = 0;
+  let lateCheckpoints = 0;
+  let lateReleases = 0;
+  const overrunFinalRenew = await runTick({
+    config: config(), tasks: [tasks()[0]], workerId: 'worker', now: 1000, maxExecutionMs: 500,
+    tracker, agent,
+    store: {
+      ...backingStore,
+      renew: (...args) => {
+        if (++checkpointRenewCount === 2) monoNow += 600;
+        return backingStore.renew(...args);
+      },
+      checkpoint: () => { lateCheckpoints++; return true; },
+      release: () => { lateReleases++; return true; }
+    }
+  });
+  assert.equal(overrunFinalRenew.completed[0].reason, 'EXECUTION_TIMEOUT');
+  assert.equal(lateCheckpoints, 0);
+  assert.equal(lateReleases, 1);
+
+  // Partial synchronous claim (80ms of 100ms budget) caps initial timer to remaining 20ms on a hung read.
+  let partialReleases = 0;
+  const partialSetup = runTick({
+    config: config(), tasks: [tasks()[0]], workerId: 'worker', now: 1000, maxExecutionMs: 100,
+    store: {
+      ...backingStore,
+      claim: (...args) => {
+        const claimed = backingStore.claim(...args);
+        monoNow += 80;
+        return claimed;
+      },
+      release: () => { partialReleases++; return true; }
+    },
+    tracker: {readTask: () => new Promise(() => {})},
+    agent
+  });
+  await Promise.resolve();
+  monoNow += 20;
+  t.mock.timers.tick(20);
+  assert.equal((await partialSetup).completed[0].reason, 'EXECUTION_TIMEOUT');
+  assert.equal(partialReleases, 1);
+
+  // Two-lane interleaving: lane 2's synchronous pre-inspection renew exhausts lane 1's deadline
+  // after lane 1 queued its inspect callback; neither lane invokes agent.inspect and both release cleanly.
+  let interleavedInspections = 0;
+  let interleavedReleases = 0;
+  const interleaved = await runTick({
+    config: config(), tasks: tasks(), workerId: 'worker', now: 1000, maxExecutionMs: 100,
+    tracker,
+    store: {
+      ...backingStore,
+      renew: (lane, ...rest) => {
+        if (lane === 'web') monoNow += 120;
+        return backingStore.renew(lane, ...rest);
+      },
+      release: () => { interleavedReleases++; return true; }
+    },
+    agent: {inspect: async () => {
+      interleavedInspections++;
+      return {shadow: true, accepted: true, findings: []};
+    }}
+  });
+  assert.deepEqual(interleaved.completed, [
+    {lane: 'api', taskId: 1, state: 'blocked', reason: 'EXECUTION_TIMEOUT'},
+    {lane: 'web', taskId: 2, state: 'blocked', reason: 'EXECUTION_TIMEOUT'}
+  ]);
+  assert.equal(interleavedInspections, 0);
+  assert.equal(interleavedReleases, 2);
+});
+
+test('recovers cross-run state across stateless SQLite stores via fenced snapshots', async () => {
+  const firstRun = createSQLiteStateStore(':memory:');
+  const secondRun = createSQLiteStateStore(':memory:');
+  try {
+    const first = await runTick({
+      config: config(), tasks: [tasks()[0]], store: firstRun, tracker,
+      agent: {inspect: async () => ({shadow: true, accepted: true, findings: ['verified']})},
+      workerId: 'runner-1', now: 1000, clock: () => 1200
+    });
+    assert.equal(first.completed[0].state, 'shadow-reviewed');
+    const exported = firstRun.exportSnapshot(1500);
+    assert.equal(exported.ok, true);
+    const transferred = JSON.parse(JSON.stringify(exported.snapshot));
+    assert.deepEqual(secondRun.importSnapshot(transferred, 2000),
+      {ok: true, reason: 'SNAPSHOT_IMPORTED', snapshotGeneration: 1});
+    assert.deepEqual(secondRun.get('api').payload, {
+      completedAt: 1200, findings: ['verified'], observedState: 'approved', taskId: 1
+    });
+    const second = await runTick({
+      config: config(), tasks: [tasks()[0]], store: secondRun, tracker, agent,
+      workerId: 'runner-2', now: 2100, clock: () => 2200
+    });
+    assert.equal(second.completed[0].state, 'shadow-reviewed');
+    assert.equal(secondRun.get('api').generation, 2);
+  } finally {
+    firstRun.close();
+    secondRun.close();
+  }
+});

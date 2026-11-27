@@ -1,6 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {planKnowledgeRoutes as plan, routeContract as route} from '../../tools/engineering-factory/contract-routing.mjs';
+import {
+ defaultSoftwareFactoryTestInventory,
+ planChangeGraphFastFeedback,
+ planKnowledgeRoutes as plan,
+ routeContract as route,
+ softwareFactoryCatalog
+} from '../../tools/engineering-factory/contract-routing.mjs';
 const revision='a'.repeat(40);
 const c={component:'core',owner:'core-team',specialty:'security',revision};
 const q={component:'core',revision,allowedSpecialties:['security']};
@@ -112,5 +118,249 @@ test('rejects array prototypes and all extra own keys before invoking array beha
  assert.equal(plan(catalog, expected, hiddenPath).reason, 'CHANGES_UNKNOWN');
  const customPaths = Object.setPrototypeOf([change[0]], {});
  assert.equal(plan(catalog, expected, customPaths).reason, 'CHANGES_UNKNOWN');
+});
+
+test('softwareFactoryCatalog and planChangeGraphFastFeedback cover all repository paths while preserving fullValidationRequired', () => {
+ assert.deepEqual(softwareFactoryCatalog('invalid'), {state: 'blocked', reason: 'REVISION_UNKNOWN'});
+ assert.deepEqual(softwareFactoryCatalog(revision, undefined), {state: 'blocked', reason: 'TEST_INVENTORY_UNKNOWN'});
+ assert.deepEqual(softwareFactoryCatalog(revision, defaultSoftwareFactoryTestInventory(), null), {
+  state: 'blocked',
+  reason: 'CHANGES_UNKNOWN'
+ });
+ const head = 'c'.repeat(40);
+ const sfExpected = {repository: 'Jamula/SoftwareFactory', revision, head};
+ const baseInventory = defaultSoftwareFactoryTestInventory();
+ const makeEvidence = (paths, overrides = {}) => ({
+  repository: 'Jamula/SoftwareFactory',
+  producer: 'trusted-ci',
+  verified: true,
+  complete: true,
+  base: revision,
+  head,
+  paths,
+  testInventory: [...baseInventory],
+  ...overrides
+ });
+ const assertMandatoryFullGates = outcome => {
+  assert.equal(outcome.shadow, true);
+  assert.equal(outcome.fullValidationRequired, true);
+  assert.equal(outcome.requiredValidation, 'full');
+  assert.equal(outcome.skipRequiredChecks, false);
+  assert.deepEqual(outcome.requiredGates, {
+   lineCoveragePct: 98,
+   branchCoveragePct: 95,
+   security: true,
+   linuxRuntime: true,
+   windowsRuntime: true
+  });
+ };
+
+ const factoryOutcome = planChangeGraphFastFeedback(
+  makeEvidence(['tools/engineering-factory/budget.mjs']),
+  sfExpected
+ );
+ assert.equal(factoryOutcome.state, 'shadow-mapped');
+ assert.equal(factoryOutcome.reason, 'FAST_FEEDBACK_SELECTED');
+ assertMandatoryFullGates(factoryOutcome);
+ assert.deepEqual(factoryOutcome.components, ['engineering-factory', 'engineering-factory-tests', 'apphost-runtime']);
+ assert.ok(factoryOutcome.tests.includes('tests/engineering-factory/budget.test.mjs'));
+ assert.ok(factoryOutcome.tests.includes('tests/engineering-factory/capacity-scale.test.mjs'));
+ assert.ok(factoryOutcome.tests.includes('tests/engineering-factory/shadow-dispatch-ledger.test.mjs'));
+ assert.ok(factoryOutcome.tests.includes('tests/engineering-factory/aspire-telemetry-smoke.test.mjs'));
+
+ const coordinatorOutcome = planChangeGraphFastFeedback(
+  makeEvidence(['tools/engineering-coordinator/event-journal.mjs']),
+  sfExpected
+ );
+ assert.equal(coordinatorOutcome.state, 'shadow-mapped');
+ assertMandatoryFullGates(coordinatorOutcome);
+ assert.deepEqual(coordinatorOutcome.components, [
+  'engineering-coordinator',
+  'engineering-coordinator-tests',
+  'engineering-factory',
+  'engineering-factory-tests',
+  'apphost-runtime'
+ ]);
+ assert.ok(coordinatorOutcome.tests.includes('tests/engineering-coordinator/event-journal.test.mjs'));
+ assert.ok(coordinatorOutcome.tests.includes('tests/engineering-factory/local-shadow-host.test.mjs'));
+ assert.ok(coordinatorOutcome.tests.includes('tests/engineering-factory/aspire-telemetry-smoke.test.mjs'));
+
+ const apphostOutcome = planChangeGraphFastFeedback(
+  makeEvidence(['apphost.cs', 'global.json', 'aspire.config.json']),
+  sfExpected
+ );
+ assert.equal(apphostOutcome.state, 'shadow-mapped');
+ assertMandatoryFullGates(apphostOutcome);
+ assert.deepEqual(apphostOutcome.components, ['apphost-runtime']);
+ assert.ok(apphostOutcome.tests.includes('tests/engineering-factory/aspire-telemetry-smoke.test.mjs'));
+
+ const workflowOutcome = planChangeGraphFastFeedback(
+  makeEvidence(['.github/workflows/validate.yml', '.github/workflows/windows-aspire.yml']),
+  sfExpected
+ );
+ assert.equal(workflowOutcome.state, 'shadow-mapped');
+ assertMandatoryFullGates(workflowOutcome);
+ assert.deepEqual(workflowOutcome.components, ['ci-workflows']);
+ assert.ok(workflowOutcome.tests.includes('tests/engineering-factory/locked-build-cache.test.mjs'));
+ assert.ok(workflowOutcome.tests.includes('tests/engineering-factory/platform-merge-gates.test.mjs'));
+
+ const configOutcome = planChangeGraphFastFeedback(
+  makeEvidence(['config/examples/softwarefactory.json', 'agents/engineering-coordinator.md']),
+  sfExpected
+ );
+ assert.equal(configOutcome.state, 'shadow-mapped');
+ assertMandatoryFullGates(configOutcome);
+ assert.ok(configOutcome.components.includes('coordinator-config'));
+ assert.ok(configOutcome.components.includes('engineering-coordinator'));
+ assert.ok(configOutcome.tests.includes('tests/engineering-coordinator/project-config.test.mjs'));
+
+ const docsOutcome = planChangeGraphFastFeedback(
+  makeEvidence(['docs/CHANGE-AWARE-VALIDATION.md', 'docs/CI-CONSOLIDATION.md', 'AGENTS.md', 'README.md']),
+  sfExpected
+ );
+ assert.equal(docsOutcome.state, 'shadow-mapped');
+ assertMandatoryFullGates(docsOutcome);
+ assert.deepEqual(docsOutcome.components, ['repository-docs']);
+ assert.deepEqual(docsOutcome.tests, [
+  'tests/engineering-factory/contract-routing.test.mjs',
+  'tests/engineering-factory/run.test.mjs',
+  'tests/engineering-factory/validation-diagnosis.test.mjs'
+ ]);
+
+ const lockOutcome = planChangeGraphFastFeedback(
+  makeEvidence(['package-lock.json', 'tests/engineering-factory/locked-build-cache.test.mjs']),
+  sfExpected
+ );
+ assert.equal(lockOutcome.state, 'shadow-mapped');
+ assertMandatoryFullGates(lockOutcome);
+ assert.ok(lockOutcome.tests.includes('tests/engineering-coordinator/coordinator.test.mjs'));
+ assert.ok(lockOutcome.tests.includes('tests/engineering-factory/locked-build-cache.test.mjs'));
+
+ const unmapped = planChangeGraphFastFeedback(makeEvidence(['unmapped-dir/unknown.mjs']), sfExpected);
+ assert.equal(unmapped.state, 'blocked');
+ assert.equal(unmapped.reason, 'PATH_UNMAPPED');
+ assert.deepEqual(unmapped.tests, []);
+ assertMandatoryFullGates(unmapped);
+
+ const addedSuite = 'tests/engineering-factory/new_regression.v2.test.mjs';
+ const addedOutcome = planChangeGraphFastFeedback(
+  makeEvidence([addedSuite], {testInventory: [...baseInventory, addedSuite]}),
+  sfExpected
+ );
+ assert.equal(addedOutcome.state, 'shadow-mapped');
+ assert.equal(addedOutcome.reason, 'FAST_FEEDBACK_SELECTED');
+ assertMandatoryFullGates(addedOutcome);
+ assert.ok(addedOutcome.tests.includes(addedSuite));
+
+ const oldSuite = 'tests/engineering-factory/profiles.test.mjs';
+ const renamedSuite = 'tests/engineering-factory/policy_profiles.test.mjs';
+ const renamedInventory = baseInventory.filter(item => item !== oldSuite).concat([renamedSuite]);
+ const renamedOutcome = planChangeGraphFastFeedback(
+  makeEvidence([oldSuite, renamedSuite], {deletedPaths: [oldSuite], testInventory: renamedInventory}),
+  sfExpected
+ );
+ assert.equal(renamedOutcome.state, 'shadow-mapped');
+ assertMandatoryFullGates(renamedOutcome);
+ assert.ok(renamedOutcome.tests.includes(renamedSuite));
+ assert.equal(renamedOutcome.tests.includes(oldSuite), false);
+
+ const deletedInventory = baseInventory.filter(item => item !== oldSuite);
+ const deletedOutcome = planChangeGraphFastFeedback(
+  makeEvidence([oldSuite], {deletedPaths: [oldSuite], testInventory: deletedInventory}),
+  sfExpected
+ );
+ assert.equal(deletedOutcome.state, 'shadow-mapped');
+ assertMandatoryFullGates(deletedOutcome);
+ assert.equal(deletedOutcome.tests.includes(oldSuite), false);
+
+ const deletedDocOutcome = planChangeGraphFastFeedback(
+  makeEvidence(['docs/OLD-NOTE.md'], {deletedPaths: ['docs/OLD-NOTE.md']}),
+  sfExpected
+ );
+ assert.equal(deletedDocOutcome.state, 'shadow-mapped');
+ assertMandatoryFullGates(deletedDocOutcome);
+
+ for (const misalignedEvidence of [
+  makeEvidence([addedSuite]),
+  makeEvidence(['tools/engineering-factory/budget.mjs'], {
+   testInventory: baseInventory.filter(item => item !== 'tests/engineering-factory/budget.test.mjs')
+  }),
+  makeEvidence([oldSuite], {deletedPaths: [oldSuite], testInventory: [...baseInventory]}),
+  makeEvidence(['docs/README.md'], {deletedPaths: ['not-in-paths.mjs']}),
+  makeEvidence(['.github/workflows/validate.yml'], {
+   testInventory: baseInventory.filter(item => item !== 'tests/engineering-factory/locked-build-cache.test.mjs')
+  })
+ ]) {
+  const blockedMisaligned = planChangeGraphFastFeedback(misalignedEvidence, sfExpected);
+  assert.equal(blockedMisaligned.state, 'blocked');
+  assert.equal(blockedMisaligned.reason, 'TEST_INVENTORY_UNALIGNED');
+  assert.deepEqual(blockedMisaligned.tests, []);
+  assertMandatoryFullGates(blockedMisaligned);
+ }
+
+ const tooManyFactoryTests = [
+  ...baseInventory,
+  ...Array.from({length: 26}, (_, i) => `tests/engineering-factory/gen_${i}.test.mjs`)
+ ];
+ const tooManyCoordinatorTests = [
+  ...baseInventory,
+  ...Array.from({length: 52}, (_, i) => `tests/engineering-coordinator/gen_${i}.test.mjs`)
+ ];
+ for (const badInventory of [
+  undefined,
+  null,
+  [],
+  ['tools/engineering-factory/budget.mjs'],
+  ['tests/engineering-factory/.hidden.test.mjs'],
+  [baseInventory[0], baseInventory[0]],
+  tooManyFactoryTests,
+  tooManyCoordinatorTests
+ ]) {
+  const blockedInventory = planChangeGraphFastFeedback(
+   makeEvidence(['docs/README.md'], {testInventory: badInventory}),
+   sfExpected
+  );
+  assert.equal(blockedInventory.state, 'blocked');
+  assert.equal(blockedInventory.reason, 'TEST_INVENTORY_UNKNOWN');
+  assertMandatoryFullGates(blockedInventory);
+ }
+
+ for (const badDeleted of [null, ['../escape'], ['docs/README.md', 'docs/README.md']]) {
+  const denied = planChangeGraphFastFeedback(makeEvidence(['docs/README.md'], {deletedPaths: badDeleted}), sfExpected);
+  assert.equal(denied.state, 'blocked');
+  assert.equal(denied.reason, 'CHANGES_UNKNOWN');
+  assertMandatoryFullGates(denied);
+ }
+ const getterDeleted = makeEvidence(['docs/README.md']);
+ Object.defineProperty(getterDeleted, 'deletedPaths', {enumerable: true, get() { throw Error('must not run'); }});
+ assert.equal(planChangeGraphFastFeedback(getterDeleted, sfExpected).reason, 'CHANGES_UNKNOWN');
+
+ for (const badPaths of [[], ['../escape'], ['docs/README.md', 'docs/README.md'], null]) {
+  const denied = planChangeGraphFastFeedback(makeEvidence(badPaths), sfExpected);
+  assert.equal(denied.state, 'blocked');
+  assert.equal(denied.reason, 'CHANGES_UNKNOWN');
+  assertMandatoryFullGates(denied);
+ }
+
+ const {testInventory: _omittedInventory, ...withoutInventory} = makeEvidence(['docs/README.md']);
+ for (const [badEvidence, badExpected] of [
+  [null, sfExpected],
+  [withoutInventory, sfExpected],
+  [makeEvidence(['docs/README.md'], {producer: 'fork-ci'}), sfExpected],
+  [makeEvidence(['docs/README.md'], {verified: false}), sfExpected],
+  [makeEvidence(['docs/README.md'], {complete: false}), sfExpected],
+  [makeEvidence(['docs/README.md'], {repository: 'other/repo'}), sfExpected],
+  [makeEvidence(['docs/README.md'], {base: head}), sfExpected],
+  [makeEvidence(['docs/README.md'], {head: revision}), sfExpected],
+  [makeEvidence(['docs/README.md']), null],
+  [makeEvidence(['docs/README.md']), {...sfExpected, repository: 'other/repo'}],
+  [makeEvidence(['docs/README.md']), {...sfExpected, revision: 'bad'}],
+  [makeEvidence(['docs/README.md']), {...sfExpected, head: 'bad'}]
+ ]) {
+  const denied = planChangeGraphFastFeedback(badEvidence, badExpected);
+  assert.equal(denied.state, 'blocked');
+  assert.equal(denied.reason, 'CHANGE_EVIDENCE_UNKNOWN');
+  assertMandatoryFullGates(denied);
+ }
 });
 

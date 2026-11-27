@@ -1,6 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {aggregateStage as aggregate,compareStageWindows,aggregateGithubTiming} from '../../tools/engineering-factory/stage-aggregate.mjs';
+import {
+  SCORECARD_PROVENANCES,
+  VELOCITY_STAGE_OBJECTIVES,
+  aggregateStage as aggregate,
+  compareStageWindows,
+  aggregateGithubTiming,
+  aggregateScorecardStages,
+  isHistoricalProxyArtifact,
+  ownDataValue
+} from '../../tools/engineering-factory/stage-aggregate.mjs';
 const q={repositoryId:1,stage:'review',from:10,to:20,complete:true,source:'synthetic',observedMs:20,nowMs:22,maxAgeMs:10};
 const r={id:'sample-1',repositoryId:1,stage:'review',at:10,duration:5,source:'synthetic'};
 test('bounded window and nearest-rank percentiles',()=>{
@@ -129,4 +138,226 @@ test('rejects accessors and proxies without invoking them', () => {
   assert.equal(proxy([{...withoutId, evidenceId: id}]).reason, 'INVALID_ROW');
   const spareKey = Object.assign(new Array(1), {other: proxyRow});
   assert.equal(proxy(spareKey).reason, 'INVALID_ROWS');
+});
+
+const stageQuery = {
+  repositoryId: 1,
+  cohort: 'small-independent',
+  provenance: 'verified-autonomous-outcome',
+  fromMs: 1000,
+  toMs: 900000,
+  observedMs: 1000000,
+  nowMs: 1000500,
+  maxAgeMs: 5000,
+  sourceComplete: true
+};
+
+const stageSample = (stage, id, startedMs, endedMs, state = 'completed', overrides = {}) => ({
+  id,
+  repositoryId: 1,
+  cohort: 'small-independent',
+  provenance: 'verified-autonomous-outcome',
+  stage,
+  startedMs,
+  endedMs,
+  state,
+  ...overrides
+});
+
+test('aggregates all seven M02.02 velocity stages, SLO misses, censored items, and overdue open items', () => {
+  assert.deepEqual(SCORECARD_PROVENANCES, [
+    'verified-autonomous-outcome', 'synthetic-fixture', 'historical-github-proxy'
+  ]);
+  assert.equal(Object.keys(VELOCITY_STAGE_OBJECTIVES).length, 7);
+
+  const samples = [
+    stageSample('ready->firstPr', 'rfp-1', 2000, 122000),
+    stageSample('ready->firstPr', 'rfp-1', 2000, 122000),
+    stageSample('ready->firstPr', 'rfp-2', 3000, 653000),
+    stageSample('ready->firstPr', 'rfp-open-overdue', 10000, null, 'open'),
+    stageSample('ready->firstPr', 'rfp-after-window', 900000, null, 'open'),
+    stageSample('ready->firstPr', 'rfp-before', 999, 2000),
+    stageSample('draft->publish', 'dp-ready-at-create', 5000, 5000),
+    stageSample('draft->publish', 'dp-slow', 6000, 126000),
+    stageSample('draft->publish', 'dp-censored-cutoff', 800000, 900000),
+    stageSample('publish->merge', 'pm-1', 10000, 190000),
+    stageSample('creation->merge', 'cm-1', 5000, 245000),
+    stageSample('merge->verifiedMain', 'mv-1', 245000, 295000),
+    stageSample('eligible->merge', 'em-1', 200000, 225000),
+    stageSample('eligible->merge', 'em-2', 210000, 340000),
+    stageSample('ciEvent->lastRequiredCheck', 'ci-fast', 10000, 40000),
+    stageSample('ciEvent->lastRequiredCheck', 'ci-75s-boundary', 20000, 95000),
+    stageSample('ciEvent->lastRequiredCheck', 'ci-open-fresh', 890000, null, 'open'),
+    stageSample('ciEvent->lastRequiredCheck', 'ci-open-75s-overdue', 850000, null, 'open',
+      {startedMs: 890000}),
+    stageSample('ciEvent->lastRequiredCheck', 'ci-open-exact-75s', 825000, null, 'open')
+  ];
+  // Adjust ci-open-exact-75s so observedMs - startedMs === 75000 falls inside [fromMs, toMs) only when startedMs < toMs:
+  const adjusted = samples.filter(s => s.id !== 'ci-open-75s-overdue' && s.id !== 'ci-open-exact-75s');
+  adjusted.push(stageSample('ciEvent->lastRequiredCheck', 'ci-open-exact', 899000, null, 'open')); // age 101000 >= 75000
+  const freshOpenQuery = {...stageQuery, observedMs: 900000, nowMs: 900500};
+  // At observedMs = 900000:
+  // ci-open-fresh started at 890000 -> age 10000 (< 75000, not overdue)
+  // ci-open-exact started at 825000 -> age 75000 (>= 75000, strict <75s overdue!)
+  adjusted.pop();
+  adjusted.push(stageSample('ciEvent->lastRequiredCheck', 'ci-open-exact-75s', 825000, null, 'open'));
+
+  const report = aggregateScorecardStages(adjusted, freshOpenQuery, [1]);
+  assert.equal(report.known, true);
+  assert.equal(report.reason, 'MEASURED_STAGES');
+  assert.equal(report.provenance, 'verified-autonomous-outcome');
+
+  const rfp = report.stages['ready->firstPr'];
+  assert.equal(rfp.status, 'measured');
+  assert.deepEqual(rfp.counts, {cohort: 3, completed: 2, censored: 1, unknown: 0});
+  assert.deepEqual([rfp.p50Ms, rfp.p95Ms], [120000, 650000]);
+  assert.deepEqual(rfp.slo, {
+    initialMissCount: 1,
+    stretchMissCount: 1,
+    overdueOpenCount: 1,
+    p50MeetsInitial: true,
+    p95MeetsInitial: false,
+    p50MeetsStretch: true,
+    p95MeetsStretch: false
+  });
+
+  const dp = report.stages['draft->publish'];
+  assert.deepEqual(dp.counts, {cohort: 3, completed: 2, censored: 1, unknown: 0});
+  assert.deepEqual([dp.p50Ms, dp.p95Ms], [0, 120000]);
+  assert.equal(dp.slo.p95MeetsInitial, true);
+  assert.equal(dp.slo.p95MeetsStretch, false);
+
+  const ci = report.stages['ciEvent->lastRequiredCheck'];
+  assert.deepEqual(ci.counts, {cohort: 4, completed: 2, censored: 2, unknown: 0});
+  assert.deepEqual([ci.p50Ms, ci.p95Ms], [30000, 75000]);
+  assert.deepEqual(ci.slo, {
+    initialMissCount: 1,
+    stretchMissCount: 1,
+    overdueOpenCount: 1,
+    p50MeetsInitial: true,
+    p95MeetsInitial: false,
+    p50MeetsStretch: true,
+    p95MeetsStretch: false
+  });
+
+  const emptyReport = aggregateScorecardStages([], freshOpenQuery, [1]);
+  assert.equal(emptyReport.known, true);
+  for (const stage of Object.keys(VELOCITY_STAGE_OBJECTIVES)) {
+    assert.equal(emptyReport.stages[stage].status, 'no-samples');
+    assert.equal(emptyReport.stages[stage].p50Ms, null);
+    assert.equal(emptyReport.stages[stage].p95Ms, null);
+    assert.equal(emptyReport.stages[stage].slo.p50MeetsInitial, null);
+  }
+});
+
+test('marks stages partial when sourceComplete is false or unknown stage timestamps exist', () => {
+  const withUnknown = aggregateScorecardStages([
+    stageSample('publish->merge', 'pm-ok', 10000, 50000),
+    stageSample('publish->merge', 'pm-missing-start', null, null, 'unknown'),
+    stageSample('eligible->merge', 'em-missing-end', 20000, null, 'unknown')
+  ], stageQuery, [1]);
+  assert.equal(withUnknown.known, false);
+  assert.equal(withUnknown.reason, 'PARTIAL_STAGE_EVIDENCE');
+  assert.equal(withUnknown.totals.unknown, 2);
+  assert.equal(withUnknown.stages['publish->merge'].status, 'partial');
+  assert.equal(withUnknown.stages['publish->merge'].p50Ms, 40000);
+  assert.equal(withUnknown.stages['publish->merge'].slo.p50MeetsInitial, null);
+  assert.equal(withUnknown.stages['eligible->merge'].status, 'partial');
+  assert.equal(withUnknown.stages['eligible->merge'].p50Ms, null);
+
+  const incompleteSource = aggregateScorecardStages(
+    [stageSample('publish->merge', 'pm-ok', 10000, 50000)],
+    {...stageQuery, sourceComplete: false},
+    [1]
+  );
+  assert.equal(incompleteSource.known, false);
+  assert.equal(incompleteSource.stages['publish->merge'].status, 'partial');
+});
+
+test('enforces strict provenance isolation and fails closed on invalid, stale, conflicting, or proxy stage evidence', () => {
+  assert.equal(ownDataValue(null, 'provenance'), undefined);
+  assert.equal(ownDataValue(42, 'provenance'), undefined);
+  const trap = () => assert.fail('must not invoke untrusted getter');
+  assert.equal(ownDataValue(new Proxy({}, {getOwnPropertyDescriptor: trap}), 'provenance'), undefined);
+  const accessorObj = {};
+  Object.defineProperty(accessorObj, 'provenance', {get: trap});
+  assert.equal(ownDataValue(accessorObj, 'provenance'), undefined);
+  assert.equal(isHistoricalProxyArtifact({provenance: 'historical-github-proxy'}), true);
+  assert.equal(isHistoricalProxyArtifact({source: 'github-proxy'}), true);
+  assert.equal(isHistoricalProxyArtifact(proxyRow), true);
+  assert.equal(isHistoricalProxyArtifact({provenance: 'verified-autonomous-outcome'}), false);
+
+  assert.equal(
+    aggregateScorecardStages([], {...stageQuery, provenance: 'historical-github-proxy'}, [1]).reason,
+    'PROVENANCE_ISOLATION_VIOLATION'
+  );
+  for (const badRow of [
+    proxyRow,
+    stageSample('ready->firstPr', 'p1', 2000, 3000, 'completed', {provenance: 'historical-github-proxy'}),
+    stageSample('ready->firstPr', 'p2', 2000, 3000, 'completed', {source: 'github-proxy'}),
+    stageSample('ready->firstPr', 'p3', 2000, 3000, 'completed', {provenance: 'synthetic-fixture'})
+  ]) {
+    assert.equal(
+      aggregateScorecardStages([badRow], stageQuery, [1]).reason,
+      'PROVENANCE_ISOLATION_VIOLATION'
+    );
+  }
+
+  for (const change of [
+    {repositoryId: 0}, {cohort: null}, {cohort: 'Bad Cohort'}, {provenance: 'unknown-source'},
+    {fromMs: -1}, {toMs: null}, {fromMs: 900000}, {sourceComplete: 'yes'}
+  ]) {
+    assert.equal(aggregateScorecardStages([], {...stageQuery, ...change}, [1]).reason, 'SCOPE_UNKNOWN');
+  }
+  for (const allowed of [null, [0], [2], new Array(1)]) {
+    assert.equal(aggregateScorecardStages([], stageQuery, allowed).reason, 'SCOPE_UNKNOWN');
+  }
+  for (const change of [
+    {observedMs: 899999}, {observedMs: 1000501}, {nowMs: -1}, {maxAgeMs: 0}
+  ]) {
+    assert.equal(aggregateScorecardStages([], {...stageQuery, ...change}, [1]).reason, 'FRESHNESS_UNKNOWN');
+  }
+  assert.equal(aggregateScorecardStages([], {...stageQuery, nowMs: 1005001}, [1]).reason, 'STALE_EVIDENCE');
+  for (const badSamples of [null, new Array(1), Array(10001).fill(null)]) {
+    assert.equal(aggregateScorecardStages(badSamples, stageQuery, [1]).reason, 'INVALID_SAMPLES');
+  }
+
+  assert.equal(
+    aggregateScorecardStages([stageSample('ready->firstPr', 's1', 2000, 3000, 'completed', {repositoryId: 2})], stageQuery, [1]).reason,
+    'SCOPE_MISMATCH'
+  );
+  assert.equal(
+    aggregateScorecardStages([stageSample('ready->firstPr', 's1', 2000, 3000, 'completed', {cohort: 'other-cohort'})], stageQuery, [1]).reason,
+    'SCOPE_MISMATCH'
+  );
+
+  for (const invalidSample of [
+    null,
+    stageSample('ready->firstPr', 'bad id', 2000, 3000),
+    stageSample({[Symbol.toPrimitive]: trap}, 's1', 2000, 3000),
+    stageSample('unknown->stage', 's1', 2000, 3000),
+    stageSample('ready->firstPr', 's1', 2000, 3000, 'completed', {provenance: 'bogus'}),
+    stageSample('ready->firstPr', 's1', 3000, 2000, 'completed'),
+    stageSample('ready->firstPr', 's1', 2000, 1000001, 'completed'),
+    stageSample('ready->firstPr', 's1', 2000, 3000, 'open'),
+    stageSample('ready->firstPr', 's1', 1000001, null, 'open'),
+    stageSample('ready->firstPr', 's1', 2000, 3000, 'unknown'),
+    stageSample('ready->firstPr', 's1', 1000001, null, 'unknown'),
+    stageSample('ready->firstPr', 's1', 2000, null, 'bogus'),
+    stageSample('ready->firstPr', 's1', 2000, 3000, 'completed', {prompt: 'sensitive'})
+  ]) {
+    assert.equal(aggregateScorecardStages([invalidSample], stageQuery, [1]).reason, 'INVALID_SAMPLE');
+  }
+
+  const baseSample = stageSample('ready->firstPr', 'dup-1', 2000, 3000);
+  for (const conflict of [
+    {...baseSample, startedMs: 2001},
+    {...baseSample, endedMs: 3001},
+    {...baseSample, endedMs: null, state: 'open'}
+  ]) {
+    assert.equal(
+      aggregateScorecardStages([baseSample, conflict], stageQuery, [1]).reason,
+      'CONFLICTING_STAGE_EVIDENCE'
+    );
+  }
 });

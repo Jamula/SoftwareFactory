@@ -4,7 +4,7 @@ import {mkdtempSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {openEventJournal} from '../../tools/engineering-coordinator/event-journal.mjs';
-import {localReconcileTick,runLocalShadowHost} from '../../tools/engineering-factory/local-shadow-host.mjs';
+import {LOCAL_DIAGNOSTIC_ONLY,localReconcileTick,runLocalShadowHost} from '../../tools/engineering-factory/local-shadow-host.mjs';
 const repo={full_name:'Jamula/SoftwareFactory',id:1471342715};
 const head='a'.repeat(40),base='b'.repeat(40);
 const pull=(number=1)=>({number,head:{sha:head,repo},base:{sha:base,ref:'main',repo},state:'open',draft:false});
@@ -196,4 +196,34 @@ test('inventory failures preserve recovery receipts while cancellation remains S
    }finally{j.close();}
   }
  }
+});
+
+test('enforces local diagnostic-only guard and supports parameterized repository scopes',async()=>{
+ assert.equal(LOCAL_DIAGNOSTIC_ONLY,true);
+ const unexpected=()=>{throw Error('unexpected access');};
+ for(const bad of [{diagnosticOnly:false},{hosted:true}]){
+  assert.equal((await localReconcileTick({owner:'worker',journal:{},request:unexpected,...bad})).reason,'LOCAL_DIAGNOSTIC_ONLY');
+  assert.equal((await runLocalShadowHost({enabled:true,owner:'worker',signal:new AbortController().signal,open:unexpected,...bad})).reason,'LOCAL_DIAGNOSTIC_ONLY');
+ }
+ assert.equal((await localReconcileTick(null)).reason,'TRUST_UNKNOWN');
+ assert.equal((await runLocalShadowHost(null)).reason,'TRUST_UNKNOWN');
+ assert.equal((await localReconcileTick({get owner(){throw Error('getter');}})).reason,'TRUST_UNKNOWN');
+ assert.equal((await runLocalShadowHost({get owner(){throw Error('getter');}})).reason,'TRUST_UNKNOWN');
+ assert.equal((await localReconcileTick({repository:'Jamula/FamilyTree',owner:'worker',journal:{}})).reason,'TRUST_UNKNOWN');
+
+ const consumerRepo={full_name:'Jamula/FamilyTree',id:7070};
+ const consumerPull={number:3,head:{sha:head,repo:consumerRepo},base:{sha:base,ref:'trunk',repo:consumerRepo},state:'open',draft:false};
+ const scopedReq=async url=>{
+  assert.ok(url.startsWith('https://api.github.com/repos/Jamula/FamilyTree/'));
+  return url.includes('/pulls?')?json([{number:3}]):json(consumerPull);
+ };
+ const ctl=new AbortController(),outputs=[];
+ const j=openEventJournal(':memory:');
+ const res=await runLocalShadowHost({
+  enabled:true,path:':memory:',owner:'diag-worker',signal:ctl.signal,clock:()=>600000,
+  request:scopedReq,scope:{repository:'Jamula/FamilyTree',repositoryId:7070,branch:'trunk'},
+  open:()=>j,write:x=>outputs.push(JSON.parse(x)),wait:async()=>{ctl.abort();}
+ });
+ assert.equal(res.reason,'STOPPED');
+ assert.equal(outputs[0].reason,'SHADOW_RECONCILED');
 });

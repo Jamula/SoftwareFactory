@@ -5,14 +5,28 @@
   "type": "object",
   "additionalProperties": false,
   "required": ["schemaVersion", "project", "execution", "limits", "adapters", "lanes"],
+  "$defs": {
+    "identifier": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"},
+    "repositorySlug": {"type": "string", "maxLength": 200, "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"},
+    "repoRelativePath": {
+      "type": "string",
+      "maxLength": 200,
+      "pattern": "^[A-Za-z0-9._/-]+$",
+      "not": {"pattern": "(^/|//|/$|(^|/)\\.{1,2}(/|$))"}
+    },
+    "specialistRole": {
+      "enum": ["api", "data", "security", "test", "infra", "ui", "docs", "coordinator"]
+    },
+    "commitSha": {"type": "string", "pattern": "^[a-f0-9]{40}$"}
+  },
   "properties": {
     "schemaVersion": {"const": 1},
     "project": {
       "type": "object", "additionalProperties": false,
       "required": ["key", "repository", "defaultBranch"],
       "properties": {
-        "key": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"},
-        "repository": {"type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"},
+        "key": {"$ref": "#/$defs/identifier"},
+        "repository": {"$ref": "#/$defs/repositorySlug"},
         "defaultBranch": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]*$", "not": {"pattern": "(\\.\\.|//|/$)"}, "maxLength": 120}
       }
     },
@@ -27,7 +41,7 @@
       "type": "object", "additionalProperties": false,
       "required": ["maxConcurrentLanes", "leaseMs", "maxAttempts", "baseDelayMs", "maxDelayMs"],
       "properties": {
-        "maxConcurrentLanes": {"type": "integer", "minimum": 1, "maximum": 8},
+        "maxConcurrentLanes": {"type": "integer", "minimum": 1, "maximum": 12},
         "leaseMs": {"type": "integer", "minimum": 1000, "maximum": 3600000},
         "maxAttempts": {"type": "integer", "minimum": 1, "maximum": 5},
         "baseDelayMs": {"type": "integer", "minimum": 1, "maximum": 60000},
@@ -49,9 +63,64 @@
         "type": "object", "additionalProperties": false,
         "required": ["id", "owners", "prompt"],
         "properties": {
-          "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"},
-          "owners": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "pattern": "^[A-Za-z0-9._/-]+$", "not": {"pattern": "(^/|//|(^|/)\\.{1,2}(/|$))"}}},
-          "prompt": {"type": "string", "pattern": "^[A-Za-z0-9._/-]+$", "not": {"pattern": "(^/|//|(^|/)\\.{1,2}(/|$))"}, "maxLength": 200}
+          "id": {"$ref": "#/$defs/identifier"},
+          "specialist": {"$ref": "#/$defs/specialistRole"},
+          "owners": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/repoRelativePath"}},
+          "prompt": {"$ref": "#/$defs/repoRelativePath"}
+        }
+      }
+    },
+    "knowledgeMap": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "revision", "source", "generatedAtMs", "maxAgeMs", "components"],
+      "properties": {
+        "repository": {"$ref": "#/$defs/repositorySlug"},
+        "revision": {"$ref": "#/$defs/commitSha"},
+        "source": {"const": "trusted-default-branch"},
+        "generatedAtMs": {"type": "integer", "minimum": 0},
+        "maxAgeMs": {"type": "integer", "minimum": 1000, "maximum": 604800000},
+        "components": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "lane", "specialist", "owners", "interfaces", "decisions", "tests", "dependsOn"],
+            "properties": {
+              "id": {"$ref": "#/$defs/identifier"},
+              "lane": {"$ref": "#/$defs/identifier"},
+              "specialist": {"$ref": "#/$defs/specialistRole"},
+              "owners": {"type": "array", "minItems": 1, "maxItems": 32, "uniqueItems": true, "items": {"$ref": "#/$defs/repoRelativePath"}},
+              "interfaces": {"type": "array", "minItems": 1, "maxItems": 32, "uniqueItems": true, "items": {"$ref": "#/$defs/repoRelativePath"}},
+              "decisions": {"type": "array", "minItems": 1, "maxItems": 32, "uniqueItems": true, "items": {"$ref": "#/$defs/repoRelativePath"}},
+              "tests": {"type": "array", "minItems": 1, "maxItems": 32, "uniqueItems": true, "items": {"$ref": "#/$defs/repoRelativePath"}},
+              "dependsOn": {"type": "array", "minItems": 0, "maxItems": 32, "uniqueItems": true, "items": {"$ref": "#/$defs/identifier"}}
+            }
+          }
+        }
+      }
+    }
+  },
+  "if": {
+    "type": "object",
+    "required": ["project"],
+    "properties": {
+      "project": {
+        "type": "object",
+        "required": ["repository"],
+        "properties": {
+          "repository": {"pattern": "^[Jj][Aa][Mm][Uu][Ll][Aa]/[Ss][Oo][Ff][Tt][Ww][Aa][Rr][Ee][Ff][Aa][Cc][Tt][Oo][Rr][Yy]$"}
+        }
+      }
+    }
+  },
+  "else": {
+    "properties": {
+      "limits": {
+        "properties": {
+          "maxConcurrentLanes": {"maximum": 8}
         }
       }
     }
