@@ -489,6 +489,30 @@ test('T01 & T04: strictly separates historical proxies from all 5 verified auton
       )
     },
     {
+      // CI receipt predating candidate CI completion!
+      receipts: receipts.map(r =>
+        r.receiptId === 'gh-1-ci'
+          ? makeHostedReceipt('gh-1-ci', 'ci', {observedMs: 8_310_000})
+          : r
+      )
+    },
+    {
+      // verify-main receipt predating required PR mainVerifiedAt!
+      receipts: receipts.map(r =>
+        r.receiptId === 'gh-1-main'
+          ? makeHostedReceipt('gh-1-main', 'verify-main', {observedMs: 8_532_000})
+          : r
+      )
+    },
+    {
+      // Acceptance receipt predating issue.acceptedAt!
+      receipts: receipts.map(r =>
+        r.receiptId === 'gh-5-accept'
+          ? makeHostedReceipt('gh-5-accept', 'acceptance', {observedMs: 8_564_000})
+          : r
+      )
+    },
+    {
       receipts: [
         ...receipts,
         makeHostedReceipt('gh-uncorrelated', 'dispatch', {correlation: {traceId: null, spanId: null}})

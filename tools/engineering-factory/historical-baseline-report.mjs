@@ -1481,30 +1481,31 @@ function parseOutcomeBindings(
       return {ok: false, reason: 'INVALID_OUTCOME_BINDING'};
     }
     seenAcceptanceReceipts.add(binding.acceptanceReceiptId);
-    byIssue.set(binding.issueNumber, {binding, dispatchRec, acceptRec});
+    byIssue.set(binding.issueNumber, {binding, dispatchRec, ciRec, mainRec, acceptRec});
   }
 
   let verifiedCount = 0;
   for (const {issue} of otelAcceptedInWindow) {
     const entry = byIssue.get(issue.number);
     if (entry === undefined) continue;
-    const {binding, dispatchRec, acceptRec} = entry;
-    if (dispatchRec.observedMs < issue.readyAt || acceptRec.observedMs > issue.acceptedAt) {
+    const {binding, dispatchRec, ciRec, mainRec, acceptRec} = entry;
+    if (dispatchRec.observedMs < issue.readyAt || acceptRec.observedMs < issue.acceptedAt) {
       continue;
     }
     const reqPulls = issue.requiredPullNumbers !== null
       ? issue.requiredPullNumbers.map(num => pullsByNumber.get(num))
       : linkGraph.pullsByIssue.get(issue.number);
-    const ciLineageVerified = reqPulls.every(p => {
-      if (p.headSha === null) return false;
+    const ciAndMainReceiptsVerified = reqPulls.every(p => {
+      if (p.headSha === null || mainRec.observedMs < p.mainVerifiedAt) return false;
       const runs = completedPullHeadRuns.get(`${p.number}:${p.headSha}`) ?? [];
       return runs.some(r =>
         r.traceId === binding.traceId &&
         r.candidateEventAt >= p.createdAt &&
-        r.completedAt <= p.mergedAt
+        r.completedAt <= p.mergedAt &&
+        ciRec.observedMs >= r.completedAt
       );
     });
-    if (ciLineageVerified) verifiedCount++;
+    if (ciAndMainReceiptsVerified) verifiedCount++;
   }
 
   const allAcceptedBound = otelAcceptedInWindow.length > 0 &&
