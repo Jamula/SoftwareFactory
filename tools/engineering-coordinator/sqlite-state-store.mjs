@@ -59,16 +59,16 @@ function canonicalValue(value, depth = 0) {
 }
 
 const snapshotDigest = content => createHash('sha256').update(JSON.stringify([
-  content.schemaVersion, content.snapshotGeneration, content.exportedAt,
+  content.schemaVersion, content.snapshotGeneration, content.exportedAt, content.workGenerationFloor,
   content.lanes, content.workClaims, content.reservations
 ])).digest('hex');
 
 function normalizeSnapshot(snapshot) {
-  if (!exactRecord(snapshot, ['schemaVersion', 'snapshotGeneration', 'exportedAt',
+  if (!exactRecord(snapshot, ['schemaVersion', 'snapshotGeneration', 'exportedAt', 'workGenerationFloor',
     'lanes', 'workClaims', 'reservations', 'digest']) ||
       snapshot.schemaVersion !== 1 || !positive(snapshot.snapshotGeneration) ||
-      !time(snapshot.exportedAt) || typeof snapshot.digest !== 'string' ||
-      !/^[a-f0-9]{64}$/.test(snapshot.digest) ||
+      !time(snapshot.exportedAt) || !time(snapshot.workGenerationFloor) ||
+      typeof snapshot.digest !== 'string' || !/^[a-f0-9]{64}$/.test(snapshot.digest) ||
       !denseDataArray(snapshot.lanes, maxPersistedLanes) ||
       !denseDataArray(snapshot.workClaims, maxPersistedWorkClaims) ||
       !denseDataArray(snapshot.reservations, maxActiveReservations)) return null;
@@ -118,6 +118,7 @@ function normalizeSnapshot(snapshot) {
   return {
     content: {
       schemaVersion: 1, snapshotGeneration: snapshot.snapshotGeneration, exportedAt: snapshot.exportedAt,
+      workGenerationFloor: snapshot.workGenerationFloor,
       lanes: Object.freeze(lanes), workClaims: Object.freeze(workClaims), reservations: Object.freeze(reservations)
     },
     encodedPayloads, laneMap, workMap
@@ -159,7 +160,7 @@ export function createSQLiteStateStore(filename) {
       db.exec("CREATE TABLE coordinator_lane_work (lane_id TEXT PRIMARY KEY, generation INTEGER NOT NULL, work_key TEXT, work_generation INTEGER); INSERT INTO coordinator_lane_work SELECT lane_id, generation, '', 0 FROM coordinator_lanes");
     }
     db.exec('CREATE TABLE IF NOT EXISTS coordinator_lane_checkpoints (lane_id TEXT PRIMARY KEY, generation INTEGER NOT NULL, checkpoint_revision INTEGER NOT NULL)');
-    db.exec('CREATE TABLE IF NOT EXISTS coordinator_snapshot_fence (id INTEGER PRIMARY KEY CHECK (id = 1), snapshot_generation INTEGER NOT NULL, last_snapshot_at INTEGER NOT NULL, observed_at INTEGER NOT NULL); INSERT OR IGNORE INTO coordinator_snapshot_fence VALUES (1, 0, 0, 0)');
+    db.exec('CREATE TABLE IF NOT EXISTS coordinator_snapshot_fence (id INTEGER PRIMARY KEY CHECK (id = 1), snapshot_generation INTEGER NOT NULL, last_snapshot_at INTEGER NOT NULL, observed_at INTEGER NOT NULL, work_generation_floor INTEGER NOT NULL DEFAULT 0); INSERT OR IGNORE INTO coordinator_snapshot_fence VALUES (1, 0, 0, 0, 0)');
     db.exec('COMMIT');
   } catch (error) {
     try { db.exec('ROLLBACK'); } catch {}
@@ -169,12 +170,16 @@ export function createSQLiteStateStore(filename) {
   const read = db.prepare('SELECT lane_id, generation, owner, lease_until, payload FROM coordinator_lanes WHERE lane_id = ?');
   const countLanes = db.prepare('SELECT count(*) AS total FROM coordinator_lanes');
   const countWork = db.prepare('SELECT count(*) AS total FROM coordinator_work_claims');
+  const maxEvictableWorkGen = db.prepare('SELECT coalesce(max(generation), 0) AS max_generation FROM coordinator_work_claims WHERE lease_until <= ? AND NOT EXISTS (SELECT 1 FROM coordinator_lane_work WHERE coordinator_lane_work.work_key = coordinator_work_claims.work_key)');
+  const pruneInactiveWork = db.prepare('DELETE FROM coordinator_work_claims WHERE lease_until <= ? AND NOT EXISTS (SELECT 1 FROM coordinator_lane_work WHERE coordinator_lane_work.work_key = coordinator_work_claims.work_key)');
+  const deleteWorkByKey = db.prepare('DELETE FROM coordinator_work_claims WHERE work_key = ?');
   const exportLanes = db.prepare('SELECT l.lane_id, l.generation, l.owner, l.lease_until, l.payload, w.work_key, w.work_generation, coalesce(c.checkpoint_revision, 0) AS checkpoint_revision FROM coordinator_lanes AS l LEFT JOIN coordinator_lane_work AS w ON w.lane_id = l.lane_id AND w.generation = l.generation LEFT JOIN coordinator_lane_checkpoints AS c ON c.lane_id = l.lane_id AND c.generation = l.generation ORDER BY l.lane_id ASC');
   const exportWork = db.prepare('SELECT work_key, lane_id, generation, owner, lease_until FROM coordinator_work_claims ORDER BY work_key ASC');
   const exportReservations = db.prepare('SELECT lane_id, expires FROM coordinator_reservations WHERE expires > ? ORDER BY lane_id ASC');
-  const readFence = db.prepare('SELECT snapshot_generation, last_snapshot_at, observed_at FROM coordinator_snapshot_fence WHERE id = 1');
-  const writeFence = db.prepare('UPDATE coordinator_snapshot_fence SET snapshot_generation = ?, last_snapshot_at = ?, observed_at = max(observed_at, ?) WHERE id = 1');
+  const readFence = db.prepare('SELECT snapshot_generation, last_snapshot_at, observed_at, work_generation_floor FROM coordinator_snapshot_fence WHERE id = 1');
+  const writeFence = db.prepare('UPDATE coordinator_snapshot_fence SET snapshot_generation = ?, last_snapshot_at = ?, observed_at = max(observed_at, ?), work_generation_floor = max(work_generation_floor, ?) WHERE id = 1');
   const bumpObserved = db.prepare('UPDATE coordinator_snapshot_fence SET observed_at = max(observed_at, ?) WHERE id = 1');
+  const bumpWorkFloor = db.prepare('UPDATE coordinator_snapshot_fence SET work_generation_floor = max(work_generation_floor, ?) WHERE id = 1');
   const hasActiveLocalLease = db.prepare('SELECT 1 AS active WHERE EXISTS (SELECT 1 FROM coordinator_lanes WHERE lease_until > ?) OR EXISTS (SELECT 1 FROM coordinator_work_claims WHERE lease_until > ?)');
   const live = db.prepare('SELECT lane_id FROM coordinator_lanes WHERE lease_until > ? UNION SELECT lane_id FROM coordinator_reservations WHERE expires > ?');
   const prune = db.prepare('DELETE FROM coordinator_reservations WHERE expires <= ?');
@@ -233,13 +238,21 @@ export function createSQLiteStateStore(filename) {
           return null;
         }
         const current = read.get(laneId);
-        if ((!current && countLanes.get().total >= maxPersistedLanes) ||
-            (workKey !== null && !currentWork && countWork.get().total >= maxPersistedWorkClaims)) {
+        if (!current && countLanes.get().total >= maxPersistedLanes) {
           db.exec('ROLLBACK');
           return null;
         }
+        if (workKey !== null && !currentWork && countWork.get().total >= maxPersistedWorkClaims) {
+          const evictedMax = maxEvictableWorkGen.get(now).max_generation;
+          if (Number(pruneInactiveWork.run(now).changes) < 1) {
+            db.exec('ROLLBACK');
+            return null;
+          }
+          bumpWorkFloor.run(evictedMax);
+        }
+        const workFloor = workKey === null ? 0 : readFence.get().work_generation_floor;
         const generation = current ? current.generation + 1 : 1;
-        const workGeneration = workKey === null ? null : currentWork ? currentWork.generation + 1 : 1;
+        const workGeneration = workKey === null ? null : Math.max(currentWork?.generation ?? 0, workFloor) + 1;
         if (!Number.isSafeInteger(generation) || (workKey !== null && !Number.isSafeInteger(workGeneration))) {
           db.exec('ROLLBACK');
           return null;
@@ -369,18 +382,20 @@ export function createSQLiteStateStore(filename) {
         }));
         const content = {
           schemaVersion: 1, snapshotGeneration, exportedAt: now,
+          workGenerationFloor: fence.work_generation_floor,
           lanes: Object.freeze(lanes), workClaims: Object.freeze(workClaims),
           reservations: Object.freeze(reservations)
         };
         const laneMap = new Map(lanes.map(item => [item.laneId, item]));
         const workMap = new Map(workClaims.map(item => [item.workKey, item]));
-        if (lanes.length > maxPersistedLanes || workClaims.length > maxPersistedWorkClaims ||
+        if (!time(fence.work_generation_floor) ||
+            lanes.length > maxPersistedLanes || workClaims.length > maxPersistedWorkClaims ||
             reservations.length > maxActiveReservations ||
             !pairedLeasesConsistent({content, laneMap, workMap})) {
           db.exec('ROLLBACK');
           return snapshotFailure('CORRUPT_STATE');
         }
-        writeFence.run(snapshotGeneration, now, now);
+        writeFence.run(snapshotGeneration, now, now, fence.work_generation_floor);
         db.exec('COMMIT');
         return Object.freeze({
           ok: true, reason: 'SNAPSHOT_EXPORTED',
@@ -406,7 +421,8 @@ export function createSQLiteStateStore(filename) {
           db.exec('ROLLBACK');
           return snapshotFailure('CLOCK_ROLLBACK');
         }
-        if (content.snapshotGeneration <= fence.snapshot_generation) {
+        if (content.snapshotGeneration <= fence.snapshot_generation ||
+            content.workGenerationFloor < fence.work_generation_floor) {
           db.exec('ROLLBACK');
           return snapshotFailure('STALE_GENERATION');
         }
@@ -460,9 +476,20 @@ export function createSQLiteStateStore(filename) {
             }
           }
         }
-        for (const row of exportWork.all()) {
+        const localWorkRows = exportWork.all();
+        const localWorkKeys = new Set(localWorkRows.map(row => row.work_key));
+        const compactedLocalWorkKeys = [];
+        for (const row of localWorkRows) {
           const incoming = workMap.get(row.work_key);
-          if (!incoming || incoming.generation < row.generation) {
+          if (!incoming) {
+            if (row.generation <= content.workGenerationFloor) {
+              compactedLocalWorkKeys.push(row.work_key);
+              continue;
+            }
+            db.exec('ROLLBACK');
+            return snapshotFailure('STALE_GENERATION');
+          }
+          if (incoming.generation < row.generation) {
             db.exec('ROLLBACK');
             return snapshotFailure('STALE_GENERATION');
           }
@@ -478,7 +505,13 @@ export function createSQLiteStateStore(filename) {
             }
           }
         }
+        if (content.workClaims.some(claim =>
+          !localWorkKeys.has(claim.workKey) && claim.generation <= fence.work_generation_floor)) {
+          db.exec('ROLLBACK');
+          return snapshotFailure('STALE_GENERATION');
+        }
         prune.run(now);
+        for (const workKey of compactedLocalWorkKeys) deleteWorkByKey.run(workKey);
         for (const lane of content.lanes) {
           put.run(lane.laneId, lane.generation, lane.owner, lane.leaseUntil, encodedPayloads.get(lane.laneId));
           putAssociation.run(lane.laneId, lane.generation, lane.workKey, lane.workGeneration);
@@ -488,7 +521,7 @@ export function createSQLiteStateStore(filename) {
           putWork.run(claim.workKey, claim.laneId, claim.generation, claim.owner, claim.leaseUntil);
         for (const reservation of retainedIncomingReservations)
           reserve.run(reservation.laneId, reservation.expires);
-        writeFence.run(content.snapshotGeneration, content.exportedAt, now);
+        writeFence.run(content.snapshotGeneration, content.exportedAt, now, content.workGenerationFloor);
         db.exec('COMMIT');
         return Object.freeze({
           ok: true, reason: 'SNAPSHOT_IMPORTED', snapshotGeneration: content.snapshotGeneration

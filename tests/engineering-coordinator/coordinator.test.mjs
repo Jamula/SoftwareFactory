@@ -661,6 +661,56 @@ test('enforces a single lane-wide deadline across sequential partial waits and s
   });
   assert.equal(syncInspect.completed[0].reason, 'EXECUTION_TIMEOUT');
   assert.equal(postInspectReads, 1);
+
+  // Synchronous overrun inside store.renew() during heartbeat aborts cancellation without releasing early,
+  // and during beforeCheckpoint blocks checkpointing and releases cleanly instead of returning shadow-reviewed.
+  let heartbeatRenewCount = 0;
+  let heartbeatReleases = 0;
+  let renewAbortSignal;
+  const renewEntered = Promise.withResolvers();
+  const overrunHeartbeatRenew = runTick({
+    config: {...config(), limits: {...config().limits, leaseMs: 1000}},
+    tasks: [tasks()[0]], workerId: 'worker', now: 1000, maxExecutionMs: 1000,
+    tracker,
+    store: {
+      ...backingStore,
+      renew: (...args) => {
+        if (++heartbeatRenewCount === 2) monoNow += 1200;
+        return backingStore.renew(...args);
+      },
+      release: () => { heartbeatReleases++; return true; }
+    },
+    agent: {inspect: (_task, context) => {
+      renewAbortSignal = context.signal;
+      renewEntered.resolve();
+      return new Promise(() => {});
+    }}
+  });
+  await renewEntered.promise;
+  t.mock.timers.tick(333);
+  assert.equal((await overrunHeartbeatRenew).completed[0].reason, 'EXECUTION_TIMEOUT');
+  assert.equal(renewAbortSignal.aborted, true);
+  assert.equal(heartbeatReleases, 0);
+
+  let checkpointRenewCount = 0;
+  let lateCheckpoints = 0;
+  let lateReleases = 0;
+  const overrunFinalRenew = await runTick({
+    config: config(), tasks: [tasks()[0]], workerId: 'worker', now: 1000, maxExecutionMs: 500,
+    tracker, agent,
+    store: {
+      ...backingStore,
+      renew: (...args) => {
+        if (++checkpointRenewCount === 2) monoNow += 600;
+        return backingStore.renew(...args);
+      },
+      checkpoint: () => { lateCheckpoints++; return true; },
+      release: () => { lateReleases++; return true; }
+    }
+  });
+  assert.equal(overrunFinalRenew.completed[0].reason, 'EXECUTION_TIMEOUT');
+  assert.equal(lateCheckpoints, 0);
+  assert.equal(lateReleases, 1);
 });
 
 test('recovers cross-run state across stateless SQLite stores via fenced snapshots', async () => {

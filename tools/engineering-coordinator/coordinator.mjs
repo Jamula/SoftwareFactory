@@ -65,9 +65,10 @@ export async function runTick({
       try {
         const renewed = store.renew(item.lane, claim.generation, workerId, observed.time, config.limits.leaseMs,
           workKey, claim.workGeneration);
-        return renewed && Number.isSafeInteger(observed.time + config.limits.leaseMs) &&
-          Number.isSafeInteger(renewed.leaseUntil) && renewed.leaseUntil >= observed.time + config.limits.leaseMs ?
-          observed : {reason: 'LEASE_LOST'};
+        if (!renewed || !Number.isSafeInteger(observed.time + config.limits.leaseMs) ||
+            !Number.isSafeInteger(renewed.leaseUntil) || renewed.leaseUntil < observed.time + config.limits.leaseMs)
+          return {reason: 'LEASE_LOST'};
+        return timedOut() ? {reason: 'EXECUTION_TIMEOUT'} : observed;
       } catch { return {reason: 'LEASE_UNAVAILABLE'}; }
     };
     let laneTimer;

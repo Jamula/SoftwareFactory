@@ -478,7 +478,7 @@ test('rejects tampered digests and malformed or internally inconsistent snapshot
 
 function rehash(snap) {
   const digest = createHash('sha256').update(JSON.stringify([
-    snap.schemaVersion, snap.snapshotGeneration, snap.exportedAt,
+    snap.schemaVersion, snap.snapshotGeneration, snap.exportedAt, snap.workGenerationFloor,
     snap.lanes, snap.workClaims, snap.reservations
   ])).digest('hex');
   return {...snap, digest};
@@ -747,5 +747,79 @@ test('fences same-generation lease resurrection, checkpoint clobbering, proto pa
   } finally {
     runner1.close();
     runner2.close();
+  }
+}));
+
+test('compacts released work-claim history above 10,000 issues using workGenerationFloor without resetting generations or accepting stale snapshots', () => withDb(filename => {
+  const source = createSQLiteStateStore(filename);
+  const preCompactionPeer = createSQLiteStateStore(':memory:');
+  try {
+    const initial = source.claim('api', 'worker-a', 1000, 1000, 4, 'example/alpha#10000');
+    assert.equal(source.release('api', initial.generation, 'worker-a', 1100,
+      initial.workKey, initial.workGeneration), true);
+
+    const db = new DatabaseSync(filename);
+    db.exec('BEGIN IMMEDIATE');
+    const seedWork = db.prepare('INSERT INTO coordinator_work_claims(work_key,lane_id,generation,owner,lease_until) VALUES(?,?,?,?,0)');
+    seedWork.run('example/alpha#1', 'api', 7, 'worker-old');
+    for (let id = 2; id <= 9999; id++) seedWork.run(`example/alpha#${id}`, 'api', 1, 'worker-old');
+    db.exec('COMMIT');
+
+    // Sync peer with pre-compaction state containing #1..#10000.
+    const preSnap = source.exportSnapshot(1200).snapshot;
+    assert.equal(preSnap.workClaims.length, 10000);
+    assert.equal(preSnap.workGenerationFloor, 0);
+    assert.equal(preCompactionPeer.importSnapshot(preSnap, 1250).ok, true);
+
+    // Claiming unseen issue #10001 compacts inactive unreferenced #1..#9999 into workGenerationFloor = 7 and assigns workGeneration = 8.
+    const nextNew = source.claim('web', 'worker-b', 1300, 1000, 4, 'example/alpha#10001');
+    assert.equal(nextNew.workGeneration, 8);
+    assert.equal(source.release('web', nextNew.generation, 'worker-b', 1350,
+      nextNew.workKey, nextNew.workGeneration), true);
+
+    // Re-claiming previously evicted #1 never resets to 1; it receives workGeneration >= 8 (> old generation 7).
+    const reclaimedEvicted = source.claim('docs', 'worker-c', 1400, 1000, 4, 'example/alpha#1');
+    assert.equal(reclaimedEvicted.workGeneration, 8);
+    assert.equal(source.renew('web', 1, 'worker-old', 1450, 1000, 'example/alpha#1', 7), null);
+    assert.equal(source.release('docs', reclaimedEvicted.generation, 'worker-c', 1450,
+      reclaimedEvicted.workKey, reclaimedEvicted.workGeneration), true);
+
+    const postSnap = source.exportSnapshot(1500).snapshot;
+    assert.equal(postSnap.workGenerationFloor, 7);
+    assert.equal(postSnap.workClaims.length, 3);
+
+    // Importing post-compaction snapshot into preCompactionPeer prunes compacted rows and enforces the floor.
+    assert.equal(preCompactionPeer.importSnapshot(postSnap, 1600).ok, true);
+    assert.equal(preCompactionPeer.exportSnapshot(1650).snapshot.workGenerationFloor, 7);
+
+    // Rejects lower workGenerationFloor and rejects re-introducing an evicted workKey at generation <= floor (7).
+    assert.equal(preCompactionPeer.importSnapshot(rehash({
+      ...postSnap, snapshotGeneration: 10, exportedAt: 1700, workGenerationFloor: 6
+    }), 1750).reason, 'STALE_GENERATION');
+    assert.equal(preCompactionPeer.importSnapshot(rehash({
+      ...postSnap,
+      snapshotGeneration: 10,
+      exportedAt: 1700,
+      lanes: [
+        ...postSnap.lanes,
+        {laneId: 'stale', generation: 1, owner: 'w', leaseUntil: 0, payload: {},
+          workKey: 'example/alpha#2', workGeneration: 7, checkpointRevision: 0}
+      ].sort((a, b) => a.laneId < b.laneId ? -1 : 1),
+      workClaims: [
+        ...postSnap.workClaims,
+        {workKey: 'example/alpha#2', laneId: 'stale', generation: 7, owner: 'w', leaseUntil: 0}
+      ].sort((a, b) => a.workKey < b.workKey ? -1 : 1)
+    }), 1750).reason, 'STALE_GENERATION');
+
+    // If 10,000 unexpired work claims exist with zero evictable rows, claim fails closed.
+    db.exec('BEGIN IMMEDIATE; DELETE FROM coordinator_work_claims;');
+    const seedActive = db.prepare('INSERT INTO coordinator_work_claims(work_key,lane_id,generation,owner,lease_until) VALUES(?,?,?,?,9000)');
+    for (let id = 1; id <= 10000; id++) seedActive.run(`example/beta#${id}`, 'web', 1, 'worker-live');
+    db.exec('COMMIT');
+    db.close();
+    assert.equal(source.claim('qa', 'worker-d', 2000, 1000, 4, 'example/beta#10001'), null);
+  } finally {
+    source.close();
+    preCompactionPeer.close();
   }
 }));
