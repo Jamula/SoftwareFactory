@@ -1,0 +1,1410 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {
+  LOGICAL_LANE_CLASSIFICATION,
+  LOGICAL_LANE_TIERS,
+  PINNED_DOTNET_MAF_RUNTIME,
+  PINNED_NODE_RUNTIME,
+  SOFTWARE_FACTORY_REPOSITORY,
+  SOFTWARE_FACTORY_REPOSITORY_ID,
+  SPELLBOOK_MAX_CONCURRENCY,
+  THROUGHPUT_COHORT_MULTIPLIERS,
+  TWO_MINUTE_DRAIN_STRETCH_MS,
+  allocatePortfolioCapacityAndSimulateTrains,
+  evaluateDotnetConsolidationBenchmark
+} from '../../tools/engineering-factory/portfolio-train-benchmark.mjs';
+
+const sha = ch => ch.repeat(40);
+const MAIN_SHA = sha('a');
+const HEAD_1 = sha('b');
+const HEAD_2 = sha('c');
+const SQUASH_1 = sha('1');
+const SQUASH_2 = sha('2');
+const WORKLOAD_SHA = sha('e');
+const GATE_SET_SHA = sha('f');
+
+const baseReceipt = () => ({
+  receiptId: 'hs-portfolio-001',
+  provider: 'github-copilot',
+  includedOnly: true,
+  overageDisabled: true,
+  hardStopEnforced: true,
+  paidUsageMicros: 0,
+  observedMs: 100000
+});
+
+const baseBudget = (overrides = {}) => ({
+  stop: false,
+  environmentVerified: true,
+  includedOnly: true,
+  overageDisabled: true,
+  authorityVerified: true,
+  nowMs: 110000,
+  observedMs: 105000,
+  remaining: 120,
+  reserved: 20,
+  active: 2,
+  maxActive: 6,
+  unitsPerRun: 10,
+  hardStopReceipt: baseReceipt(),
+  ...overrides
+});
+
+const makeCredential = (id, repoSlug, overrides = {}) => ({
+  credentialId: id,
+  scope: 'repo-read-only-shadow',
+  allowedRepositories: [repoSlug],
+  sharedAdminToken: false,
+  persistedInCheckout: false,
+  ...overrides
+});
+
+const makeTrainCandidate = (pr, overrides = {}) => ({
+  pr,
+  head: HEAD_1,
+  observedHead: HEAD_1,
+  expectedBase: MAIN_SHA,
+  compatibleBase: true,
+  checksPassed: true,
+  reviewState: 'APPROVED',
+  independentReview: true,
+  unresolvedFindings: 0,
+  securityClear: true,
+  threadsResolved: true,
+  authorityVerified: true,
+  coveredLines: 990,
+  totalLines: 1000,
+  coveredBranches: 960,
+  totalBranches: 1000,
+  ownedPaths: [`src/feature-${pr}`],
+  simulatedSquashSha: String(pr).padStart(40, '1'),
+  postMergeMainHealthy: true,
+  eligibleToMergeMs: 25000,
+  postMergeVerifyMs: 15000,
+  blockedMs: 1000,
+  ...overrides
+});
+
+const makeRepo = ({
+  repositoryId,
+  repository,
+  localConcurrencyCap,
+  maxConcurrency = localConcurrencyCap,
+  minLinePercent,
+  minBranchPercent,
+  credentialId,
+  inFlightLeases = [],
+  candidates = [],
+  mainHealthy = true,
+  killSwitch = false,
+  defaultBranch = 'main',
+  mergeQueueOverrides = {},
+  overrides = {}
+}) => ({
+  repositoryId,
+  repository,
+  enrolled: true,
+  ownerAuthorized: true,
+  killSwitch,
+  localConcurrencyCap,
+  maxConcurrency,
+  minLinePercent,
+  minBranchPercent,
+  credential: makeCredential(credentialId, repository),
+  inFlightLeases,
+  train: {
+    defaultBranch,
+    mainSha: MAIN_SHA,
+    mainHealthy,
+    mergeQueue: {
+      mode: 'native-merge-queue',
+      supported: true,
+      ownerApproved: true,
+      costVerified: true,
+      incrementalSpendMicros: 0,
+      ...mergeQueueOverrides
+    },
+    candidates
+  },
+  ...overrides
+});
+
+const factoryRepo = (opts = {}) => makeRepo({
+  repositoryId: SOFTWARE_FACTORY_REPOSITORY_ID,
+  repository: SOFTWARE_FACTORY_REPOSITORY,
+  localConcurrencyCap: 4,
+  minLinePercent: 98,
+  minBranchPercent: 95,
+  credentialId: 'cred-sf',
+  ...opts
+});
+
+const spellbookRepo = (opts = {}) => makeRepo({
+  repositoryId: 200004,
+  repository: 'example/spellbook',
+  localConcurrencyCap: SPELLBOOK_MAX_CONCURRENCY,
+  minLinePercent: 97,
+  minBranchPercent: 90,
+  credentialId: 'cred-spellbook',
+  ...opts
+});
+
+const familyTreeRepo = (opts = {}) => makeRepo({
+  repositoryId: 200003,
+  repository: 'example/family-tree',
+  localConcurrencyCap: 1,
+  minLinePercent: 95,
+  minBranchPercent: 90,
+  credentialId: 'cred-familytree',
+  ...opts
+});
+
+const familyHubRepo = (opts = {}) => makeRepo({
+  repositoryId: 200005,
+  repository: 'example/family-hub',
+  localConcurrencyCap: 2,
+  minLinePercent: 100,
+  minBranchPercent: 100,
+  credentialId: 'cred-familyhub',
+  defaultBranch: 'trunk',
+  ...opts
+});
+
+const makeWorkItem = (repositoryId, issue, criticalPathRank = 1, ownedPaths = [`src/item-${issue}`]) => ({
+  repositoryId,
+  issue,
+  laneId: `lane-${repositoryId}-${issue}`,
+  head: HEAD_2,
+  criticalPathRank,
+  ownedPaths
+});
+
+test('gives SoftwareFactory (1471342715) strict first-claim priority without cancelling in-flight consumer leases and enforces Spellbook <= 2', () => {
+  const spellbookLease = {
+    leaseId: 'lease-sb-active-1',
+    issue: 101,
+    laneId: 'lane-sb-active',
+    head: HEAD_1,
+    ownedPaths: ['ios/active']
+  };
+  const familyTreeLease = {
+    leaseId: 'lease-ft-active-1',
+    issue: 201,
+    laneId: 'lane-ft-active',
+    head: HEAD_1,
+    ownedPaths: ['src/tree-active']
+  };
+
+  // Budget maxActive=6, active=2 (both held by consumers) -> 4 available slots.
+  const result = allocatePortfolioCapacityAndSimulateTrains({
+    stop: false,
+    budget: baseBudget({active: 2, maxActive: 6}),
+    repositories: [
+      spellbookRepo({
+        inFlightLeases: [spellbookLease],
+        candidates: [
+          makeTrainCandidate(11, {simulatedSquashSha: SQUASH_1, eligibleToMergeMs: 30000, postMergeVerifyMs: 20000}),
+          makeTrainCandidate(12, {expectedBase: SQUASH_1, simulatedSquashSha: SQUASH_2, eligibleToMergeMs: 25000, postMergeVerifyMs: 15000})
+        ]
+      }),
+      familyTreeRepo({inFlightLeases: [familyTreeLease]}),
+      familyHubRepo(),
+      factoryRepo({
+        candidates: [
+          makeTrainCandidate(1, {reviewState: 'COMMENTED_CLEAR', simulatedSquashSha: SQUASH_1})
+        ]
+      })
+    ],
+    workItems: [
+      // Overlaps active Spellbook in-flight lease ios/active -> deferred by path overlap
+      makeWorkItem(200004, 104, 1, ['ios/active/module.swift']),
+      // Even though Spellbook has rank 1, SoftwareFactory (1471342715) claims first!
+      makeWorkItem(200004, 102, 1, ['src/sb-1']),
+      makeWorkItem(200004, 103, 1, ['src/sb-2']),
+      makeWorkItem(200005, 301, 2, ['app/hub-1']),
+      makeWorkItem(200005, 302, 2, ['app/hub-2']),
+      makeWorkItem(SOFTWARE_FACTORY_REPOSITORY_ID, 16, 3, ['tools/sf-b']),
+      makeWorkItem(SOFTWARE_FACTORY_REPOSITORY_ID, 14, 1, ['tools/sf-a']),
+      // Overlaps tools/sf-a -> deferred by path overlap without consuming a slot
+      makeWorkItem(SOFTWARE_FACTORY_REPOSITORY_ID, 17, 2, ['tools/sf-a/sub'])
+    ]
+  });
+
+  assert.equal(result.valid, true);
+  assert.equal(result.shadow, true);
+  assert.equal(result.liveDispatch, false);
+  assert.equal(result.liveMerge, false);
+  assert.equal(result.reason, 'PORTFOLIO_SHADOW_ALLOCATED');
+  assert.equal(result.cancelledInFlightLeases, 0);
+  assert.equal(result.preservedInFlightLeases.length, 2);
+  assert.deepEqual(
+    result.preservedInFlightLeases.map(l => l.leaseId),
+    ['lease-sb-active-1', 'lease-ft-active-1']
+  );
+  assert.equal(result.logicalLaneClassification, LOGICAL_LANE_CLASSIFICATION);
+  assert.equal(result.logicalLanesAreConcurrentAgentAuthorization, false);
+  assert.equal(result.authorizedConcurrentWorkers, 0);
+
+  // 4 available slots:
+  // 1) SF issue 14 (rank 1)
+  // 2) SF issue 16 (rank 3) [SF issue 17 deferred due to path overlap]
+  // 3) Spellbook issue 102 (rank 1 -> brings Spellbook to 1 in-flight + 1 allocated = 2 == cap!)
+  //    Spellbook issue 103 is capped at 2 (REPO_CONCURRENCY_CAP_REACHED)!
+  // 4) FamilyHub issue 301 (rank 2); FamilyHub issue 302 deferred (PORTFOLIO_CAPACITY_EXHAUSTED)
+  assert.deepEqual(
+    result.allocatedWorkItems.map(w => ({repo: w.repository, issue: w.issue, tier: w.priorityTier})),
+    [
+      {repo: 'Jamula/SoftwareFactory', issue: 14, tier: 'softwarefactory-first-claim'},
+      {repo: 'Jamula/SoftwareFactory', issue: 16, tier: 'softwarefactory-first-claim'},
+      {repo: 'example/spellbook', issue: 102, tier: 'consumer-fair-critical-path'},
+      {repo: 'example/family-hub', issue: 301, tier: 'consumer-fair-critical-path'}
+    ]
+  );
+
+  const deferredByIssue = new Map(result.deferredWorkItems.map(d => [d.issue, d.reason]));
+  assert.equal(deferredByIssue.get(17), 'PATH_OVERLAP_DEFERRED');
+  assert.equal(deferredByIssue.get(104), 'PATH_OVERLAP_DEFERRED');
+  assert.equal(deferredByIssue.get(103), 'REPO_CONCURRENCY_CAP_REACHED');
+  assert.equal(deferredByIssue.get(302), 'PORTFOLIO_CAPACITY_EXHAUSTED');
+
+  const sbSummary = result.repositoryResults.find(r => r.repository === 'example/spellbook');
+  assert.equal(sbSummary.effectiveActiveCount, 2);
+  assert.equal(sbSummary.train.trainStatus, 'TRAIN_DRAINED');
+  assert.deepEqual(sbSummary.train.mergedPrs, [11, 12]);
+  assert.equal(sbSummary.train.rebasesPerformed, 0);
+  assert.equal(sbSummary.train.lastMergeReceiptMs, 75000);
+  assert.equal(sbSummary.train.verifiedMainMs, 90000);
+  assert.equal(sbSummary.train.p50MergeMs, 25000);
+  assert.equal(sbSummary.train.p95MergeMs, 30000);
+  assert.equal(sbSummary.train.withinTwoMinuteStretchTarget, true);
+  assert.equal(sbSummary.train.stretchTargetMs, TWO_MINUTE_DRAIN_STRETCH_MS);
+  assert.equal(sbSummary.train.stretchTargetOnly, true);
+
+  const sfSummary = result.repositoryResults.find(r => r.repository === SOFTWARE_FACTORY_REPOSITORY);
+  assert.deepEqual(sfSummary.train.mergedPrs, [1]);
+});
+
+test('never cancels active consumer leases when capacity is exhausted and classifies 20-50 logical lanes as non-authorizing stretch', () => {
+  const activeConsumerLease = {
+    leaseId: 'lease-consumer-full',
+    issue: 500,
+    laneId: 'lane-consumer-500',
+    head: HEAD_1,
+    ownedPaths: ['src/core']
+  };
+  const twentyFourItems = Array.from({length: 24}, (_, idx) =>
+    makeWorkItem(SOFTWARE_FACTORY_REPOSITORY_ID, idx + 1, 1, [`tools/mod-${idx}`])
+  );
+
+  const result = allocatePortfolioCapacityAndSimulateTrains({
+    stop: false,
+    budget: baseBudget({active: 1, maxActive: 1}),
+    repositories: [
+      spellbookRepo({inFlightLeases: [activeConsumerLease]}),
+      factoryRepo({maxConcurrency: 4})
+    ],
+    workItems: twentyFourItems
+  });
+
+  assert.equal(result.valid, true);
+  assert.equal(result.reason, 'PORTFOLIO_EVALUATED_NO_NEW_ALLOCATION');
+  assert.equal(result.budgetAvailable, 0);
+  assert.equal(result.cancelledInFlightLeases, 0);
+  assert.equal(result.preservedInFlightLeases.length, 1);
+  assert.equal(result.allocatedWorkItems.length, 0);
+  assert.equal(result.logicalLanesTotal, 25);
+  assert.equal(result.withinArchitecturalStretchBand20To50, true);
+  assert.equal(result.logicalLanesAreConcurrentAgentAuthorization, false);
+  assert.equal(result.authorizedConcurrentWorkers, 0);
+  // First 4 viable SF items hit PORTFOLIO_CAPACITY_EXHAUSTED (activeCount stays 0 < 4)
+  assert.equal(result.deferredWorkItems.length, 24);
+  assert.equal(result.deferredWorkItems.every(d => d.reason === 'PORTFOLIO_CAPACITY_EXHAUSTED'), true);
+});
+
+test('isolates red main (both initial and post-merge) and per-repo kill switches strictly to the affected repository', () => {
+  const result = allocatePortfolioCapacityAndSimulateTrains({
+    stop: false,
+    budget: baseBudget({active: 0, maxActive: 6}),
+    repositories: [
+      // Repo 1: initial red main -> blocks ONLY family-tree train & work items
+      familyTreeRepo({
+        mainHealthy: false,
+        candidates: [makeTrainCandidate(31, {simulatedSquashSha: SQUASH_1})]
+      }),
+      // Repo 2: mid-train post-merge red main -> PR 41 merges then fails main, halting PR 42 and blocking spellbook work items
+      spellbookRepo({
+        candidates: [
+          makeTrainCandidate(41, {simulatedSquashSha: SQUASH_1, postMergeMainHealthy: false}),
+          makeTrainCandidate(42, {simulatedSquashSha: SQUASH_2, ownedPaths: ['src/other']})
+        ]
+      }),
+      // Repo 3: local per-repo killSwitch -> stops ONLY family-hub
+      familyHubRepo({
+        killSwitch: true,
+        candidates: [
+          makeTrainCandidate(51, {
+            simulatedSquashSha: SQUASH_1,
+            coveredLines: 1000,
+            coveredBranches: 1000
+          })
+        ]
+      }),
+      // Repo 4: healthy SoftwareFactory -> unaffected by all 3 peer stops/failures!
+      factoryRepo({
+        candidates: [makeTrainCandidate(61, {simulatedSquashSha: SQUASH_1})]
+      })
+    ],
+    workItems: [
+      makeWorkItem(200003, 1, 1),
+      makeWorkItem(200004, 2, 1),
+      makeWorkItem(200005, 3, 1),
+      makeWorkItem(SOFTWARE_FACTORY_REPOSITORY_ID, 4, 1)
+    ]
+  });
+
+  assert.equal(result.valid, true);
+  assert.equal(result.crossRepoMainFailureSpillover, false);
+  assert.deepEqual(result.isolatedUnhealthyMainRepositories, ['example/family-tree', 'example/spellbook']);
+  assert.deepEqual(result.unaffectedHealthyRepositories, [SOFTWARE_FACTORY_REPOSITORY]);
+  assert.deepEqual(result.allocatedWorkItems.map(w => w.repository), [SOFTWARE_FACTORY_REPOSITORY]);
+
+  const byRepo = new Map(result.repositoryResults.map(r => [r.repository, r]));
+
+  const ft = byRepo.get('example/family-tree');
+  assert.equal(ft.train.trainStatus, 'BLOCKED_MAIN_UNHEALTHY');
+  assert.equal(ft.train.tripRepoKillSwitch, true);
+  assert.deepEqual(ft.train.mergedPrs, []);
+  assert.deepEqual(ft.train.blockedAfterMainFailurePrs, [31]);
+
+  const sb = byRepo.get('example/spellbook');
+  assert.equal(sb.train.trainStatus, 'HALTED_ON_POST_MERGE_MAIN_FAILURE');
+  assert.equal(sb.train.tripRepoKillSwitch, true);
+  assert.deepEqual(sb.train.mergedPrs, [41]);
+  assert.deepEqual(sb.train.blockedAfterMainFailurePrs, [42]);
+  assert.equal(sb.train.withinTwoMinuteStretchTarget, false);
+
+  const fh = byRepo.get('example/family-hub');
+  assert.equal(fh.train.trainStatus, 'STOPPED_BY_KILL_SWITCH');
+  assert.equal(fh.train.tripRepoKillSwitch, true);
+  assert.deepEqual(fh.train.isolatedCandidates, [{pr: 51, reason: 'STOPPED_BY_KILL_SWITCH'}]);
+
+  const sf = byRepo.get(SOFTWARE_FACTORY_REPOSITORY);
+  assert.equal(sf.train.trainStatus, 'TRAIN_DRAINED');
+  assert.equal(sf.train.mergeQueueMode, 'native-merge-queue');
+  assert.deepEqual(sf.train.mergedPrs, [61]);
+
+  const deferredMap = new Map(result.deferredWorkItems.map(d => [d.repository, d.reason]));
+  assert.equal(deferredMap.get('example/family-tree'), 'REPO_MAIN_UNHEALTHY');
+  assert.equal(deferredMap.get('example/spellbook'), 'REPO_MAIN_UNHEALTHY');
+  assert.equal(deferredMap.get('example/family-hub'), 'REPO_KILL_SWITCH_ACTIVE');
+});
+
+test('simulates fair round-robin consumer allocation and isolates non-eligible train candidates without rebasing healthy train', () => {
+  const consumerA = makeRepo({
+    repositoryId: 300001,
+    repository: 'example/alpha',
+    localConcurrencyCap: 3,
+    minLinePercent: 95,
+    minBranchPercent: 90,
+    credentialId: 'cred-alpha',
+    mergeQueueOverrides: {mode: 'serialized-protected-squash'},
+    candidates: [
+      // Isolated: head changed
+      makeTrainCandidate(1, {observedHead: HEAD_2, simulatedSquashSha: sha('3')}),
+      // Isolated: checks incomplete
+      makeTrainCandidate(2, {checksPassed: false, simulatedSquashSha: sha('4')}),
+      // Isolated: COMMENTED_CLEAR is NOT sufficient for consumer repos!
+      makeTrainCandidate(3, {reviewState: 'COMMENTED_CLEAR', simulatedSquashSha: sha('5')}),
+      // Isolated: coverage below 95/90
+      makeTrainCandidate(4, {coveredLines: 940, simulatedSquashSha: sha('6')}),
+      // Eligible #1: claims src/shared-dir
+      makeTrainCandidate(5, {
+        ownedPaths: ['src/shared-dir'],
+        simulatedSquashSha: sha('7'),
+        eligibleToMergeMs: 80000,
+        postMergeVerifyMs: 50000
+      }),
+      // Isolated: path conflict with PR 5 in same prevalidated train batch
+      makeTrainCandidate(6, {
+        ownedPaths: ['src/shared-dir/file.mjs'],
+        simulatedSquashSha: sha('8')
+      })
+    ]
+  });
+  const consumerB = makeRepo({
+    repositoryId: 300002,
+    repository: 'example/beta',
+    localConcurrencyCap: 3,
+    minLinePercent: 95,
+    minBranchPercent: 90,
+    credentialId: 'cred-beta',
+    candidates: [
+      makeTrainCandidate(10, {checksPassed: false, simulatedSquashSha: sha('9')})
+    ]
+  });
+
+  const result = allocatePortfolioCapacityAndSimulateTrains({
+    stop: false,
+    budget: baseBudget({active: 0, maxActive: 3}),
+    repositories: [consumerA, consumerB],
+    workItems: [
+      // Equal criticalPathRank=1 across consumerA and consumerB -> round-robin A, B, A!
+      makeWorkItem(300001, 11, 1, ['src/a1']),
+      makeWorkItem(300001, 12, 1, ['src/a2']),
+      makeWorkItem(300001, 10, 1, ['src/a0']),
+      makeWorkItem(300002, 20, 1, ['src/b0']),
+      // Overlapping item on consumerB
+      makeWorkItem(300002, 21, 1, ['src/b0/nested']),
+      makeWorkItem(300002, 22, 2, ['src/b2'])
+    ]
+  });
+
+  assert.equal(result.valid, true);
+  assert.deepEqual(
+    result.allocatedWorkItems.map(w => `${w.repository}#${w.issue}`),
+    ['example/alpha#10', 'example/beta#20', 'example/alpha#11']
+  );
+  assert.equal(result.nextConsumerCursorRepositoryId, 300001);
+
+  // Cross-evaluation single-slot round-robin: passing lastServedConsumerRepositoryId prevents starvation
+  const singleSlotCycle1 = allocatePortfolioCapacityAndSimulateTrains({
+    stop: false,
+    budget: baseBudget({active: 0, maxActive: 1}),
+    repositories: [consumerA, consumerB],
+    workItems: [makeWorkItem(300001, 10, 1, ['src/a0']), makeWorkItem(300002, 20, 1, ['src/b0'])]
+  });
+  assert.deepEqual(singleSlotCycle1.allocatedWorkItems.map(w => w.repository), ['example/alpha']);
+  assert.equal(singleSlotCycle1.nextConsumerCursorRepositoryId, 300001);
+
+  const singleSlotCycle2 = allocatePortfolioCapacityAndSimulateTrains({
+    stop: false,
+    lastServedConsumerRepositoryId: singleSlotCycle1.nextConsumerCursorRepositoryId,
+    budget: baseBudget({active: 0, maxActive: 1}),
+    repositories: [consumerA, consumerB],
+    workItems: [makeWorkItem(300001, 11, 1, ['src/a1']), makeWorkItem(300002, 20, 1, ['src/b0'])]
+  });
+  assert.deepEqual(singleSlotCycle2.allocatedWorkItems.map(w => w.repository), ['example/beta']);
+  assert.equal(singleSlotCycle2.nextConsumerCursorRepositoryId, 300002);
+
+  const singleSlotCycle3 = allocatePortfolioCapacityAndSimulateTrains({
+    stop: false,
+    lastServedConsumerRepositoryId: singleSlotCycle2.nextConsumerCursorRepositoryId,
+    budget: baseBudget({active: 0, maxActive: 1}),
+    repositories: [consumerA, consumerB],
+    workItems: [makeWorkItem(300001, 11, 1, ['src/a1']), makeWorkItem(300002, 22, 1, ['src/b2'])]
+  });
+  assert.deepEqual(singleSlotCycle3.allocatedWorkItems.map(w => w.repository), ['example/alpha']);
+  assert.equal(singleSlotCycle3.nextConsumerCursorRepositoryId, 300001);
+
+  const alphaTrain = result.repositoryResults[0].train;
+  assert.equal(alphaTrain.trainStatus, 'TRAIN_DRAINED');
+  assert.equal(alphaTrain.mergeQueueMode, 'serialized-protected-squash');
+  assert.deepEqual(alphaTrain.mergedPrs, [5]);
+  assert.equal(alphaTrain.verifiedMainMs, 130000);
+  assert.equal(alphaTrain.withinTwoMinuteStretchTarget, false);
+  assert.deepEqual(alphaTrain.isolatedCandidates, [
+    {pr: 1, reason: 'HEAD_OR_BASE_MISMATCH'},
+    {pr: 2, reason: 'CHECKS_OR_SECURITY_INCOMPLETE'},
+    {pr: 3, reason: 'INDEPENDENT_REVIEW_INCOMPLETE'},
+    {pr: 4, reason: 'COVERAGE_BELOW_POLICY'},
+    {pr: 6, reason: 'PATH_CONFLICT_REBASE_REQUIRED'}
+  ]);
+
+  const betaTrain = result.repositoryResults[1].train;
+  assert.equal(betaTrain.trainStatus, 'IDLE_NO_ELIGIBLE');
+  assert.equal(betaTrain.p50MergeMs, null);
+  assert.equal(betaTrain.p95MergeMs, null);
+});
+
+test('portfolio allocator fails closed on shared admin tokens, spoofing, cap breaches, proxies and getter traps', () => {
+  const validInput = {
+    stop: false,
+    budget: baseBudget({active: 0, maxActive: 4}),
+    repositories: [factoryRepo(), spellbookRepo()],
+    workItems: [makeWorkItem(SOFTWARE_FACTORY_REPOSITORY_ID, 1, 1)]
+  };
+
+  assert.equal(allocatePortfolioCapacityAndSimulateTrains(null).reason, 'INPUT_UNKNOWN');
+  assert.equal(allocatePortfolioCapacityAndSimulateTrains({...validInput, stop: true}).reason, 'STOPPED');
+
+  const proxyInput = new Proxy(validInput, {get() { throw new Error('proxy getter must not run'); }});
+  assert.equal(allocatePortfolioCapacityAndSimulateTrains(proxyInput).reason, 'INPUT_UNKNOWN');
+
+  const getterInput = Object.defineProperties({}, {
+    ...Object.getOwnPropertyDescriptors(validInput),
+    stop: {enumerable: true, get() { throw new Error('accessor must not run'); }}
+  });
+  assert.equal(allocatePortfolioCapacityAndSimulateTrains(getterInput).reason, 'INPUT_UNKNOWN');
+
+  const symbolInput = {...validInput, [Symbol('extra')]: 1};
+  assert.equal(allocatePortfolioCapacityAndSimulateTrains(symbolInput).reason, 'INPUT_UNKNOWN');
+
+  const {workItems: _omitted, ...missingRequired} = validInput;
+  assert.equal(allocatePortfolioCapacityAndSimulateTrains(missingRequired).reason, 'INPUT_UNKNOWN');
+
+  assert.equal(
+    allocatePortfolioCapacityAndSimulateTrains({...validInput, budget: {...baseBudget(), extra: 1}}).reason,
+    'BUDGET_UNKNOWN'
+  );
+  const {hardStopReceipt: _missingReceipt, ...budgetWithoutReceipt} = baseBudget();
+  assert.equal(
+    allocatePortfolioCapacityAndSimulateTrains({...validInput, budget: budgetWithoutReceipt}).reason,
+    'HARD_STOP_UNVERIFIED'
+  );
+  assert.equal(
+    allocatePortfolioCapacityAndSimulateTrains({
+      ...validInput,
+      budget: {...baseBudget(), hardStopReceipt: {...baseReceipt(), paidUsageMicros: 1}}
+    }).reason,
+    'PAID_USAGE_NONZERO'
+  );
+  assert.equal(
+    allocatePortfolioCapacityAndSimulateTrains({
+      ...validInput,
+      budget: {...baseBudget(), hardStopReceipt: {...baseReceipt(), extra: 1}}
+    }).reason,
+    'HARD_STOP_UNVERIFIED'
+  );
+  assert.equal(
+    allocatePortfolioCapacityAndSimulateTrains({
+      ...validInput,
+      budget: baseBudget({overageDisabled: false})
+    }).reason,
+    'BUDGET_UNKNOWN'
+  );
+  assert.equal(
+    allocatePortfolioCapacityAndSimulateTrains({...validInput, repositories: []}).reason,
+    'INPUT_UNKNOWN'
+  );
+
+  // Sparse, custom-prototype, proxy, and getter arrays
+  const sparseRepos = new Array(1);
+  const protoRepos = Object.setPrototypeOf([factoryRepo()], {});
+  const getterRepos = [factoryRepo()];
+  Object.defineProperty(getterRepos, '0', {enumerable: true, get() { throw new Error('must not run'); }});
+  for (const repositories of [sparseRepos, protoRepos, getterRepos, new Proxy([factoryRepo()], {})]) {
+    assert.equal(
+      allocatePortfolioCapacityAndSimulateTrains({...validInput, repositories}).reason,
+      'INPUT_UNKNOWN'
+    );
+  }
+
+  // Shared admin token & credential isolation
+  assert.equal(
+    allocatePortfolioCapacityAndSimulateTrains({
+      ...validInput,
+      repositories: [factoryRepo({
+        overrides: {credential: makeCredential('cred-sf', SOFTWARE_FACTORY_REPOSITORY, {sharedAdminToken: true})}
+      })]
+    }).reason,
+    'SHARED_ADMIN_TOKEN_FORBIDDEN'
+  );
+  for (const credPatch of [
+    {credentialId: 'bad space'},
+    {scope: 'repo-admin'},
+    {persistedInCheckout: true},
+    {allowedRepositories: []},
+    {allowedRepositories: ['other/repo']}
+  ]) {
+    assert.equal(
+      allocatePortfolioCapacityAndSimulateTrains({
+        ...validInput,
+        repositories: [factoryRepo({
+          overrides: {credential: makeCredential('cred-sf', SOFTWARE_FACTORY_REPOSITORY, credPatch)}
+        })]
+      }).reason,
+      'CREDENTIAL_ISOLATION_VIOLATION'
+    );
+  }
+  assert.equal(
+    allocatePortfolioCapacityAndSimulateTrains({
+      ...validInput,
+      repositories: [factoryRepo({credentialId: 'dup-cred'}), spellbookRepo({credentialId: 'DUP-CRED'})]
+    }).reason,
+    'CREDENTIAL_ISOLATION_VIOLATION'
+  );
+
+  // Identity spoofing, duplicates, enrollment, authorization
+  assert.equal(
+    allocatePortfolioCapacityAndSimulateTrains({
+      ...validInput,
+      repositories: [makeRepo({
+        repositoryId: 999999,
+        repository: SOFTWARE_FACTORY_REPOSITORY,
+        localConcurrencyCap: 2,
+        minLinePercent: 98,
+        minBranchPercent: 95,
+        credentialId: 'c1'
+      })]
+    }).reason,
+    'REPOSITORY_IDENTITY_MISMATCH'
+  );
+  assert.equal(
+    allocatePortfolioCapacityAndSimulateTrains({
+      ...validInput,
+      repositories: [makeRepo({
+        repositoryId: SOFTWARE_FACTORY_REPOSITORY_ID,
+        repository: 'jamula/softwarefactory',
+        localConcurrencyCap: 2,
+        minLinePercent: 98,
+        minBranchPercent: 95,
+        credentialId: 'c1'
+      })]
+    }).reason,
+    'REPOSITORY_IDENTITY_MISMATCH'
+  );
+  assert.equal(
+    allocatePortfolioCapacityAndSimulateTrains({
+      ...validInput,
+      repositories: [spellbookRepo(), spellbookRepo({credentialId: 'cred-2'})]
+    }).reason,
+    'DUPLICATE_REPOSITORY'
+  );
+  assert.equal(
+    allocatePortfolioCapacityAndSimulateTrains({
+      ...validInput,
+      repositories: [spellbookRepo({overrides: {enrolled: false}})]
+    }).reason,
+    'UNENROLLED_REPOSITORY'
+  );
+  assert.equal(
+    allocatePortfolioCapacityAndSimulateTrains({
+      ...validInput,
+      repositories: [spellbookRepo({overrides: {ownerAuthorized: false}})]
+    }).reason,
+    'ENROLLMENT_NOT_AUTHORIZED'
+  );
+
+  // Concurrency cap & Spellbook <= 2 & coverage floors
+  assert.equal(
+    allocatePortfolioCapacityAndSimulateTrains({
+      ...validInput,
+      repositories: [spellbookRepo({localConcurrencyCap: 3, maxConcurrency: 3})]
+    }).reason,
+    'REPO_CONCURRENCY_CAP_EXCEEDED'
+  );
+  assert.equal(
+    allocatePortfolioCapacityAndSimulateTrains({
+      ...validInput,
+      repositories: [factoryRepo({localConcurrencyCap: 2, maxConcurrency: 3})]
+    }).reason,
+    'REPO_CONCURRENCY_CAP_EXCEEDED'
+  );
+  assert.equal(
+    allocatePortfolioCapacityAndSimulateTrains({
+      ...validInput,
+      repositories: [factoryRepo({minLinePercent: 97})]
+    }).reason,
+    'REPO_POLICY_BELOW_MINIMUM'
+  );
+  assert.equal(
+    allocatePortfolioCapacityAndSimulateTrains({
+      ...validInput,
+      repositories: [spellbookRepo({minLinePercent: 96})]
+    }).reason,
+    'REPO_POLICY_BELOW_MINIMUM'
+  );
+  assert.equal(
+    allocatePortfolioCapacityAndSimulateTrains({
+      ...validInput,
+      repositories: [familyTreeRepo({minBranchPercent: 89})]
+    }).reason,
+    'REPO_POLICY_BELOW_MINIMUM'
+  );
+
+  // Lease accounting, in-flight validation, train validation, work item validation
+  const lease1 = {leaseId: 'l1', issue: 1, laneId: 'lane-1', head: HEAD_1, ownedPaths: ['src/a']};
+  assert.equal(
+    allocatePortfolioCapacityAndSimulateTrains({
+      ...validInput,
+      budget: baseBudget({active: 0, maxActive: 4}),
+      repositories: [familyTreeRepo({inFlightLeases: [lease1]})]
+    }).reason,
+    'ACTIVE_LEASE_ACCOUNTING_MISMATCH'
+  );
+  assert.equal(
+    allocatePortfolioCapacityAndSimulateTrains({
+      ...validInput,
+      budget: baseBudget({active: 2, maxActive: 4}),
+      repositories: [familyTreeRepo({localConcurrencyCap: 1, inFlightLeases: [lease1, {...lease1, leaseId: 'l2', issue: 2, laneId: 'lane-2', ownedPaths: ['src/b']}]})]
+    }).reason,
+    'REPO_CONCURRENCY_CAP_EXCEEDED'
+  );
+  assert.equal(
+    allocatePortfolioCapacityAndSimulateTrains({
+      ...validInput,
+      budget: baseBudget({active: 2, maxActive: 4}),
+      repositories: [factoryRepo({
+        inFlightLeases: [lease1, {...lease1, leaseId: 'l2', issue: 2, laneId: 'lane-2', ownedPaths: ['src/a/sub']}]
+      })]
+    }).reason,
+    'INVALID_IN_FLIGHT_LEASE'
+  );
+  assert.equal(
+    allocatePortfolioCapacityAndSimulateTrains({
+      ...validInput,
+      budget: baseBudget({active: 1, maxActive: 4}),
+      repositories: [factoryRepo({
+        inFlightLeases: [{...lease1, ownedPaths: ['src/a', 'src/a/sub']}]
+      })]
+    }).reason,
+    'INVALID_IN_FLIGHT_LEASE'
+  );
+  assert.equal(
+    allocatePortfolioCapacityAndSimulateTrains({
+      ...validInput,
+      repositories: [factoryRepo({overrides: {repositoryId: -1}})]
+    }).reason,
+    'REPOSITORY_SCHEMA_INVALID'
+  );
+  assert.equal(
+    allocatePortfolioCapacityAndSimulateTrains({
+      ...validInput,
+      repositories: [factoryRepo({defaultBranch: '../bad'})]
+    }).reason,
+    'INVALID_TRAIN_STATE'
+  );
+  assert.equal(
+    allocatePortfolioCapacityAndSimulateTrains({
+      ...validInput,
+      repositories: [factoryRepo({mergeQueueOverrides: {mode: 'unknown-mode'}})]
+    }).reason,
+    'INVALID_TRAIN_STATE'
+  );
+  assert.equal(
+    allocatePortfolioCapacityAndSimulateTrains({
+      ...validInput,
+      repositories: [factoryRepo({mergeQueueOverrides: {incrementalSpendMicros: 5}})]
+    }).reason,
+    'SPEND_UNKNOWN_OR_EXCEEDED'
+  );
+  assert.equal(
+    allocatePortfolioCapacityAndSimulateTrains({...validInput, lastServedConsumerRepositoryId: 0}).reason,
+    'INPUT_UNKNOWN'
+  );
+  assert.equal(
+    allocatePortfolioCapacityAndSimulateTrains({
+      ...validInput,
+      repositories: [factoryRepo({mergeQueueOverrides: {supported: false}})]
+    }).reason,
+    'UNVERIFIED_MERGE_QUEUE'
+  );
+  assert.equal(
+    allocatePortfolioCapacityAndSimulateTrains({
+      ...validInput,
+      repositories: [factoryRepo({mergeQueueOverrides: {mode: 'serialized-protected-squash'}})]
+    }).reason,
+    'SOFTWARE_FACTORY_MERGE_QUEUE_REQUIRED'
+  );
+  assert.equal(
+    allocatePortfolioCapacityAndSimulateTrains({
+      ...validInput,
+      repositories: [factoryRepo({defaultBranch: 'trunk'})]
+    }).reason,
+    'SOFTWARE_FACTORY_MERGE_QUEUE_REQUIRED'
+  );
+  assert.equal(
+    allocatePortfolioCapacityAndSimulateTrains({
+      ...validInput,
+      repositories: [factoryRepo({candidates: [makeTrainCandidate(1, {simulatedSquashSha: MAIN_SHA})]})]
+    }).reason,
+    'INVALID_TRAIN_CANDIDATE'
+  );
+  assert.equal(
+    allocatePortfolioCapacityAndSimulateTrains({
+      ...validInput,
+      workItems: [makeWorkItem(999999, 1, 1)]
+    }).reason,
+    'UNENROLLED_REPOSITORY'
+  );
+  assert.equal(
+    allocatePortfolioCapacityAndSimulateTrains({
+      ...validInput,
+      workItems: [
+        makeWorkItem(SOFTWARE_FACTORY_REPOSITORY_ID, 1, 1),
+        makeWorkItem(SOFTWARE_FACTORY_REPOSITORY_ID, 1, 2, ['tools/other'])
+      ]
+    }).reason,
+    'DUPLICATE_WORK_ITEM'
+  );
+  assert.equal(
+    allocatePortfolioCapacityAndSimulateTrains({
+      ...validInput,
+      workItems: [{...makeWorkItem(SOFTWARE_FACTORY_REPOSITORY_ID, 1, 1), ownedPaths: ['../escape']}]
+    }).reason,
+    'WORK_ITEM_UNKNOWN'
+  );
+});
+
+const makeTier = (logicalLanes, wallClockMs, cpuTimeMs, peakMemoryMb, p95LatencyMs, contentionWaitMs, cancellationMs, overrides = {}) => ({
+  logicalLanes,
+  configuredWorkerCap: 12,
+  observedPeakConcurrency: 12,
+  concurrentAgentAuthorization: false,
+  wallClockMs,
+  cpuTimeMs,
+  peakMemoryMb,
+  p95LatencyMs,
+  contentionWaitMs,
+  cancellationPropagated: true,
+  cancellationMs,
+  duplicatePathLeases: 0,
+  crossRepoLeaks: 0,
+  ...overrides
+});
+
+const nodeBaselineProfile = () => ({
+  runtime: PINNED_NODE_RUNTIME,
+  workload: WORKLOAD_SHA,
+  contractPreserved: true,
+  deterministic: true,
+  ciRestoreMs: 2000,
+  ciCompileMs: 0,
+  ciCoverageMs: 3000,
+  coveredLines: 990,
+  totalLines: 1000,
+  coveredBranches: 970,
+  totalBranches: 1000,
+  securityReviewed: true,
+  independentReview: true,
+  rollbackReady: true,
+  costVerified: true,
+  incrementalSpendMicros: 0,
+  logicalLaneTiers: [
+    makeTier(100, 35000, 28000, 340, 900, 180, 45),
+    makeTier(12, 10000, 6000, 150, 180, 25, 15),
+    makeTier(50, 20000, 15000, 240, 460, 80, 30)
+  ]
+});
+
+const dotnetMafCandidateProfile = () => ({
+  runtime: PINNED_DOTNET_MAF_RUNTIME,
+  dotnetSdkVersion: '10.0.404',
+  mafWorkflowsVersion: '1.28.0',
+  pregelSuperstepsVerified: true,
+  checkpointResumeVerified: true,
+  priorSuperstepsRepeatedOnResume: 0,
+  aspireOtelActivitySourceVerified: true,
+  forbiddenLegacyDependencies: [],
+  shadowOnlyClientEnforced: true,
+  workload: WORKLOAD_SHA,
+  contractPreserved: true,
+  deterministic: true,
+  ciRestoreMs: 2500,
+  ciCompileMs: 3000,
+  ciCoverageMs: 2500,
+  coveredLines: 995,
+  totalLines: 1000,
+  coveredBranches: 980,
+  totalBranches: 1000,
+  securityReviewed: true,
+  independentReview: true,
+  rollbackReady: true,
+  costVerified: true,
+  incrementalSpendMicros: 0,
+  logicalLaneTiers: [
+    makeTier(12, 2000, 1800, 95, 70, 8, 6),
+    makeTier(50, 6000, 5000, 130, 160, 20, 10),
+    makeTier(100, 12000, 10000, 180, 310, 45, 18)
+  ]
+});
+
+const baseCohortSample = () => ({
+  cohort: 'm02-maf-consolidation-v1',
+  workload: WORKLOAD_SHA,
+  gateSet: GATE_SET_SHA,
+  complete: true,
+  windowMs: 86400000,
+  accepted: 5,
+  censored: 0,
+  gatesPassed: true,
+  independentReview: true,
+  mainHealthy: true,
+  compatibleTrain: true,
+  rollbackReady: true,
+  duplicateDispatches: 0,
+  unauthorizedWrites: 0,
+  coveredLines: 990,
+  totalLines: 1000,
+  coveredBranches: 970,
+  totalBranches: 1000,
+  rework: 2,
+  humanInterventions: 1,
+  costVerified: true,
+  incrementalSpendMicros: 0
+});
+
+const verifiedCohorts = (accepted = 50, source = 'verified', overrides = {}) => ({
+  source,
+  repository: SOFTWARE_FACTORY_REPOSITORY,
+  policy: {minLinePercent: 98, minBranchPercent: 95},
+  baseline: baseCohortSample(),
+  candidate: {
+    ...baseCohortSample(),
+    accepted,
+    coveredLines: 995,
+    coveredBranches: 980,
+    rework: 1,
+    humanInterventions: 0
+  },
+  ...overrides
+});
+
+const benchmarkInput = (overrides = {}) => ({
+  stop: false,
+  hostedRunner: true,
+  linuxAndWindowsVerified: true,
+  workload: WORKLOAD_SHA,
+  minNetGainPercent: 20,
+  nodeBaseline: nodeBaselineProfile(),
+  dotnetMafCandidate: dotnetMafCandidateProfile(),
+  cohorts: verifiedCohorts(50, 'verified'),
+  ...overrides
+});
+
+test('records Node 26.13.1 baseline across 12/50/100 logical lanes and marks unmeasured 2x-25x cohorts clearly', () => {
+  const baselineOnly = evaluateDotnetConsolidationBenchmark(benchmarkInput({
+    dotnetMafCandidate: null,
+    cohorts: null
+  }));
+
+  assert.equal(baselineOnly.valid, true);
+  assert.equal(baselineOnly.shadow, true);
+  assert.equal(baselineOnly.liveDispatch, false);
+  assert.equal(baselineOnly.liveMerge, false);
+  assert.equal(baselineOnly.baselineReady, true);
+  assert.equal(baselineOnly.comparable, false);
+  assert.equal(baselineOnly.consolidationEligible, false);
+  assert.equal(baselineOnly.recommendation, 'retain-node-authoritative');
+  assert.equal(baselineOnly.reason, 'NODE_BASELINE_RECORDED');
+  assert.equal(baselineOnly.logicalLaneClassification, LOGICAL_LANE_CLASSIFICATION);
+  assert.equal(baselineOnly.logicalLanesAreConcurrentAgentAuthorization, false);
+  assert.deepEqual(
+    baselineOnly.nodeBaseline.logicalLaneTiers.map(t => t.logicalLanes),
+    [...LOGICAL_LANE_TIERS]
+  );
+  assert.equal(
+    baselineOnly.nodeBaseline.logicalLaneTiers.every(
+      t => t.unitKind === 'logical-lanes' && t.concurrentAgentAuthorization === false
+    ),
+    true
+  );
+  // Node CI overhead = 2000 + 0 + 3000 = 5000ms -> end-to-end = [15000, 25000, 40000], suite net = 65000 + 5000 = 70000ms
+  assert.deepEqual(
+    baselineOnly.nodeBaseline.logicalLaneTiers.map(t => t.endToEndMs),
+    [15000, 25000, 40000]
+  );
+  assert.equal(baselineOnly.nodeBaseline.netEndToEndMs, 70000);
+  assert.equal(baselineOnly.cohorts.status, 'UNMEASURED_BASELINE_REQUIRED');
+  assert.equal(baselineOnly.cohorts.keepStretchOpen, true);
+  assert.equal(baselineOnly.cohorts.comparableAcceptedUnits, 0);
+  assert.equal(baselineOnly.cohorts.baseline, null);
+  assert.equal(baselineOnly.cohorts.candidate, null);
+  assert.deepEqual(
+    baselineOnly.cohorts.checkpoints.map(c => c.multiplier),
+    [...THROUGHPUT_COHORT_MULTIPLIERS]
+  );
+});
+
+test('approves single-runtime .NET 10 MAF 1.28.0 consolidation only when CI-inclusive logical lanes and verified 2x-25x cohorts pass', () => {
+  const tenX = evaluateDotnetConsolidationBenchmark(benchmarkInput());
+  assert.equal(tenX.valid, true);
+  assert.equal(tenX.consolidationEligible, true);
+  assert.equal(tenX.recommendation, 'dotnet-10-consolidation-eligible');
+  assert.equal(tenX.reason, 'DOTNET_10_CONSOLIDATION_ELIGIBLE');
+  // .NET CI overhead = 2500 + 3000 + 2500 = 8000ms -> tiers = [10000, 14000, 20000], suite net = 20000 + 8000 = 28000ms vs 70000ms (60% net gain!)
+  assert.equal(tenX.netGainPercent, 60);
+  assert.deepEqual(tenX.tierComparisons.map(t => t.logicalLanes), [12, 50, 100]);
+  assert.equal(tenX.cohorts.highestCheckpoint, '10x');
+  assert.equal(tenX.cohorts.keepStretchOpen, true);
+  assert.equal(tenX.cohorts.comparableAcceptedUnits, 5);
+  assert.deepEqual(tenX.cohorts.baseline, {
+    accepted: 5,
+    censored: 0,
+    windowMs: 86400000,
+    acceptedPerDay: 5,
+    rework: 2,
+    humanInterventions: 1,
+    incrementalSpendMicros: 0,
+    coverage: {coveredLines: 990, totalLines: 1000, coveredBranches: 970, totalBranches: 1000}
+  });
+  assert.deepEqual(tenX.cohorts.candidate, {
+    accepted: 50,
+    censored: 0,
+    windowMs: 86400000,
+    acceptedPerDay: 50,
+    rework: 1,
+    humanInterventions: 0,
+    incrementalSpendMicros: 0,
+    coverage: {coveredLines: 995, totalLines: 1000, coveredBranches: 980, totalBranches: 1000}
+  });
+
+  // Verified 25x closes stretch
+  const twentyFiveX = evaluateDotnetConsolidationBenchmark(benchmarkInput({
+    dotnetMafCandidate: {...dotnetMafCandidateProfile(), mafWorkflowsVersion: '2.0.0'},
+    cohorts: verifiedCohorts(125, 'verified')
+  }));
+  assert.equal(twentyFiveX.consolidationEligible, true);
+  assert.equal(twentyFiveX.cohorts.highestCheckpoint, '25x');
+  assert.equal(twentyFiveX.cohorts.keepStretchOpen, false);
+
+  // Spellbook & other consumer cohort policies work cleanly
+  const spellbookCohorts = evaluateDotnetConsolidationBenchmark(benchmarkInput({
+    cohorts: {
+      source: 'verified',
+      repository: 'Jamula/Spellbook',
+      policy: {minLinePercent: 97, minBranchPercent: 90},
+      baseline: {...baseCohortSample(), coveredLines: 975, coveredBranches: 910},
+      candidate: {...baseCohortSample(), accepted: 25, coveredLines: 980, coveredBranches: 920}
+    }
+  }));
+  assert.equal(spellbookCohorts.consolidationEligible, true);
+  assert.equal(spellbookCohorts.cohorts.highestCheckpoint, '5x');
+
+  const familyTreeCohorts = evaluateDotnetConsolidationBenchmark(benchmarkInput({
+    cohorts: {
+      source: 'verified',
+      repository: 'Jamula/FamilyTree',
+      policy: {minLinePercent: 95, minBranchPercent: 90},
+      baseline: {...baseCohortSample(), coveredLines: 955, coveredBranches: 905},
+      candidate: {...baseCohortSample(), accepted: 10, coveredLines: 960, coveredBranches: 910}
+    }
+  }));
+  assert.equal(familyTreeCohorts.consolidationEligible, true);
+  assert.equal(familyTreeCohorts.cohorts.highestCheckpoint, '2x');
+});
+
+test('retains Node as authoritative on CI overhead regressions, unmeasured/synthetic cohorts, legacy deps, safety, review or version failures', () => {
+  // Concurrent agent authorization claim on logical-lane benchmark is rejected immediately
+  const badAuthTier = evaluateDotnetConsolidationBenchmark(benchmarkInput({
+    dotnetMafCandidate: {
+      ...dotnetMafCandidateProfile(),
+      logicalLaneTiers: [
+        makeTier(12, 2000, 1800, 95, 70, 8, 6, {concurrentAgentAuthorization: true}),
+        makeTier(50, 6000, 5000, 130, 160, 20, 10),
+        makeTier(100, 12000, 10000, 180, 310, 45, 18)
+      ]
+    }
+  }));
+  assert.equal(badAuthTier.valid, false);
+  assert.equal(badAuthTier.reason, 'UNAUTHORIZED_CONCURRENT_AGENT_CLAIM');
+
+  assert.equal(
+    evaluateDotnetConsolidationBenchmark(benchmarkInput({
+      nodeBaseline: {
+        ...nodeBaselineProfile(),
+        logicalLaneTiers: [
+          makeTier(12, 10000, 6000, 150, 180, 25, 15, {concurrentAgentAuthorization: true}),
+          makeTier(50, 20000, 15000, 240, 460, 80, 30),
+          makeTier(100, 35000, 28000, 340, 900, 180, 45)
+        ]
+      }
+    })).reason,
+    'UNAUTHORIZED_CONCURRENT_AGENT_CLAIM'
+  );
+
+  // Stop, hosted runner, cross-platform Linux + Windows gates
+  assert.equal(evaluateDotnetConsolidationBenchmark(benchmarkInput({stop: true})).reason, 'STOPPED');
+  assert.equal(
+    evaluateDotnetConsolidationBenchmark(benchmarkInput({hostedRunner: false})).reason,
+    'HOSTED_EVIDENCE_REQUIRED'
+  );
+  assert.equal(
+    evaluateDotnetConsolidationBenchmark(benchmarkInput({linuxAndWindowsVerified: false})).reason,
+    'CROSS_PLATFORM_EVIDENCE_REQUIRED'
+  );
+
+  // Unsupported .NET / MAF versions and excluded legacy packages
+  for (const verPatch of [
+    {dotnetSdkVersion: '9.0.300'},
+    {dotnetSdkVersion: '10.0.404-rc.1'},
+    {mafWorkflowsVersion: '1.27.9'},
+    {mafWorkflowsVersion: '1.28.0-preview.1'}
+  ]) {
+    assert.equal(
+      evaluateDotnetConsolidationBenchmark(benchmarkInput({
+        dotnetMafCandidate: {...dotnetMafCandidateProfile(), ...verPatch}
+      })).reason,
+      'MAF_RUNTIME_VERSION_UNSUPPORTED'
+    );
+  }
+  for (const legacyPkg of ['SemanticKernel', 'AutoGen', 'GitHubModels', 'Temporal', 'LangGraph']) {
+    assert.equal(
+      evaluateDotnetConsolidationBenchmark(benchmarkInput({
+        dotnetMafCandidate: {...dotnetMafCandidateProfile(), forbiddenLegacyDependencies: [legacyPkg]}
+      })).reason,
+      'LEGACY_OR_EXCLUDED_DEPENDENCY_DETECTED'
+    );
+  }
+
+  // Workload, paired worker-cap & spend checks on both Node and .NET
+  assert.equal(
+    evaluateDotnetConsolidationBenchmark(benchmarkInput({
+      nodeBaseline: {
+        ...nodeBaselineProfile(),
+        logicalLaneTiers: [
+          makeTier(12, 10000, 6000, 150, 180, 25, 15, {configuredWorkerCap: 1, observedPeakConcurrency: 1}),
+          makeTier(50, 20000, 15000, 240, 460, 80, 30, {configuredWorkerCap: 1, observedPeakConcurrency: 1}),
+          makeTier(100, 35000, 28000, 340, 900, 180, 45, {configuredWorkerCap: 1, observedPeakConcurrency: 1})
+        ]
+      }
+    })).reason,
+    'UNMATCHED_WORKER_CAP'
+  );
+  assert.equal(
+    evaluateDotnetConsolidationBenchmark(benchmarkInput({
+      nodeBaseline: {...nodeBaselineProfile(), workload: HEAD_1}
+    })).reason,
+    'UNMATCHED_WORKLOAD'
+  );
+  assert.equal(
+    evaluateDotnetConsolidationBenchmark(benchmarkInput({
+      dotnetMafCandidate: {...dotnetMafCandidateProfile(), workload: HEAD_1}
+    })).reason,
+    'UNMATCHED_WORKLOAD'
+  );
+  assert.equal(
+    evaluateDotnetConsolidationBenchmark(benchmarkInput({
+      nodeBaseline: {...nodeBaselineProfile(), incrementalSpendMicros: 1}
+    })).reason,
+    'SPEND_UNKNOWN_OR_EXCEEDED'
+  );
+  assert.equal(
+    evaluateDotnetConsolidationBenchmark(benchmarkInput({
+      dotnetMafCandidate: {...dotnetMafCandidateProfile(), costVerified: false}
+    })).reason,
+    'SPEND_UNKNOWN_OR_EXCEEDED'
+  );
+
+  // Node baseline unverified
+  for (const nodePatch of [
+    {contractPreserved: false},
+    {coveredLines: 970},
+    {securityReviewed: false},
+    {
+      logicalLaneTiers: [
+        makeTier(12, 10000, 6000, 150, 180, 25, 15, {duplicatePathLeases: 1}),
+        makeTier(50, 20000, 15000, 240, 460, 80, 30),
+        makeTier(100, 35000, 28000, 340, 900, 180, 45)
+      ]
+    }
+  ]) {
+    assert.equal(
+      evaluateDotnetConsolidationBenchmark(benchmarkInput({
+        nodeBaseline: {...nodeBaselineProfile(), ...nodePatch}
+      })).reason,
+      'NODE_BASELINE_UNVERIFIED'
+    );
+  }
+
+  // .NET MAF architecture, checkpoint resume, OTel, safety, coverage, review, rollback
+  for (const mafSafetyPatch of [
+    {contractPreserved: false},
+    {deterministic: false},
+    {shadowOnlyClientEnforced: false},
+    {pregelSuperstepsVerified: false},
+    {checkpointResumeVerified: false},
+    {priorSuperstepsRepeatedOnResume: 1},
+    {aspireOtelActivitySourceVerified: false},
+    {
+      logicalLaneTiers: [
+        makeTier(12, 2000, 1800, 95, 70, 8, 6, {crossRepoLeaks: 1}),
+        makeTier(50, 6000, 5000, 130, 160, 20, 10),
+        makeTier(100, 12000, 10000, 180, 310, 45, 18)
+      ]
+    }
+  ]) {
+    const res = evaluateDotnetConsolidationBenchmark(benchmarkInput({
+      dotnetMafCandidate: {...dotnetMafCandidateProfile(), ...mafSafetyPatch}
+    }));
+    assert.equal(res.consolidationEligible, false);
+    assert.equal(res.recommendation, 'retain-node-authoritative');
+    assert.equal(res.reason, 'MAF_ARCHITECTURE_OR_SAFETY_UNVERIFIED');
+  }
+
+  for (const covPatch of [{coveredLines: 979}, {coveredLines: 985}, {coveredBranches: 960}]) {
+    const res = evaluateDotnetConsolidationBenchmark(benchmarkInput({
+      dotnetMafCandidate: {...dotnetMafCandidateProfile(), ...covPatch}
+    }));
+    assert.equal(res.reason, 'CANDIDATE_COVERAGE_REGRESSION');
+  }
+
+  for (const revPatch of [{securityReviewed: false}, {independentReview: false}, {rollbackReady: false}]) {
+    const res = evaluateDotnetConsolidationBenchmark(benchmarkInput({
+      dotnetMafCandidate: {...dotnetMafCandidateProfile(), ...revPatch}
+    }));
+    assert.equal(res.reason, 'REVIEW_OR_ROLLBACK_UNREADY');
+  }
+
+  // Tier runtime metric regression vs CI overhead eating runtime gain vs insufficient net gain
+  assert.equal(
+    evaluateDotnetConsolidationBenchmark(benchmarkInput({
+      dotnetMafCandidate: {
+        ...dotnetMafCandidateProfile(),
+        logicalLaneTiers: [
+          makeTier(12, 2000, 1800, 200, 70, 8, 6),
+          makeTier(50, 6000, 5000, 130, 160, 20, 10),
+          makeTier(100, 12000, 10000, 180, 310, 45, 18)
+        ]
+      }
+    })).reason,
+    'TIER_METRIC_REGRESSION'
+  );
+
+  // CI restore+compile+coverage overhead exceeds 12-lane runtime savings (2000 + 14000 = 16000 >= 15000)
+  assert.equal(
+    evaluateDotnetConsolidationBenchmark(benchmarkInput({
+      dotnetMafCandidate: {
+        ...dotnetMafCandidateProfile(),
+        ciRestoreMs: 5000,
+        ciCompileMs: 6000,
+        ciCoverageMs: 3000
+      }
+    })).reason,
+    'CI_OVERHEAD_EXCEEDS_RUNTIME_GAIN'
+  );
+
+  // 12-lane tier saves 1000ms out of 15000ms (6.67% < 20% minNetGainPercent)
+  assert.equal(
+    evaluateDotnetConsolidationBenchmark(benchmarkInput({
+      dotnetMafCandidate: {
+        ...dotnetMafCandidateProfile(),
+        ciRestoreMs: 4000,
+        ciCompileMs: 5000,
+        ciCoverageMs: 3000
+      }
+    })).reason,
+    'INSUFFICIENT_NET_END_TO_END_GAIN'
+  );
+
+  // Suite-wide net gain below minNetGainPercent even when each individual tier meets it
+  assert.equal(
+    evaluateDotnetConsolidationBenchmark(benchmarkInput({
+      minNetGainPercent: 30,
+      nodeBaseline: {
+        ...nodeBaselineProfile(),
+        ciRestoreMs: 5000,
+        ciCompileMs: 0,
+        ciCoverageMs: 5000,
+        logicalLaneTiers: [
+          makeTier(12, 10000, 6000, 150, 180, 25, 15),
+          makeTier(50, 10000, 6000, 150, 180, 25, 15),
+          makeTier(100, 10000, 6000, 150, 180, 25, 15)
+        ]
+      },
+      dotnetMafCandidate: {
+        ...dotnetMafCandidateProfile(),
+        ciRestoreMs: 0,
+        ciCompileMs: 0,
+        ciCoverageMs: 0,
+        logicalLaneTiers: [
+          makeTier(12, 10000, 6000, 150, 180, 25, 15),
+          makeTier(50, 10000, 6000, 150, 180, 25, 15),
+          makeTier(100, 10000, 6000, 150, 180, 25, 15)
+        ]
+      }
+    })).reason,
+    'INSUFFICIENT_NET_END_TO_END_GAIN'
+  );
+
+  // Cohort gates: unmeasured, below 2x, synthetic-only, policy/quality/coverage/rework/spend/throughput regressions
+  assert.equal(
+    evaluateDotnetConsolidationBenchmark(benchmarkInput({cohorts: null})).reason,
+    'MEASURED_COHORTS_REQUIRED'
+  );
+  assert.equal(
+    evaluateDotnetConsolidationBenchmark(benchmarkInput({cohorts: verifiedCohorts(8, 'verified')})).reason,
+    'COHORT_BELOW_FIRST_CHECKPOINT'
+  );
+  assert.equal(
+    evaluateDotnetConsolidationBenchmark(benchmarkInput({cohorts: verifiedCohorts(125, 'synthetic')})).reason,
+    'VERIFIED_HOSTED_COHORTS_REQUIRED'
+  );
+  assert.equal(
+    evaluateDotnetConsolidationBenchmark(benchmarkInput({
+      cohorts: verifiedCohorts(25, 'verified', {policy: {minLinePercent: 97, minBranchPercent: 95}})
+    })).reason,
+    'POLICY_BELOW_MINIMUM'
+  );
+  assert.equal(
+    evaluateDotnetConsolidationBenchmark(benchmarkInput({
+      cohorts: verifiedCohorts(4, 'verified')
+    })).reason,
+    'UNMATCHED_OR_INCOMPLETE_COHORT'
+  );
+  assert.equal(
+    evaluateDotnetConsolidationBenchmark(benchmarkInput({
+      cohorts: {
+        ...verifiedCohorts(25, 'verified'),
+        candidate: {...verifiedCohorts(25, 'verified').candidate, gatesPassed: false}
+      }
+    })).reason,
+    'QUALITY_OR_SAFETY_GATE_FAILED'
+  );
+  assert.equal(
+    evaluateDotnetConsolidationBenchmark(benchmarkInput({
+      cohorts: {
+        ...verifiedCohorts(25, 'verified'),
+        candidate: {...verifiedCohorts(25, 'verified').candidate, coveredLines: 985}
+      }
+    })).reason,
+    'COVERAGE_REGRESSION'
+  );
+  assert.equal(
+    evaluateDotnetConsolidationBenchmark(benchmarkInput({
+      cohorts: {
+        ...verifiedCohorts(25, 'verified'),
+        baseline: {...baseCohortSample(), accepted: 10, windowMs: 172800000, rework: 2},
+        candidate: {...verifiedCohorts(25, 'verified').candidate, accepted: 5, windowMs: 17280000, rework: 2}
+      }
+    })).reason,
+    'REWORK_OR_INTERVENTION_REGRESSION'
+  );
+  assert.equal(
+    evaluateDotnetConsolidationBenchmark(benchmarkInput({
+      cohorts: {
+        ...verifiedCohorts(25, 'verified'),
+        candidate: {...verifiedCohorts(25, 'verified').candidate, incrementalSpendMicros: null}
+      }
+    })).reason,
+    'SPEND_UNKNOWN_OR_EXCEEDED'
+  );
+  assert.equal(
+    evaluateDotnetConsolidationBenchmark(benchmarkInput({
+      cohorts: {
+        ...verifiedCohorts(5, 'verified'),
+        candidate: {...verifiedCohorts(5, 'verified').candidate, accepted: 5, windowMs: 172800000}
+      }
+    })).reason,
+    'THROUGHPUT_REGRESSION'
+  );
+
+  // Malformed shapes, proxies, and getters on benchmark evaluator
+  const trapBench = Object.defineProperties({}, {
+    ...Object.getOwnPropertyDescriptors(benchmarkInput()),
+    workload: {enumerable: true, get() { throw new Error('must not run'); }}
+  });
+  for (const invalid of [
+    null,
+    trapBench,
+    new Proxy(benchmarkInput(), {get() { throw new Error('must not run'); }}),
+    benchmarkInput({minNetGainPercent: 10}),
+    benchmarkInput({nodeBaseline: {...nodeBaselineProfile(), runtime: 'other-node'}}),
+    benchmarkInput({nodeBaseline: {...nodeBaselineProfile(), logicalLaneTiers: []}}),
+    benchmarkInput({
+      nodeBaseline: {
+        ...nodeBaselineProfile(),
+        logicalLaneTiers: [
+          makeTier(12, 10000, 6000, 150, 180, 25, 15),
+          makeTier(12, 20000, 15000, 240, 460, 80, 30),
+          makeTier(100, 35000, 28000, 340, 900, 180, 45)
+        ]
+      }
+    }),
+    benchmarkInput({dotnetMafCandidate: {...dotnetMafCandidateProfile(), runtime: 'dotnet-other'}}),
+    benchmarkInput({dotnetMafCandidate: {...dotnetMafCandidateProfile(), forbiddenLegacyDependencies: ['']}}),
+    benchmarkInput({cohorts: {bad: true}})
+  ]) {
+    assert.equal(evaluateDotnetConsolidationBenchmark(invalid).reason, 'EVIDENCE_UNKNOWN');
+  }
+});
