@@ -38,13 +38,13 @@ Offline evaluators never fabricate live owner billing settings or check off `#10
    - On `Jamula/SoftwareFactory` (`repositoryId: 1471342715`, `repositoryVisibility: "public"`), trigger one minimal read-only/bounded native **Copilot Cloud Agent** task (`harness: "copilot-cloud-agent"`, `actor: "copilot-swe-agent[bot]"`) from GitHub Issues / Mission Control on github.com, then close any local terminal/chat so execution completes strictly on GitHub's cloud infrastructure (`runner: "github-hosted"` or `"cloud-sandbox"`, `laptopOrChatDependency: false`). *(Note: `harness: "copilot-cloud-automation"` is valid only when `repositoryVisibility` is `"private"` or `"internal"`.)*
    - From **Mission Control** and **GitHub Billing -> Usage**, record the canonical `taskId` UUID, `sessionId`, `actor` (`"copilot-swe-agent[bot]"`), optional `linkedPullRequest` / `linkedRunId`, `includedQuotaAttributed: true`, `incrementalBilledUsdCents: 0`, and `accountingSource: "verified"` (`isEstimated: false`). If billing usage is still pending, missing, or estimated, wait or stop fail-closed—never record estimated accounting as verified.
 4. **Validate the recorded receipt deterministically and post to [#105](https://github.com/Jamula/SoftwareFactory/issues/105):**
-   - Save the owner-observed JSON receipt to a temporary local file (for example `/tmp/issue-105-receipt.json`) and validate it offline:
+   - Save the owner-observed JSON receipt to a temporary local file (for example `/tmp/issue-105-receipt.json`) and validate it offline against the current clock (`{nowMs: Date.now()}` at the CLI boundary so expired saved receipts fail closed rather than reusing a historical `receipt.nowMs`):
      ```bash
      node --input-type=module -e '
        import {readFileSync} from "node:fs";
        import {verifyBillingHardStopAndSmokeReceipt} from "./tools/engineering-factory/billing-hardstop-smoke.mjs";
        const receipt = JSON.parse(readFileSync("/tmp/issue-105-receipt.json", "utf8"));
-       const result = verifyBillingHardStopAndSmokeReceipt(receipt);
+       const result = verifyBillingHardStopAndSmokeReceipt(receipt, {nowMs: Date.now()});
        console.log(JSON.stringify(result, null, 2));
        if (!result.verified) process.exit(1);
      '
@@ -53,7 +53,7 @@ Offline evaluators never fabricate live owner billing settings or check off `#10
 
 ## `#105` JSON receipt schema (`tools/engineering-factory/billing-hardstop-smoke.mjs`)
 
-`verifyBillingHardStopAndSmokeReceipt(input, options?)` validates plain JSON objects (`Object.prototype`, own enumerable data descriptors only, `types.isProxy` rejected before inspection) and always returns a frozen shadow result (`shadow: true`, `liveActivation: false`, `autonomousExitAccepted: false`) whose `reason` maps cleanly through `tools/engineering-factory/telemetry.mjs`.
+`verifyBillingHardStopAndSmokeReceipt(input, options?)` validates plain JSON objects (`Object.prototype`, own enumerable data descriptors only, `types.isProxy` rejected before inspection) and always returns a frozen shadow result (`shadow: true`, `liveActivation: false`, `autonomousExitAccepted: false`) whose `reason` maps cleanly through `tools/engineering-factory/telemetry.mjs`. Passing `options.nowMs` (for example `{nowMs: Date.now()}` at an interactive CLI boundary) enforces freshness against the live verification time while keeping the evaluator itself deterministic.
 
 Synthetic schema example (**non-live template** — replace timestamps and IDs with actual owner-observed values during `#105` verification):
 
@@ -64,14 +64,14 @@ Synthetic schema example (**non-live template** — replace timestamps and IDs w
   "repository": "Jamula/SoftwareFactory",
   "repositoryId": 1471342715,
   "repositoryVisibility": "public",
-  "nowMs": 1764273600000,
+  "nowMs": 1795773600000,
   "maxReceiptAgeMs": 86400000,
   "retiredDiyWorkflowAbsent": true,
   "zeroPersonalPatSecretsVerified": true,
   "customPilotEnvironmentAbsent": true,
   "billingHardStop": {
     "authenticatedBillingCheck": true,
-    "observedAtMs": 1764273480000,
+    "observedAtMs": 1795773480000,
     "aiCreditUnitUsdCents": 1,
     "ghAwCapsSoftOnlyAcknowledged": true,
     "meters": {
@@ -99,7 +99,7 @@ Synthetic schema example (**non-live template** — replace timestamps and IDs w
     "taskId": "01936d8e-7f2a-7b00-8a11-3c4d5e6f7081",
     "sessionId": "mc-sess-synthetic-example-01",
     "actor": "copilot-swe-agent[bot]",
-    "observedAtMs": 1764273540000,
+    "observedAtMs": 1795773540000,
     "includedQuotaAttributed": true,
     "incrementalBilledUsdCents": 0,
     "accountingSource": "verified",
@@ -117,7 +117,7 @@ Synthetic schema example (**non-live template** — replace timestamps and IDs w
 | `stop` | Required `false` | `STOPPED` / `STOP_SWITCH_ACTIVE` |
 | `repository`, `repositoryId` | Required exact match against expected target (`Jamula/SoftwareFactory` + `1471342715` by default; consumer `options` must supply both slug and ID) | `INVALID_IDENTITY` / `REPOSITORY_IDENTITY_INVALID`, `PROVENANCE_MISMATCH` / `REPOSITORY_SCOPE_MISMATCH` |
 | `repositoryVisibility` | Required `'public' \| 'private' \| 'internal'` | `EVIDENCE_UNKNOWN` / `REPOSITORY_OR_CLOCK_INVALID` |
-| `nowMs`, `maxReceiptAgeMs?` | Required `nowMs >= 0`; optional `1 <= maxReceiptAgeMs <= 2,592,000,000` (default `86,400,000` ms) | `EVIDENCE_UNKNOWN` / `REPOSITORY_OR_CLOCK_INVALID`, `INVALID_POLICY` / `MAX_RECEIPT_AGE_INVALID` |
+| `nowMs?`, `options.nowMs?`, `maxReceiptAgeMs?` | Non-negative safe integer clock required via `options.nowMs` (authoritative verification time, recommended at CLI boundary) or `input.nowMs` (`input.nowMs <= options.nowMs` when both present); optional `1 <= maxReceiptAgeMs <= 2,592,000,000` (default `86,400,000` ms) | `EVIDENCE_UNKNOWN` / `REPOSITORY_OR_CLOCK_INVALID`, `STALE_EVIDENCE` / `RECEIPT_TIMESTAMP_IN_FUTURE`, `INVALID_POLICY` / `VERIFIER_OPTIONS_INVALID`, `MAX_RECEIPT_AGE_INVALID` |
 | `retiredDiyWorkflowAbsent`, `zeroPersonalPatSecretsVerified`, `customPilotEnvironmentAbsent?` | Required `true` (`customPilotEnvironmentAbsent` optional `true`) | `PROVIDER_FORBIDDEN` / `RETIRED_DIY_WORKFLOW_PRESENT`, `PERSONAL_PAT_SECRETS_FORBIDDEN`, `CUSTOM_PILOT_ENVIRONMENT_FORBIDDEN` |
 | `billingHardStop.authenticatedBillingCheck`, `observedAtMs`, `aiCreditUnitUsdCents?`, `ghAwCapsSoftOnlyAcknowledged?` | `authenticatedBillingCheck === true`, `0 <= nowMs - observedAtMs <= maxReceiptAgeMs`, optional `aiCreditUnitUsdCents === 1` (`$0.01`) and `ghAwCapsSoftOnlyAcknowledged === true` | `BUDGET_UNKNOWN` / `BILLING_CHECK_UNAUTHENTICATED`, `STALE_EVIDENCE` / `BILLING_TIMESTAMP_IN_FUTURE`, `STALE_QUOTA` / `STALE_BILLING_HARD_STOP_RECEIPT`, `INVALID_POLICY` |
 | `billingHardStop.meters.{aiCredits,copilotPremiumRequests,cloudSandboxesAndActions}` | All 3 meters required with `verified === true`, `overageLimitUsdCents === 0`, and `overageAllowed === false` | `BUDGET_UNKNOWN` / `HARD_STOP_METERS_INCOMPLETE`, `HARD_STOP_METER_INVALID`, `HARD_STOP_METER_UNVERIFIED`, `PAID_OVERAGE_ALLOWED`, `OVERAGE_LIMIT_NONZERO` |

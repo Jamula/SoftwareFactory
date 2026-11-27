@@ -36,14 +36,13 @@ export const SUPPORTED_SMOKE_HARNESSES = Object.freeze([
   'copilot-cloud-automation'
 ]);
 
-const OPTION_KEYS = new Set(['expectedRepository', 'expectedRepositoryId']);
+const OPTION_KEYS = new Set(['expectedRepository', 'expectedRepositoryId', 'nowMs']);
 
 const REQUIRED_TOP_LEVEL_KEYS = Object.freeze([
   'stop',
   'repository',
   'repositoryId',
   'repositoryVisibility',
-  'nowMs',
   'retiredDiyWorkflowAbsent',
   'zeroPersonalPatSecretsVerified',
   'billingHardStop',
@@ -51,6 +50,7 @@ const REQUIRED_TOP_LEVEL_KEYS = Object.freeze([
 ]);
 const TOP_LEVEL_KEYS = new Set([
   ...REQUIRED_TOP_LEVEL_KEYS,
+  'nowMs',
   'schemaVersion',
   'maxReceiptAgeMs',
   'customPilotEnvironmentAbsent'
@@ -154,7 +154,8 @@ function resolveOptions(options) {
     return {
       ok: true,
       expectedRepository: SOFTWARE_FACTORY_REPOSITORY,
-      expectedRepositoryId: SOFTWARE_FACTORY_REPOSITORY_ID
+      expectedRepositoryId: SOFTWARE_FACTORY_REPOSITORY_ID,
+      nowMs: null
     };
   }
   if (!plainObject(options, OPTION_KEYS)) return {ok: false};
@@ -164,7 +165,9 @@ function resolveOptions(options) {
   const expectedRepositoryId = Object.hasOwn(options, 'expectedRepositoryId')
     ? options.expectedRepositoryId
     : SOFTWARE_FACTORY_REPOSITORY_ID;
-  if (!validRepositorySlug(expectedRepository) || !positive(expectedRepositoryId)) {
+  const hasOptionNow = Object.hasOwn(options, 'nowMs');
+  if (!validRepositorySlug(expectedRepository) || !positive(expectedRepositoryId) ||
+      (hasOptionNow && !nonneg(options.nowMs))) {
     return {ok: false};
   }
   const isFactorySlug =
@@ -174,7 +177,12 @@ function resolveOptions(options) {
       (isFactoryId && expectedRepository !== SOFTWARE_FACTORY_REPOSITORY)) {
     return {ok: false};
   }
-  return {ok: true, expectedRepository, expectedRepositoryId};
+  return {
+    ok: true,
+    expectedRepository,
+    expectedRepositoryId,
+    nowMs: hasOptionNow ? options.nowMs : null
+  };
 }
 
 function evaluateBillingHardStop(billingHardStop, nowMs, maxReceiptAgeMs) {
@@ -434,9 +442,16 @@ export function verifyBillingHardStopAndSmokeReceipt(input, options) {
       input.repositoryId !== resolvedOptions.expectedRepositoryId) {
     return deny('PROVENANCE_MISMATCH', 'REPOSITORY_SCOPE_MISMATCH');
   }
-  if (!REPOSITORY_VISIBILITIES.includes(input.repositoryVisibility) || !nonneg(input.nowMs)) {
+  const hasInputNow = Object.hasOwn(input, 'nowMs');
+  if (!REPOSITORY_VISIBILITIES.includes(input.repositoryVisibility) ||
+      (hasInputNow && !nonneg(input.nowMs)) ||
+      (!hasInputNow && resolvedOptions.nowMs === null)) {
     return deny('EVIDENCE_UNKNOWN', 'REPOSITORY_OR_CLOCK_INVALID');
   }
+  if (resolvedOptions.nowMs !== null && hasInputNow && input.nowMs > resolvedOptions.nowMs) {
+    return deny('STALE_EVIDENCE', 'RECEIPT_TIMESTAMP_IN_FUTURE');
+  }
+  const effectiveNowMs = resolvedOptions.nowMs !== null ? resolvedOptions.nowMs : input.nowMs;
   let maxReceiptAgeMs = DEFAULT_MAX_RECEIPT_AGE_MS;
   if (Object.hasOwn(input, 'maxReceiptAgeMs')) {
     if (!positive(input.maxReceiptAgeMs) || input.maxReceiptAgeMs > MAX_ALLOWED_RECEIPT_AGE_MS) {
@@ -447,7 +462,7 @@ export function verifyBillingHardStopAndSmokeReceipt(input, options) {
 
   const billingCheck = evaluateBillingHardStop(
     input.billingHardStop,
-    input.nowMs,
+    effectiveNowMs,
     maxReceiptAgeMs
   );
   if (billingCheck.error) return billingCheck.error;
@@ -455,7 +470,7 @@ export function verifyBillingHardStopAndSmokeReceipt(input, options) {
   const smokeCheck = evaluateSmokeReceipt(
     input.smokeReceipt,
     input.repositoryVisibility,
-    input.nowMs,
+    effectiveNowMs,
     maxReceiptAgeMs
   );
   if (smokeCheck.error) return smokeCheck.error;

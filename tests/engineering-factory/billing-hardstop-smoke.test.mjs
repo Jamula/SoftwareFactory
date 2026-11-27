@@ -248,11 +248,30 @@ test('verifies full Cloud Agent public receipt and minimal private/internal Clou
   const jsonBlockMatch = /```json\n([\s\S]*?)\n```/.exec(docMarkdown);
   assert.notEqual(jsonBlockMatch, null);
   const docExampleReceipt = JSON.parse(jsonBlockMatch[1]);
-  const docVerified = verifyBillingHardStopAndSmokeReceipt(docExampleReceipt);
+  const docVerified = verifyBillingHardStopAndSmokeReceipt(docExampleReceipt, {
+    nowMs: 1_795_773_600_000
+  });
   assert.equal(docVerified.verified, true);
   assert.equal(docVerified.shadow, true);
   assert.equal(docVerified.liveActivation, false);
   assertCleanTelemetry(docVerified, 'eligible', 'NONE');
+
+  // Re-running verification against an expired saved receipt with a later options.nowMs fails closed
+  const docExpired = verifyBillingHardStopAndSmokeReceipt(docExampleReceipt, {
+    nowMs: 1_795_773_480_000 + DEFAULT_MAX_RECEIPT_AGE_MS + 1
+  });
+  assert.equal(docExpired.verified, false);
+  assert.equal(docExpired.reason, 'STALE_QUOTA');
+  assert.equal(docExpired.verificationCode, 'STALE_BILLING_HARD_STOP_RECEIPT');
+  assertCleanTelemetry(docExpired, 'blocked', 'STALE');
+
+  // Saved receipt without embedded nowMs validates cleanly when options.nowMs is supplied
+  const withoutInputNow = {...makeReceipt()};
+  delete withoutInputNow.nowMs;
+  const optClockVerified = verifyBillingHardStopAndSmokeReceipt(withoutInputNow, {
+    nowMs: makeReceipt().nowMs
+  });
+  assert.equal(optClockVerified.verified, true);
 });
 
 test('enforces step 1 $0 overage hard-stops across AI Credits, Copilot Premium Requests, and Cloud Sandboxes/Actions plus retired DIY hygiene', () => {
@@ -668,15 +687,25 @@ test('rejects proxies (active and revoked), accessors, non-enumerable/symbol pro
     assertCleanTelemetry(res, 'blocked', 'SECURITY');
   }
 
+  const missingClockReceipt = {...makeReceipt()};
+  delete missingClockReceipt.nowMs;
   for (const badEnv of [
-    {repositoryVisibility: 'enterprise'},
-    {nowMs: -1},
-    {nowMs: 1.5}
+    makeReceipt({repositoryVisibility: 'enterprise'}),
+    makeReceipt({nowMs: -1}),
+    makeReceipt({nowMs: 1.5}),
+    missingClockReceipt
   ]) {
-    const res = verifyBillingHardStopAndSmokeReceipt(makeReceipt(badEnv));
+    const res = verifyBillingHardStopAndSmokeReceipt(badEnv);
     assert.equal(res.reason, 'EVIDENCE_UNKNOWN');
     assert.equal(res.verificationCode, 'REPOSITORY_OR_CLOCK_INVALID');
   }
+
+  const futureReceiptNow = verifyBillingHardStopAndSmokeReceipt(makeReceipt(), {
+    nowMs: makeReceipt().nowMs - 1
+  });
+  assert.equal(futureReceiptNow.reason, 'STALE_EVIDENCE');
+  assert.equal(futureReceiptNow.verificationCode, 'RECEIPT_TIMESTAMP_IN_FUTURE');
+  assertCleanTelemetry(futureReceiptNow, 'blocked', 'STALE');
 
   for (const badMaxAge of [0, -1, MAX_ALLOWED_RECEIPT_AGE_MS + 1, '86400000']) {
     const res = verifyBillingHardStopAndSmokeReceipt(
@@ -698,7 +727,10 @@ test('rejects proxies (active and revoked), accessors, non-enumerable/symbol pro
     {expectedRepository: 'Jamula/FamilyTree'},
     {expectedRepositoryId: 222},
     {expectedRepository: 'jamula/softwarefactory', expectedRepositoryId: 222},
-    {expectedRepository: 'jamula/softwarefactory', expectedRepositoryId: 1471342715}
+    {expectedRepository: 'jamula/softwarefactory', expectedRepositoryId: 1471342715},
+    {nowMs: -1},
+    {nowMs: 1.5},
+    {nowMs: '1795773600000'}
   ]) {
     const res = verifyBillingHardStopAndSmokeReceipt(makeReceipt(), badOptions);
     assert.equal(res.verified, false);
