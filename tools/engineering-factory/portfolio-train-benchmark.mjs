@@ -420,7 +420,7 @@ export function allocatePortfolioCapacityAndSimulateTrains(input) {
   if (!exactRecord(input.budget, BUDGET_REQUIRED_KEYS, BUDGET_OPTIONAL_KEYS)) {
     return portfolioDenied('BUDGET_UNKNOWN');
   }
-  if (Object.hasOwn(input.budget, 'hardStopReceipt') &&
+  if (!Object.hasOwn(input.budget, 'hardStopReceipt') ||
       !exactRecord(input.budget.hardStopReceipt, HARD_STOP_KEYS)) {
     return portfolioDenied('HARD_STOP_UNVERIFIED');
   }
@@ -1067,6 +1067,12 @@ export function evaluateDotnetConsolidationBenchmark(input) {
     return consolidationDenied('LEGACY_OR_EXCLUDED_DEPENDENCY_DETECTED');
   }
   if (cand.workload !== input.workload) return consolidationDenied('UNMATCHED_WORKLOAD');
+  if (LOGICAL_LANE_TIERS.some((_, idx) =>
+        nodeParsed.orderedTiers[idx].configuredWorkerCap !==
+        candParsed.orderedTiers[idx].configuredWorkerCap
+      )) {
+    return consolidationDenied('UNMATCHED_WORKER_CAP');
+  }
   if (!cand.costVerified || cand.incrementalSpendMicros !== 0) {
     return consolidationDenied('SPEND_UNKNOWN_OR_EXCEEDED');
   }
@@ -1077,6 +1083,7 @@ export function evaluateDotnetConsolidationBenchmark(input) {
     return Object.freeze({
       unitKind: 'logical-lanes',
       logicalLanes,
+      configuredWorkerCap: nodeTier.configuredWorkerCap,
       concurrentAgentAuthorization: false,
       wallClockDeltaMs: candTier.wallClockMs - nodeTier.wallClockMs,
       endToEndDeltaMs: candTier.endToEndMs - nodeTier.endToEndMs,

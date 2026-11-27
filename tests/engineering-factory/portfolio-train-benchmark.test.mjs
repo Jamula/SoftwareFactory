@@ -18,7 +18,6 @@ const sha = ch => ch.repeat(40);
 const MAIN_SHA = sha('a');
 const HEAD_1 = sha('b');
 const HEAD_2 = sha('c');
-const HEAD_3 = sha('d');
 const SQUASH_1 = sha('1');
 const SQUASH_2 = sha('2');
 const WORKLOAD_SHA = sha('e');
@@ -514,6 +513,18 @@ test('portfolio allocator fails closed on shared admin tokens, spoofing, cap bre
   assert.equal(
     allocatePortfolioCapacityAndSimulateTrains({...validInput, budget: {...baseBudget(), extra: 1}}).reason,
     'BUDGET_UNKNOWN'
+  );
+  const {hardStopReceipt: _missingReceipt, ...budgetWithoutReceipt} = baseBudget();
+  assert.equal(
+    allocatePortfolioCapacityAndSimulateTrains({...validInput, budget: budgetWithoutReceipt}).reason,
+    'HARD_STOP_UNVERIFIED'
+  );
+  assert.equal(
+    allocatePortfolioCapacityAndSimulateTrains({
+      ...validInput,
+      budget: {...baseBudget(), hardStopReceipt: {...baseReceipt(), paidUsageMicros: 1}}
+    }).reason,
+    'PAID_USAGE_NONZERO'
   );
   assert.equal(
     allocatePortfolioCapacityAndSimulateTrains({
@@ -1052,7 +1063,20 @@ test('retains Node as authoritative on CI overhead regressions, unmeasured/synth
     );
   }
 
-  // Workload & spend checks on both Node and .NET
+  // Workload, paired worker-cap & spend checks on both Node and .NET
+  assert.equal(
+    evaluateDotnetConsolidationBenchmark(benchmarkInput({
+      nodeBaseline: {
+        ...nodeBaselineProfile(),
+        logicalLaneTiers: [
+          makeTier(12, 10000, 6000, 150, 180, 25, 15, {configuredWorkerCap: 1, observedPeakConcurrency: 1}),
+          makeTier(50, 20000, 15000, 240, 460, 80, 30, {configuredWorkerCap: 1, observedPeakConcurrency: 1}),
+          makeTier(100, 35000, 28000, 340, 900, 180, 45, {configuredWorkerCap: 1, observedPeakConcurrency: 1})
+        ]
+      }
+    })).reason,
+    'UNMATCHED_WORKER_CAP'
+  );
   assert.equal(
     evaluateDotnetConsolidationBenchmark(benchmarkInput({
       nodeBaseline: {...nodeBaselineProfile(), workload: HEAD_1}
