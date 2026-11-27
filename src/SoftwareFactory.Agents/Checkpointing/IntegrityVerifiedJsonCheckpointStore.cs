@@ -306,26 +306,23 @@ public sealed class IntegrityVerifiedJsonCheckpointStore : ICheckpointStore<Json
         }
     }
 
-    private static long GetMaxExistingSequence(string sessionDir)
-    {
-        long maxSequence = 0L;
-        foreach (string fileName in Directory.GetFiles(sessionDir, "*.checkpoint.json").Select(static path => Path.GetFileName(path)))
-        {
-            string stem = fileName[..^".checkpoint.json".Length];
-            if (!stem.StartsWith("cp-", StringComparison.Ordinal)
-                || !long.TryParse(stem.AsSpan(3), System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out long parsed)
-                || parsed <= 0L)
-            {
-                throw new CheckpointIntegrityException("MALFORMED_CHECKPOINT_FILENAME", "Existing checkpoint file name is invalid.");
-            }
+    private static long GetMaxExistingSequence(string sessionDir) =>
+        Directory.GetFiles(sessionDir, "*.checkpoint.json")
+            .Select(ParseSequenceFromFilePath)
+            .DefaultIfEmpty(0L)
+            .Max();
 
-            if (parsed > maxSequence)
-            {
-                maxSequence = parsed;
-            }
+    private static long ParseSequenceFromFilePath(string filePath)
+    {
+        string stem = Path.GetFileName(filePath)[..^".checkpoint.json".Length];
+        if (!stem.StartsWith("cp-", StringComparison.Ordinal)
+            || !long.TryParse(stem.AsSpan(3), System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out long parsed)
+            || parsed <= 0L)
+        {
+            throw new CheckpointIntegrityException("MALFORMED_CHECKPOINT_FILENAME", "Existing checkpoint file name is invalid.");
         }
 
-        return maxSequence;
+        return parsed;
     }
 
     private static void VerifyEmbeddedContractsMatchBinding(JsonElement element, CheckpointBinding expected)
