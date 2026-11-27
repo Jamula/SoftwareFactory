@@ -7,7 +7,9 @@ import {
 import {
   CONNECTOR_PROTOCOL_VERSION,
   CONNECTOR_ROLES,
+  CROSS_MODEL_MODES,
   FORBIDDEN_CONTROL_PLANE_PATHS,
+  MAX_MCP_FRAMED_LINES,
   MAX_MCP_REQUEST_BYTES,
   MCP_CONNECTOR_TOOLS,
   MCP_PROTOCOL_VERSION,
@@ -15,8 +17,10 @@ import {
   PROVIDER_ADAPTERS,
   SUPPORTED_PROVIDER_FAMILIES,
   createCopilotOnlyRollbackState,
+  evaluateCrossModelReviewEligibility,
   handleMcpConnectorRequest,
   isValidTraceparent,
+  processMcpFramedMessages,
   validateMultiAgentConnectorConfig
 } from '../../tools/engineering-factory/mcp-agent-connector.mjs';
 
@@ -665,7 +669,15 @@ test('handleMcpConnectorRequest enforces byte bounds, JSON-RPC 2.0 envelopes, no
     { progressToken: '' },
     { progressToken: 1.5 },
     { nestedArr: ['gho_secretInMetaArray'] },
-    { nestedObj: { token: 'ghu_secretInMetaObj' } }
+    { nestedObj: { token: 'ghu_secretInMetaObj' } },
+    { claudeCodeOauthToken: 'opaque-meta-val' },
+    { CLAUDE_CODE_OAUTH_TOKEN: 'opaque-meta-env-val' },
+    { GH_TOKEN: 'opaque-meta-gh-val' },
+    { GH_ENTERPRISE_TOKEN: 'opaque-meta-ghe-val' },
+    { GITHUB_ENTERPRISE_TOKEN: 'opaque-meta-ghent-val' },
+    { authorization: 'opaque-auth-header-placeholder' },
+    { access_token: 'opaque-snake-access' },
+    { api_key: 'opaque-snake-key' }
   ]) {
     const metaErr = handleMcpConnectorRequest({
       jsonrpc: '2.0',
@@ -1601,4 +1613,844 @@ test('tools/call validate_provider_isolation validates IChatClient, Codex, and C
   });
   assert.equal(claudeFail.result.isError, true);
   assert.equal(claudeFail.result.structuredContent.reason, 'PRE_TOOL_HOOK_NOT_FAIL_CLOSED');
+});
+
+test('subscription entitlement metadata and credential-bearing env/config keys fail closed without raw tokens', () => {
+  assert.equal(MAX_MCP_FRAMED_LINES, 100);
+  assert.deepEqual(CROSS_MODEL_MODES, ['independent-review', 'specialist-fallback']);
+
+  const { includedQuotaVerified: _dropClaudeQuota, ...claudePlanCfg } =
+    claudeConfig({ oauthEntitlementVerified: true });
+  const claudePlanRes = validateMultiAgentConnectorConfig(claudePlanCfg);
+  assert.equal(claudePlanRes.valid, true);
+  assert.equal(claudePlanRes.oauthEntitlementVerified, true);
+
+  const { includedQuotaVerified: _dropCodexQuota, ...codexPlanCfg } =
+    codexConfig({ oauthEntitlementVerified: true });
+  const codexPlanRes = validateMultiAgentConnectorConfig(codexPlanCfg);
+  assert.equal(codexPlanRes.valid, true);
+  assert.equal(codexPlanRes.oauthEntitlementVerified, true);
+
+  const copilotPlanAligned = validateMultiAgentConnectorConfig(
+    copilotConfig({ oauthEntitlementVerified: true, env: { COPILOT_TRACE_MODE: 'local' } })
+  );
+  assert.equal(copilotPlanAligned.valid, true);
+  assert.equal(copilotPlanAligned.oauthEntitlementVerified, true);
+  assert.equal(
+    validateMultiAgentConnectorConfig(copilotConfig({ oauthEntitlementVerified: false })).reason,
+    'OAUTH_ENTITLEMENT_UNVERIFIED'
+  );
+
+  const { includedQuotaVerified: _dropClaudeUnverified, ...claudeUnverifiedPlan } =
+    claudeConfig({ oauthEntitlementVerified: false });
+  const { includedQuotaVerified: _dropCodexUnverified, ...codexUnverifiedPlan } =
+    codexConfig({ oauthEntitlementVerified: false });
+  for (const unverifiedPlanCfg of [
+    claudeUnverifiedPlan,
+    claudeConfig({ includedQuotaVerified: true, oauthEntitlementVerified: false }),
+    codexUnverifiedPlan
+  ]) {
+    assert.equal(validateMultiAgentConnectorConfig(unverifiedPlanCfg).reason, 'OAUTH_ENTITLEMENT_UNVERIFIED');
+  }
+
+  assert.equal(
+    validateMultiAgentConnectorConfig(claudeConfig({
+      includedQuotaVerified: false,
+      oauthEntitlementVerified: true
+    })).reason,
+    'INCLUDED_QUOTA_UNVERIFIED'
+  );
+  assert.equal(
+    validateMultiAgentConnectorConfig(claudeConfig({
+      includedQuotaVerified: 'yes',
+      oauthEntitlementVerified: true
+    })).reason,
+    'INCLUDED_QUOTA_UNVERIFIED'
+  );
+
+  for (const invalidEntitlementFlag of ['true', 1, {}, 'opaque-non-prefix-string']) {
+    assert.equal(
+      validateMultiAgentConnectorConfig(claudeConfig({ oauthEntitlementVerified: invalidEntitlementFlag })).reason,
+      'INVALID_OAUTH_ENTITLEMENT'
+    );
+  }
+
+  const proxyTrap = {
+    get() { throw new Error('proxy trap must never run'); },
+    ownKeys() { throw new Error('proxy trap must never run'); }
+  };
+  const arrWithGetter = [];
+  Object.defineProperty(arrWithGetter, '0', {
+    enumerable: true,
+    get() { throw new Error('array getter must never execute'); }
+  });
+  const cyclicConfig = copilotConfig();
+  cyclicConfig.env = cyclicConfig;
+  let sharedDag = { leaf: 1 };
+  for (let i = 0; i < 20; i++) {
+    sharedDag = { left: sharedDag, right: sharedDag };
+  }
+  for (const structuralTrap of [
+    claudeConfig({ overageHardStopUsdCents: new Proxy({}, proxyTrap) }),
+    claudeConfig({ overageHardStopUsdCents: arrWithGetter }),
+    claudeConfig({ overageHardStopUsdCents: [Object.create(null)] }),
+    claudeConfig({ overageHardStopUsdCents: Object.create(null) }),
+    claudeConfig({ overageHardStopUsdCents: Number.NaN }),
+    claudeConfig({ overageHardStopUsdCents: () => {} }),
+    cyclicConfig,
+    claudeConfig({ overageHardStopUsdCents: sharedDag })
+  ]) {
+    assert.equal(validateMultiAgentConnectorConfig(structuralTrap).reason, 'INVALID_CONNECTOR_CONFIG');
+  }
+  assert.equal(
+    validateMultiAgentConnectorConfig(copilotConfig({ preToolUseOnFailure: 'block' })).reason,
+    'INVALID_CONNECTOR_CONFIG'
+  );
+  assert.equal(
+    validateMultiAgentConnectorConfig(codexConfig({ preToolUseOnFailure: 'block' })).reason,
+    'INVALID_CONNECTOR_CONFIG'
+  );
+  assert.equal(
+    validateMultiAgentConnectorConfig(copilotConfig({ ownerAuthorized: false })).reason,
+    'OWNER_AUTHORIZATION_REQUIRED'
+  );
+  assert.equal(
+    validateMultiAgentConnectorConfig(copilotConfig({ trustedBaseConfigRestored: false })).reason,
+    'UNTRUSTED_PROVIDER_CONFIG'
+  );
+  assert.equal(
+    validateMultiAgentConnectorConfig(codexConfig({ overageHardStopUsdCents: 500 })).reason,
+    'OVERAGE_HARD_STOP_REQUIRED'
+  );
+  assert.equal(
+    validateMultiAgentConnectorConfig(claudeConfig({ overageHardStopUsdCents: 500 })).reason,
+    'OVERAGE_HARD_STOP_REQUIRED'
+  );
+  assert.equal(
+    validateMultiAgentConnectorConfig(claudeConfig({ env: { lowercase_bad: '1' } })).reason,
+    'INVALID_CONNECTOR_ENV'
+  );
+
+  for (const rejectedCfg of [
+    claudeConfig({ oauthEntitlementVerified: 'sk-ant-canary-1' }),
+    claudeConfig({ overageHardStopUsdCents: 'sk-ant-canary-2' }),
+    claudeConfig({ overageHardStopUsdCents: ['ghp_ArrayCanary'] }),
+    claudeConfig({ overageHardStopUsdCents: { nested: 'ghp_ObjCanary' } }),
+    codexConfig({ preToolUseOnFailure: 'sk-CrossFieldCodexCanary' }),
+    copilotConfig({ preToolUseOnFailure: 'ghp_CrossFieldCopilotCanary' }),
+    claudeConfig({ claudeCodeOauthToken: 'opaque-val-1' }),
+    claudeConfig({ access_token: 'opaque-val-2' }),
+    claudeConfig({ api_key: 'opaque-val-3' }),
+    claudeConfig({ authorization: 'opaque-auth-header-placeholder' }),
+    codexConfig({ openaiApiKey: 'opaque-val-4' }),
+    copilotConfig({ githubToken: 'opaque-val-5' }),
+    claudeConfig({ env: { CLAUDE_CODE_OAUTH_TOKEN: 'opaque-val-6' } }),
+    claudeConfig({ env: { AUTHORIZATION: 'opaque-auth-header-placeholder' } }),
+    claudeConfig({ preToolUseOnFailure: 'warn', env: { CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-canary-3' } }),
+    claudeConfig({ env: { ANTHROPIC_API_KEY: 'opaque-val-7' } }),
+    codexConfig({ env: { OPENAI_AGENTS_DISABLE_TRACING: '1', OPENAI_API_KEY: 'opaque-val-8' } }),
+    copilotConfig({ env: { GITHUB_TOKEN: 'opaque-val-9' } }),
+    copilotConfig({ env: { GH_TOKEN: 'opaque-val-10' } }),
+    copilotConfig({ env: { GH_ENTERPRISE_TOKEN: 'opaque-val-11' } }),
+    copilotConfig({ env: { GITHUB_ENTERPRISE_TOKEN: 'opaque-val-12' } })
+  ]) {
+    const res = validateMultiAgentConnectorConfig(rejectedCfg);
+    assert.equal(res.valid, false);
+    assert.equal(res.reason, 'SECRET_MATERIAL_REJECTED');
+    assert.equal(JSON.stringify(res).includes('canary'), false);
+    assert.equal(JSON.stringify(res).includes('Canary'), false);
+    assert.equal(JSON.stringify(res).includes('opaque-'), false);
+  }
+
+  for (const badRollbackBudget of [
+    copilotConfig({ oauthEntitlementVerified: false }),
+    copilotConfig({ externalTelemetryDisabled: false }),
+    copilotConfig({ externalMergeAuthorityOnly: false }),
+    copilotConfig({ allowDirectMergeOrPolicyWrite: true }),
+    copilotConfig({ adapter: 'claude-code-action' }),
+    copilotConfig({ authorizedSpendCapUsdCents: 100, observedSpendUsdCents: 999 }),
+    copilotConfig({ sessionCheckpoint: new Proxy({}, proxyTrap) }),
+    copilotConfig({ env: { CLAUDE_CODE_OAUTH_TOKEN: 'opaque-token' } })
+  ]) {
+    const rb = createCopilotOnlyRollbackState('ENTITLEMENT_CHECK', badRollbackBudget);
+    assert.equal(rb.budgetVerified, false);
+    assert.equal(rb.budgetRevalidationRequired, true);
+  }
+  const cleanEnvBudget = createCopilotOnlyRollbackState(
+    'CLEAN_BUDGET',
+    copilotConfig({ oauthEntitlementVerified: true, externalTelemetryDisabled: true, env: { SAFE_FLAG: '1' } })
+  );
+  assert.equal(cleanEnvBudget.budgetVerified, true);
+});
+
+test('processMcpFramedMessages processes bounded stdio JSON-RPC batches, omits notifications, and guarantees newline-free frames', () => {
+  const ctx = { ...authorizedContext(), nowMs: NOW_MS };
+  const batchLines = [
+    JSON.stringify({
+      jsonrpc: '2.0',
+      id: 'f-init',
+      method: 'initialize',
+      params: { protocolVersion: MCP_PROTOCOL_VERSION }
+    }),
+    JSON.stringify({
+      jsonrpc: '2.0',
+      method: 'notifications/initialized'
+    }),
+    JSON.stringify({
+      jsonrpc: '2.0',
+      id: 'f-wi',
+      method: 'tools/call',
+      params: {
+        name: 'get_bounded_work_item_context',
+        arguments: {
+          repositoryId: FACTORY_REPO_ID,
+          issueNumber: 136,
+          traceparent: VALID_TRACEPARENT,
+          summary: 'Line separator \u2028 and paragraph separator \u2029 must stay single-line',
+          ownedPaths: ['docs/MCP-MULTI-AGENT-CONNECTOR.md']
+        }
+      }
+    }),
+    JSON.stringify({
+      jsonrpc: '2.0',
+      method: 'notifications/cancelled',
+      params: { _meta: { progressToken: 'tok-cancel' } }
+    }),
+    '{malformed-json-frame'
+  ];
+
+  const arrayRes = processMcpFramedMessages(batchLines, ctx);
+  assert.equal(Object.isFrozen(arrayRes), true);
+  assert.equal(Object.isFrozen(arrayRes.responses), true);
+  assert.equal(arrayRes.valid, true);
+  assert.equal(arrayRes.readOnly, true);
+  assert.equal(arrayRes.reason, 'MCP_FRAMED_BATCH_PROCESSED');
+  assert.equal(arrayRes.lineCount, 5);
+  assert.equal(arrayRes.notificationCount, 2);
+  assert.equal(arrayRes.errorCount, 1);
+  assert.equal(arrayRes.responses.length, 3);
+  for (const frame of arrayRes.responses) {
+    assert.equal(/[\r\n\u2028\u2029]/.test(frame), false);
+    assert.equal(typeof JSON.parse(frame), 'object');
+  }
+  assert.equal(arrayRes.responses[1].includes('\\u2028'), true);
+  assert.equal(arrayRes.responses[1].includes('\\u2029'), true);
+  const parsedWorkItem = JSON.parse(arrayRes.responses[1]);
+  assert.equal(
+    parsedWorkItem.result.structuredContent.summary,
+    'Line separator \u2028 and paragraph separator \u2029 must stay single-line'
+  );
+  assert.equal(JSON.parse(arrayRes.responses[2]).error.code, -32700);
+  assert.equal(arrayRes.framedOutput, `${arrayRes.responses.join('\n')}\n`);
+
+  const crlfStream = `${batchLines.join('\r\n')}\r\n`;
+  const streamRes = processMcpFramedMessages(crlfStream, ctx);
+  assert.deepEqual(streamRes, arrayRes);
+
+  const noTrailingNewlineRes = processMcpFramedMessages(batchLines.slice(0, 2).join('\n'));
+  assert.equal(noTrailingNewlineRes.valid, true);
+  assert.equal(noTrailingNewlineRes.lineCount, 2);
+  assert.equal(noTrailingNewlineRes.notificationCount, 1);
+  assert.equal(noTrailingNewlineRes.responses.length, 1);
+
+  const notificationsOnly = processMcpFramedMessages([
+    JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
+    JSON.stringify({ jsonrpc: '2.0', method: 'notifications/cancelled' })
+  ]);
+  assert.equal(notificationsOnly.valid, true);
+  assert.equal(notificationsOnly.lineCount, 2);
+  assert.equal(notificationsOnly.notificationCount, 2);
+  assert.deepEqual(notificationsOnly.responses, []);
+  assert.equal(notificationsOnly.framedOutput, '');
+
+  const pingLine = idx => JSON.stringify({ jsonrpc: '2.0', id: idx, method: 'ping' });
+  const exactMaxLines = Array.from({ length: MAX_MCP_FRAMED_LINES }, (_, idx) => pingLine(idx + 1));
+  const maxArrayRes = processMcpFramedMessages(exactMaxLines);
+  assert.equal(maxArrayRes.valid, true);
+  assert.equal(maxArrayRes.lineCount, 100);
+  assert.equal(maxArrayRes.responses.length, 100);
+
+  const maxStringRes = processMcpFramedMessages(`${exactMaxLines.join('\n')}\n`);
+  assert.equal(maxStringRes.valid, true);
+  assert.equal(maxStringRes.lineCount, 100);
+
+  const overMaxLines = Array.from({ length: MAX_MCP_FRAMED_LINES + 1 }, (_, idx) => pingLine(idx + 1));
+  assert.equal(processMcpFramedMessages(overMaxLines).valid, false);
+  assert.equal(processMcpFramedMessages(overMaxLines).reason, 'FRAMED_BATCH_LIMIT_EXCEEDED');
+  assert.equal(processMcpFramedMessages(overMaxLines.join('\n')).reason, 'FRAMED_BATCH_LIMIT_EXCEEDED');
+  assert.equal(processMcpFramedMessages(`${exactMaxLines.join('\n')}\n\n`).reason, 'FRAMED_BATCH_LIMIT_EXCEEDED');
+
+  const asciiOversizeLine = JSON.stringify({
+    jsonrpc: '2.0',
+    id: 'big-ascii',
+    method: 'ping',
+    params: { pad: 'x'.repeat(MAX_MCP_REQUEST_BYTES) }
+  });
+  const multiByteOversizeLine = JSON.stringify({
+    jsonrpc: '2.0',
+    id: 'big-utf8',
+    method: 'ping',
+    params: { pad: '€'.repeat(25_000) }
+  });
+  assert.ok(multiByteOversizeLine.length < MAX_MCP_REQUEST_BYTES);
+  assert.ok(Buffer.byteLength(multiByteOversizeLine, 'utf8') > MAX_MCP_REQUEST_BYTES);
+
+  const mixedOversize = processMcpFramedMessages([
+    pingLine(1),
+    asciiOversizeLine,
+    multiByteOversizeLine,
+    pingLine(2)
+  ]);
+  assert.equal(mixedOversize.valid, true);
+  assert.equal(mixedOversize.errorCount, 2);
+  assert.equal(mixedOversize.responses.length, 4);
+  assert.equal(JSON.parse(mixedOversize.responses[0]).id, 1);
+  assert.equal(JSON.parse(mixedOversize.responses[1]).error.data.reason, 'PAYLOAD_TOO_LARGE');
+  assert.equal(JSON.parse(mixedOversize.responses[2]).error.data.reason, 'PAYLOAD_TOO_LARGE');
+  assert.equal(JSON.parse(mixedOversize.responses[3]).id, 2);
+
+  const rawOversizeStream = processMcpFramedMessages(`${pingLine(1)}\n${asciiOversizeLine}\n`);
+  assert.equal(rawOversizeStream.valid, true);
+  assert.equal(rawOversizeStream.errorCount, 1);
+  assert.equal(JSON.parse(rawOversizeStream.responses[1]).error.data.reason, 'PAYLOAD_TOO_LARGE');
+
+  const proxyTrap = {
+    get() { throw new Error('proxy trap must not execute'); },
+    ownKeys() { throw new Error('proxy trap must not execute'); }
+  };
+  const getterArr = [pingLine(1)];
+  Object.defineProperty(getterArr, '0', {
+    enumerable: true,
+    get() { throw new Error('array getter must not execute'); }
+  });
+  const sparseArr = new Array(2);
+  sparseArr[0] = pingLine(1);
+  const protoArr = Object.setPrototypeOf([pingLine(1)], Object.prototype);
+
+  for (const invalidBatch of [
+    null,
+    undefined,
+    123,
+    {},
+    new Proxy([], proxyTrap),
+    getterArr,
+    sparseArr,
+    protoArr,
+    [123]
+  ]) {
+    const bad = processMcpFramedMessages(invalidBatch);
+    assert.equal(bad.valid, false);
+    assert.equal(bad.reason, 'INVALID_FRAMED_BATCH');
+    assert.deepEqual(bad.responses, []);
+    assert.equal(bad.framedOutput, '');
+  }
+
+  assert.equal(processMcpFramedMessages([]).reason, 'EMPTY_FRAMED_BATCH');
+  assert.equal(processMcpFramedMessages('').reason, 'EMPTY_FRAMED_BATCH');
+
+  for (const embeddedNewlineInput of [
+    [`${pingLine(1)}\n${pingLine(2)}`],
+    [`${pingLine(1)}\r`],
+    `${pingLine(1)}\r${pingLine(2)}`,
+    `${pingLine(1)}\r`
+  ]) {
+    const embeddedErr = processMcpFramedMessages(embeddedNewlineInput);
+    assert.equal(embeddedErr.valid, false);
+    assert.equal(embeddedErr.reason, 'EMBEDDED_NEWLINE_IN_FRAME');
+  }
+
+  const badCtxRes = processMcpFramedMessages([pingLine(1)], { stop: 'yes' });
+  assert.equal(badCtxRes.valid, false);
+  assert.equal(badCtxRes.reason, 'INVALID_CONNECTOR_CONTEXT');
+});
+
+test('evaluateCrossModelReviewEligibility enforces cross-model independence, provider isolation, OAuth metadata, merge authority, and rollback', () => {
+  const checkpointState = JSON.stringify({ reviewerTurn: 1, verdict: 'commented-clear' });
+  const checkpointSha256 = createHash('sha256').update(checkpointState, 'utf8').digest('hex');
+
+  const claudeSessionReviewer = claudeConfig({
+    adapter: 'claude-agent-sdk',
+    role: 'independent-reviewer',
+    includedQuotaVerified: undefined,
+    oauthEntitlementVerified: true,
+    headSha: HEAD_SHA,
+    sessionCheckpoint: {
+      sessionId: 'claude-review-session-01',
+      sha256: checkpointSha256,
+      headSha: HEAD_SHA,
+      serializedState: checkpointState
+    }
+  });
+  delete claudeSessionReviewer.includedQuotaVerified;
+
+  const crossProviderReview = evaluateCrossModelReviewEligibility({
+    authorProvider: 'github-copilot',
+    authorModelFamily: 'GPT-5.4',
+    authorIdentity: 'copilot-swe-agent[bot]',
+    authorConfig: copilotConfig({ headSha: HEAD_SHA }),
+    reviewerProvider: 'anthropic-claude',
+    reviewerModelFamily: 'Claude-Opus-4.6',
+    reviewerIdentity: 'claude-reviewer[bot]',
+    reviewerConfig: claudeSessionReviewer,
+    headSha: HEAD_SHA,
+    externalMergeGateAuthoritative: true
+  });
+  assert.equal(Object.isFrozen(crossProviderReview), true);
+  assert.equal(crossProviderReview.valid, true);
+  assert.equal(crossProviderReview.eligible, true);
+  assert.equal(crossProviderReview.mode, 'independent-review');
+  assert.equal(crossProviderReview.reason, 'CROSS_MODEL_REVIEW_ELIGIBLE');
+  assert.equal(crossProviderReview.crossProvider, true);
+  assert.equal(crossProviderReview.crossModelFamily, true);
+  assert.equal(crossProviderReview.authorModelFamily, 'gpt-5.4');
+  assert.equal(crossProviderReview.reviewerModelFamily, 'claude-opus-4.6');
+  assert.equal(crossProviderReview.headSha, HEAD_SHA);
+  assert.equal(crossProviderReview.rollbackActive, false);
+  assert.equal(crossProviderReview.externalMergeGateAuthoritative, true);
+  assert.equal(crossProviderReview.externalMergeAuthorityOnly, true);
+  assert.deepEqual(crossProviderReview.soleMergeEvaluators, [
+    'tools/engineering-factory/core.mjs',
+    'tools/engineering-factory/protected-squash.mjs'
+  ]);
+  assert.equal(crossProviderReview.allowDirectMergeOrPolicyWrite, false);
+  assert.equal(crossProviderReview.syntheticApprovalAllowed, false);
+  assert.equal(crossProviderReview.liveDispatch, false);
+  assert.equal(crossProviderReview.liveMerge, false);
+  assert.equal(crossProviderReview.unapprovedSpendUsdCents, 0);
+  assert.equal(crossProviderReview.reviewerValidation.oauthEntitlementVerified, true);
+  assert.equal(crossProviderReview.reviewerValidation.sessionCheckpointVerified, true);
+  assert.equal(crossProviderReview.rollbackState.budgetVerified, true);
+  assert.equal(crossProviderReview.rollbackState.preserveCopilotExecution, true);
+
+  const sameProviderCrossModel = evaluateCrossModelReviewEligibility({
+    authorProvider: 'github-copilot',
+    authorModelFamily: 'gpt-5.4',
+    authorConfig: copilotConfig(),
+    reviewerProvider: 'github-copilot',
+    reviewerModelFamily: 'claude-sonnet-4.5',
+    reviewerConfig: copilotConfig({ role: 'independent-reviewer' }),
+    externalMergeGateAuthoritative: true
+  });
+  assert.equal(sameProviderCrossModel.eligible, true);
+  assert.equal(sameProviderCrossModel.crossProvider, false);
+  assert.equal(sameProviderCrossModel.crossModelFamily, true);
+  assert.equal(sameProviderCrossModel.headSha, null);
+
+  const crossProviderSameModel = evaluateCrossModelReviewEligibility({
+    authorProvider: 'openai-codex',
+    authorModelFamily: 'gpt-5.4',
+    authorConfig: codexConfig({ role: 'worker' }),
+    reviewerProvider: 'github-copilot',
+    reviewerModelFamily: 'gpt-5.4',
+    reviewerConfig: copilotConfig({ role: 'independent-reviewer' }),
+    externalMergeGateAuthoritative: true
+  });
+  assert.equal(crossProviderSameModel.eligible, true);
+  assert.equal(crossProviderSameModel.crossProvider, true);
+  assert.equal(crossProviderSameModel.crossModelFamily, false);
+  assert.equal(crossProviderSameModel.rollbackState.budgetVerified, true);
+
+  const specialistFallback = evaluateCrossModelReviewEligibility({
+    mode: 'specialist-fallback',
+    authorProvider: 'openai-codex',
+    authorModelFamily: 'codex-1',
+    authorConfig: codexConfig({ role: 'worker', oauthEntitlementVerified: true }),
+    reviewerProvider: 'anthropic-claude',
+    reviewerModelFamily: 'claude-sonnet-4.5',
+    reviewerConfig: claudeConfig({
+      role: 'specialist',
+      includedQuotaVerified: false,
+      authorizedSpendCapUsdCents: 300,
+      observedSpendUsdCents: 50
+    }),
+    verifiedCopilotBudget: copilotConfig(),
+    externalMergeGateAuthoritative: true
+  });
+  assert.equal(specialistFallback.eligible, true);
+  assert.equal(specialistFallback.mode, 'specialist-fallback');
+  assert.equal(specialistFallback.reason, 'SPECIALIST_FALLBACK_ELIGIBLE');
+  assert.equal(specialistFallback.rollbackState.budgetVerified, true);
+
+  const externalOnlyNoCopilotBudget = evaluateCrossModelReviewEligibility({
+    mode: 'specialist-fallback',
+    authorProvider: 'openai-codex',
+    authorModelFamily: 'codex-1',
+    authorConfig: codexConfig({ role: 'worker' }),
+    reviewerProvider: 'anthropic-claude',
+    reviewerModelFamily: 'claude-sonnet-4.5',
+    reviewerConfig: claudeConfig({ role: 'specialist' }),
+    externalMergeGateAuthoritative: true
+  });
+  assert.equal(externalOnlyNoCopilotBudget.eligible, true);
+  assert.equal(externalOnlyNoCopilotBudget.rollbackState.budgetVerified, false);
+  assert.equal(externalOnlyNoCopilotBudget.rollbackState.budgetRevalidationRequired, true);
+
+  const selfModelRejected = evaluateCrossModelReviewEligibility({
+    authorProvider: 'openai-codex',
+    authorModelFamily: 'gpt-5.4',
+    authorConfig: codexConfig({ role: 'worker' }),
+    reviewerProvider: 'openai-codex',
+    reviewerModelFamily: 'GPT-5.4',
+    reviewerConfig: codexConfig({ role: 'independent-reviewer' }),
+    externalMergeGateAuthoritative: true
+  });
+  assert.equal(selfModelRejected.eligible, false);
+  assert.equal(selfModelRejected.rollbackActive, true);
+  assert.equal(selfModelRejected.reason, 'SELF_MODEL_REVIEW_FORBIDDEN');
+
+  const selfIdentityRejected = evaluateCrossModelReviewEligibility({
+    authorProvider: 'github-copilot',
+    authorModelFamily: 'gpt-5.4',
+    authorIdentity: 'Copilot-Bot[bot]',
+    authorConfig: copilotConfig(),
+    reviewerProvider: 'anthropic-claude',
+    reviewerModelFamily: 'claude-opus-4.6',
+    reviewerIdentity: 'copilot-bot[bot]',
+    reviewerConfig: claudeConfig(),
+    externalMergeGateAuthoritative: true
+  });
+  assert.equal(selfIdentityRejected.eligible, false);
+  assert.equal(selfIdentityRejected.reason, 'SELF_IDENTITY_REVIEW_FORBIDDEN');
+
+  const codexTracingFailed = evaluateCrossModelReviewEligibility({
+    authorProvider: 'openai-codex',
+    authorModelFamily: 'codex-1',
+    authorConfig: codexConfig({ role: 'worker', env: { OPENAI_AGENTS_DISABLE_TRACING: '0' } }),
+    reviewerProvider: 'anthropic-claude',
+    reviewerModelFamily: 'claude-opus-4.6',
+    reviewerConfig: claudeConfig(),
+    externalMergeGateAuthoritative: true
+  });
+  assert.equal(codexTracingFailed.eligible, false);
+  assert.equal(codexTracingFailed.failedSide, 'author');
+  assert.equal(codexTracingFailed.reason, 'EXTERNAL_TRACING_NOT_DISABLED');
+
+  const claudeHookFailed = evaluateCrossModelReviewEligibility({
+    authorProvider: 'github-copilot',
+    authorModelFamily: 'gpt-5.4',
+    authorConfig: copilotConfig(),
+    reviewerProvider: 'anthropic-claude',
+    reviewerModelFamily: 'claude-opus-4.6',
+    reviewerConfig: claudeConfig({ preToolUseOnFailure: 'warn' }),
+    externalMergeGateAuthoritative: true
+  });
+  assert.equal(claudeHookFailed.eligible, false);
+  assert.equal(claudeHookFailed.failedSide, 'reviewer');
+  assert.equal(claudeHookFailed.reason, 'PRE_TOOL_HOOK_NOT_FAIL_CLOSED');
+  assert.equal(claudeHookFailed.rollbackState.preserveCopilotExecution, true);
+
+  const copilotAuthorFailedIgnoreSuppliedBudget = evaluateCrossModelReviewEligibility({
+    authorProvider: 'github-copilot',
+    authorModelFamily: 'gpt-5.4',
+    authorConfig: copilotConfig({ includedQuotaVerified: false }),
+    reviewerProvider: 'anthropic-claude',
+    reviewerModelFamily: 'claude-opus-4.6',
+    reviewerConfig: claudeConfig(),
+    verifiedCopilotBudget: copilotConfig(),
+    externalMergeGateAuthoritative: true
+  });
+  assert.equal(copilotAuthorFailedIgnoreSuppliedBudget.reason, 'INCLUDED_QUOTA_UNVERIFIED');
+  assert.equal(copilotAuthorFailedIgnoreSuppliedBudget.rollbackState.budgetVerified, false);
+
+  const copilotAuthorMissingFamilyIgnoreBudget = evaluateCrossModelReviewEligibility({
+    authorProvider: 'github-copilot',
+    authorModelFamily: 'gpt-5.4',
+    authorConfig: { includedQuotaVerified: false },
+    reviewerProvider: 'anthropic-claude',
+    reviewerModelFamily: 'claude-opus-4.6',
+    reviewerConfig: claudeConfig(),
+    verifiedCopilotBudget: copilotConfig(),
+    externalMergeGateAuthoritative: true
+  });
+  assert.equal(copilotAuthorMissingFamilyIgnoreBudget.rollbackState.budgetVerified, false);
+
+  const copilotReviewerFailedIgnoreSuppliedBudget = evaluateCrossModelReviewEligibility({
+    authorProvider: 'openai-codex',
+    authorModelFamily: 'codex-1',
+    authorConfig: codexConfig({ role: 'worker' }),
+    reviewerProvider: 'github-copilot',
+    reviewerModelFamily: 'claude-sonnet-4.5',
+    reviewerConfig: copilotConfig({ role: 'independent-reviewer', overageHardStopUsdCents: 100 }),
+    verifiedCopilotBudget: copilotConfig(),
+    externalMergeGateAuthoritative: true
+  });
+  assert.equal(copilotReviewerFailedIgnoreSuppliedBudget.reason, 'OVERAGE_HARD_STOP_REQUIRED');
+  assert.equal(copilotReviewerFailedIgnoreSuppliedBudget.rollbackState.budgetVerified, false);
+
+  const invalidSuppliedBudget = evaluateCrossModelReviewEligibility({
+    authorProvider: 'openai-codex',
+    authorModelFamily: 'codex-1',
+    authorConfig: codexConfig({ role: 'worker' }),
+    reviewerProvider: 'anthropic-claude',
+    reviewerModelFamily: 'claude-opus-4.6',
+    reviewerConfig: claudeConfig(),
+    verifiedCopilotBudget: { includedQuotaVerified: false, overageHardStopUsdCents: 0, unapprovedSpendUsdCents: 0 },
+    externalMergeGateAuthoritative: true
+  });
+  assert.equal(invalidSuppliedBudget.eligible, false);
+  assert.equal(invalidSuppliedBudget.reason, 'INVALID_VERIFIED_COPILOT_BUDGET');
+
+  const rejectedInactiveReason = evaluateCrossModelReviewEligibility({
+    authorProvider: 'github-copilot',
+    authorModelFamily: 'gpt-5.4',
+    authorConfig: copilotConfig(),
+    reviewerProvider: 'anthropic-claude',
+    reviewerModelFamily: 'claude-opus-4.6',
+    reviewerConfig: claudeConfig(),
+    rollbackReason: 'ghp_InactiveReasonCanary999',
+    externalMergeGateAuthoritative: true
+  });
+  assert.equal(rejectedInactiveReason.eligible, false);
+  assert.equal(rejectedInactiveReason.reason, 'SECRET_MATERIAL_REJECTED');
+  assert.equal(JSON.stringify(rejectedInactiveReason).includes('InactiveReasonCanary999'), false);
+
+  const controlCharInactiveRollbackReason = evaluateCrossModelReviewEligibility({
+    authorProvider: 'github-copilot',
+    authorModelFamily: 'gpt-5.4',
+    authorConfig: copilotConfig(),
+    reviewerProvider: 'anthropic-claude',
+    reviewerModelFamily: 'claude-opus-4.6',
+    reviewerConfig: claudeConfig(),
+    rollbackReason: 'bad\u0000char',
+    externalMergeGateAuthoritative: true
+  });
+  assert.equal(controlCharInactiveRollbackReason.eligible, false);
+  assert.equal(controlCharInactiveRollbackReason.reason, 'INVALID_CROSS_MODEL_INPUT');
+
+  for (const [rejectedInput, expectedSide] of [
+    [{
+      authorProvider: 'github-copilot',
+      authorModelFamily: 'gpt-5.4',
+      authorConfig: copilotConfig(),
+      reviewerProvider: 'anthropic-claude',
+      reviewerModelFamily: 'claude-opus-4.6',
+      reviewerConfig: claudeConfig(),
+      authorization: 'opaque-auth-header-placeholder',
+      externalMergeGateAuthoritative: true
+    }, null],
+    [{
+      authorProvider: 'github-copilot',
+      authorModelFamily: 'sk-ant-canary-model',
+      authorConfig: copilotConfig(),
+      reviewerProvider: 'anthropic-claude',
+      reviewerModelFamily: 'claude-opus-4.6',
+      reviewerConfig: claudeConfig(),
+      externalMergeGateAuthoritative: true
+    }, null],
+    [{
+      authorProvider: 'github-copilot',
+      authorModelFamily: 'gpt-5.4',
+      authorConfig: copilotConfig(),
+      reviewerProvider: 'anthropic-claude',
+      reviewerModelFamily: 'claude-opus-4.6',
+      reviewerConfig: claudeConfig(),
+      verifiedCopilotBudget: { ...copilotConfig(), env: { GITHUB_TOKEN: 'opaque-gh-budget-token' } },
+      externalMergeGateAuthoritative: true
+    }, null],
+    [{
+      authorProvider: 'github-copilot',
+      authorModelFamily: 'gpt-5.4',
+      authorConfig: copilotConfig(),
+      reviewerProvider: 'anthropic-claude',
+      reviewerModelFamily: 'claude-opus-4.6',
+      reviewerConfig: claudeConfig(),
+      verifiedCopilotBudget: { ...copilotConfig(), nestedList: [{ apiKey: 'opaque-budget-secret' }] },
+      externalMergeGateAuthoritative: true
+    }, null],
+    [{
+      authorProvider: 'openai-codex',
+      authorModelFamily: 'codex-1',
+      authorConfig: codexConfig({
+        role: 'worker',
+        env: { OPENAI_AGENTS_DISABLE_TRACING: '1', OPENAI_API_KEY: 'opaque-author-key' }
+      }),
+      reviewerProvider: 'anthropic-claude',
+      reviewerModelFamily: 'claude-opus-4.6',
+      reviewerConfig: claudeConfig(),
+      externalMergeGateAuthoritative: true
+    }, 'author'],
+    [{
+      authorProvider: 'github-copilot',
+      authorModelFamily: 'gpt-5.4',
+      authorConfig: copilotConfig(),
+      reviewerProvider: 'anthropic-claude',
+      reviewerModelFamily: 'claude-opus-4.6',
+      reviewerConfig: claudeConfig({ env: { CLAUDE_CODE_OAUTH_TOKEN: 'opaque-reviewer-oauth' } }),
+      externalMergeGateAuthoritative: true
+    }, 'reviewer']
+  ]) {
+    const secDenied = evaluateCrossModelReviewEligibility(rejectedInput);
+    assert.equal(secDenied.eligible, false);
+    assert.equal(secDenied.reason, 'SECRET_MATERIAL_REJECTED');
+    assert.equal(secDenied.failedSide, expectedSide);
+    assert.equal(JSON.stringify(secDenied).includes('canary'), false);
+    assert.equal(JSON.stringify(secDenied).includes('opaque-'), false);
+  }
+
+  for (const badMergeAuth of [undefined, false, 'true', 1]) {
+    const mergeDenied = evaluateCrossModelReviewEligibility({
+      authorProvider: 'github-copilot',
+      authorModelFamily: 'gpt-5.4',
+      authorConfig: copilotConfig(),
+      reviewerProvider: 'anthropic-claude',
+      reviewerModelFamily: 'claude-opus-4.6',
+      reviewerConfig: claudeConfig(),
+      externalMergeGateAuthoritative: badMergeAuth
+    });
+    assert.equal(mergeDenied.eligible, false);
+    assert.equal(mergeDenied.reason, 'EXTERNAL_MERGE_AUTHORITY_REQUIRED');
+    assert.equal(mergeDenied.externalMergeGateAuthoritative, true);
+  }
+
+  const manualRollback = evaluateCrossModelReviewEligibility({
+    authorProvider: 'github-copilot',
+    authorModelFamily: 'gpt-5.4',
+    authorConfig: copilotConfig(),
+    reviewerProvider: 'anthropic-claude',
+    reviewerModelFamily: 'claude-opus-4.6',
+    reviewerConfig: claudeConfig(),
+    externalMergeGateAuthoritative: true,
+    rollbackToCopilotOnly: true,
+    rollbackReason: 'VENDOR_QUOTA_REVOKED'
+  });
+  assert.equal(manualRollback.eligible, false);
+  assert.equal(manualRollback.rollbackActive, true);
+  assert.equal(manualRollback.reason, 'VENDOR_QUOTA_REVOKED');
+  assert.equal(manualRollback.rollbackState.preserveCopilotExecution, true);
+
+  const redactedRollback = evaluateCrossModelReviewEligibility({
+    externalMergeGateAuthoritative: true,
+    rollbackToCopilotOnly: true,
+    rollbackReason: 'revoked token ghp_SecretRollbackCanary777'
+  });
+  assert.equal(redactedRollback.reason, 'REDACTED_ROLLBACK_REASON');
+  assert.equal(JSON.stringify(redactedRollback).includes('SecretRollbackCanary777'), false);
+
+  for (const stopSignal of [
+    { killSwitch: true },
+    { stop: true, rollbackReason: 'OPERATOR_EMERGENCY_STOP' }
+  ]) {
+    const stopped = evaluateCrossModelReviewEligibility({
+      externalMergeGateAuthoritative: true,
+      verifiedCopilotBudget: copilotConfig(),
+      ...stopSignal
+    });
+    assert.equal(stopped.eligible, false);
+    assert.equal(stopped.reason, 'CONNECTOR_STOPPED');
+    assert.equal(stopped.rollbackActive, true);
+  }
+
+  assert.equal(evaluateCrossModelReviewEligibility({
+    authorProvider: 'github-copilot',
+    authorModelFamily: 'gpt-5.4',
+    authorConfig: copilotConfig(),
+    reviewerProvider: 'openai-codex',
+    reviewerModelFamily: 'claude-opus-4.6',
+    reviewerConfig: claudeConfig(),
+    externalMergeGateAuthoritative: true
+  }).reason, 'PROVIDER_CONFIG_MISMATCH');
+
+  assert.equal(evaluateCrossModelReviewEligibility({
+    authorProvider: 'github-copilot',
+    authorModelFamily: 'gpt-5.4',
+    authorConfig: copilotConfig({ role: 'independent-reviewer' }),
+    reviewerProvider: 'anthropic-claude',
+    reviewerModelFamily: 'claude-opus-4.6',
+    reviewerConfig: claudeConfig(),
+    externalMergeGateAuthoritative: true
+  }).reason, 'INVALID_AUTHOR_ROLE');
+
+  assert.equal(evaluateCrossModelReviewEligibility({
+    authorProvider: 'github-copilot',
+    authorModelFamily: 'gpt-5.4',
+    authorConfig: copilotConfig(),
+    reviewerProvider: 'anthropic-claude',
+    reviewerModelFamily: 'claude-opus-4.6',
+    reviewerConfig: claudeConfig({ role: 'worker' }),
+    externalMergeGateAuthoritative: true
+  }).reason, 'INVALID_REVIEWER_ROLE');
+
+  assert.equal(evaluateCrossModelReviewEligibility({
+    mode: 'specialist-fallback',
+    authorProvider: 'github-copilot',
+    authorModelFamily: 'gpt-5.4',
+    authorConfig: copilotConfig(),
+    reviewerProvider: 'anthropic-claude',
+    reviewerModelFamily: 'claude-opus-4.6',
+    reviewerConfig: claudeConfig({ role: 'independent-reviewer' }),
+    externalMergeGateAuthoritative: true
+  }).reason, 'INVALID_REVIEWER_ROLE');
+
+  assert.equal(evaluateCrossModelReviewEligibility({
+    authorProvider: 'github-copilot',
+    authorModelFamily: 'gpt-5.4',
+    authorConfig: copilotConfig({ headSha: HEAD_SHA }),
+    reviewerProvider: 'anthropic-claude',
+    reviewerModelFamily: 'claude-opus-4.6',
+    reviewerConfig: claudeConfig({ headSha: BASE_SHA }),
+    externalMergeGateAuthoritative: true
+  }).reason, 'CROSS_MODEL_HEAD_MISMATCH');
+
+  assert.equal(evaluateCrossModelReviewEligibility({
+    mode: 'auto-merge',
+    externalMergeGateAuthoritative: true
+  }).reason, 'INVALID_CROSS_MODEL_MODE');
+
+  assert.equal(evaluateCrossModelReviewEligibility({
+    authorProvider: 'unknown-vendor',
+    authorModelFamily: 'gpt-5.4',
+    authorConfig: copilotConfig(),
+    reviewerProvider: 'anthropic-claude',
+    reviewerModelFamily: 'claude-opus-4.6',
+    reviewerConfig: claudeConfig(),
+    externalMergeGateAuthoritative: true
+  }).reason, 'UNSUPPORTED_PROVIDER_FAMILY');
+
+  for (const badModel of ['', '  gpt-5  ', 'gpt/5']) {
+    assert.equal(evaluateCrossModelReviewEligibility({
+      authorProvider: 'github-copilot',
+      authorModelFamily: badModel,
+      authorConfig: copilotConfig(),
+      reviewerProvider: 'anthropic-claude',
+      reviewerModelFamily: 'claude-opus-4.6',
+      reviewerConfig: claudeConfig(),
+      externalMergeGateAuthoritative: true
+    }).reason, 'INVALID_MODEL_FAMILY');
+  }
+
+  for (const badActor of ['', 'bad actor', 'actor/slash']) {
+    assert.equal(evaluateCrossModelReviewEligibility({
+      authorProvider: 'github-copilot',
+      authorModelFamily: 'gpt-5.4',
+      authorIdentity: badActor,
+      authorConfig: copilotConfig(),
+      reviewerProvider: 'anthropic-claude',
+      reviewerModelFamily: 'claude-opus-4.6',
+      reviewerConfig: claudeConfig(),
+      externalMergeGateAuthoritative: true
+    }).reason, 'INVALID_ACTOR_IDENTITY');
+  }
+
+  const proxyTrap = {
+    get() { throw new Error('proxy trap must not execute'); },
+    ownKeys() { throw new Error('proxy trap must not execute'); }
+  };
+  for (const malformedInput of [
+    null,
+    undefined,
+    [],
+    new Proxy({}, proxyTrap),
+    { badNum: Number.NaN },
+    { unknownTopKey: true },
+    { killSwitch: 'true' },
+    { stop: 1 },
+    { rollbackToCopilotOnly: 'yes' },
+    { rollbackReason: 123 },
+    { verifiedCopilotBudget: 'not-object' },
+    { headSha: 'not-40-hex' }
+  ]) {
+    const res = evaluateCrossModelReviewEligibility(malformedInput);
+    assert.equal(res.eligible, false);
+    assert.equal(res.reason, 'INVALID_CROSS_MODEL_INPUT');
+  }
 });

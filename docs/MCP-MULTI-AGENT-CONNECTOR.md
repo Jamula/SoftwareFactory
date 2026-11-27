@@ -18,9 +18,14 @@ This document defines SoftwareFactory's versioned, read-only, deterministic **MC
 
 ---
 
-## JSON-RPC `2.0` MCP Protocol Surface
+## JSON-RPC `2.0` MCP Protocol Surface & Framed Stdio Transport
 
-`handleMcpConnectorRequest(rawOrObject, context)` handles standard JSON-RPC `2.0` envelopes, optional validated `_meta` request metadata (`initialize`, `ping`, `tools/list`, and `tools/call`), and notifications (`id === undefined` always returns `null` without unsolicited error responses, even when notification `params` are invalid):
+`handleMcpConnectorRequest(rawOrObject, context)` handles standard JSON-RPC `2.0` envelopes, optional validated `_meta` request metadata (`initialize`, `ping`, `tools/list`, and `tools/call`), and notifications (`id === undefined` always returns `null` without unsolicited error responses, even when notification `params` are invalid).
+
+`processMcpFramedMessages(lines, context)` provides a deterministic, bounded newline-delimited JSON-RPC `2.0` batch/stdio processor ready for MCP stdio pipes (`.NET` `IChatClient` MCP clients, `openai/codex-action`, and `anthropics/claude-code-action`):
+
+- Accepts either a dense plain array of single-line JSON strings or a `\n` / `\r\n`-delimited stream chunk, enforcing `MAX_MCP_FRAMED_LINES = 100` (`FRAMED_BATCH_LIMIT_EXCEEDED` above `100` lines), rejecting empty batches (`EMPTY_FRAMED_BATCH`) and embedded `\r` / `\n` frame-injection characters (`EMBEDDED_NEWLINE_IN_FRAME`), and validating `context` fail-closed (`INVALID_CONNECTOR_CONTEXT`).
+- Enforces `MAX_MCP_REQUEST_BYTES = 65,536` UTF-8 bytes per line (`-32600` `PAYLOAD_TOO_LARGE` without parsing oversized frames), omits responses for JSON-RPC notifications, and escapes `\u2028` / `\u2029` so every entry in `responses` (and `framedOutput`) is guaranteed newline-free.
 
 | Method | Purpose | Response Contract |
 | --- | --- | --- |
@@ -60,13 +65,23 @@ In `M02`, inner specialist orchestration runs on `.NET 10` with **Microsoft Agen
 
 ## Provider Isolation Rules & `$0` Unapproved Spend Gate
 
-Every connector configuration must declare `externalMergeAuthorityOnly: true`, `allowDirectMergeOrPolicyWrite: false`, and `unapprovedSpendUsdCents: 0` (`UNAPPROVED_SPEND_FORBIDDEN` otherwise). Raw credential tokens in `env` or checkpoint metadata are rejected fail-closed (`SECRET_MATERIAL_REJECTED`).
+Every connector configuration must declare `externalMergeAuthorityOnly: true`, `allowDirectMergeOrPolicyWrite: false`, and `unapprovedSpendUsdCents: 0` (`UNAPPROVED_SPEND_FORBIDDEN` otherwise). Raw credential tokens and case-insensitive credential/authorization keys (`authorization`, `access_token`, `api_key`, `token`, and any `*_token` alias except MCP `progressToken`, including `GH_TOKEN`, `GH_ENTERPRISE_TOKEN`, `GITHUB_ENTERPRISE_TOKEN`, `GITHUB_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, etc.) across configs, `env`, and MCP `_meta` are rejected fail-closed (`SECRET_MATERIAL_REJECTED` / `INVALID_MCP_META`). Included subscription / OAuth capacity is represented exclusively via boolean metadata (`includedQuotaVerified === true` or `oauthEntitlementVerified === true`, rejecting `false` with `OAUTH_ENTITLEMENT_UNVERIFIED` and non-booleans with `INVALID_OAUTH_ENTITLEMENT`).
 
 | Provider Family | Supported Adapters | Mandatory Isolation & Budget Invariants |
 | --- | --- | --- |
-| `github-copilot` (default) | `copilot-cloud-agent`, `microsoft-agents-ai-ichatclient`, `microsoft-extensions-ai-ichatclient` | `includedQuotaVerified === true`, `overageHardStopUsdCents === 0` (GitHub Billing `$0` overage hard-stops on AI Credits, Premium Requests, and Cloud Sandboxes/Actions), `unapprovedSpendUsdCents === 0`. |
-| `openai-codex` | `openai-codex-action`, `openai-agents-sdk`, `microsoft-extensions-ai-ichatclient` | `ownerAuthorized === true`, `unapprovedSpendUsdCents === 0`, `includedQuotaVerified === true` (or explicit `authorizedSpendCapUsdCents > observedSpendUsdCents` with verified remaining cap), `env.OPENAI_AGENTS_DISABLE_TRACING === "1"` (fails closed with `EXTERNAL_TRACING_NOT_DISABLED` if missing or not `"1"`), `externalTelemetryDisabled === true`, and `trustedBaseConfigRestored === true` (restoring `.codex/` configuration from the trusted base branch before execution so untrusted PR branches cannot tamper with sandbox or network settings). |
-| `anthropic-claude` | `claude-code-action`, `claude-agent-sdk`, `microsoft-extensions-ai-ichatclient` | `ownerAuthorized === true`, `unapprovedSpendUsdCents === 0`, `includedQuotaVerified === true` (or explicit `authorizedSpendCapUsdCents > observedSpendUsdCents` with verified remaining cap; OAuth/API secrets never embedded in metadata), `preToolUseOnFailure === "block"` (fails closed with `PRE_TOOL_HOOK_NOT_FAIL_CLOSED` if `"ignore"` or omitted), `externalTelemetryDisabled === true`, `trustedBaseConfigRestored === true`, and optional `SessionStore` `sessionCheckpoint` integrity requiring `serializedState` bytes (`CHECKPOINT_STATE_MISSING` if omitted), `64`-hex SHA-256 cryptographic digest verification, and matching `40`-hex `headSha`. |
+| `github-copilot` (default) | `copilot-cloud-agent`, `microsoft-agents-ai-ichatclient`, `microsoft-extensions-ai-ichatclient` | `includedQuotaVerified === true`, `overageHardStopUsdCents === 0` (GitHub Billing `$0` overage hard-stops on AI Credits, Premium Requests, and Cloud Sandboxes/Actions), `unapprovedSpendUsdCents === 0`, optional `oauthEntitlementVerified === true`. |
+| `openai-codex` | `openai-codex-action`, `openai-agents-sdk`, `microsoft-extensions-ai-ichatclient` | `ownerAuthorized === true`, `unapprovedSpendUsdCents === 0`, `includedQuotaVerified === true` or `oauthEntitlementVerified === true` (or explicit `authorizedSpendCapUsdCents > observedSpendUsdCents` with verified remaining cap), `env.OPENAI_AGENTS_DISABLE_TRACING === "1"` (fails closed with `EXTERNAL_TRACING_NOT_DISABLED` if missing or not `"1"`), `externalTelemetryDisabled === true`, and `trustedBaseConfigRestored === true` (restoring `.codex/` configuration from the trusted base branch before execution so untrusted PR branches cannot tamper with sandbox or network settings). |
+| `anthropic-claude` | `claude-code-action`, `claude-agent-sdk`, `microsoft-extensions-ai-ichatclient` | `ownerAuthorized === true`, `unapprovedSpendUsdCents === 0`, `includedQuotaVerified === true` or `oauthEntitlementVerified === true` (or explicit `authorizedSpendCapUsdCents > observedSpendUsdCents` with verified remaining cap; OAuth/API secrets never embedded in metadata), `preToolUseOnFailure === "block"` (fails closed with `PRE_TOOL_HOOK_NOT_FAIL_CLOSED` if `"ignore"` or omitted), `externalTelemetryDisabled === true`, `trustedBaseConfigRestored === true`, and optional `SessionStore` `sessionCheckpoint` integrity requiring `serializedState` bytes (`CHECKPOINT_STATE_MISSING` if omitted), `64`-hex SHA-256 cryptographic digest verification, and matching `40`-hex `headSha`. |
+
+---
+
+## Heterogeneous Cross-Model Independent Review & Specialist Fallback
+
+`evaluateCrossModelReviewEligibility(input)` validates heterogeneous multi-vendor review (`mode: "independent-review"`, default) and specialist worker fallback (`mode: "specialist-fallback"`):
+
+- **True cross-model independence:** Requires `reviewerProvider !== authorProvider` OR case-normalized `reviewerModelFamily !== authorModelFamily` (`SELF_MODEL_REVIEW_FORBIDDEN` on self-model review, and `SELF_IDENTITY_REVIEW_FORBIDDEN` if optional `authorIdentity` and `reviewerIdentity` match).
+- **Dual harness & entitlement verification:** Validates both `authorConfig` and `reviewerConfig` through `validateMultiAgentConnectorConfig` (reporting `failedSide: "author" | "reviewer"`), checks provider alignment (`PROVIDER_CONFIG_MISMATCH`), role separation (`INVALID_AUTHOR_ROLE`, `INVALID_REVIEWER_ROLE`), exact candidate `headSha` alignment (`CROSS_MODEL_HEAD_MISMATCH`), verified subscription/OAuth metadata (`oauthEntitlementVerified === true` or `includedQuotaVerified === true` or remaining `authorizedSpendCapUsdCents`) with zero raw secrets (`SECRET_MATERIAL_REJECTED`), and `$0` unapproved spend.
+- **Sole external merge authority & instant rollback:** Requires `externalMergeGateAuthoritative === true` (`EXTERNAL_MERGE_AUTHORITY_REQUIRED`), keeps `tools/engineering-factory/core.mjs` and `tools/engineering-factory/protected-squash.mjs` as the sole merge authority (`syntheticApprovalAllowed: false`, `liveMerge: false`), and attaches a frozen Copilot-only fallback via `createCopilotOnlyRollbackState` (activating immediately on `rollbackToCopilotOnly`, `killSwitch`, `stop`, or any harness/isolation failure without fabricating Copilot budget evidence).
 
 ---
 
