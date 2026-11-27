@@ -1461,6 +1461,21 @@ test('buildAutomaticRevertCandidateSpec emits bounded revert PR specs on rollbac
       targetPaths: ['tools/engineering-factory/ai-credit-scorecard.mjs'],
       targetRevertCommitSha: revertSha
     }],
+    ...[
+      'CODEOWNERS',
+      '.github/CODEOWNERS',
+      'docs/CODEOWNERS',
+      'tools/engineering-factory/review-history.mjs',
+      'tools/engineering-factory/review-batch.mjs',
+      'tools/engineering-coordinator'
+    ].map((govPath, idx) => [rollbackVerdict, {
+      proposalId: `gov-review-owners-${idx}`,
+      repositoryId: SF_REPO_ID,
+      laneId: `sf-review-owners-${idx}`,
+      ownedPaths: [govPath],
+      targetPaths: [govPath],
+      targetRevertCommitSha: revertSha
+    }]),
     [rollbackVerdict, {
       proposalId: 'gov-broad-owned-dir',
       repositoryId: SF_REPO_ID,

@@ -135,8 +135,20 @@ const token = s => typeof s === 'string' && /^[A-Za-z0-9._:-]{1,96}$/.test(s);
 
 const GOVERNED_PREFIX_ANCHORS = [
   ...EXACT_PROTECTED_CONTROL_PLANE_PATHS,
+  'CODEOWNERS',
+  '.github/CODEOWNERS',
+  'docs/CODEOWNERS',
+  '.github/github-app.yml',
+  'AGENTS.md',
+  'VERSION',
   'tools/engineering-factory/optimistic-improver.mjs',
   'tools/engineering-factory/ai-credit-scorecard.mjs',
+  'tools/engineering-factory/review-history.mjs',
+  'tools/engineering-factory/review-batch.mjs',
+  'tools/engineering-factory/consumer-onboarding.mjs',
+  'tools/engineering-factory/pilot-readiness.mjs',
+  'tools/engineering-coordinator/review-intent-store.mjs',
+  'tools/engineering-coordinator/review-provider.mjs',
   '.github/workflows',
   '.github/rulesets'
 ];
@@ -148,7 +160,7 @@ function pathsOverlap(left, right) {
 function touchesGovernedContractPath(path) {
   if (isProtectedControlPlanePath(path)) return true;
   if (GOVERNED_PREFIX_ANCHORS.some(anchor => pathsOverlap(path, anchor))) return true;
-  return /(^|\/)(governance|policy|security|budget|workflows?)(\/|\.|-|_|$)/i.test(path);
+  return /(^|\/)(codeowners|governance|policy|security|budget|workflows?)(\/|\.|-|_|$)/i.test(path);
 }
 
 function validPathList(paths, maxLen) {
