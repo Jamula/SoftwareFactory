@@ -104,8 +104,8 @@ test('classifyValidationFailure maps test, coverage, security, infra/runner-time
   ['assertion-failed', 'test', 'repair-code-or-test'],
   ['runtime-smoke-failed', 'test', 'repair-code-or-test'],
   ['coverage-below-target', 'coverage', 'add-targeted-coverage-tests'],
-  ['coverage-missing', 'coverage', 'add-targeted-coverage-tests'],
-  ['coverage-head-mismatch', 'coverage', 'add-targeted-coverage-tests'],
+  ['coverage-missing', 'coverage', 'diagnose-coverage-evidence'],
+  ['coverage-head-mismatch', 'coverage', 'diagnose-coverage-evidence'],
   ['npm-lock-mismatch', 'dependency-lock', 'reconcile-locked-dependencies'],
   ['nuget-restore-mismatch', 'dependency-lock', 'reconcile-locked-dependencies'],
   ['toolchain-version-drift', 'dependency-lock', 'reconcile-locked-dependencies']

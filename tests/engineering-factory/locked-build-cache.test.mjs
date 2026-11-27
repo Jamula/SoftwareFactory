@@ -29,8 +29,10 @@ const ciInput = (overrides = {}) => ({
  complete: true,
  rid: 'linux-x64',
  node: '26.13.1',
+ npmCiFlags: '--ignore-scripts',
  dotnet: '10.0.404',
  aspire: '17.0.0',
+ packageJsonDigest: hashLockedContent('{"name":"softwarefactory","private":true}'),
  packageLockDigest: hashLockedContent('{"name":"softwarefactory","lockfileVersion":3}'),
  apphostDigest: hashLockedContent('#:package Aspire.Hosting.AppHost@17.0.0'),
  globalJsonDigest: hashLockedContent('{"sdk":{"version":"10.0.404","rollForward":"disable"}}'),
@@ -66,6 +68,12 @@ test('deriveCiCacheKeys derives OS-scoped exact-input keys for npm ci, NuGet/App
  assert.notEqual(linux.keys.npmCi, windows.keys.npmCi);
  assert.notEqual(linux.keys.nugetApphost, windows.keys.nugetApphost);
  assert.notEqual(linux.keys.aspireCli, windows.keys.aspireCli);
+
+ const manifestChanged = deriveCiCacheKeys(ciInput({packageJsonDigest: '0'.repeat(64)}));
+ assert.notEqual(manifestChanged.keys.npmCi, linux.keys.npmCi);
+ assert.notEqual(manifestChanged.inputDigests.npmCi, linux.inputDigests.npmCi);
+ assert.equal(manifestChanged.keys.nugetApphost, linux.keys.nugetApphost);
+ assert.equal(manifestChanged.keys.aspireCli, linux.keys.aspireCli);
 
  const lockChanged = deriveCiCacheKeys(ciInput({packageLockDigest: '1'.repeat(64)}));
  assert.notEqual(lockChanged.keys.npmCi, linux.keys.npmCi);
@@ -109,6 +117,8 @@ test('deriveCiCacheKeys fails closed on malformed inputs, fork/untrusted provena
   ciInput({rid: 'linux-arm64'}),
   ciInput({rid: 'darwin-x64'}),
   ciInput({node: '26.13.0'}),
+  ciInput({npmCiFlags: '--omit=dev'}),
+  ciInput({npmCiFlags: ''}),
   ciInput({dotnet: '10.0.403'}),
   ciInput({aspire: '17.0.1'})
  ]) {
@@ -118,6 +128,7 @@ test('deriveCiCacheKeys fails closed on malformed inputs, fork/untrusted provena
  }
 
  for (const badDigest of [
+  ciInput({packageJsonDigest: 'bad'}),
   ciInput({packageLockDigest: 'bad'}),
   ciInput({apphostDigest: 'A'.repeat(64)}),
   ciInput({globalJsonDigest: null})
@@ -144,6 +155,7 @@ test('verifyCiCacheEntry verifies all three CI bottleneck targets across linux-x
     writerBranchProtected: true,
     rid,
     node: '26.13.1',
+    npmCiFlags: '--ignore-scripts',
     dotnet: '10.0.404',
     aspire: '17.0.0',
     inputDigest: derived.inputDigests[target],
@@ -183,6 +195,7 @@ test('verifyCiCacheEntry verifies all three CI bottleneck targets across linux-x
    for (const drifted of [
     {...validEntry, rid: rid === 'linux-x64' ? 'win-x64' : 'linux-x64'},
     {...validEntry, node: '26.13.0'},
+    {...validEntry, npmCiFlags: '--omit=dev'},
     {...validEntry, dotnet: '10.0.400'},
     {...validEntry, aspire: '16.9.0'}
    ]) {
@@ -225,6 +238,7 @@ test('verifyCiCacheEntry verifies all three CI bottleneck targets across linux-x
   writerBranchProtected: true,
   rid: 'linux-x64',
   node: '26.13.1',
+  npmCiFlags: '--ignore-scripts',
   dotnet: '10.0.404',
   aspire: '17.0.0',
   inputDigest: derived.inputDigests.npmCi,

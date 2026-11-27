@@ -7,11 +7,11 @@ The evaluator exposes pure, offline, shadow-only metadata helpers for repository
 `planFastFeedback` accepts a complete path inventory only when its repository, candidate head, base revision, and `trusted-ci` producer marker match the expected snapshot and the evidence is marked verified. The component catalog must name the same repository and base revision, have non-overlapping ownership roots, and provide valid dependency edges and test paths. Missing, stale, incomplete, ambiguous, or unmapped evidence blocks the suggestion.
 
 `softwareFactoryCatalog` and `planChangeGraphFastFeedback` in `tools/engineering-factory/contract-routing.mjs` expand change-graph fast-feedback selection across all `Jamula/SoftwareFactory` repository paths:
-- `tools/engineering-factory` and `tests/engineering-factory` (including direct `<stem>.mjs` to `<stem>.test.mjs` pairing and dependent `apphost-runtime` checks)
-- `tools/engineering-coordinator` and `tests/engineering-coordinator`
+- `tools/engineering-factory` and `tests/engineering-factory` (selecting the full `tests/engineering-factory/*.test.mjs` inventory so intra-component consumers such as `capacity-scale.mjs` importing `budget.mjs` are never skipped, plus dependent `apphost-runtime` checks)
+- `tools/engineering-coordinator` and `tests/engineering-coordinator` (propagating into `engineering-factory` and `apphost-runtime` because `local-shadow-host.mjs` consumes `event-journal.mjs`)
 - `apphost.cs` (plus `global.json` and `aspire.config.json`)
 - `.github/workflows` (plus `apphost.run.json`)
-- `config` and `agents` (propagating to dependent `engineering-coordinator` lanes)
+- `config` and `agents` (propagating to dependent `engineering-coordinator`, `engineering-factory`, and `apphost-runtime` lanes)
 - `docs` and root governance files (`README.md`, `SECURITY.md`, `AGENTS.md`, `CONTRIBUTING.md`, `LICENSE`, `NOTICE`, `VERSION`, `.gitignore`)
 - `package.json` and `package-lock.json`
 
@@ -24,17 +24,17 @@ The `trusted-ci` marker is a data contract, not an authentication mechanism. A p
 `planBuildReuse` in `tools/engineering-factory/validation-diagnosis.mjs` returns a candidate only when a verified `trusted-ci` receipt matches the repository, source head, workflow, dependency, toolchain, and input digests.
 
 `hashLockedContent`, `deriveCiCacheKeys`, and `verifyCiCacheEntry` in `tools/engineering-factory/locked-build-cache.mjs` model exact-input cache keys and fail-closed verification for SoftwareFactory's three hosted CI restore/build bottlenecks per OS RID (`linux-x64` and `win-x64`):
-- **`npmCi`**: `package-lock.json` SHA-256 digest + Node.js `26.13.1`
+- **`npmCi`**: `package.json` + `package-lock.json` SHA-256 digests + effective install flags (`--ignore-scripts`) + Node.js `26.13.1`
 - **`nugetApphost`**: `apphost.cs` + `global.json` SHA-256 digests + .NET SDK `10.0.404`
 - **`aspireCli`**: `Aspire.Cli 17.0.0` tool binary + .NET SDK `10.0.404` + pinned NuGet v3 feed per OS RID (`linux-x64` / `win-x64`)
 
-`deriveCiCacheKeys` and `verifyCiCacheEntry` fail closed on fork or untrusted writer provenance (`isFork !== false`, `writerIsFork !== false`, `writerBranchProtected !== true`), OS or toolchain version drift, input digest mismatch, or cache poisoning (spoofed cache key, tampered observed artifact digest vs. expected writer receipt digest, or unclean archive layout). Even when an entry is verified (`verified: true`, `candidate: true`), `fullVerificationRequired: true` and `skipRequiredChecks: false` remain mandatory.
+`deriveCiCacheKeys` and `verifyCiCacheEntry` fail closed on fork or untrusted writer provenance (`isFork !== false`, `writerIsFork !== false`, `writerBranchProtected !== true`), OS/toolchain/install-flag drift, input digest mismatch, or cache poisoning (spoofed cache key, tampered observed artifact digest vs. expected writer receipt digest, or unclean archive layout). Even when an entry is verified (`verified: true`, `candidate: true`), `fullVerificationRequired: true` and `skipRequiredChecks: false` remain mandatory.
 
 ## Deterministic failure classification and bounded repair
 
 `classifyValidationFailure` in `tools/engineering-factory/validation-diagnosis.mjs` deterministically classifies exact-head `trusted-ci` failure signals across six operational categories:
 - `test` (`test-failure`, `assertion-failed`, `runtime-smoke-failed`) -> `repair-code-or-test`
-- `coverage` (`coverage-below-target`, `coverage-missing`, `coverage-head-mismatch`) -> `add-targeted-coverage-tests`
+- `coverage` (`coverage-below-target` -> `add-targeted-coverage-tests`; `coverage-missing` and `coverage-head-mismatch` -> `diagnose-coverage-evidence` so evidence-collection or candidate-head mismatches are diagnosed rather than misrouted to test authoring)
 - `security` (`codeql-alert`, `secret-detected`, `untrusted-provenance`, `cache-poisoning`, `tls-or-certificate`) -> `block-and-security-remediate`
 - `infra` / `runner-timeout` (`runner-timeout`, `runner-lost`, `github-api-5xx`, `network-reset` when transient vs. deterministic `job-step-timeout` or `transient: false`) -> `bounded-infra-retry` up to `retryLimit <= 2` for verified transient runner faults, or `diagnose-stage-timeout` without retry for deterministic stage hangs
 - `dependency-lock` (`npm-lock-mismatch`, `nuget-restore-mismatch`, `toolchain-version-drift`) -> `reconcile-locked-dependencies`

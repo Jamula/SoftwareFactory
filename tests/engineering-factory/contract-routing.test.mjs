@@ -148,26 +148,34 @@ test('softwareFactoryCatalog and planChangeGraphFastFeedback cover all repositor
  };
 
  const factoryOutcome = planChangeGraphFastFeedback(
-  makeEvidence(['tools/engineering-factory/budget.mjs', 'tools/engineering-factory/aspire-smoke.mjs']),
+  makeEvidence(['tools/engineering-factory/budget.mjs']),
   sfExpected
  );
  assert.equal(factoryOutcome.state, 'shadow-mapped');
  assert.equal(factoryOutcome.reason, 'FAST_FEEDBACK_SELECTED');
  assertMandatoryFullGates(factoryOutcome);
- assert.ok(factoryOutcome.components.includes('engineering-factory'));
- assert.ok(factoryOutcome.components.includes('apphost-runtime'));
+ assert.deepEqual(factoryOutcome.components, ['engineering-factory', 'engineering-factory-tests', 'apphost-runtime']);
  assert.ok(factoryOutcome.tests.includes('tests/engineering-factory/budget.test.mjs'));
+ assert.ok(factoryOutcome.tests.includes('tests/engineering-factory/capacity-scale.test.mjs'));
+ assert.ok(factoryOutcome.tests.includes('tests/engineering-factory/shadow-dispatch-ledger.test.mjs'));
  assert.ok(factoryOutcome.tests.includes('tests/engineering-factory/aspire-telemetry-smoke.test.mjs'));
 
  const coordinatorOutcome = planChangeGraphFastFeedback(
-  makeEvidence(['tools/engineering-coordinator/retry.mjs', 'tests/engineering-coordinator/retry.test.mjs']),
+  makeEvidence(['tools/engineering-coordinator/event-journal.mjs']),
   sfExpected
  );
  assert.equal(coordinatorOutcome.state, 'shadow-mapped');
  assertMandatoryFullGates(coordinatorOutcome);
- assert.deepEqual(coordinatorOutcome.components, ['engineering-coordinator', 'engineering-coordinator-tests']);
- assert.ok(coordinatorOutcome.tests.includes('tests/engineering-coordinator/retry.test.mjs'));
- assert.ok(coordinatorOutcome.tests.includes('tests/engineering-coordinator/planner.test.mjs'));
+ assert.deepEqual(coordinatorOutcome.components, [
+  'engineering-coordinator',
+  'engineering-coordinator-tests',
+  'engineering-factory',
+  'engineering-factory-tests',
+  'apphost-runtime'
+ ]);
+ assert.ok(coordinatorOutcome.tests.includes('tests/engineering-coordinator/event-journal.test.mjs'));
+ assert.ok(coordinatorOutcome.tests.includes('tests/engineering-factory/local-shadow-host.test.mjs'));
+ assert.ok(coordinatorOutcome.tests.includes('tests/engineering-factory/aspire-telemetry-smoke.test.mjs'));
 
  const apphostOutcome = planChangeGraphFastFeedback(
   makeEvidence(['apphost.cs', 'global.json', 'aspire.config.json']),

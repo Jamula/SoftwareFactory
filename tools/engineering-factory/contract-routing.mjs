@@ -63,7 +63,7 @@ export function planKnowledgeRoutes(catalog, expected, changedPaths) {
   const componentFields = ['component', 'owner', 'specialty', 'root', 'interface', 'decision', 'tests', 'dependsOn'];
   if (!list(catalog.components, 200, entry => ownData(entry, componentFields) &&
       boundedToken(entry.component) && boundedToken(entry.owner) && boundedToken(entry.specialty) &&
-      path(entry.root) && path(entry.interface) && path(entry.decision) && list(entry.tests, 30, path) &&
+      path(entry.root) && path(entry.interface) && path(entry.decision) && list(entry.tests, 60, path) &&
       entry.tests.length > 0 && unique(entry.tests) && list(entry.dependsOn, 60, boundedToken) &&
       unique(entry.dependsOn)) || catalog.components.length === 0 ||
       !unique(catalog.components.map(entry => entry.component))) return blocked('MAP_INVALID');
@@ -106,7 +106,7 @@ export function planKnowledgeRoutes(catalog, expected, changedPaths) {
 }
 
 const SF_REPOSITORY = 'Jamula/SoftwareFactory';
-const FACTORY_TEST_STEMS = new Set([
+const FACTORY_TESTS = [
   'aspire-telemetry-smoke', 'budget', 'capacity-scale', 'contract-routing', 'copilot-hosted-pilot',
   'core', 'coverage-evidence', 'dispatch-intent', 'event-envelope', 'integration-train', 'issue-event',
   'lease-transition', 'local-otel-sdk', 'local-shadow-host', 'locked-build-cache', 'outcome-measurement',
@@ -114,11 +114,11 @@ const FACTORY_TEST_STEMS = new Set([
   'protected-squash', 'pull-signals', 'queue-inspection', 'queue-reread', 'review-batch',
   'review-history', 'run', 'shadow-dispatch-ledger', 'shadow-runtime', 'stage-aggregate',
   'stage-latency', 'telemetry', 'validation-diagnosis', 'verify-dashboard-metrics'
-]);
-const COORDINATOR_TEST_STEMS = new Set([
+].map(stem => `tests/engineering-factory/${stem}.test.mjs`);
+const COORDINATOR_TESTS = [
   'coordinator', 'event-journal', 'planner', 'project-config', 'provider-adapters',
   'retry', 'review-intent-store', 'review-provider', 'sqlite-state-store'
-]);
+].map(stem => `tests/engineering-coordinator/${stem}.test.mjs`);
 const ROOT_DOC_FILES = new Set(['AGENTS.md', 'CONTRIBUTING.md', 'LICENSE', 'NOTICE', 'VERSION', '.gitignore']);
 const LOCK_FILES = new Set(['package.json', 'package-lock.json']);
 
@@ -170,17 +170,7 @@ export function softwareFactoryCatalog(revision) {
         root: 'tools/engineering-coordinator',
         interface: 'tools/engineering-coordinator/coordinator.mjs',
         decision: 'docs/COORDINATOR-EVENT-JOURNAL.md',
-        tests: [
-          'tests/engineering-coordinator/coordinator.test.mjs',
-          'tests/engineering-coordinator/event-journal.test.mjs',
-          'tests/engineering-coordinator/planner.test.mjs',
-          'tests/engineering-coordinator/project-config.test.mjs',
-          'tests/engineering-coordinator/provider-adapters.test.mjs',
-          'tests/engineering-coordinator/retry.test.mjs',
-          'tests/engineering-coordinator/review-intent-store.test.mjs',
-          'tests/engineering-coordinator/review-provider.test.mjs',
-          'tests/engineering-coordinator/sqlite-state-store.test.mjs'
-        ],
+        tests: [...COORDINATOR_TESTS],
         dependsOn: ['coordinator-config', 'coordinator-agents']
       },
       {
@@ -190,7 +180,7 @@ export function softwareFactoryCatalog(revision) {
         root: 'tests/engineering-coordinator',
         interface: 'tests/engineering-coordinator/coordinator.test.mjs',
         decision: 'docs/COORDINATOR-REVIEW-PROVIDER.md',
-        tests: ['tests/engineering-coordinator/coordinator.test.mjs'],
+        tests: [...COORDINATOR_TESTS],
         dependsOn: ['engineering-coordinator']
       },
       {
@@ -200,14 +190,8 @@ export function softwareFactoryCatalog(revision) {
         root: 'tools/engineering-factory',
         interface: 'package.json',
         decision: 'docs/ENGINEERING-STANDARDS.md',
-        tests: [
-          'tests/engineering-factory/core.test.mjs',
-          'tests/engineering-factory/run.test.mjs',
-          'tests/engineering-factory/contract-routing.test.mjs',
-          'tests/engineering-factory/coverage-evidence.test.mjs',
-          'tests/engineering-factory/validation-diagnosis.test.mjs'
-        ],
-        dependsOn: []
+        tests: [...FACTORY_TESTS],
+        dependsOn: ['engineering-coordinator']
       },
       {
         component: 'engineering-factory-tests',
@@ -216,10 +200,7 @@ export function softwareFactoryCatalog(revision) {
         root: 'tests/engineering-factory',
         interface: 'tests/engineering-factory/coverage-reporter.mjs',
         decision: 'docs/VERIFIED-OUTCOME-REPORTING.md',
-        tests: [
-          'tests/engineering-factory/coverage-evidence.test.mjs',
-          'tests/engineering-factory/run.test.mjs'
-        ],
+        tests: [...FACTORY_TESTS],
         dependsOn: ['engineering-factory']
       },
       {
@@ -284,16 +265,6 @@ const fastFeedbackDenied = reason => ({
   skipRequiredChecks: false
 });
 
-function directTestForChangedPath(changed) {
-  const factoryMatch = /^(?:tools|tests)\/engineering-factory\/([a-z0-9-]+)(?:\.test)?\.mjs$/.exec(changed);
-  if (factoryMatch && FACTORY_TEST_STEMS.has(factoryMatch[1]))
-    return `tests/engineering-factory/${factoryMatch[1]}.test.mjs`;
-  const coordinatorMatch = /^(?:tools|tests)\/engineering-coordinator\/([a-z0-9-]+)(?:\.test)?\.mjs$/.exec(changed);
-  if (coordinatorMatch && COORDINATOR_TEST_STEMS.has(coordinatorMatch[1]))
-    return `tests/engineering-coordinator/${coordinatorMatch[1]}.test.mjs`;
-  return null;
-}
-
 export function planChangeGraphFastFeedback(evidence, expected) {
   if (!ownData(expected, ['repository', 'revision', 'head']) ||
       expected.repository !== SF_REPOSITORY || !sha(expected.revision) || !sha(expected.head) ||
@@ -318,12 +289,8 @@ export function planChangeGraphFastFeedback(evidence, expected) {
   if (mapped.state !== 'shadow-mapped') return fastFeedbackDenied(mapped.reason);
   const tests = new Set(mapped.routes.flatMap(route => route.tests));
   if (lockChanged) {
-    tests.add('tests/engineering-coordinator/coordinator.test.mjs');
-    tests.add('tests/engineering-factory/locked-build-cache.test.mjs');
-  }
-  for (const item of evidence.paths) {
-    const direct = directTestForChangedPath(item);
-    if (direct !== null) tests.add(direct);
+    for (const suite of COORDINATOR_TESTS) tests.add(suite);
+    for (const suite of FACTORY_TESTS) tests.add(suite);
   }
   return {
     state: 'shadow-mapped',
