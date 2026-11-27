@@ -88,6 +88,18 @@ while strictly isolating `sourceKind: "historical-proxy"` from
 
 ## 4. Optimistic Improvement Loop & Cohort Rollback (`optimistic-improver.mjs`)
 
+- **Repository-Isolated Causal Audit Index (`queryCausalAuditTrail(chains, filter)`):**
+  Indexes completed autonomous causal chains with strict plain-object / anti-`Proxy`
+  own-data-descriptor validation across all records (rejecting explicit `null`/`undefined`
+  filter fields), enforces required `filter.repositoryId` isolation so cross-repository
+  records or shared fork SHAs never leak or cross-block across tenants, verifies every
+  target-repository chain's unbroken 9-link lineage via `verifyCausalProvenanceChain`
+  (rejecting broken chains, partial `allowInFlightUpToStage` prefixes, per-repository
+  duplicate `traceId` / `commitSha` / `squashCommitSha` / `pullNumber` entries, and
+  circuit-breaker inputs mismatched with lineage paths/identities while keeping omitted
+  circuit-breaker state as `null` rather than `false`), and supports deterministic
+  chronological lookups by `repositoryId`, `traceId`, `deliveryId`, `issueNumber`,
+  `pullNumber`, `commitSha`, `squashCommitSha`, or `violationCode`.
 - **Candidate Proposal Generator (`proposeOptimisticImprovements`):** Synthesizes bounded,
   isolated, non-overlapping candidate proposals across SoftwareFactory
   (`"factory-velocity"`, `"knowledge-map"`) and enrolled products (`"enrolled-product"`)
@@ -96,8 +108,14 @@ while strictly isolating `sourceKind: "historical-proxy"` from
   (`directMainMutation: false`, `autoPolicyMutation: false`), require the full gate
   pipeline (`["ci-98-95", "codeql", "independent-review", "squash-merge-queue"]`), and set
   `requiresHumanApproval: true` whenever any target touches or encloses governance,
-  workflow, policy, security, or budget contracts (including ancestor directories such as
-  `tools/engineering-factory` or `.github`).
+  ownership (`CODEOWNERS`, `.github/CODEOWNERS`, `docs/CODEOWNERS`), executable coverage
+  and runner gates (`package.json`, `package-lock.json`,
+  `tests/engineering-factory/coverage-reporter.mjs`, `no-python-guard.mjs`),
+  independent-review (`review-history.mjs`, `review-batch.mjs`, `review-intent-store.mjs`,
+  `review-provider.mjs`), workflow, policy, security, or budget contracts (including
+  `optimistic-improver.mjs`, `ai-credit-scorecard.mjs`, and ancestor directories such as
+  `tools/engineering-factory`, `tools/engineering-coordinator`, `config`, `agents`, or
+  `.github`).
 - **Matched Cohort Verification & Automatic Rollback (`verifyCohortImprovementOrRollback`):**
   Requires matching `repositoryId`, `cohortId`, `sourceKind: "verified-autonomous"`,
   `complete: true`, non-overlapping equal-duration windows (`beforeCohort.windowEndMs <=
@@ -110,3 +128,15 @@ while strictly isolating `sourceKind: "historical-proxy"` from
   routine human interventions increase in either absolute count or per-outcome rate,
   `reworkRateBps` (including `>10,000` bps repair-per-superstep ratios) regresses beyond
   tolerance, or AI-credit cost per accepted outcome exceeds baseline.
+- **Bounded Automatic Revert Candidate Specification (`buildAutomaticRevertCandidateSpec`):**
+  Consumes a `verifyCohortImprovementOrRollback` verdict (bound to `repositoryId` and
+  `cohortId`) and merged candidate metadata; fails closed when `rollbackRequired !== true`,
+  when `repositoryId` / `cohortId` disagree, when inputs are malformed, proxy-wrapped, or
+  out-of-lane, or when supplied `touchedPaths` / 9-link `provenanceChain` omit touched
+  files from `targetPaths`, and when `rollbackRequired === true` emits an isolated,
+  read-only revert PR specification (`directMainMutation: false`,
+  `autoPolicyMutation: false`, `gatePipelineRequired: ["ci-98-95", "codeql",
+  "independent-review", "squash-merge-queue"]`, exact `rollbackReasons`, verified 40-hex
+  `targetRevertCommitSha`, `provenanceVerified` boolean, and `requiresHumanApproval: true`
+  whenever `targetPaths`, `ownedPaths`, or contract metadata touch governed control-plane,
+  workflow, policy, security, or budget surfaces).

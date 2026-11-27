@@ -3,10 +3,13 @@ import assert from 'node:assert/strict';
 import {buildAiCreditAndAutonomyScorecard} from '../../tools/engineering-factory/ai-credit-scorecard.mjs';
 import {
   GOVERNED_CONTRACT_DOMAINS,
+  KNOWN_ROLLBACK_REASONS,
   MIN_COHORT_ACCEPTED_OUTCOMES,
   PROPOSAL_SCOPES,
   REQUIRED_GATE_PIPELINE,
+  buildAutomaticRevertCandidateSpec,
   proposeOptimisticImprovements,
+  queryCausalAuditTrail,
   verifyCohortImprovementOrRollback
 } from '../../tools/engineering-factory/optimistic-improver.mjs';
 
@@ -265,7 +268,33 @@ test('proposeOptimisticImprovements generates isolated non-overlapping proposals
   assert.equal(broadDirectoryProposal.valid, true);
   assert.equal(broadDirectoryProposal.proposals[0].requiresHumanApproval, true);
 
-  // Proposal targeting security-named path also sets requiresHumanApproval: true
+  // Proposal targeting security-named path or optimistic-improver.mjs itself also sets requiresHumanApproval: true
+  const improverSelfProposal = proposeOptimisticImprovements({
+    scorecard: {...scorecard, bottlenecks: []},
+    knowledgeLanes: [
+      {
+        laneId: 'sf-improver-self',
+        repositoryId: SF_REPO_ID,
+        scope: 'factory-velocity',
+        ownedPaths: ['tools/engineering-factory/optimistic-improver.mjs']
+      }
+    ],
+    failureTaxonomy: [],
+    feedbackItems: [
+      {
+        id: 'improver-tune',
+        repositoryId: SF_REPO_ID,
+        laneId: 'sf-improver-self',
+        source: 'operator',
+        metricName: 'proposalEvalMs',
+        baselineValue: 20,
+        targetValue: 10,
+        targetPaths: ['tools/engineering-factory/optimistic-improver.mjs']
+      }
+    ]
+  });
+  assert.equal(improverSelfProposal.proposals[0].requiresHumanApproval, true);
+
   const secPathProposal = proposeOptimisticImprovements({
     scorecard: {...scorecard, bottlenecks: []},
     knowledgeLanes: [
@@ -752,4 +781,969 @@ test('verifyCohortImprovementOrRollback enforces >=5 comparable outcomes and tri
     }).valid,
     false
   );
+});
+
+function spanHex(index) {
+  return index.toString(16).padStart(16, '0');
+}
+
+function buildAuditChain({
+  traceSeed = 'a',
+  commitSeed = '1',
+  squashSeed = '2',
+  deliveryId = 'delivery-100',
+  repositoryId = SF_REPO_ID,
+  startedAtMs = 1_000,
+  completedAtMs = 1_900,
+  consumerPolicy = false,
+  extra = {}
+} = {}) {
+  const traceId = traceSeed.repeat(32).slice(0, 32);
+  const commitSha = commitSeed.repeat(40).slice(0, 40);
+  const squashCommitSha = squashSeed.repeat(40).slice(0, 40);
+  const lockSha256 = 'f'.repeat(64);
+  const isConsumer = repositoryId !== SF_REPO_ID || consumerPolicy;
+
+  return {
+    stages: {
+      eventDelivery: {
+        traceparent: `00-${traceId}-${spanHex(1)}-01`,
+        parentSpanId: null,
+        deliveryId,
+        repositoryId,
+        observedMs: startedAtMs
+      },
+      ghAwLock: {
+        traceparent: `00-${traceId}-${spanHex(2)}-01`,
+        parentSpanId: spanHex(1),
+        lockSha256,
+        observedMs: startedAtMs + 10
+      },
+      casLease: {
+        traceparent: `00-${traceId}-${spanHex(3)}-01`,
+        parentSpanId: spanHex(2),
+        leaseGeneration: 2,
+        laneId: isConsumer ? 'ft-product-lane' : 'sf-velocity-lane',
+        ownedPaths: isConsumer
+          ? ['src/tree/pedigree.ts']
+          : ['tools/engineering-factory/stage-latency.mjs'],
+        observedMs: startedAtMs + 20
+      },
+      missionControlTask: {
+        traceparent: `00-${traceId}-${spanHex(4)}-01`,
+        parentSpanId: spanHex(3),
+        taskId: '550e8400-e29b-41d4-a716-446655440000',
+        sessionId: 'mc-session-137',
+        observedMs: startedAtMs + 30
+      },
+      candidateCommit: {
+        traceparent: `00-${traceId}-${spanHex(5)}-01`,
+        parentSpanId: spanHex(4),
+        commitSha,
+        signed: true,
+        touchedPaths: isConsumer
+          ? ['src/tree/pedigree.ts']
+          : ['tools/engineering-factory/stage-latency.mjs'],
+        observedMs: startedAtMs + 40
+      },
+      exactHeadValidation: {
+        traceparent: `00-${traceId}-${spanHex(6)}-01`,
+        parentSpanId: spanHex(5),
+        headSha: commitSha,
+        ciReceiptId: 'ci-rcpt-137',
+        codeqlReceiptId: 'codeql-rcpt-137',
+        coverageReceiptId: 'cov-rcpt-137',
+        expectedComponents: [isConsumer ? 'consumer.pedigree' : 'engineering-factory.stage-latency'],
+        coverageReports: [
+          {
+            component: isConsumer ? 'consumer.pedigree' : 'engineering-factory.stage-latency',
+            head: commitSha,
+            lines: isConsumer ? 97 : 99,
+            lineTotal: 100,
+            branches: isConsumer ? 92 : 96,
+            branchTotal: 100
+          }
+        ],
+        lines: isConsumer ? 97 : 99,
+        lineTotal: 100,
+        branches: isConsumer ? 92 : 96,
+        branchTotal: 100,
+        observedMs: startedAtMs + 50
+      },
+      independentReview: {
+        traceparent: `00-${traceId}-${spanHex(7)}-01`,
+        parentSpanId: spanHex(6),
+        reviewId: 'review-137',
+        reviewedHeadSha: commitSha,
+        reviewerIdentity: isConsumer ? 'senior-maintainer' : 'copilot-pull-request-reviewer[bot]',
+        authorIdentity: 'cyrusjamula',
+        implementationAgentIdentity: 'copilot-swe-agent[bot]',
+        authorizedReviewers: ['copilot-pull-request-reviewer[bot]', 'senior-maintainer'],
+        reviewState: isConsumer ? 'APPROVED' : 'COMMENTED',
+        reviewHistoryComplete: true,
+        outstandingChangesRequested: 0,
+        unresolvedThreads: 0,
+        summaryFindingsResolved: true,
+        observedMs: startedAtMs + 60
+      },
+      mergeQueueSquash: {
+        traceparent: `00-${traceId}-${spanHex(8)}-01`,
+        parentSpanId: spanHex(7),
+        expectedHeadSha: commitSha,
+        squashCommitSha,
+        observedMs: startedAtMs + 70
+      },
+      verifiedMain: {
+        traceparent: `00-${traceId}-${spanHex(9)}-01`,
+        parentSpanId: spanHex(8),
+        mainCommitSha: squashCommitSha,
+        mainHealthy: true,
+        receiptId: 'main-rcpt-137',
+        observedMs: completedAtMs
+      }
+    },
+    ...(isConsumer
+      ? {coveragePolicy: {profile: 'consumer', minLinePercent: 97, minBranchPercent: 92}}
+      : {}),
+    ...extra
+  };
+}
+
+function buildSampleCircuitBreaker(repositoryId = SF_REPO_ID, overrides = {}) {
+  return {
+    repositoryId,
+    ownedPaths: ['tools/engineering-factory/stage-latency.mjs'],
+    touchedPaths: ['tools/engineering-factory/stage-latency.mjs'],
+    attempt: 1,
+    maxRetries: 2,
+    runAiCredits: 10,
+    maxRunAiCredits: 50,
+    burnRateBps: 500,
+    maxBurnSpikeBps: 2500,
+    incrementalBilledUsdCents: 0,
+    safeOutputsThreatDetected: false,
+    accountingVerified: true,
+    ...overrides
+  };
+}
+
+test('queryCausalAuditTrail enforces repository isolation, deterministic ordering, 9-link lineage verification, and all filter keys', () => {
+  const sfChainLate = buildAuditChain({
+    traceSeed: 'c',
+    commitSeed: '5',
+    squashSeed: '6',
+    deliveryId: 'delivery-batch-1',
+    startedAtMs: 2_000,
+    completedAtMs: 3_000,
+    extra: {
+      issueNumber: 137,
+      pullNumber: 142,
+      violations: ['AI_CREDIT_ANOMALY'],
+      circuitBreaker: buildSampleCircuitBreaker(SF_REPO_ID, {runAiCredits: 75})
+    }
+  });
+  const sfChainEarlyB = buildAuditChain({
+    traceSeed: 'b',
+    commitSeed: '3',
+    squashSeed: '4',
+    deliveryId: 'delivery-batch-1',
+    startedAtMs: 1_000,
+    completedAtMs: 2_000,
+    extra: {
+      issueNumber: 137,
+      pullNumber: 141
+    }
+  });
+  const sfChainEarlyTieStart = buildAuditChain({
+    traceSeed: 'a',
+    commitSeed: '7',
+    squashSeed: '8',
+    deliveryId: 'delivery-solo',
+    startedAtMs: 1_000,
+    completedAtMs: 2_000,
+    extra: {
+      circuitBreaker: buildSampleCircuitBreaker(SF_REPO_ID, {attempt: 4, maxRetries: 2})
+    }
+  });
+  const sfChainLaterStartSameComplete = buildAuditChain({
+    traceSeed: 'd',
+    commitSeed: '9',
+    squashSeed: 'a',
+    deliveryId: 'delivery-solo-2',
+    startedAtMs: 1_100,
+    completedAtMs: 2_000
+  });
+  // Consumer repository shares issueNumber: 137 and pullNumber: 141 — must remain strictly isolated!
+  const ftChain = buildAuditChain({
+    traceSeed: 'e',
+    commitSeed: 'b',
+    squashSeed: 'c',
+    deliveryId: 'delivery-batch-1',
+    repositoryId: FAMILYTREE_REPO_ID,
+    startedAtMs: 1_200,
+    completedAtMs: 1_800,
+    extra: {
+      issueNumber: 137,
+      pullNumber: 141,
+      violations: ['AI_CREDIT_ANOMALY']
+    }
+  });
+
+  const index = [sfChainLate, ftChain, sfChainLaterStartSameComplete, sfChainEarlyB, sfChainEarlyTieStart];
+
+  // Repository-wide query isolates SF_REPO_ID and sorts deterministically by completedAtMs, startedAtMs, traceId
+  const allSf = queryCausalAuditTrail(index, {repositoryId: SF_REPO_ID});
+  assert.equal(allSf.valid, true);
+  assert.equal(allSf.shadow, true);
+  assert.equal(allSf.liveMutation, false);
+  assert.equal(allSf.readOnly, true);
+  assert.equal(allSf.repositoryId, SF_REPO_ID);
+  assert.equal(allSf.totalRepositoryChains, 4);
+  assert.equal(allSf.isolatedOutCount, 1);
+  assert.equal(allSf.matchCount, 4);
+  assert.deepEqual(
+    allSf.records.map(r => r.traceId),
+    ['a'.repeat(32), 'b'.repeat(32), 'd'.repeat(32), 'c'.repeat(32)]
+  );
+  for (const rec of allSf.records) {
+    assert.equal(rec.repositoryId, SF_REPO_ID);
+    assert.equal(rec.lineageVerified, true);
+    assert.equal(rec.verifiedStageCount, 9);
+    assert.equal(rec.provenanceCode, 'PROVENANCE_CHAIN_VERIFIED');
+    assert.equal(Object.isFrozen(rec), true);
+    assert.equal(Object.isFrozen(rec.ownedPaths), true);
+    assert.equal(Object.isFrozen(rec.touchedPaths), true);
+    if (rec.violations !== null) {
+      assert.equal(Object.isFrozen(rec.violations), true);
+    }
+  }
+
+  // Consumer repo query isolates FAMILYTREE_REPO_ID only (and forked/shared commitSha or JSON-safe semantic errors in other repos cannot DoS consumer query)
+  const sfForkSharingCommit = buildAuditChain({
+    traceSeed: '9',
+    commitSeed: 'b',
+    squashSeed: 'd',
+    repositoryId: SF_REPO_ID,
+    extra: {
+      issueNumber: 0,
+      violations: ['UNKNOWN_FOREIGN_CODE']
+    }
+  });
+  const allFt = queryCausalAuditTrail([...index, sfForkSharingCommit], {repositoryId: FAMILYTREE_REPO_ID});
+  assert.equal(allFt.valid, true);
+  assert.equal(allFt.totalRepositoryChains, 1);
+  assert.equal(allFt.isolatedOutCount, 5);
+  assert.equal(allFt.matchCount, 1);
+  assert.equal(allFt.records[0].repositoryId, FAMILYTREE_REPO_ID);
+  assert.equal(allFt.records[0].pullNumber, 141);
+
+  // Individual lookups across every supported filter field
+  const byTrace = queryCausalAuditTrail(index, {
+    repositoryId: SF_REPO_ID,
+    traceId: 'b'.repeat(32)
+  });
+  assert.equal(byTrace.matchCount, 1);
+  assert.equal(byTrace.records[0].pullNumber, 141);
+
+  const byDelivery = queryCausalAuditTrail(index, {
+    repositoryId: SF_REPO_ID,
+    deliveryId: 'delivery-batch-1'
+  });
+  assert.equal(byDelivery.matchCount, 2);
+  assert.deepEqual(byDelivery.records.map(r => r.pullNumber), [141, 142]);
+
+  const byIssue = queryCausalAuditTrail(index, {
+    repositoryId: SF_REPO_ID,
+    issueNumber: 137
+  });
+  assert.equal(byIssue.matchCount, 2);
+
+  const byPull = queryCausalAuditTrail(index, {
+    repositoryId: SF_REPO_ID,
+    pullNumber: 142
+  });
+  assert.equal(byPull.matchCount, 1);
+  assert.equal(byPull.records[0].commitSha, '5'.repeat(40));
+
+  const byCommit = queryCausalAuditTrail(index, {
+    repositoryId: SF_REPO_ID,
+    commitSha: '7'.repeat(40)
+  });
+  assert.equal(byCommit.matchCount, 1);
+  assert.deepEqual(byCommit.records[0].violations, ['RETRY_CAP_EXCEEDED']);
+  assert.equal(byCommit.records[0].killSwitchTripped, true);
+
+  // Missing breaker/violations evidence stays null (unknown), while explicit empty violations: [] reports false
+  const bySquash = queryCausalAuditTrail(index, {
+    repositoryId: SF_REPO_ID,
+    squashCommitSha: 'a'.repeat(40)
+  });
+  assert.equal(bySquash.matchCount, 1);
+  assert.equal(bySquash.records[0].violations, null);
+  assert.equal(bySquash.records[0].killSwitchTripped, null);
+
+  const cleanConfirmed = buildAuditChain({
+    traceSeed: '8',
+    commitSeed: 'd',
+    squashSeed: 'e',
+    extra: {
+      violations: [],
+      circuitBreaker: buildSampleCircuitBreaker(SF_REPO_ID, {
+        authorIdentity: 'cyrusjamula',
+        implementationAgentIdentity: 'copilot-swe-agent[bot]',
+        reviewerIdentity: 'copilot-pull-request-reviewer[bot]',
+        mainHealthy: true
+      })
+    }
+  });
+  const cleanRes = queryCausalAuditTrail([cleanConfirmed], {repositoryId: SF_REPO_ID});
+  assert.equal(cleanRes.valid, true);
+  assert.deepEqual(cleanRes.records[0].violations, []);
+  assert.equal(cleanRes.records[0].killSwitchTripped, false);
+
+  const byViolation = queryCausalAuditTrail(index, {
+    repositoryId: SF_REPO_ID,
+    violationCode: 'AI_CREDIT_ANOMALY'
+  });
+  assert.equal(byViolation.matchCount, 1);
+  assert.equal(byViolation.records[0].pullNumber, 142);
+
+  // Combined multi-key filter and clean empty match
+  const combinedMatch = queryCausalAuditTrail(index, {
+    repositoryId: SF_REPO_ID,
+    traceId: 'c'.repeat(32),
+    deliveryId: 'delivery-batch-1',
+    issueNumber: 137,
+    pullNumber: 142,
+    commitSha: '5'.repeat(40),
+    squashCommitSha: '6'.repeat(40),
+    violationCode: 'AI_CREDIT_ANOMALY'
+  });
+  assert.equal(combinedMatch.matchCount, 1);
+
+  const noMatch = queryCausalAuditTrail(index, {
+    repositoryId: SF_REPO_ID,
+    issueNumber: 999
+  });
+  assert.equal(noMatch.valid, true);
+  assert.equal(noMatch.matchCount, 0);
+  assert.deepEqual(noMatch.records, []);
+});
+
+test('queryCausalAuditTrail fails closed on missing repositoryId, proxies, incomplete/broken chains, duplicates, and inconsistent circuit-breaker evidence', () => {
+  const validChain = buildAuditChain();
+
+  // Missing repositoryId & invalid filter envelopes (including explicit null/undefined filter values!)
+  assert.equal(queryCausalAuditTrail([validChain], {}).reason, 'MISSING_REPOSITORY_ID');
+  for (const badFilter of [
+    null,
+    new Proxy({repositoryId: SF_REPO_ID}, {}),
+    {repositoryId: 0},
+    {repositoryId: SF_REPO_ID, unknownKey: 1},
+    {repositoryId: SF_REPO_ID, traceId: null},
+    {repositoryId: SF_REPO_ID, traceId: undefined},
+    {repositoryId: SF_REPO_ID, traceId: '0'.repeat(32)},
+    {repositoryId: SF_REPO_ID, deliveryId: null},
+    {repositoryId: SF_REPO_ID, deliveryId: 'bad delivery!'},
+    {repositoryId: SF_REPO_ID, issueNumber: null},
+    {repositoryId: SF_REPO_ID, issueNumber: 0},
+    {repositoryId: SF_REPO_ID, pullNumber: null},
+    {repositoryId: SF_REPO_ID, pullNumber: -1},
+    {repositoryId: SF_REPO_ID, commitSha: null},
+    {repositoryId: SF_REPO_ID, commitSha: 'short'},
+    {repositoryId: SF_REPO_ID, squashCommitSha: null},
+    {repositoryId: SF_REPO_ID, squashCommitSha: 'Z'.repeat(40)},
+    {repositoryId: SF_REPO_ID, violationCode: null},
+    {repositoryId: SF_REPO_ID, violationCode: 'UNKNOWN_VIOLATION'}
+  ]) {
+    const res = queryCausalAuditTrail([validChain], badFilter);
+    assert.equal(res.valid, false);
+    assert.equal(res.reason, 'INVALID_AUDIT_FILTER');
+  }
+
+  // Non-enumerable or getter property on filter fails closed
+  const getterFilter = {repositoryId: SF_REPO_ID};
+  Object.defineProperty(getterFilter, 'issueNumber', {get: () => 137, enumerable: true});
+  assert.equal(queryCausalAuditTrail([validChain], getterFilter).reason, 'INVALID_AUDIT_FILTER');
+
+  // Invalid chains array or entry envelopes (including nested proxy inside an isolated-out repository!)
+  for (const badChains of [
+    null,
+    new Proxy([validChain], {}),
+    new Array(1)
+  ]) {
+    assert.equal(queryCausalAuditTrail(badChains, {repositoryId: SF_REPO_ID}).reason, 'INVALID_AUDIT_CHAINS');
+  }
+
+  const otherRepoNestedProxy = buildAuditChain({repositoryId: FAMILYTREE_REPO_ID});
+  otherRepoNestedProxy.stages.casLease.ownedPaths = new Proxy(['src/tree/pedigree.ts'], {});
+  const otherRepoCallableProxy = buildAuditChain({repositoryId: FAMILYTREE_REPO_ID});
+  otherRepoCallableProxy.stages.callableHook = new Proxy(() => 42, {});
+  const otherRepoNonFinite = buildAuditChain({repositoryId: FAMILYTREE_REPO_ID});
+  otherRepoNonFinite.stages.badNumber = Number.NaN;
+  const otherRepoSymbolVal = buildAuditChain({repositoryId: FAMILYTREE_REPO_ID});
+  otherRepoSymbolVal.stages.badPrimitive = Symbol('secret');
+  const otherRepoTooManyKeys = buildAuditChain({repositoryId: FAMILYTREE_REPO_ID});
+  otherRepoTooManyKeys.stages.wideObject = Object.fromEntries(
+    Array.from({length: 130}, (_, idx) => [`k${idx}`, idx])
+  );
+  const otherRepoDiamondDag = buildAuditChain({repositoryId: FAMILYTREE_REPO_ID});
+  let dagNode = {leaf: 1};
+  for (let i = 0; i < 12; i++) {
+    dagNode = {a: dagNode, b: dagNode};
+  }
+  otherRepoDiamondDag.stages.dag = dagNode;
+  const otherRepoDeepNest = buildAuditChain({repositoryId: FAMILYTREE_REPO_ID});
+  let deepCursor = {};
+  const deepRoot = deepCursor;
+  for (let i = 0; i < 14; i++) {
+    deepCursor.next = {};
+    deepCursor = deepCursor.next;
+  }
+  otherRepoDeepNest.stages.extraNested = deepRoot;
+
+  for (const badEntry of [
+    null,
+    new Proxy(validChain, {}),
+    {stages: null},
+    {stages: {eventDelivery: {repositoryId: 0}}},
+    {...validChain, extraKey: true},
+    {...validChain, issueNumber: null},
+    {...validChain, issueNumber: 0},
+    {...validChain, pullNumber: null},
+    {...validChain, pullNumber: 0},
+    {...validChain, violations: null},
+    {...validChain, violations: ['BOGUS']},
+    {...validChain, violations: ['AI_CREDIT_ANOMALY', 'AI_CREDIT_ANOMALY']},
+    {...validChain, violations: new Proxy(['AI_CREDIT_ANOMALY'], {})},
+    {...validChain, circuitBreaker: {}},
+    {...validChain, circuitBreaker: buildSampleCircuitBreaker(SF_REPO_ID, {touchedPaths: ['../escape.mjs']})},
+    otherRepoNestedProxy,
+    otherRepoCallableProxy,
+    otherRepoNonFinite,
+    otherRepoSymbolVal,
+    otherRepoTooManyKeys,
+    otherRepoDiamondDag,
+    otherRepoDeepNest
+  ]) {
+    assert.equal(
+      queryCausalAuditTrail([badEntry], {repositoryId: SF_REPO_ID}).reason,
+      'INVALID_AUDIT_CHAIN_ENTRY'
+    );
+  }
+
+  // Circuit-breaker lineage mismatches (repo, ownedPaths, touchedPaths, author, agent, reviewer, mainHealthy) fail closed
+  for (const badCb of [
+    buildSampleCircuitBreaker(FAMILYTREE_REPO_ID),
+    buildSampleCircuitBreaker(SF_REPO_ID, {ownedPaths: ['docs/other.md'], touchedPaths: ['docs/other.md']}),
+    buildSampleCircuitBreaker(SF_REPO_ID, {
+      ownedPaths: ['tools/engineering-factory/stage-latency.mjs'],
+      touchedPaths: []
+    }),
+    buildSampleCircuitBreaker(SF_REPO_ID, {
+      authorIdentity: 'someone-else',
+      reviewerIdentity: 'copilot-pull-request-reviewer[bot]'
+    }),
+    buildSampleCircuitBreaker(SF_REPO_ID, {
+      authorIdentity: 'cyrusjamula',
+      implementationAgentIdentity: 'other-agent[bot]',
+      reviewerIdentity: 'copilot-pull-request-reviewer[bot]'
+    }),
+    buildSampleCircuitBreaker(SF_REPO_ID, {
+      authorIdentity: 'cyrusjamula',
+      reviewerIdentity: 'senior-maintainer'
+    }),
+    buildSampleCircuitBreaker(SF_REPO_ID, {
+      authorIdentity: null,
+      reviewerIdentity: null
+    }),
+    buildSampleCircuitBreaker(SF_REPO_ID, {
+      authorIdentity: 'cyrusjamula',
+      implementationAgentIdentity: null,
+      reviewerIdentity: 'copilot-pull-request-reviewer[bot]'
+    }),
+    buildSampleCircuitBreaker(SF_REPO_ID, {
+      authorIdentity: undefined,
+      reviewerIdentity: undefined
+    }),
+    buildSampleCircuitBreaker(SF_REPO_ID, {reviewerIdentity: null}),
+    buildSampleCircuitBreaker(SF_REPO_ID, {mainHealthy: null}),
+    buildSampleCircuitBreaker(SF_REPO_ID, {mainHealthy: false})
+  ]) {
+    assert.equal(
+      queryCausalAuditTrail([{...validChain, circuitBreaker: badCb}], {repositoryId: SF_REPO_ID}).reason,
+      'INCONSISTENT_CIRCUIT_BREAKER_LINEAGE'
+    );
+  }
+
+  // Broken 9-link chain (unsigned commit) fails closed via verifyCausalProvenanceChain
+  const unsignedChain = buildAuditChain();
+  unsignedChain.stages.candidateCommit.signed = false;
+  assert.equal(
+    queryCausalAuditTrail([unsignedChain], {repositoryId: SF_REPO_ID}).reason,
+    'UNVERIFIED_PROVENANCE_CHAIN'
+  );
+
+  // Partial in-flight chain (<9 links) fails closed even though verifyCausalProvenanceChain marks prefix valid
+  const inFlightChain = {
+    allowInFlightUpToStage: 'candidateCommit',
+    stages: {
+      eventDelivery: validChain.stages.eventDelivery,
+      ghAwLock: validChain.stages.ghAwLock,
+      casLease: validChain.stages.casLease,
+      missionControlTask: validChain.stages.missionControlTask,
+      candidateCommit: validChain.stages.candidateCommit
+    }
+  };
+  assert.equal(
+    queryCausalAuditTrail([inFlightChain], {repositoryId: SF_REPO_ID}).reason,
+    'INCOMPLETE_PROVENANCE_CHAIN'
+  );
+
+  // Duplicate traceId, commitSha, squashCommitSha, and per-repo pullNumber fail closed
+  const dupTrace = buildAuditChain({traceSeed: 'a', commitSeed: '3', squashSeed: '4'});
+  assert.equal(
+    queryCausalAuditTrail([validChain, dupTrace], {repositoryId: SF_REPO_ID}).reason,
+    'DUPLICATE_TRACE_ID'
+  );
+
+  const dupCommit = buildAuditChain({traceSeed: 'b', commitSeed: '1', squashSeed: '4'});
+  assert.equal(
+    queryCausalAuditTrail([validChain, dupCommit], {repositoryId: SF_REPO_ID}).reason,
+    'DUPLICATE_COMMIT_SHA'
+  );
+
+  const dupSquash = buildAuditChain({traceSeed: 'b', commitSeed: '3', squashSeed: '2'});
+  assert.equal(
+    queryCausalAuditTrail([validChain, dupSquash], {repositoryId: SF_REPO_ID}).reason,
+    'DUPLICATE_SQUASH_COMMIT_SHA'
+  );
+
+  const pullA = buildAuditChain({traceSeed: 'a', commitSeed: '1', squashSeed: '2', extra: {pullNumber: 150}});
+  const pullB = buildAuditChain({traceSeed: 'b', commitSeed: '3', squashSeed: '4', extra: {pullNumber: 150}});
+  assert.equal(
+    queryCausalAuditTrail([pullA, pullB], {repositoryId: SF_REPO_ID}).reason,
+    'DUPLICATE_PULL_NUMBER'
+  );
+
+  // Disagreement between declared violations and circuitBreaker fails closed (both length mismatch and code mismatch)
+  const mismatchLen = buildAuditChain({
+    extra: {
+      violations: [],
+      circuitBreaker: buildSampleCircuitBreaker(SF_REPO_ID, {runAiCredits: 99})
+    }
+  });
+  assert.equal(
+    queryCausalAuditTrail([mismatchLen], {repositoryId: SF_REPO_ID}).reason,
+    'INCONSISTENT_AUDIT_VIOLATIONS'
+  );
+
+  const mismatchCode = buildAuditChain({
+    extra: {
+      violations: ['RETRY_CAP_EXCEEDED'],
+      circuitBreaker: buildSampleCircuitBreaker(SF_REPO_ID, {runAiCredits: 99})
+    }
+  });
+  assert.equal(
+    queryCausalAuditTrail([mismatchCode], {repositoryId: SF_REPO_ID}).reason,
+    'INCONSISTENT_AUDIT_VIOLATIONS'
+  );
+});
+
+test('buildAutomaticRevertCandidateSpec emits bounded revert PR specs on rollbackRequired === true with governed-path human approval', () => {
+  assert.equal(KNOWN_ROLLBACK_REASONS.length, 7);
+  const before = buildBaselineCohort();
+  const rollbackVerdict = verifyCohortImprovementOrRollback({
+    beforeCohort: before,
+    afterCohort: buildCandidateCohort({
+      coveredLines: 965,
+      aiCreditsTotal: 240
+    })
+  });
+  assert.equal(rollbackVerdict.rollbackRequired, true);
+
+  const revertSha = '2'.repeat(40);
+  const verifiedCandidateChain = buildAuditChain({squashSeed: '2'});
+  const standardSpec = buildAutomaticRevertCandidateSpec(rollbackVerdict, {
+    proposalId: 'bottleneck:1471342715:gh-aw-queue-latency-p95',
+    repositoryId: SF_REPO_ID,
+    laneId: 'sf-velocity-lane',
+    ownedPaths: ['tools/engineering-factory/stage-latency.mjs'],
+    touchedPaths: ['tools/engineering-factory/stage-latency.mjs'],
+    targetPaths: ['tools/engineering-factory/stage-latency.mjs'],
+    provenanceChain: verifiedCandidateChain,
+    targetRevertCommitSha: revertSha,
+    squashCommitSha: revertSha,
+    cohortId: 'm02-small-comparable',
+    pullNumber: 145,
+    issueNumber: 137
+  });
+
+  assert.equal(standardSpec.valid, true);
+  assert.equal(standardSpec.shadow, true);
+  assert.equal(standardSpec.liveMutation, false);
+  assert.equal(standardSpec.revertRequired, true);
+  assert.equal(standardSpec.provenanceVerified, true);
+  assert.equal(standardSpec.directMainMutation, false);
+  assert.equal(standardSpec.autoPolicyMutation, false);
+  assert.equal(standardSpec.requiresHumanApproval, false);
+  assert.equal(standardSpec.deliveryKind, 'candidate-revert-pr');
+  assert.deepEqual(standardSpec.gatePipelineRequired, REQUIRED_GATE_PIPELINE);
+  assert.deepEqual(standardSpec.rollbackReasons, rollbackVerdict.rollbackReasons);
+  assert.equal(standardSpec.targetRevertCommitSha, revertSha);
+  assert.equal(standardSpec.scope, 'factory-velocity');
+  assert.equal(standardSpec.cohortId, 'm02-small-comparable');
+  assert.equal(standardSpec.sourcePullNumber, 145);
+  assert.equal(standardSpec.sourceIssueNumber, 137);
+  assert.deepEqual(standardSpec.metricsDelta, rollbackVerdict.metricsDelta);
+
+  // Consumer product lane defaults scope to enrolled-product and accepts squashCommitSha + concise verdict without metricsDelta
+  const conciseVerdict = {
+    valid: true,
+    status: 'ROLLBACK_REQUIRED',
+    cohortComplete: true,
+    verifiedImprovement: false,
+    rollbackRequired: true,
+    rollbackReasons: ['REWORK_RATE_REGRESSED']
+  };
+  const consumerSpec = buildAutomaticRevertCandidateSpec(conciseVerdict, {
+    proposalId: 'feedback:3333333333:ft-ux-latency',
+    repositoryId: FAMILYTREE_REPO_ID,
+    laneId: 'ft-product-lane',
+    targetPaths: ['src/tree/pedigree.ts'],
+    squashCommitSha: revertSha
+  });
+  assert.equal(consumerSpec.valid, true);
+  assert.equal(consumerSpec.provenanceVerified, false);
+  assert.equal(consumerSpec.scope, 'enrolled-product');
+  assert.equal(consumerSpec.requiresHumanApproval, false);
+  assert.equal(consumerSpec.targetRevertCommitSha, revertSha);
+  assert.equal(consumerSpec.cohortId, null);
+  assert.equal(consumerSpec.sourcePullNumber, null);
+  assert.equal(consumerSpec.sourceIssueNumber, null);
+  assert.equal(consumerSpec.metricsDelta, null);
+
+  // Governed paths, ancestor directories, governed contractDomain, touchesContract, or explicit requiresHumanApproval enforce requiresHumanApproval: true
+  const consumerRollbackVerdict = verifyCohortImprovementOrRollback({
+    beforeCohort: buildBaselineCohort({repositoryId: FAMILYTREE_REPO_ID}),
+    afterCohort: buildCandidateCohort({repositoryId: FAMILYTREE_REPO_ID, securityFindings: 1})
+  });
+  for (const [verdict, governedMeta] of [
+    [rollbackVerdict, {
+      proposalId: 'gov-workflow',
+      repositoryId: SF_REPO_ID,
+      laneId: 'sf-gov',
+      targetPaths: ['.github/workflows/ci.yml'],
+      targetRevertCommitSha: revertSha,
+      requiresHumanApproval: false // cannot downgrade governed path!
+    }],
+    [rollbackVerdict, {
+      proposalId: 'gov-budget',
+      repositoryId: SF_REPO_ID,
+      laneId: 'sf-budget',
+      targetPaths: ['tools/engineering-factory/budget.mjs'],
+      targetRevertCommitSha: revertSha
+    }],
+    [rollbackVerdict, {
+      proposalId: 'gov-optimistic-improver',
+      repositoryId: SF_REPO_ID,
+      laneId: 'sf-improver',
+      ownedPaths: ['tools/engineering-factory/optimistic-improver.mjs'],
+      targetPaths: ['tools/engineering-factory/optimistic-improver.mjs'],
+      targetRevertCommitSha: revertSha,
+      requiresHumanApproval: false
+    }],
+    [rollbackVerdict, {
+      proposalId: 'gov-scorecard',
+      repositoryId: SF_REPO_ID,
+      laneId: 'sf-scorecard',
+      ownedPaths: ['tools/engineering-factory/ai-credit-scorecard.mjs'],
+      targetPaths: ['tools/engineering-factory/ai-credit-scorecard.mjs'],
+      targetRevertCommitSha: revertSha
+    }],
+    ...[
+      'CODEOWNERS',
+      '.github/CODEOWNERS',
+      'docs/CODEOWNERS',
+      'package.json',
+      'package-lock.json',
+      'tests/engineering-factory/coverage-reporter.mjs',
+      'tools/engineering-factory/review-history.mjs',
+      'tools/engineering-factory/review-batch.mjs',
+      'tools/engineering-coordinator'
+    ].map((govPath, idx) => [rollbackVerdict, {
+      proposalId: `gov-review-owners-${idx}`,
+      repositoryId: SF_REPO_ID,
+      laneId: `sf-review-owners-${idx}`,
+      ownedPaths: [govPath],
+      targetPaths: [govPath],
+      targetRevertCommitSha: revertSha
+    }]),
+    [rollbackVerdict, {
+      proposalId: 'gov-broad-owned-dir',
+      repositoryId: SF_REPO_ID,
+      laneId: 'sf-broad',
+      ownedPaths: ['tools/engineering-factory'],
+      targetPaths: ['tools/engineering-factory/stage-latency.mjs'],
+      targetRevertCommitSha: revertSha
+    }],
+    [consumerRollbackVerdict, {
+      proposalId: 'gov-domain',
+      repositoryId: FAMILYTREE_REPO_ID,
+      laneId: 'ft-policy',
+      scope: 'enrolled-product',
+      contractDomain: 'policy',
+      targetPaths: ['src/tree/pedigree.ts'],
+      targetRevertCommitSha: revertSha
+    }],
+    [consumerRollbackVerdict, {
+      proposalId: 'gov-contract-flag',
+      repositoryId: FAMILYTREE_REPO_ID,
+      laneId: 'ft-contract',
+      touchesContract: true,
+      targetPaths: ['src/tree/pedigree.ts'],
+      targetRevertCommitSha: revertSha
+    }],
+    [consumerRollbackVerdict, {
+      proposalId: 'gov-explicit-flag',
+      repositoryId: FAMILYTREE_REPO_ID,
+      laneId: 'ft-explicit',
+      requiresHumanApproval: true,
+      targetPaths: ['src/tree/pedigree.ts'],
+      targetRevertCommitSha: revertSha
+    }]
+  ]) {
+    const spec = buildAutomaticRevertCandidateSpec(verdict, governedMeta);
+    assert.equal(spec.valid, true, governedMeta.proposalId);
+    assert.equal(spec.requiresHumanApproval, true, governedMeta.proposalId);
+    assert.equal(spec.deliveryKind, 'human-approved-revert-pr', governedMeta.proposalId);
+    assert.equal(spec.directMainMutation, false);
+    assert.equal(spec.autoPolicyMutation, false);
+  }
+});
+
+test('buildAutomaticRevertCandidateSpec refuses non-rollback verdicts and fails closed on proxies, out-of-lane targets, and malformed SHAs', () => {
+  const before = buildBaselineCohort();
+  const rollbackVerdict = verifyCohortImprovementOrRollback({
+    beforeCohort: before,
+    afterCohort: buildCandidateCohort({securityFindings: 1})
+  });
+  const baseMeta = {
+    proposalId: 'prop-137',
+    repositoryId: SF_REPO_ID,
+    laneId: 'sf-velocity-lane',
+    targetPaths: ['tools/engineering-factory/stage-latency.mjs'],
+    targetRevertCommitSha: 'a'.repeat(40)
+  };
+
+  // Valid non-rollback verdicts (VERIFIED_IMPROVEMENT, NO_MATERIAL_GAIN, INSUFFICIENT_COHORT) return ROLLBACK_NOT_REQUIRED
+  for (const nonRollback of [
+    verifyCohortImprovementOrRollback({
+      beforeCohort: before,
+      afterCohort: buildCandidateCohort({medianCycleTimeMs: 300_000})
+    }),
+    verifyCohortImprovementOrRollback({
+      beforeCohort: before,
+      afterCohort: buildCandidateCohort()
+    }),
+    verifyCohortImprovementOrRollback({
+      beforeCohort: buildBaselineCohort({acceptedOutcomes: 4}),
+      afterCohort: buildCandidateCohort()
+    })
+  ]) {
+    const res = buildAutomaticRevertCandidateSpec(nonRollback, baseMeta);
+    assert.equal(res.valid, false);
+    assert.equal(res.revertRequired, false);
+    assert.equal(res.reason, 'ROLLBACK_NOT_REQUIRED');
+    assert.equal(res.targetRevertCommitSha, null);
+    assert.equal(res.directMainMutation, false);
+    assert.equal(res.autoPolicyMutation, false);
+    assert.deepEqual(res.gatePipelineRequired, REQUIRED_GATE_PIPELINE);
+  }
+
+  // Invalid or tampered cohortVerdict payloads fail closed
+  for (const badVerdict of [
+    null,
+    new Proxy(rollbackVerdict, {}),
+    verifyCohortImprovementOrRollback(null),
+    {...rollbackVerdict, shadow: false},
+    {...rollbackVerdict, repositoryId: 0},
+    {...rollbackVerdict, cohortId: 'BAD COHORT'},
+    {...rollbackVerdict, minimumRequiredOutcomes: 5},
+    {...rollbackVerdict, rollbackReasons: []},
+    {...rollbackVerdict, rollbackReasons: ['UNKNOWN_REASON']},
+    {...rollbackVerdict, rollbackReasons: ['MAIN_HEALTH_FAILURE', 'MAIN_HEALTH_FAILURE']},
+    {...rollbackVerdict, metricsDelta: {medianCycleTimeDeltaMs: Number.NaN, reworkRateDeltaBps: 0, aiCreditsPerOutcomeDelta: 0}},
+    {...rollbackVerdict, status: 'VERIFIED_IMPROVEMENT'},
+    {...rollbackVerdict, cohortComplete: false},
+    {...rollbackVerdict, verifiedImprovement: true},
+    {
+      valid: true,
+      status: 'VERIFIED_IMPROVEMENT',
+      cohortComplete: true,
+      verifiedImprovement: false,
+      rollbackRequired: false,
+      rollbackReasons: []
+    },
+    {
+      valid: true,
+      status: 'VERIFIED_IMPROVEMENT',
+      cohortComplete: true,
+      verifiedImprovement: true,
+      rollbackRequired: false,
+      rollbackReasons: ['MAIN_HEALTH_FAILURE']
+    },
+    {
+      valid: true,
+      status: 'INSUFFICIENT_COHORT',
+      cohortComplete: false,
+      verifiedImprovement: false,
+      rollbackRequired: false,
+      minimumRequiredOutcomes: 5,
+      beforeAcceptedOutcomes: 5,
+      afterAcceptedOutcomes: 5,
+      rollbackReasons: []
+    },
+    {
+      valid: true,
+      status: 'INSUFFICIENT_COHORT',
+      cohortComplete: true,
+      verifiedImprovement: false,
+      rollbackRequired: false,
+      minimumRequiredOutcomes: 5,
+      beforeAcceptedOutcomes: 3,
+      afterAcceptedOutcomes: 5,
+      rollbackReasons: []
+    },
+    {
+      valid: true,
+      status: 'UNKNOWN_STATUS',
+      cohortComplete: true,
+      verifiedImprovement: false,
+      rollbackRequired: false,
+      rollbackReasons: []
+    }
+  ]) {
+    assert.equal(
+      buildAutomaticRevertCandidateSpec(badVerdict, baseMeta).reason,
+      'INVALID_COHORT_VERDICT'
+    );
+  }
+
+  // Cross-repository and cross-cohort verdict/meta mismatches fail closed
+  assert.equal(
+    buildAutomaticRevertCandidateSpec(rollbackVerdict, {
+      ...baseMeta,
+      repositoryId: FAMILYTREE_REPO_ID
+    }).reason,
+    'COHORT_REPOSITORY_MISMATCH'
+  );
+  assert.equal(
+    buildAutomaticRevertCandidateSpec(rollbackVerdict, {
+      ...baseMeta,
+      cohortId: 'different-cohort'
+    }).reason,
+    'COHORT_ID_MISMATCH'
+  );
+
+  // Omitting touchedPaths or provenanceChain paths from targetPaths (e.g. hiding governed paths) fails closed
+  assert.equal(
+    buildAutomaticRevertCandidateSpec(rollbackVerdict, {
+      ...baseMeta,
+      touchedPaths: ['tools/engineering-factory/stage-latency.mjs', '.github/workflows/ci.yml']
+    }).reason,
+    'INCOMPLETE_REVERT_TARGET_PATHS'
+  );
+  assert.equal(
+    buildAutomaticRevertCandidateSpec(rollbackVerdict, {
+      ...baseMeta,
+      provenanceChain: {allowInFlightUpToStage: 'eventDelivery', stages: {eventDelivery: buildAuditChain().stages.eventDelivery}}
+    }).reason,
+    'UNVERIFIED_CANDIDATE_PROVENANCE'
+  );
+  for (const mismatchMeta of [
+    {...baseMeta, provenanceChain: buildAuditChain({squashSeed: '3'})}, // wrong squashCommitSha
+    {...baseMeta, laneId: 'other-lane', targetRevertCommitSha: '2'.repeat(40), provenanceChain: buildAuditChain({squashSeed: '2'})},
+    {
+      ...baseMeta,
+      targetRevertCommitSha: '2'.repeat(40),
+      ownedPaths: ['tools/engineering-factory'],
+      provenanceChain: buildAuditChain({squashSeed: '2'})
+    },
+    {
+      ...baseMeta,
+      targetRevertCommitSha: '2'.repeat(40),
+      targetPaths: ['tools/engineering-factory/stage-latency.mjs', 'src/unowned-other-lane/file.ts'],
+      provenanceChain: buildAuditChain({squashSeed: '2'})
+    },
+    {
+      ...baseMeta,
+      targetRevertCommitSha: '2'.repeat(40),
+      targetPaths: ['docs/extra.md'],
+      provenanceChain: buildAuditChain({squashSeed: '2'})
+    }
+  ]) {
+    assert.equal(
+      buildAutomaticRevertCandidateSpec(rollbackVerdict, mismatchMeta).reason,
+      'CANDIDATE_PROVENANCE_MISMATCH'
+    );
+  }
+
+  // Invalid candidateMeta, malformed/mismatched SHAs, and out-of-lane target paths fail closed
+  const missingSha = {...baseMeta};
+  delete missingSha.targetRevertCommitSha;
+  assert.equal(
+    buildAutomaticRevertCandidateSpec(rollbackVerdict, missingSha).reason,
+    'INVALID_CANDIDATE_META'
+  );
+
+  for (const badShaMeta of [
+    {...baseMeta, targetRevertCommitSha: 'not-40-hex'},
+    {...missingSha, squashCommitSha: 'A'.repeat(40)}
+  ]) {
+    assert.equal(
+      buildAutomaticRevertCandidateSpec(rollbackVerdict, badShaMeta).reason,
+      'INVALID_REVERT_COMMIT_SHA'
+    );
+  }
+
+  assert.equal(
+    buildAutomaticRevertCandidateSpec(rollbackVerdict, {
+      ...baseMeta,
+      squashCommitSha: 'b'.repeat(40)
+    }).reason,
+    'REVERT_COMMIT_SHA_MISMATCH'
+  );
+
+  assert.equal(
+    buildAutomaticRevertCandidateSpec(rollbackVerdict, {
+      ...baseMeta,
+      ownedPaths: ['docs/guides'],
+      targetPaths: ['tools/engineering-factory/stage-latency.mjs']
+    }).reason,
+    'OUT_OF_LANE_REVERT_TARGET'
+  );
+
+  for (const badMeta of [
+    null,
+    new Proxy(baseMeta, {}),
+    {...baseMeta, proposalId: ''},
+    {...baseMeta, repositoryId: 0},
+    {...baseMeta, laneId: 'bad lane!'},
+    {...baseMeta, targetPaths: ['../escape.mjs']},
+    {...baseMeta, ownedPaths: ['../escape.mjs']},
+    {...baseMeta, touchedPaths: ['../escape.mjs']},
+    {...baseMeta, scope: 'invalid-scope'},
+    {...baseMeta, contractDomain: 'invalid-domain'},
+    {...baseMeta, touchesContract: 'yes'},
+    {...baseMeta, requiresHumanApproval: 'yes'},
+    {...baseMeta, cohortId: 'BAD COHORT'},
+    {...baseMeta, pullNumber: 0},
+    {...baseMeta, issueNumber: 0}
+  ]) {
+    assert.equal(
+      buildAutomaticRevertCandidateSpec(rollbackVerdict, badMeta).reason,
+      'INVALID_CANDIDATE_META'
+    );
+  }
 });
