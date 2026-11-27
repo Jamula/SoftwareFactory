@@ -1395,6 +1395,25 @@ test('evaluateFamilyTreeShadowReadiness enforces M01 acceptance, scoped auth, pr
     'SHADOW_SUITE_INVALID'
   );
 
+  // Maximum-size 64-check FamilyTree profile succeeds within bounded comparison budget
+  const checks64 = Array.from({ length: 64 }, (_, i) => ({
+    name: `check-${i + 1}`,
+    appId: 12000 + i + 1
+  }));
+  const maxChecksPolicy = {
+    ...byRepo('example/family-tree'),
+    checks: checks64
+  };
+  const maxChecksPkg = makeOnboardingPackage(maxChecksPolicy, {
+    repositoryId: 900164,
+    stackProfile: 'web-genealogy-64-checks',
+    credentialId: 'cred-shadow-family-tree-64'
+  });
+  assert.equal(
+    evaluateFamilyTreeShadowReadiness(makeReadinessInput({ onboardingPackage: maxChecksPkg })).ready,
+    true
+  );
+
   // Valid onboardingPackage and valid shadowDenialSuite for a different package fail mismatch check
   const altFamilyTreePkg = makeOnboardingPackage(byRepo('example/family-tree'), {
     repositoryId: 900199,

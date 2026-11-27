@@ -28,7 +28,7 @@ export const FAMILYTREE_REQUIRED_SHADOW_DENIALS = Object.freeze([
 
 const MAX_ARRAY_LEN = 64;
 const MAX_EQUAL_DEPTH = 8;
-const MAX_EQUAL_VISITS = 2048;
+const MAX_EQUAL_VISITS = 16_384;
 
 const REPLAY_SUITE_SNAPSHOT_KEYS = Object.freeze([
   'eligibleCandidate',
