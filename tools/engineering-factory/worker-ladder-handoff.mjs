@@ -75,6 +75,7 @@ const TOP_LEVEL_KEYS = new Set([
 
 const PROVIDER_KEYS = new Set([
   'providerFamily',
+  'entitlementId',
   'ownerAuthorized',
   'approvedRepositoryId',
   'independentAuthorizationVerified',
@@ -145,6 +146,8 @@ const THROUGHPUT_KEYS = new Set([
 
 const PEER_LEASE_KEYS = new Set([
   'leaseId',
+  'providerFamily',
+  'entitlementId',
   'issue',
   'pr',
   'lane',
@@ -185,7 +188,7 @@ const CHECKPOINT_KEYS = new Set([
 const HANDOFF_KEYS = new Set(['mode', 'attempt', 'maxAttempts', 'targetProvider']);
 
 const SECRET_TOKEN_RE =
-  /(?<![A-Za-z0-9])(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|sk-(?:ant-)?[A-Za-z0-9_-]+|AKIA[0-9A-Z]+|[Bb]earer[ \t]+\S+)|-----BEGIN [A-Z ]*PRIVATE KEY-----/;
+  /(?<![A-Za-z0-9])(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|sk-(?:ant-)?[A-Za-z0-9_-]+|AKIA[0-9A-Z]+|[Bb][Ee][Aa][Rr][Ee][Rr][ \t]+\S+)|-----BEGIN [A-Za-z ]*[Pp][Rr][Ii][Vv][Aa][Tt][Ee] [Kk][Ee][Yy]-----/;
 const FORBIDDEN_JSON_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 
 const nonneg = n => Number.isSafeInteger(n) && n >= 0;
@@ -372,6 +375,7 @@ function blockedResult(reason, decisionCode, actualMaxWorkers = 0, extras = {}) 
 function evaluateProviderContract(provider, repositoryId, repositoryVisibility, nowMs, roleLabel) {
   if (!plainObject(provider, PROVIDER_KEYS) ||
       typeof provider.providerFamily !== 'string' ||
+      (Object.hasOwn(provider, 'entitlementId') && !validIdToken(provider.entitlementId)) ||
       typeof provider.ownerAuthorized !== 'boolean' ||
       !positive(provider.approvedRepositoryId) ||
       typeof provider.independentAuthorizationVerified !== 'boolean' ||
@@ -379,6 +383,7 @@ function evaluateProviderContract(provider, repositoryId, repositoryVisibility, 
       provider.verifiedProviderWorkerCeiling > 1000) {
     return {error: blockedResult('EVIDENCE_UNKNOWN', `${roleLabel}_PROVIDER_CAPABILITY_INVALID`)};
   }
+  const entitlementId = Object.hasOwn(provider, 'entitlementId') ? provider.entitlementId : 'default';
   if (provider.providerFamily.toLowerCase() === 'github-models') {
     return {error: blockedResult('PROVIDER_FORBIDDEN', 'RETIRED_PROVIDER_FORBIDDEN')};
   }
@@ -532,8 +537,12 @@ function evaluateProviderContract(provider, repositoryId, repositoryVisibility, 
 
   return {
     error: null,
+    providerFamily: provider.providerFamily,
+    entitlementId,
+    providerKey: `${provider.providerFamily}:${entitlementId}`,
     summary: Object.freeze({
       providerFamily: provider.providerFamily,
+      entitlementId,
       model: model.id,
       harness: harness.kind,
       sdkVersion: harness.kind === 'copilot-sdk' ? PINNED_COPILOT_SDK_VERSION : null,
@@ -547,28 +556,43 @@ function evaluateProviderContract(provider, repositoryId, repositoryVisibility, 
   };
 }
 
+const EMPTY_PROVIDER_PEER_BUCKET = Object.freeze({
+  activeCount: 0,
+  committedUnits: 0,
+  dailyCommittedUnits: 0,
+  committedRequests: 0,
+  minReservedUnits: Infinity,
+  minReservedRequests: Infinity,
+  missingUnitCommitments: false,
+  missingDailyCommitments: false
+});
+
 function computeProviderCapacity(providerEval, repoConcurrencyCap, peerStats) {
-  const {accounting, ghAwCaps, verifiedProviderWorkerCeiling} = providerEval;
+  const {accounting, ghAwCaps, verifiedProviderWorkerCeiling, providerKey} = providerEval;
+  const provPeers = peerStats.byProviderKey.get(providerKey) ?? EMPTY_PROVIDER_PEER_BUCKET;
   const netDeducted = accounting.netOfReservationsVerified === true;
   const dailyIncludes = accounting.dailyUsageIncludesReservations === true;
-  const hasPeers = peerStats.activeCount > 0;
+  const hasProvPeers = provPeers.activeCount > 0;
 
-  if ((hasPeers && (peerStats.minReservedUnits < accounting.unitsPerWorkerRun ||
-        peerStats.minReservedRequests < accounting.requestsPerWorkerRun)) ||
-      (!netDeducted && peerStats.missingUnitCommitments) ||
-      (ghAwCaps !== null && !dailyIncludes && peerStats.missingDailyCommitments)) {
+  if ((hasProvPeers && (provPeers.minReservedUnits < accounting.unitsPerWorkerRun ||
+        provPeers.minReservedRequests < accounting.requestsPerWorkerRun)) ||
+      (!netDeducted && provPeers.missingUnitCommitments) ||
+      (ghAwCaps !== null && !dailyIncludes && provPeers.missingDailyCommitments)) {
     return {error: blockedResult('BUDGET_UNKNOWN', 'PEER_RESERVATION_COMMITMENTS_UNKNOWN')};
   }
 
   const hardCeiling = Math.min(verifiedProviderWorkerCeiling, repoConcurrencyCap);
-  if (peerStats.activeCount > hardCeiling) {
+  if (provPeers.activeCount > verifiedProviderWorkerCeiling ||
+      peerStats.activeCount > repoConcurrencyCap) {
     return {error: blockedResult('BUDGET_OR_CONCURRENCY', 'ACTIVE_PEERS_EXCEED_VERIFIED_CEILING')};
   }
 
-  const reservedUnits = netDeducted ? 0 : peerStats.committedUnits;
-  const reservedRequests = netDeducted ? 0 : peerStats.committedRequests;
+  const providerSlotsLeft = verifiedProviderWorkerCeiling - provPeers.activeCount;
+  const repoSlotsLeft = repoConcurrencyCap - peerStats.activeCount;
+  const reservedUnits = netDeducted ? 0 : provPeers.committedUnits;
+  const reservedRequests = netDeducted ? 0 : provPeers.committedRequests;
   const dailyUsed = ghAwCaps !== null
-    ? ghAwCaps.dailyUnitsUsed + (dailyIncludes ? 0 : peerStats.dailyCommittedUnits)
+    ? ghAwCaps.dailyUnitsUsed + (dailyIncludes ? 0 : provPeers.dailyCommittedUnits)
     : 0;
   const overdrawn = (!netDeducted && (reservedUnits > accounting.remainingIncludedUnits ||
       reservedRequests > accounting.remainingIncludedRequests)) ||
@@ -578,6 +602,8 @@ function computeProviderCapacity(providerEval, repoConcurrencyCap, peerStats) {
     return {
       error: null,
       hardCeiling,
+      providerSlotsLeft: 0,
+      repoSlotsLeft,
       fundedAdditionalSlots: 0,
       verifiedCapacityCeiling: 0,
       maxFundedRung: 0
@@ -592,15 +618,18 @@ function computeProviderCapacity(providerEval, repoConcurrencyCap, peerStats) {
     unitSlots = Math.min(unitSlots, Math.floor(remainingDaily / accounting.unitsPerWorkerRun));
   }
   const requestSlots = accounting.requestsPerWorkerRun === 0
-    ? hardCeiling
+    ? providerSlotsLeft
     : Math.floor(effectiveRequests / accounting.requestsPerWorkerRun);
   const fundedAdditionalSlots = Math.min(unitSlots, requestSlots);
-  const verifiedCapacityCeiling = Math.min(hardCeiling, peerStats.activeCount + fundedAdditionalSlots);
+  const additionalCapacity = Math.min(providerSlotsLeft, repoSlotsLeft, fundedAdditionalSlots);
+  const verifiedCapacityCeiling = peerStats.activeCount + additionalCapacity;
   const maxFundedRung = highestLadderRung(verifiedCapacityCeiling);
 
   return {
     error: null,
     hardCeiling,
+    providerSlotsLeft,
+    repoSlotsLeft,
     fundedAdditionalSlots,
     verifiedCapacityCeiling,
     maxFundedRung
@@ -611,18 +640,12 @@ function validOptionalPr(obj) {
   return !Object.hasOwn(obj, 'pr') || obj.pr === null || positive(obj.pr);
 }
 
-function evaluatePeerLeases(rawPeers, nowMs) {
+function evaluatePeerLeases(rawPeers, nowMs, defaultProviderFamily, defaultEntitlementId) {
   if (rawPeers === undefined) {
     return {
       error: null,
       activeCount: 0,
-      committedUnits: 0,
-      dailyCommittedUnits: 0,
-      committedRequests: 0,
-      minReservedUnits: Infinity,
-      minReservedRequests: Infinity,
-      missingUnitCommitments: false,
-      missingDailyCommitments: false,
+      byProviderKey: new Map(),
       activeIssues: new Set(),
       activePrs: new Set(),
       activeLanes: new Set(),
@@ -640,18 +663,14 @@ function evaluatePeerLeases(rawPeers, nowMs) {
   const activeLanes = new Set();
   const activePaths = [];
   const expiredMaxGenByIssue = new Map();
+  const byProviderKey = new Map();
   let activeCount = 0;
-  let committedUnits = 0;
-  let dailyCommittedUnits = 0;
-  let committedRequests = 0;
-  let minReservedUnits = Infinity;
-  let minReservedRequests = Infinity;
-  let missingUnitCommitments = false;
-  let missingDailyCommitments = false;
 
   for (let i = 0; i < rawPeers.length; i++) {
     const p = rawPeers[i];
     if (!plainObject(p, PEER_LEASE_KEYS) || !validIdToken(p.leaseId) || seenIds.has(p.leaseId) ||
+        (Object.hasOwn(p, 'providerFamily') && !SUPPORTED_PROVIDER_FAMILIES.includes(p.providerFamily)) ||
+        (Object.hasOwn(p, 'entitlementId') && !validIdToken(p.entitlementId)) ||
         !positive(p.issue) || !validOptionalPr(p) || !validLane(p.lane) ||
         !validPathList(p.ownedPaths) || !positive(p.leaseGeneration) || !nonneg(p.expiresAtMs)) {
       return {error: blockedResult('LEASE_OR_CLOCK_UNKNOWN', 'PEER_LEASES_INVALID')};
@@ -677,19 +696,41 @@ function evaluatePeerLeases(rawPeers, nowMs) {
         activeLanes.has(p.lane) || p.ownedPaths.some(op => activePaths.some(ap => pathsOverlap(op, ap)))) {
       return {error: blockedResult('LANE_OR_PATH_RESERVED', 'ACTIVE_PEER_LEASE_CONFLICT')};
     }
-    if (hasUnits && p.reservedUnits < minReservedUnits) minReservedUnits = p.reservedUnits;
-    if (hasReqs && p.reservedRequests < minReservedRequests) minReservedRequests = p.reservedRequests;
+
+    const peerFamily = Object.hasOwn(p, 'providerFamily') ? p.providerFamily : defaultProviderFamily;
+    const peerEntitlement = Object.hasOwn(p, 'entitlementId')
+      ? p.entitlementId
+      : (peerFamily === defaultProviderFamily ? defaultEntitlementId : 'default');
+    const providerKey = `${peerFamily}:${peerEntitlement}`;
+    let bucket = byProviderKey.get(providerKey);
+    if (!bucket) {
+      bucket = {
+        activeCount: 0,
+        committedUnits: 0,
+        dailyCommittedUnits: 0,
+        committedRequests: 0,
+        minReservedUnits: Infinity,
+        minReservedRequests: Infinity,
+        missingUnitCommitments: false,
+        missingDailyCommitments: false
+      };
+      byProviderKey.set(providerKey, bucket);
+    }
+
+    if (hasUnits && p.reservedUnits < bucket.minReservedUnits) bucket.minReservedUnits = p.reservedUnits;
+    if (hasReqs && p.reservedRequests < bucket.minReservedRequests) bucket.minReservedRequests = p.reservedRequests;
     if (!hasUnits || !hasReqs) {
-      missingUnitCommitments = true;
+      bucket.missingUnitCommitments = true;
     } else {
-      committedUnits += p.reservedUnits;
-      committedRequests += p.reservedRequests;
+      bucket.committedUnits += p.reservedUnits;
+      bucket.committedRequests += p.reservedRequests;
     }
     if (!hasUnits) {
-      missingDailyCommitments = true;
+      bucket.missingDailyCommitments = true;
     } else {
-      dailyCommittedUnits += p.reservedUnits;
+      bucket.dailyCommittedUnits += p.reservedUnits;
     }
+    bucket.activeCount++;
     activeCount++;
     activeIssues.add(p.issue);
     if (pr !== null) activePrs.add(pr);
@@ -700,13 +741,7 @@ function evaluatePeerLeases(rawPeers, nowMs) {
   return {
     error: null,
     activeCount,
-    committedUnits,
-    dailyCommittedUnits,
-    committedRequests,
-    minReservedUnits,
-    minReservedRequests,
-    missingUnitCommitments,
-    missingDailyCommitments,
+    byProviderKey,
     activeIssues,
     activePrs,
     activeLanes,
@@ -1046,7 +1081,12 @@ export function evaluateWorkerLadderAndQuotaHandoff(input) {
   const ladderEval = evaluateLadderEvidence(input.ladder, hasLease);
   if (ladderEval.error) return ladderEval.error;
 
-  const peerStats = evaluatePeerLeases(input.activePeerLeases, input.nowMs);
+  const peerStats = evaluatePeerLeases(
+    input.activePeerLeases,
+    input.nowMs,
+    primaryEval.providerFamily,
+    primaryEval.entitlementId
+  );
   if (peerStats.error) return peerStats.error;
 
   let leaseEval = null;
@@ -1090,7 +1130,7 @@ export function evaluateWorkerLadderAndQuotaHandoff(input) {
   }
 
   const canFitLease = (cap, targetRung) =>
-    peerStats.activeCount < cap.hardCeiling && peerStats.activeCount + 1 <= targetRung;
+    cap.providerSlotsLeft >= 1 && cap.repoSlotsLeft >= 1 && peerStats.activeCount + 1 <= targetRung;
 
   // Checkpoint pause, quota-refresh resumption, and alternate-provider handoff workflow.
   if (hasCheckpoint) {

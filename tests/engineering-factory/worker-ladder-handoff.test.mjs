@@ -1789,4 +1789,104 @@ test('enforces active-peer rung bounds, overdrawn/under-reserved peer quotas, un
   assert.equal(downscaleFrom12.actualMaxWorkers, 4);
   assert.equal(downscaleFrom12.shortfallFrom12, 8);
   assert.equal(downscaleFrom12.goalMet, false);
+
+  // 6. Case-insensitive Bearer scheme blocking (raw and unicode-escaped)
+  for (const mixedBearer of [
+    'BEARER syntheticHeaderValue',
+    'bEaReR syntheticHeaderValue',
+    '\\u0062\\u0045\\u0061\\u0052\\u0065\\u0052 syntheticHeaderValue'
+  ]) {
+    const raw = `{${baseStateJson},"hdr":"${mixedBearer}"}`;
+    const res = evaluateWorkerLadderAndQuotaHandoff(makeFixture({
+      primaryProvider: makeExhaustedPrimaryProvider(),
+      lease,
+      checkpoint: {...checkpoint, serializedState: raw, sha256: computeCheckpointSha256(raw)}
+    }));
+    assert.equal(res.reason, 'PROVIDER_FORBIDDEN');
+    assert.equal(res.decisionCode, 'CHECKPOINT_SECRET_TOKEN_FORBIDDEN');
+  }
+
+  // 7. Provider/entitlement-scoped peer commitment deduction: 60-unit Copilot peer does NOT exhaust 51-unit Codex handoff target,
+  // while still enforcing repository-wide concurrency and ownership!
+  const copilot60Peer = {
+    leaseId: 'peer-copilot-60',
+    providerFamily: 'github-copilot',
+    entitlementId: 'copilot-org',
+    issue: 601,
+    lane: 'lane-copilot-60',
+    ownedPaths: ['src/other-task.mjs'],
+    leaseGeneration: 1,
+    expiresAtMs: NOW_MS + 60_000,
+    reservedUnits: 60,
+    reservedRequests: 2
+  };
+  const codex51Target = makeProvider({
+    providerFamily: 'openai-codex',
+    entitlementId: 'codex-included',
+    verifiedProviderWorkerCeiling: 4,
+    model: {id: 'gpt-5.4-codex', allowlist: ['gpt-5.4-codex'], verifiedAvailable: true},
+    harness: {kind: 'openai-codex-action', verified: true, externalTracingDisabled: true},
+    billingEntitlement: {
+      ...baseP.billingEntitlement,
+      accounting: {
+        ...baseP.billingEntitlement.accounting,
+        remainingIncludedUnits: 51,
+        unitsPerWorkerRun: 1,
+        remainingIncludedRequests: 10,
+        requestsPerWorkerRun: 1
+      }
+    }
+  });
+  const crossProviderHandoff = evaluateWorkerLadderAndQuotaHandoff(makeFixture({
+    primaryProvider: {...makeExhaustedPrimaryProvider(), entitlementId: 'copilot-org'},
+    ladder: makeLadder({currentRung: 2, verifiedPriorRung: 1, requestedRung: 2, observedSimultaneousWorkers: 2}),
+    activePeerLeases: [
+      copilot60Peer,
+      {
+        leaseId: 'peer-codex-other-entitlement',
+        providerFamily: 'openai-codex',
+        issue: 602,
+        lane: 'lane-codex-default',
+        ownedPaths: ['src/third-task.mjs'],
+        leaseGeneration: 1,
+        expiresAtMs: NOW_MS + 60_000,
+        reservedUnits: 50,
+        reservedRequests: 2
+      }
+    ],
+    lease,
+    checkpoint,
+    handoff: {mode: 'provider-handoff', attempt: 1, targetProvider: codex51Target}
+  }));
+  // With 2 active peers across the repo and requestedRung: 2, repo concurrency blocks adding a 3rd simultaneous worker
+  assert.equal(crossProviderHandoff.decisionCode, 'WORKER_RUNG_CONCURRENCY_FULL');
+
+  const crossProviderHandoffOk = evaluateWorkerLadderAndQuotaHandoff(makeFixture({
+    primaryProvider: {...makeExhaustedPrimaryProvider(), entitlementId: 'copilot-org'},
+    ladder: makeLadder({currentRung: 2, verifiedPriorRung: 1, requestedRung: 2, observedSimultaneousWorkers: 2}),
+    activePeerLeases: [copilot60Peer],
+    lease,
+    checkpoint,
+    handoff: {mode: 'provider-handoff', attempt: 1, targetProvider: codex51Target}
+  }));
+  assert.equal(crossProviderHandoffOk.admitted, true);
+  assert.equal(crossProviderHandoffOk.decisionCode, 'CHECKPOINT_HANDOFF_TO_INCLUDED_PROVIDER');
+  assert.equal(crossProviderHandoffOk.selectedProvider.entitlementId, 'codex-included');
+  assert.equal(crossProviderHandoffOk.ladderDecision.activePeerWorkers, 1);
+
+  // Invalid entitlementId / providerFamily on provider or peer lease fails closed
+  assert.equal(
+    evaluateWorkerLadderAndQuotaHandoff(makeFixture({
+      primaryProvider: makeProvider({entitlementId: 'bad id!'})
+    })).decisionCode,
+    'PRIMARY_PROVIDER_CAPABILITY_INVALID'
+  );
+  for (const badPeerPatch of [{providerFamily: 'unknown'}, {entitlementId: 'bad id!'}]) {
+    assert.equal(
+      evaluateWorkerLadderAndQuotaHandoff(makeFixture({
+        activePeerLeases: [{...copilot60Peer, ...badPeerPatch}]
+      })).decisionCode,
+      'PEER_LEASES_INVALID'
+    );
+  }
 });
