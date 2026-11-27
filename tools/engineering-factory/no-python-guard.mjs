@@ -16,7 +16,6 @@ const FORBIDDEN_OBJECT_KEYS=new Set(['__proto__','constructor','prototype']);
 const CONTROL_CHAR_PATTERN=/[\u0000-\u001f\u007f]/;
 const SHA40_PATTERN=/^[a-f0-9]{40}$/;
 const APP_SLUG_PATTERN=/^[a-z0-9]+(?:-[a-z0-9]+)*$/;
-const HTTPS_URL_PATTERN=/^https:\/\/\S+$/;
 const ISO_UTC_PATTERN=/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.\d{1,7})?Z$/;
 
 const PYTHON_PATH_PATTERN=/\.(?:py|pyw|pyc|pyo|pyd|pyi|pyz|whl|ipynb)$/i;
@@ -86,8 +85,16 @@ const isSha40=value=>typeof value==='string'&&SHA40_PATTERN.test(value);
 const isBoundedText=(value,maxLen)=>
   typeof value==='string'&&value.trim().length>0&&value.length<=maxLen&&!CONTROL_CHAR_PATTERN.test(value);
 
-const isOptionalHttpsUrl=value=>
-  value===null||(typeof value==='string'&&value.length<=512&&!CONTROL_CHAR_PATTERN.test(value)&&HTTPS_URL_PATTERN.test(value));
+function isOptionalHttpsUrl(value){
+  if(value===null)return true;
+  if(typeof value!=='string'||value.length===0||value.length>512||
+     CONTROL_CHAR_PATTERN.test(value)||/\s/.test(value)||value.includes('\\')||
+     value.startsWith('https:///')||!URL.canParse(value)){
+    return false;
+  }
+  const parsed=new URL(value);
+  return parsed.protocol==='https:'&&parsed.username===''&&parsed.password==='';
+}
 
 function classifyCodeqlCheckName(name){
   const slashIndex=name.lastIndexOf('/');
