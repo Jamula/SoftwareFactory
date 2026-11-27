@@ -778,6 +778,11 @@ test('proveFamilyTreeShadowDenials rejects invalid suite shapes, broken scenario
   const symbolPriority = { [Symbol('s')]: 1 };
   const cyclicPriority = {};
   cyclicPriority.self = cyclicPriority;
+  let sharedDag = Array.from({ length: 64 }, () => 1);
+  for (let level = 0; level < 4; level += 1) {
+    const prev = sharedDag;
+    sharedDag = Array.from({ length: 64 }, () => prev);
+  }
 
   const makePrioritySuite = (expectedPriority, candidatePriority) => {
     const candWithPriority = {
@@ -845,6 +850,7 @@ test('proveFamilyTreeShadowDenials rejects invalid suite shapes, broken scenario
     makePrioritySuite(Object.create(null), {}),
     makePrioritySuite(symbolPriority, {}),
     makePrioritySuite(cyclicPriority, cyclicPriority),
+    makePrioritySuite(sharedDag, sharedDag),
     { ...suite, denials: { ...d, staleReview: cand } },
     { ...suite, denials: { ...d, staleReview: { ...cand, snapshot: { ...snap, reviews: [] } } } },
     {

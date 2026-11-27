@@ -28,6 +28,7 @@ export const FAMILYTREE_REQUIRED_SHADOW_DENIALS = Object.freeze([
 
 const MAX_ARRAY_LEN = 64;
 const MAX_EQUAL_DEPTH = 8;
+const MAX_EQUAL_VISITS = 2048;
 
 const CONFIG_KEYS = Object.freeze([
   'repositoryId',
@@ -212,8 +213,12 @@ const strictSnapshotShape = s =>
   dense(s.reviews) &&
   s.reviews.every(validReviewShape);
 
-function sameDataAtDepth(candidateVal, expectedVal, depth) {
-  if (depth > MAX_EQUAL_DEPTH || types.isProxy(expectedVal) || types.isProxy(candidateVal)) {
+function sameDataBounded(candidateVal, expectedVal, depth, budget) {
+  budget.remaining -= 1;
+  if (depth > MAX_EQUAL_DEPTH ||
+      budget.remaining < 0 ||
+      types.isProxy(expectedVal) ||
+      types.isProxy(candidateVal)) {
     return false;
   }
   if (!expectedVal || typeof expectedVal !== 'object') {
@@ -223,7 +228,7 @@ function sameDataAtDepth(candidateVal, expectedVal, depth) {
     return dense(expectedVal) &&
       dense(candidateVal) &&
       candidateVal.length === expectedVal.length &&
-      expectedVal.every((item, i) => sameDataAtDepth(candidateVal[i], item, depth + 1));
+      expectedVal.every((item, i) => sameDataBounded(candidateVal[i], item, depth + 1, budget));
   }
   if (Object.getPrototypeOf(expectedVal) !== Object.prototype) {
     return false;
@@ -233,10 +238,11 @@ function sameDataAtDepth(candidateVal, expectedVal, depth) {
     return false;
   }
   return exact(candidateVal, keys) &&
-    keys.every(key => sameDataAtDepth(candidateVal[key], expectedVal[key], depth + 1));
+    keys.every(key => sameDataBounded(candidateVal[key], expectedVal[key], depth + 1, budget));
 }
 
-const equalData = (candidateVal, expectedVal) => sameDataAtDepth(candidateVal, expectedVal, 0);
+const equalData = (candidateVal, expectedVal) =>
+  sameDataBounded(candidateVal, expectedVal, 0, { remaining: MAX_EQUAL_VISITS });
 
 const singleMutation = (baseObj, candidateObj, mutatedField) => {
   const keys = Object.keys(baseObj);
