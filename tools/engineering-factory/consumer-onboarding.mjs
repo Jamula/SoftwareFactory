@@ -16,6 +16,11 @@ export const MANDATORY_ONBOARDING_SETTINGS = Object.freeze([
   'stackProfile'
 ]);
 export const OPTIONAL_ONBOARDING_SETTINGS = Object.freeze(['stricterCoverageThresholds']);
+export const TRUSTED_WORKFLOW_CHECKOUT_PINS = Object.freeze(
+  Object.assign(Object.create(null), {
+    afc3d223f287b029db32672908097efc67a259c9: '1208481843e73d1d2506085c654e84255303541d'
+  })
+);
 
 export const ONBOARDING_STACK_PROFILES = Object.freeze({
   'baseline-95-90': Object.freeze({
@@ -91,7 +96,12 @@ export const CONSUMER_COMPONENT_CATALOG = Object.freeze([
 
 const ownData = (obj, key) => {
   const desc = Object.getOwnPropertyDescriptor(obj, key);
-  return Boolean(desc && desc.enumerable && 'value' in desc);
+  return Boolean(
+    desc &&
+    Object.hasOwn(desc, 'enumerable') &&
+    desc.enumerable === true &&
+    Object.hasOwn(desc, 'value')
+  );
 };
 
 const exact = (value, keys) =>
@@ -493,6 +503,7 @@ const DISCOVERY_INPUT_KEYS = new Set([
   'repositoryId',
   'pinnedFactorySha',
   'pinnedCheckoutSha',
+  'observedCheckoutRef',
   'stackProfile',
   'stricterCoverageThresholds',
   'mandatorySettings',
@@ -504,7 +515,7 @@ const DISCOVERY_INPUT_KEYS = new Set([
   'existingFiles',
   'discoveredRepository'
 ]);
-const DISCOVERED_REPO_KEYS = new Set([
+const REQUIRED_DISCOVERED_REPO_FIELDS = Object.freeze([
   'defaultBranch',
   'mergeMethod',
   'checks',
@@ -512,13 +523,59 @@ const DISCOVERED_REPO_KEYS = new Set([
   'owners',
   'coverage',
   'maxConcurrency',
+  'existingFiles'
+]);
+const DISCOVERED_REPO_KEYS = new Set([
+  ...REQUIRED_DISCOVERED_REPO_FIELDS,
   'requireExplicitApproval',
   'requireStrictUpToDate',
   'allowCommentedBotApproval',
   'migrationFreezeClear',
-  'visibility',
-  'existingFiles'
+  'visibility'
 ]);
+
+const JSON_CHAR_ESCAPES = Object.freeze(
+  Object.assign(Object.create(null), {
+    8: '\\b',
+    9: '\\t',
+    10: '\\n',
+    12: '\\f',
+    13: '\\r',
+    34: '\\"',
+    92: '\\\\'
+  })
+);
+
+const quoteJsonString = value => {
+  let out = '"';
+  for (let i = 0; i < value.length; i += 1) {
+    const code = value.charCodeAt(i);
+    const mapped = JSON_CHAR_ESCAPES[code];
+    if (mapped !== undefined) {
+      out += mapped;
+    } else if (code < 0x20) {
+      out += `\\u${code.toString(16).padStart(4, '0')}`;
+    } else {
+      out += value[i];
+    }
+  }
+  return `${out}"`;
+};
+
+const serializeHookFreeJson = (value, depth = 0) => {
+  if (typeof value === 'string') return quoteJsonString(value);
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  const pad = '  '.repeat(depth);
+  const childPad = '  '.repeat(depth + 1);
+  if (Array.isArray(value)) {
+    const items = value.map(item => `${childPad}${serializeHookFreeJson(item, depth + 1)}`);
+    return `[\n${items.join(',\n')}\n${pad}]`;
+  }
+  const entries = Object.keys(value).map(
+    key => `${childPad}${quoteJsonString(key)}: ${serializeHookFreeJson(value[key], depth + 1)}`
+  );
+  return `{\n${entries.join(',\n')}\n${pad}}`;
+};
 
 const plainAllowed = (value, allowedKeys) =>
   value !== null &&
@@ -553,7 +610,7 @@ const renderShadowReplayWorkflow = pinnedWorkflowSha => [
   ''
 ].join('\n');
 
-const renderPolicyJson = policy => `${JSON.stringify(policy, null, 2)}\n`;
+const renderPolicyJson = policy => `${serializeHookFreeJson(policy)}\n`;
 
 export function planConsumerBootstrap(request) {
   const denyPlan = reason =>
@@ -709,14 +766,16 @@ export function buildReadOnlyOnboardingPlan(discoveryInput) {
     requiredKeys = Object.freeze([...ms]);
   }
 
+  const hasPinnedCheckout = Object.hasOwn(discoveryInput, 'pinnedCheckoutSha');
+  const hasObservedCheckout = Object.hasOwn(discoveryInput, 'observedCheckoutRef');
   if (!Object.hasOwn(discoveryInput, 'repository') ||
       !repoSlug(discoveryInput.repository) ||
       !Object.hasOwn(discoveryInput, 'repositoryId') ||
       !posInt(discoveryInput.repositoryId) ||
       !Object.hasOwn(discoveryInput, 'pinnedFactorySha') ||
       typeof discoveryInput.pinnedFactorySha !== 'string' ||
-      (Object.hasOwn(discoveryInput, 'pinnedCheckoutSha') &&
-        typeof discoveryInput.pinnedCheckoutSha !== 'string') ||
+      (hasPinnedCheckout && typeof discoveryInput.pinnedCheckoutSha !== 'string') ||
+      (hasObservedCheckout && typeof discoveryInput.observedCheckoutRef !== 'string') ||
       !Object.hasOwn(discoveryInput, 'stackProfile') ||
       !text(discoveryInput.stackProfile, 80)) {
     return denyDiscovery('DISCOVERY_INPUT_INVALID');
@@ -728,11 +787,36 @@ export function buildReadOnlyOnboardingPlan(discoveryInput) {
   }
 
   const pinnedFactorySha = discoveryInput.pinnedFactorySha;
-  const pinnedCheckoutSha = Object.hasOwn(discoveryInput, 'pinnedCheckoutSha')
-    ? discoveryInput.pinnedCheckoutSha
-    : pinnedFactorySha;
-  if (!sha40(pinnedFactorySha) || !sha40(pinnedCheckoutSha)) {
+  if (!sha40(pinnedFactorySha) ||
+      (hasPinnedCheckout && !sha40(discoveryInput.pinnedCheckoutSha)) ||
+      (hasObservedCheckout && !sha40(discoveryInput.observedCheckoutRef))) {
     return denyDiscovery('PIN_REF_NOT_IMMUTABLE_SHA');
+  }
+
+  const catalogedCheckoutSha = TRUSTED_WORKFLOW_CHECKOUT_PINS[pinnedFactorySha];
+  let checkoutRef;
+  let reviewedCheckoutSha;
+  if (catalogedCheckoutSha !== undefined) {
+    if ((hasPinnedCheckout && discoveryInput.pinnedCheckoutSha !== catalogedCheckoutSha) ||
+        (hasObservedCheckout && discoveryInput.observedCheckoutRef !== catalogedCheckoutSha)) {
+      return denyDiscovery('PIN_SHA_MISMATCH');
+    }
+    checkoutRef = catalogedCheckoutSha;
+    reviewedCheckoutSha = catalogedCheckoutSha;
+  } else {
+    const missingPinEvidence = [];
+    if (!hasObservedCheckout) missingPinEvidence.push('workflow-checkout-ref-discovery-required');
+    if (!hasPinnedCheckout) missingPinEvidence.push('reviewed-checkout-sha-required');
+    if (missingPinEvidence.length > 0) {
+      return denyDiscovery('CHECKOUT_PIN_UNVERIFIED', {
+        blockers: Object.freeze(missingPinEvidence)
+      });
+    }
+    if (discoveryInput.observedCheckoutRef !== discoveryInput.pinnedCheckoutSha) {
+      return denyDiscovery('PIN_SHA_MISMATCH');
+    }
+    checkoutRef = discoveryInput.observedCheckoutRef;
+    reviewedCheckoutSha = discoveryInput.pinnedCheckoutSha;
   }
 
   if (!Object.hasOwn(ONBOARDING_STACK_PROFILES, discoveryInput.stackProfile)) {
@@ -769,16 +853,30 @@ export function buildReadOnlyOnboardingPlan(discoveryInput) {
     }
   }
 
+  if (mode === 'existing-repository' && !hasDiscovered) {
+    return denyDiscovery('DISCOVERY_INVENTORY_INCOMPLETE', {
+      blockers: Object.freeze(REQUIRED_DISCOVERED_REPO_FIELDS.map(f => `missing-discovered-${f}`))
+    });
+  }
+
   const discovered = hasDiscovered ? discoveryInput.discoveredRepository : null;
   if (hasDiscovered) {
     if (!plainAllowed(discovered, DISCOVERED_REPO_KEYS)) {
       return denyDiscovery('DISCOVERED_REPOSITORY_INVALID');
     }
-    if ((Object.hasOwn(discoveryInput, 'existingFiles') && Object.hasOwn(discovered, 'existingFiles')) ||
+    if (Object.hasOwn(discoveryInput, 'existingFiles') ||
         (Object.hasOwn(discoveryInput, 'visibility') &&
           Object.hasOwn(discovered, 'visibility') &&
           discoveryInput.visibility !== discovered.visibility)) {
       return denyDiscovery('DISCOVERY_INPUT_INVALID');
+    }
+    const missingFields = REQUIRED_DISCOVERED_REPO_FIELDS.filter(
+      field => !Object.hasOwn(discovered, field)
+    );
+    if (missingFields.length > 0) {
+      return denyDiscovery('DISCOVERY_INVENTORY_INCOMPLETE', {
+        blockers: Object.freeze(missingFields.map(f => `missing-discovered-${f}`))
+      });
     }
     for (const boolKey of [
       'migrationFreezeClear',
@@ -790,12 +888,11 @@ export function buildReadOnlyOnboardingPlan(discoveryInput) {
         return denyDiscovery('DISCOVERED_REPOSITORY_INVALID');
       }
     }
-    if ((Object.hasOwn(discovered, 'coverage') &&
-          (!exact(discovered.coverage, ['line', 'branch']) ||
-            !pct(discovered.coverage.line) ||
-            !pct(discovered.coverage.branch))) ||
-        (Object.hasOwn(discovered, 'maxConcurrency') &&
-          (!posInt(discovered.maxConcurrency) || discovered.maxConcurrency > 12)) ||
+    if (!exact(discovered.coverage, ['line', 'branch']) ||
+        !pct(discovered.coverage.line) ||
+        !pct(discovered.coverage.branch) ||
+        !posInt(discovered.maxConcurrency) ||
+        discovered.maxConcurrency > 12 ||
         (Object.hasOwn(discovered, 'visibility') &&
           !VISIBILITY_VALUES.includes(discovered.visibility))) {
       return denyDiscovery('DISCOVERED_REPOSITORY_INVALID');
@@ -810,9 +907,7 @@ export function buildReadOnlyOnboardingPlan(discoveryInput) {
     }
   }
 
-  const discoveredCoverage = hasDiscovered && Object.hasOwn(discovered, 'coverage')
-    ? discovered.coverage
-    : null;
+  const discoveredCoverage = hasDiscovered ? discovered.coverage : null;
   const requiredLine = Math.max(
     CONSUMER_BASELINE_COVERAGE.line,
     profile.coverage.line,
@@ -843,24 +938,12 @@ export function buildReadOnlyOnboardingPlan(discoveryInput) {
     effectiveBranch = thresh.branch;
   }
 
-  const defaultBranch = hasDiscovered && Object.hasOwn(discovered, 'defaultBranch')
-    ? discovered.defaultBranch
-    : profile.defaultBranch;
-  const mergeMethod = hasDiscovered && Object.hasOwn(discovered, 'mergeMethod')
-    ? discovered.mergeMethod
-    : profile.mergeMethod;
-  const rawChecks = hasDiscovered && Object.hasOwn(discovered, 'checks')
-    ? discovered.checks
-    : profile.checks;
-  const rawReviewers = hasDiscovered && Object.hasOwn(discovered, 'reviewers')
-    ? discovered.reviewers
-    : profile.reviewers;
-  const rawOwners = hasDiscovered && Object.hasOwn(discovered, 'owners')
-    ? discovered.owners
-    : profile.owners;
-  const maxConcurrency = hasDiscovered && Object.hasOwn(discovered, 'maxConcurrency')
-    ? discovered.maxConcurrency
-    : profile.maxActive;
+  const defaultBranch = hasDiscovered ? discovered.defaultBranch : profile.defaultBranch;
+  const mergeMethod = hasDiscovered ? discovered.mergeMethod : profile.mergeMethod;
+  const rawChecks = hasDiscovered ? discovered.checks : profile.checks;
+  const rawReviewers = hasDiscovered ? discovered.reviewers : profile.reviewers;
+  const rawOwners = hasDiscovered ? discovered.owners : profile.owners;
+  const maxConcurrency = hasDiscovered ? discovered.maxConcurrency : profile.maxActive;
   const effectiveMaxActive = Math.min(profile.maxActive, maxConcurrency);
 
   const candidatePolicy = {
@@ -885,12 +968,9 @@ export function buildReadOnlyOnboardingPlan(discoveryInput) {
     return denyDiscovery('DISCOVERED_REPOSITORY_INVALID');
   }
 
-  let rawExistingFiles = [];
-  if (Object.hasOwn(discoveryInput, 'existingFiles')) {
-    rawExistingFiles = discoveryInput.existingFiles;
-  } else if (hasDiscovered && Object.hasOwn(discovered, 'existingFiles')) {
-    rawExistingFiles = discovered.existingFiles;
-  }
+  const rawExistingFiles = hasDiscovered
+    ? discovered.existingFiles
+    : (Object.hasOwn(discoveryInput, 'existingFiles') ? discoveryInput.existingFiles : []);
   if (!dense(rawExistingFiles, 256)) {
     return denyDiscovery('EXISTING_FILES_INVALID');
   }
@@ -1003,15 +1083,15 @@ export function buildReadOnlyOnboardingPlan(discoveryInput) {
     workflowPin: Object.freeze({
       uses: `${REUSABLE_WORKFLOW_PREFIX}${pinnedFactorySha}`,
       reviewedWorkflowSha: pinnedFactorySha,
-      checkoutRef: pinnedCheckoutSha,
-      reviewedCheckoutSha: pinnedCheckoutSha,
+      checkoutRef,
+      reviewedCheckoutSha,
       permissions: 'contents:read',
       persistCredentials: false
     }),
     policy: frozenPolicy,
     localGates: Object.freeze({
-      minLineCoverage: effectiveLine,
-      minBranchCoverage: effectiveBranch,
+      minLineCoverage: requiredLine,
+      minBranchCoverage: requiredBranch,
       maxConcurrency,
       requiredChecks: Object.freeze(
         candidatePolicy.checks.map(c => Object.freeze({ name: c.name, appId: c.appId }))

@@ -14,21 +14,21 @@ Onboarding requires at most **4 mandatory user-supplied settings** plus **1 opti
 
 1. `repository`: Target `owner/repo` slug (never `Jamula/SoftwareFactory`).
 2. `repositoryId`: Stable numeric GitHub repository ID (never `1471342715`).
-3. `pinnedFactorySha`: Immutable 40-lowercase-hex commit SHA for `Jamula/SoftwareFactory/.github/workflows/shadow-tests.yml@<sha>` (optional `pinnedCheckoutSha` binds the reviewed internal `checkoutRef` when distinct).
+3. `pinnedFactorySha`: Immutable 40-lowercase-hex commit SHA for `Jamula/SoftwareFactory/.github/workflows/shadow-tests.yml@<sha>`. Cataloged workflow revisions in `TRUSTED_WORKFLOW_CHECKOUT_PINS` (`afc3d223f287b029db32672908097efc67a259c9` → `1208481843e73d1d2506085c654e84255303541d`) automatically bind their verified internal `checkoutRef`; uncataloged workflow SHAs require explicit `observedCheckoutRef` + `pinnedCheckoutSha` evidence or fail closed (`CHECKOUT_PIN_UNVERIFIED` / `PIN_SHA_MISMATCH`).
 4. `stackProfile`: Cataloged profile key (`baseline-95-90`, `web-genealogy-95-90`, `ios-webkit-97-90`, or `strict-up-to-date-migration-gated`).
 5. `stricterCoverageThresholds` *(optional 5th setting)*: `{ line, branch }` raising local coverage above the consumer/profile/discovered floor (attempting to lower any existing or baseline gate fails closed with `BASELINE_COVERAGE_BELOW_MINIMUM` or `LOCAL_GATE_WEAKENED`).
 
 ### Greenfield vs. existing-repository workflow
 
 - **Greenfield (`mode: "greenfield"`, default when `discoveredRepository` is omitted)**: Synthesizes a disabled-at-rest `.github/softwarefactory-policy.json` (`mode: "disabled"`, `killSwitch: true`), a SHA-pinned `.github/workflows/softwarefactory-shadow-replay.yml` (`permissions: contents: read`, `persistCredentials: false`), GitHub-Issues-authoritative tracking defaults (`separateBacklogCreated: false`, `mandatoryExternalServices: 0`), an independent per-repository kill switch, and a single-commit rollback plan (`single-commit-revert`).
-- **Existing repository (`mode: "existing-repository"`)**: Combines the `<= 5` user settings with optional read-only `discoveredRepository` inventory (`defaultBranch`, `mergeMethod`, `checks`, `reviewers`, `owners`, `coverage`, `maxConcurrency`, `visibility`, `migrationFreezeClear`, `existingFiles`). Preserves all stricter existing consumer gates—such as `97%/90%` line/branch coverage on `ios-webkit-97-90`, `100%/100%` + `trunk` + migration-freeze enforcement on `strict-up-to-date-migration-gated`, stricter concurrency caps (`Math.min(profile.maxActive, maxConcurrency)`), and formal `APPROVED`-only independent reviews (`allowCommentedBotApproval: false`).
+- **Existing repository (`mode: "existing-repository"`)**: Combines the `<= 5` user settings with complete read-only `discoveredRepository` gate and file inventory (`defaultBranch`, `mergeMethod`, `checks`, `reviewers`, `owners`, `coverage`, `maxConcurrency`, `existingFiles`, plus optional `visibility`, `migrationFreezeClear`, `requireExplicitApproval`, `requireStrictUpToDate`, `allowCommentedBotApproval`; missing discovery fields block readiness with `DISCOVERY_INVENTORY_INCOMPLETE` and explicit `blockers`). Preserves all stricter existing consumer gates—such as `97%/90%` line/branch coverage on `ios-webkit-97-90`, `100%/100%` + `trunk` + migration-freeze enforcement on `strict-up-to-date-migration-gated`, stricter concurrency caps (`Math.min(profile.maxActive, maxConcurrency)`), and formal `APPROVED`-only independent reviews (`allowCommentedBotApproval: false`).
 - **Read-only safety defaults & zero overwrites**: Enforces `defaultEnabled: false`, `implicitActivation: false`, `overwriteExistingFiles: false`, `liveMutations: 0`, and `deployments: 0`. Any override attempt fails closed (`UNSAFE_DISCOVERY_DEFAULTS`), unsupported external resources fail closed (`UNSUPPORTED_RESOURCE_BLOCKED`), and any collision with existing consumer files (exact, case-variant, ancestor, or descendant path) fails closed with `EXISTING_FILE_CONFLICT`.
 - **Hosted execution options & AI Credit hard-stops**: Reports repository-visibility-aware execution capabilities (`gh-aw` + Copilot Cloud Agent + pinned `@microsoft/copilot-sdk` `2.0.3` on `public`, `private`, and `internal` repositories; Copilot Cloud Automations on `private` and `internal` repositories only) alongside mandatory per-repository `$0` paid-overage AI Credit hard-stops (`perRepoAiCreditHardStopRequired: true`, `paidOverageAllowed: false`).
 
 ```js
 import { buildReadOnlyOnboardingPlan } from './tools/engineering-factory/consumer-onboarding.mjs';
 
-// 1. Greenfield onboarding (4 mandatory settings; checkoutRef defaults to pinnedFactorySha unless pinnedCheckoutSha is supplied)
+// 1. Greenfield onboarding (4 mandatory settings; cataloged workflow SHA binds checkoutRef 12084818...)
 const greenfieldPlan = buildReadOnlyOnboardingPlan({
   repository: 'example/new-project',
   repositoryId: 900501,
@@ -36,16 +36,26 @@ const greenfieldPlan = buildReadOnlyOnboardingPlan({
   stackProfile: 'baseline-95-90'
 });
 
-// 2. Existing repository onboarding preserving stricter gates, separate checkout SHA, and file-collision checks
+// 2. Existing repository onboarding with complete read-only gate & file inventory
 const existingPlan = buildReadOnlyOnboardingPlan({
   mode: 'existing-repository',
   repository: 'example/spellbook',
   repositoryId: 900202,
   pinnedFactorySha: 'afc3d223f287b029db32672908097efc67a259c9',
-  pinnedCheckoutSha: '1208481843e73d1d2506085c654e84255303541d',
   stackProfile: 'ios-webkit-97-90',
   stricterCoverageThresholds: { line: 98, branch: 92 },
   discoveredRepository: {
+    defaultBranch: 'main',
+    mergeMethod: 'squash',
+    checks: [
+      { name: 'fictional-webkit-gate', appId: 34567 },
+      { name: 'fictional-ios-gate', appId: 34568 }
+    ],
+    reviewers: ['synthetic-spellbook-reviewer'],
+    owners: [
+      { prefix: 'ios/', owner: 'synthetic-ios-owner' },
+      { prefix: 'src/', owner: 'synthetic-spellbook-owner' }
+    ],
     coverage: { line: 97, branch: 90 },
     maxConcurrency: 2,
     existingFiles: ['.github/workflows/ios-ci.yml', 'src/bridge.ts']
