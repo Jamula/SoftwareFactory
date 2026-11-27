@@ -1372,8 +1372,14 @@ export function evaluateCheckConsolidationParity(input) {
 
   const shadowInventoryOk = input.gates.shadowEventIngestionPreserved !== false &&
     classification.baseline.disabledShadowInventory.every(ctx => {
+      const base = baselineByContext.get(ctx);
       const prop = proposedByContext.get(ctx);
-      return prop !== undefined && prop.kind === 'disabled-shadow-inventory';
+      return prop !== undefined &&
+        prop.kind === 'disabled-shadow-inventory' &&
+        isTrusted(prop) &&
+        (!Object.hasOwn(base, 'platforms') ||
+          (Object.hasOwn(prop, 'platforms') && base.platforms.every(p => prop.platforms.includes(p)))) &&
+        base.triggers.every(trigger => prop.triggers.includes(trigger));
     }) &&
     classification.proposed.disabledShadowInventory.every(ctx => {
       const base = baselineByContext.get(ctx);
@@ -1440,11 +1446,16 @@ export function evaluateCheckConsolidationParity(input) {
     if (baseCheck.kind === 'disabled-shadow-inventory') continue;
     const retained = proposedByContext.get(baseCheck.context);
     if (retained !== undefined) {
-      if (baseCheck.kind === 'required-execution' && retained.kind !== 'required-execution') {
+      if (!isTrusted(retained) ||
+          (baseCheck.kind === 'required-execution' && retained.kind !== 'required-execution') ||
+          (Object.hasOwn(baseCheck, 'platforms') &&
+            (!Object.hasOwn(retained, 'platforms') || !baseCheck.platforms.every(p => retained.platforms.includes(p))))) {
         return consolidationBlocked('UNVERIFIED_CHECK_CONSOLIDATION', classification, [], preservedGates);
       }
-      if (Object.hasOwn(baseCheck, 'platforms') &&
-          (!Object.hasOwn(retained, 'platforms') || !baseCheck.platforms.every(p => retained.platforms.includes(p)))) {
+      if (baseCheck.triggers.includes('merge_group') && !retained.triggers.includes('merge_group')) {
+        return consolidationBlocked('MERGE_GROUP_COVERAGE_DROPPED', classification, [], preservedGates);
+      }
+      if (!baseCheck.triggers.every(trigger => retained.triggers.includes(trigger))) {
         return consolidationBlocked('UNVERIFIED_CHECK_CONSOLIDATION', classification, [], preservedGates);
       }
       continue;
@@ -1453,10 +1464,17 @@ export function evaluateCheckConsolidationParity(input) {
       return consolidationBlocked('UNVERIFIED_CHECK_CONSOLIDATION', classification, [], preservedGates);
     }
     const target = proposedByContext.get(baseCheck.consolidatedInto);
-    if (target.kind === 'disabled-shadow-inventory' ||
+    if (!isTrusted(target) ||
+        target.kind === 'disabled-shadow-inventory' ||
         (baseCheck.kind === 'required-execution' && target.kind !== 'required-execution') ||
         (Object.hasOwn(baseCheck, 'platforms') &&
           (!Object.hasOwn(target, 'platforms') || !baseCheck.platforms.every(p => target.platforms.includes(p))))) {
+      return consolidationBlocked('UNVERIFIED_CHECK_CONSOLIDATION', classification, [], preservedGates);
+    }
+    if (baseCheck.triggers.includes('merge_group') && !target.triggers.includes('merge_group')) {
+      return consolidationBlocked('MERGE_GROUP_COVERAGE_DROPPED', classification, [], preservedGates);
+    }
+    if (!baseCheck.triggers.every(trigger => target.triggers.includes(trigger))) {
       return consolidationBlocked('UNVERIFIED_CHECK_CONSOLIDATION', classification, [], preservedGates);
     }
     consolidatedChecks.push({

@@ -1330,7 +1330,8 @@ test('evaluateCheckConsolidationParity verifies 12-to-8 check consolidation and 
     {context: 'upload-coverage-javascript', kind: 'reporting', triggers: ['pull_request', 'merge_group']},
     {context: 'windows-aspire-runtime', kind: 'required-execution', triggers: ['pull_request', 'merge_group']},
     {context: '.NET MAF specialist agents', kind: 'required-execution', triggers: ['pull_request', 'merge_group']},
-    {context: 'CodeQL', kind: 'required-execution', triggers: ['pull_request']}
+    {context: 'CodeQL', kind: 'required-execution', triggers: ['pull_request']},
+    {context: 'inventory', kind: 'disabled-shadow-inventory', triggers: ['schedule', 'workflow_dispatch']}
   ];
   const minimalVerified = evaluateCheckConsolidationParity({
     repository: 'Jamula/SoftwareFactory',
@@ -1476,7 +1477,17 @@ test('evaluateCheckConsolidationParity blocks any proposal dropping mandatory ex
   disableShadowFlag.gates.shadowEventIngestionPreserved = false;
   assert.equal(evaluateCheckConsolidationParity(disableShadowFlag).reason, 'SHADOW_INVENTORY_VIOLATION');
 
-  // Unverified consolidation: missing consolidatedInto, execution->reporting downgrade, platform loss, or unproven equivalence
+  const shadowTriggerDropped = defaultSoftwareFactoryConsolidationProposal();
+  shadowTriggerDropped.proposedChecks.find(c => c.context === 'inventory').triggers = ['workflow_dispatch'];
+  const shadowTriggerRes = evaluateCheckConsolidationParity(shadowTriggerDropped);
+  assert.equal(shadowTriggerRes.reason, 'SHADOW_INVENTORY_VIOLATION');
+  assert.equal(shadowTriggerRes.preservedGates.shadowInventoryPreserved, false);
+
+  const shadowPlatformDropped = defaultSoftwareFactoryConsolidationProposal();
+  delete shadowPlatformDropped.proposedChecks.find(c => c.context === 'inventory').platforms;
+  assert.equal(evaluateCheckConsolidationParity(shadowPlatformDropped).reason, 'SHADOW_INVENTORY_VIOLATION');
+
+  // Unverified consolidation: missing consolidatedInto, execution->reporting downgrade, platform/trigger loss, or unproven equivalence
   const unmappedDrop = defaultSoftwareFactoryConsolidationProposal();
   delete unmappedDrop.baselineChecks.find(c => c.context === 'test-coverage').consolidatedInto;
   assert.equal(evaluateCheckConsolidationParity(unmappedDrop).reason, 'UNVERIFIED_CHECK_CONSOLIDATION');
@@ -1492,9 +1503,83 @@ test('evaluateCheckConsolidationParity blocks any proposal dropping mandatory ex
   retainedDowngrade.proposedChecks.find(c => c.context === 'pinned-synthetic-replay').kind = 'reporting';
   assert.equal(evaluateCheckConsolidationParity(retainedDowngrade).reason, 'UNVERIFIED_CHECK_CONSOLIDATION');
 
+  const retainedUntrusted = defaultSoftwareFactoryConsolidationProposal();
+  retainedUntrusted.proposedChecks.find(c => c.context === 'pinned-synthetic-replay').trustedProducer = false;
+  assert.equal(evaluateCheckConsolidationParity(retainedUntrusted).reason, 'UNVERIFIED_CHECK_CONSOLIDATION');
+
   const retainedPlatformDropped = defaultSoftwareFactoryConsolidationProposal();
   delete retainedPlatformDropped.proposedChecks.find(c => c.context === 'pinned-synthetic-replay').platforms;
   assert.equal(evaluateCheckConsolidationParity(retainedPlatformDropped).reason, 'UNVERIFIED_CHECK_CONSOLIDATION');
+
+  const retainedPushMainDropped = defaultSoftwareFactoryConsolidationProposal();
+  retainedPushMainDropped.proposedChecks.find(c => c.context === 'pinned-synthetic-replay').triggers = [
+    'pull_request',
+    'merge_group'
+  ];
+  assert.equal(evaluateCheckConsolidationParity(retainedPushMainDropped).reason, 'UNVERIFIED_CHECK_CONSOLIDATION');
+
+  const retainedPrTriggerDropped = defaultSoftwareFactoryConsolidationProposal();
+  retainedPrTriggerDropped.proposedChecks.find(
+    c => c.context === 'CodeQL / Analyze (actions)'
+  ).triggers = ['push_main'];
+  assert.equal(evaluateCheckConsolidationParity(retainedPrTriggerDropped).reason, 'UNVERIFIED_CHECK_CONSOLIDATION');
+
+  const consolidatedMergeGroupMissing = defaultSoftwareFactoryConsolidationProposal();
+  consolidatedMergeGroupMissing.baselineChecks.push({
+    context: 'legacy-mg-check',
+    kind: 'reporting',
+    platforms: ['linux'],
+    triggers: ['pull_request', 'merge_group'],
+    consolidatedInto: 'CodeQL / Analyze (actions)' // lacks merge_group!
+  });
+  assert.equal(
+    evaluateCheckConsolidationParity(consolidatedMergeGroupMissing).reason,
+    'MERGE_GROUP_COVERAGE_DROPPED'
+  );
+
+  const consolidatedPushMainMissing = defaultSoftwareFactoryConsolidationProposal();
+  consolidatedPushMainMissing.proposedChecks.push({
+    context: 'pr-only-target',
+    kind: 'reporting',
+    platforms: ['linux'],
+    triggers: ['pull_request']
+  });
+  consolidatedPushMainMissing.proposedChecks = consolidatedPushMainMissing.proposedChecks.filter(
+    c => c.context !== 'pinned-synthetic-replay'
+  );
+  consolidatedPushMainMissing.baselineChecks.find(
+    c => c.context === 'pinned-synthetic-replay'
+  ).consolidatedInto = 'build-test';
+  consolidatedPushMainMissing.baselineChecks.push({
+    context: 'legacy-push-report',
+    kind: 'reporting',
+    platforms: ['linux'],
+    triggers: ['pull_request', 'push_main'],
+    consolidatedInto: 'pr-only-target'
+  });
+  assert.equal(
+    evaluateCheckConsolidationParity(consolidatedPushMainMissing).reason,
+    'UNVERIFIED_CHECK_CONSOLIDATION'
+  );
+
+  const targetUntrusted = defaultSoftwareFactoryConsolidationProposal();
+  targetUntrusted.proposedChecks.push({
+    context: 'untrusted-target',
+    kind: 'reporting',
+    platforms: ['linux'],
+    triggers: ['pull_request'],
+    trustedProducer: false
+  });
+  targetUntrusted.proposedChecks = targetUntrusted.proposedChecks.filter(
+    c => c.context !== 'pinned-synthetic-replay'
+  );
+  targetUntrusted.baselineChecks.find(
+    c => c.context === 'pinned-synthetic-replay'
+  ).consolidatedInto = 'build-test';
+  targetUntrusted.baselineChecks.find(
+    c => c.context === 'CodeQL - Code Quality / Analyze (csharp)'
+  ).consolidatedInto = 'untrusted-target';
+  assert.equal(evaluateCheckConsolidationParity(targetUntrusted).reason, 'UNVERIFIED_CHECK_CONSOLIDATION');
 
   const targetPlatformMismatch = defaultSoftwareFactoryConsolidationProposal();
   targetPlatformMismatch.baselineChecks.push({
@@ -1622,6 +1707,13 @@ test('dotnet-agents.yml enforces SHA-pinned exact-input NuGet caching, 98/95 Cov
   // Per-stage millisecond durations and Coverlet 98/95 enforcement on both platforms
   for (const token of ['restore_ms=', 'build_ms=', 'test_coverage_ms=', 'smoke_ms=', 'CollectCoverage=true']) {
     assert.equal(content.split(token).length - 1, 2, `expected ${token} in both Linux and Windows jobs`);
+  }
+
+  // Job-level env blocks (4-space indent) must never reference runner.* context
+  const jobEnvMatches = [...content.matchAll(/^    env:\n((?:      .+\n)+)/gm)].map(m => m[1]);
+  assert.equal(jobEnvMatches.length, 2);
+  for (const jobEnv of jobEnvMatches) {
+    assert.equal(jobEnv.includes('runner.'), false, `runner context is invalid in job-level env: ${jobEnv}`);
   }
 
   // Zero ${{ ... }} interpolation inside any run: | script block

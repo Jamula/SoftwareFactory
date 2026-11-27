@@ -19,7 +19,6 @@ jobs:
     env:
       DOTNET_CLI_TELEMETRY_OPTOUT: '1'
       DOTNET_NOLOGO: '1'
-      NUGET_PACKAGES: ${{ runner.temp }}/nuget-packages
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -53,6 +52,7 @@ jobs:
           key: sf-dotnet-agents-nuget-v1-${{ runner.os }}-${{ runner.arch }}-dotnet-10.0.404-release-${{ hashFiles('global.json', 'apphost.cs', 'src/SoftwareFactory.Agents/SoftwareFactory.Agents.csproj', 'tests/SoftwareFactory.Agents.Tests/SoftwareFactory.Agents.Tests.csproj', '**/packages.lock.json', 'Directory.Build.props', 'Directory.Packages.props') }}
       - name: Restore and build .NET MAF agents and Aspire AppHost
         env:
+          NUGET_PACKAGES: ${{ runner.temp }}/nuget-packages
           CACHE_HIT: ${{ steps.nuget-cache-restore.outputs.cache-hit || steps.nuget-cache-main.outputs.cache-hit || 'false' }}
         run: |
           set -euo pipefail
@@ -71,6 +71,8 @@ jobs:
           build_end="$(date +%s%3N)"
           printf 'dotnet-agents stage timing: platform=linux build_ms=%s\n' "$((build_end - build_start))"
       - name: Run xUnit tests with Coverlet 98/95 coverage gate
+        env:
+          NUGET_PACKAGES: ${{ runner.temp }}/nuget-packages
         run: |
           set -euo pipefail
           test_start="$(date +%s%3N)"
@@ -80,6 +82,8 @@ jobs:
           test_end="$(date +%s%3N)"
           printf 'dotnet-agents stage timing: platform=linux test_coverage_ms=%s\n' "$((test_end - test_start))"
       - name: Run synthetic MAF workflow smoke and benchmark CLI
+        env:
+          NUGET_PACKAGES: ${{ runner.temp }}/nuget-packages
         run: |
           set -euo pipefail
           smoke_start="$(date +%s%3N)"
@@ -102,7 +106,6 @@ jobs:
     env:
       DOTNET_CLI_TELEMETRY_OPTOUT: '1'
       DOTNET_NOLOGO: '1'
-      NUGET_PACKAGES: ${{ runner.temp }}/nuget-packages
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -137,6 +140,7 @@ jobs:
           key: sf-dotnet-agents-nuget-v1-${{ runner.os }}-${{ runner.arch }}-dotnet-10.0.404-release-${{ hashFiles('global.json', 'apphost.cs', 'src/SoftwareFactory.Agents/SoftwareFactory.Agents.csproj', 'tests/SoftwareFactory.Agents.Tests/SoftwareFactory.Agents.Tests.csproj', '**/packages.lock.json', 'Directory.Build.props', 'Directory.Packages.props') }}
       - name: Restore and build .NET MAF agents and Aspire AppHost
         env:
+          NUGET_PACKAGES: ${{ runner.temp }}/nuget-packages
           CACHE_HIT: ${{ steps.nuget-cache-restore.outputs.cache-hit || steps.nuget-cache-main.outputs.cache-hit || 'false' }}
         run: |
           $ErrorActionPreference = 'Stop'
@@ -156,6 +160,8 @@ jobs:
           $buildTimer.Stop()
           Write-Host "dotnet-agents stage timing: platform=windows build_ms=$($buildTimer.ElapsedMilliseconds)"
       - name: Run xUnit tests with Coverlet 98/95 coverage gate
+        env:
+          NUGET_PACKAGES: ${{ runner.temp }}/nuget-packages
         run: |
           $ErrorActionPreference = 'Stop'
           $testTimer = [System.Diagnostics.Stopwatch]::StartNew()
@@ -166,6 +172,8 @@ jobs:
           $testTimer.Stop()
           Write-Host "dotnet-agents stage timing: platform=windows test_coverage_ms=$($testTimer.ElapsedMilliseconds)"
       - name: Run synthetic MAF workflow smoke and benchmark CLI
+        env:
+          NUGET_PACKAGES: ${{ runner.temp }}/nuget-packages
         run: |
           $ErrorActionPreference = 'Stop'
           $smokeTimer = [System.Diagnostics.Stopwatch]::StartNew()
