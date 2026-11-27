@@ -9,7 +9,7 @@ const POLICY_KEYS = new Set([
 ]);
 const RECEIPT_KEYS = [
   'repository', 'repositoryId', 'branch', 'headRepository', 'isFork',
-  'head', 'mergeGroupHead', 'ruleset', 'pullChecks', 'mergeGroupChecks',
+  'head', 'base', 'mergeGroupHead', 'mergeGroup', 'ruleset', 'pullChecks', 'mergeGroupChecks',
   'codeScanning', 'secretScanningClear', 'threadsResolved', 'trustedReviewers', 'review',
   'expectedComponents', 'coverageReports'
 ];
@@ -34,9 +34,11 @@ const hasData = (x, p) => {
 const own = (x, k) => x !== null && typeof x === 'object' && !types.isProxy(x) && !Array.isArray(x) &&
   Object.getPrototypeOf(x) === Object.prototype && k.every(p => hasData(x, p));
 const exact = (x, k) => own(x, k) && Reflect.ownKeys(x).length === k.length;
+const ownValue = (x, p) => Object.hasOwn(x, p) ? Object.getOwnPropertyDescriptor(x, p).value : undefined;
 const plainSubset = (x, allowed) => x !== null && typeof x === 'object' && !types.isProxy(x) &&
   !Array.isArray(x) && Object.getPrototypeOf(x) === Object.prototype &&
-  Reflect.ownKeys(x).every(k => typeof k === 'string' && allowed.has(k) && hasData(x, k));
+  Reflect.ownKeys(x).every(k => typeof k === 'string' && allowed.has(k) && hasData(x, k)) &&
+  [...allowed].every(k => Object.hasOwn(x, k) || !(k in x));
 const name = x => typeof x === 'string' && /^[a-z0-9][a-z0-9._-]{0,79}$/.test(x);
 const repoName = x => typeof x === 'string' && x.length <= 200 &&
   /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(x) && !x.includes('..');
@@ -55,27 +57,33 @@ const gateDeny = reason => Object.freeze({shadow: true, valid: false, liveMerge:
 function resolvePolicy(head, expectedSet, policy) {
   if (policy === undefined) return {ok: true, lineMin: 98, branchMin: 95, branchless: null};
   if (!plainSubset(policy, POLICY_KEYS)) return {ok: false, reason: 'INVALID_POLICY'};
-  const repository = policy.repository === undefined ? FACTORY_REPO : policy.repository;
+  const repoOpt = ownValue(policy, 'repository');
+  const repository = repoOpt === undefined ? FACTORY_REPO : repoOpt;
   if (!repoName(repository)) return {ok: false, reason: 'INVALID_POLICY'};
   const isFactory = repository.toLowerCase() === 'jamula/softwarefactory';
   let floorLine = isFactory ? 98 : 95;
   let floorBranch = isFactory ? 95 : 90;
-  if (policy.existingLineMin !== undefined) {
-    if (!pct(policy.existingLineMin, floorLine)) return {ok: false, reason: 'INVALID_POLICY'};
-    floorLine = policy.existingLineMin;
+  const existingLine = ownValue(policy, 'existingLineMin');
+  if (existingLine !== undefined) {
+    if (!pct(existingLine, floorLine)) return {ok: false, reason: 'INVALID_POLICY'};
+    floorLine = existingLine;
   }
-  if (policy.existingBranchMin !== undefined) {
-    if (!pct(policy.existingBranchMin, floorBranch)) return {ok: false, reason: 'INVALID_POLICY'};
-    floorBranch = policy.existingBranchMin;
+  const existingBranch = ownValue(policy, 'existingBranchMin');
+  if (existingBranch !== undefined) {
+    if (!pct(existingBranch, floorBranch)) return {ok: false, reason: 'INVALID_POLICY'};
+    floorBranch = existingBranch;
   }
-  const lineMin = policy.lineMin === undefined ? floorLine : policy.lineMin;
-  const branchMin = policy.branchMin === undefined ? floorBranch : policy.branchMin;
+  const lineOpt = ownValue(policy, 'lineMin');
+  const branchOpt = ownValue(policy, 'branchMin');
+  const lineMin = lineOpt === undefined ? floorLine : lineOpt;
+  const branchMin = branchOpt === undefined ? floorBranch : branchOpt;
   if (!pct(lineMin, floorLine) || !pct(branchMin, floorBranch)) return {ok: false, reason: 'INVALID_POLICY'};
   const branchless = new Set();
-  if (policy.branchless !== undefined) {
-    if (!dense(policy.branchless)) return {ok: false, reason: 'INVALID_POLICY'};
-    for (let i = 0; i < policy.branchless.length; i++) {
-      const entry = policy.branchless[i];
+  const branchlessOpt = ownValue(policy, 'branchless');
+  if (branchlessOpt !== undefined) {
+    if (!dense(branchlessOpt)) return {ok: false, reason: 'INVALID_POLICY'};
+    for (let i = 0; i < branchlessOpt.length; i++) {
+      const entry = branchlessOpt[i];
       if (!exact(entry, ['component', 'head', 'reviewedBy', 'reason']) ||
           !name(entry.component) || !sha(entry.head) || !reviewerId(entry.reviewedBy) ||
           typeof entry.reason !== 'string' || entry.reason.trim().length < 8 ||
@@ -206,7 +214,7 @@ export function verifyCandidateGateReceipt(receipt) {
       receipt.repository !== FACTORY_REPO ||
       receipt.repositoryId !== FACTORY_REPO_ID || receipt.branch !== 'main' ||
       !repoName(receipt.headRepository) || typeof receipt.isFork !== 'boolean' ||
-      !sha(receipt.head) || !sha(receipt.mergeGroupHead) ||
+      !sha(receipt.head) || !sha(receipt.base) || receipt.head === receipt.base || !sha(receipt.mergeGroupHead) ||
       typeof receipt.secretScanningClear !== 'boolean' || typeof receipt.threadsResolved !== 'boolean' ||
       !dense(receipt.trustedReviewers, 64) || !receipt.trustedReviewers.length ||
       !receipt.trustedReviewers.every(reviewerId))
@@ -220,7 +228,12 @@ export function verifyCandidateGateReceipt(receipt) {
   if (!rules.ok) return gateDeny(rules.reason);
   if (!verifyChecks(receipt.pullChecks, rules.requiredMap, receipt.head, null))
     return gateDeny('PULL_CHECKS_INCOMPLETE');
-  if (!verifyChecks(receipt.mergeGroupChecks, rules.requiredMap, receipt.mergeGroupHead, 'merge_group'))
+  const mg = receipt.mergeGroup;
+  if (!exact(mg, ['head', 'base', 'memberHeads']) || mg.head !== receipt.mergeGroupHead ||
+      mg.base !== receipt.base || !dense(mg.memberHeads, 5) || !mg.memberHeads.length ||
+      !mg.memberHeads.every(sha) || new Set(mg.memberHeads).size !== mg.memberHeads.length ||
+      !mg.memberHeads.includes(receipt.head) ||
+      !verifyChecks(receipt.mergeGroupChecks, rules.requiredMap, receipt.mergeGroupHead, 'merge_group'))
     return gateDeny('MERGE_GROUP_CHECKS_INCOMPLETE');
   const cs = receipt.codeScanning;
   if (!exact(cs, ['tool', 'head', 'status', 'conclusion', 'openAlerts']) || cs.tool !== 'CodeQL' ||
@@ -234,18 +247,25 @@ export function verifyCandidateGateReceipt(receipt) {
       !reviewerId(rv.reviewer) || !reviewerId(rv.author) || !reviewerId(rv.agent))
     return gateDeny('INDEPENDENT_REVIEW_INCOMPLETE');
   const reviewerLower = rv.reviewer.toLowerCase();
+  const authorLower = rv.author.toLowerCase();
+  const agentLower = rv.agent.toLowerCase();
   if (!allowlist.has(reviewerLower) ||
-      reviewerLower === rv.author.toLowerCase() ||
-      reviewerLower === rv.agent.toLowerCase() ||
+      reviewerLower === authorLower ||
+      reviewerLower === agentLower ||
       !(rv.state === 'APPROVED' || (rv.state === 'COMMENTED' &&
         ['copilot-pull-request-reviewer', 'copilot-pull-request-reviewer[bot]'].includes(reviewerLower))) ||
       rv.summaryDisposition !== 'clear' || rv.unresolvedSummaryFindings !== 0 || rv.blockingReviewCount !== 0)
     return gateDeny('INDEPENDENT_REVIEW_INCOMPLETE');
-  const covPolicy = receipt.branchless === undefined
+  const branchless = ownValue(receipt, 'branchless');
+  const covPolicy = branchless === undefined
     ? {repository: FACTORY_REPO, lineMin: rules.minimumCoverage, branchMin: 95}
-    : {repository: FACTORY_REPO, lineMin: rules.minimumCoverage, branchMin: 95, branchless: receipt.branchless};
+    : {repository: FACTORY_REPO, lineMin: rules.minimumCoverage, branchMin: 95, branchless};
   const cov = coverageEvidence(receipt.head, receipt.expectedComponents, receipt.coverageReports, covPolicy);
   if (!cov.valid) return gateDeny('COVERAGE_UNVERIFIED');
+  if (branchless !== undefined && branchless.some(entry => {
+    const by = entry.reviewedBy.toLowerCase();
+    return !allowlist.has(by) || by === authorLower || by === agentLower;
+  })) return gateDeny('COVERAGE_UNVERIFIED');
   return Object.freeze({
     shadow: true,
     valid: true,

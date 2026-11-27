@@ -50,6 +50,12 @@ test('consumer and repository policies enforce 98/95 factory floor and >=95/90 o
   {repository:'example/spellbook',existingLineMin:97,lineMin:96},
   {repository:'example/spellbook',existingBranchMin:92,branchMin:90}
  ])assert.equal(check(h,['core'],[r],badPolicy).reason,'INVALID_POLICY');
+ try{
+  Object.defineProperty(Object.prototype,'repository',{get(){calls++;return 'example/family-tree';},configurable:true});
+  assert.equal(check(h,['core'],[consumer95],{}).reason,'INVALID_POLICY');
+ }finally{
+  delete Object.prototype.repository;
+ }
  assert.equal(calls,0);
 });
 
@@ -77,7 +83,9 @@ test('branchless components require an exact-head reviewed justification and sti
 });
 
 test('verifyCandidateGateReceipt reconciles rulesets, fork PRs, merge_group checks, CodeQL, review summaries, and coverage>=98',()=>{
+ const base='d'.repeat(40);
  const mg='c'.repeat(40);
+ const otherHead='e'.repeat(40);
  const contexts=['build-test','upload-coverage-javascript','windows-aspire-runtime'];
  const baseReceipt=()=>({
   repository:'Jamula/SoftwareFactory',
@@ -86,7 +94,9 @@ test('verifyCandidateGateReceipt reconciles rulesets, fork PRs, merge_group chec
   headRepository:'Jamula/SoftwareFactory',
   isFork:false,
   head:h,
+  base,
   mergeGroupHead:mg,
+  mergeGroup:{head:mg,base,memberHeads:[otherHead,h]},
   ruleset:{
    strict_required_status_checks_policy:true,
    required_status_checks:contexts.map(context=>({context,integration_id:15368})),
@@ -135,7 +145,7 @@ test('verifyCandidateGateReceipt reconciles rulesets, fork PRs, merge_group chec
 
  for(const patch of [
   {repository:'example/other'},{repositoryId:1},{branch:'dev'},{headRepository:'bad'},
-  {isFork:'no'},{head:'bad'},{mergeGroupHead:'bad'},{secretScanningClear:'yes'},{threadsResolved:null},
+  {isFork:'no'},{head:'bad'},{base:'bad'},{base:h},{mergeGroupHead:'bad'},{secretScanningClear:'yes'},{threadsResolved:null},
   {trustedReviewers:null},{trustedReviewers:[]},{trustedReviewers:[' bad']},
   {trustedReviewers:['human-reviewer','Human-Reviewer']},{extra:1}
  ])assert.equal(verifyReceipt({...baseReceipt(),...patch}).reason,'RECEIPT_UNKNOWN');
@@ -184,6 +194,12 @@ test('verifyCandidateGateReceipt reconciles rulesets, fork PRs, merge_group chec
   baseReceipt().pullChecks.map((c,i)=>i===0?{...c,conclusion:'skipped'}:c)
  ])assert.equal(verifyReceipt({...baseReceipt(),pullChecks:badPullChecks}).reason,'PULL_CHECKS_INCOMPLETE');
 
+ for(const badMg of [
+  null,{head:h,base,memberHeads:[h]},{head:mg,base:h,memberHeads:[h]},
+  {head:mg,base,memberHeads:null},{head:mg,base,memberHeads:[]},{head:mg,base,memberHeads:['bad']},
+  {head:mg,base,memberHeads:[h,h]},{head:mg,base,memberHeads:[otherHead]}
+ ])assert.equal(verifyReceipt({...baseReceipt(),mergeGroup:badMg}).reason,'MERGE_GROUP_CHECKS_INCOMPLETE');
+
  for(const badMgChecks of [
   null,
   baseReceipt().mergeGroupChecks.slice(0,2),
@@ -228,13 +244,22 @@ test('verifyCandidateGateReceipt reconciles rulesets, fork PRs, merge_group chec
  assert.equal(verifyReceipt(stricterRulesetReceipt).reason,'COVERAGE_UNVERIFIED');
 
  const zero={component:'schema',head:h,lines:50,lineTotal:50,branches:0,branchTotal:0};
- const branchlessEntry={component:'schema',head:h,reviewedBy:'independent-reviewer',reason:'pure constant schema definition'};
+ const branchlessEntry={component:'schema',head:h,reviewedBy:'human-reviewer',reason:'pure constant schema definition'};
  assert.equal(verifyReceipt({...baseReceipt(),expectedComponents:['core','schema'],coverageReports:[r,zero]}).reason,'COVERAGE_UNVERIFIED');
  assert.equal(verifyReceipt({...baseReceipt(),expectedComponents:['core','schema'],coverageReports:[r,zero],branchless:[branchlessEntry]}).valid,true);
  assert.equal(verifyReceipt({...baseReceipt(),expectedComponents:['core','schema'],coverageReports:[r,zero],branchless:[{...branchlessEntry,head:mg}]}).reason,'COVERAGE_UNVERIFIED');
+ assert.equal(verifyReceipt({...baseReceipt(),expectedComponents:['core','schema'],coverageReports:[r,zero],branchless:[{...branchlessEntry,reviewedBy:'outside-user'}]}).reason,'COVERAGE_UNVERIFIED');
+ assert.equal(verifyReceipt({...baseReceipt(),trustedReviewers:['copilot-pull-request-reviewer[bot]','contributor','human-reviewer'],expectedComponents:['core','schema'],coverageReports:[r,zero],branchless:[{...branchlessEntry,reviewedBy:'Contributor'}]}).reason,'COVERAGE_UNVERIFIED');
+ assert.equal(verifyReceipt({...baseReceipt(),trustedReviewers:['copilot-pull-request-reviewer[bot]','coding-agent','human-reviewer'],expectedComponents:['core','schema'],coverageReports:[r,zero],branchless:[{...branchlessEntry,reviewedBy:'Coding-Agent'}]}).reason,'COVERAGE_UNVERIFIED');
 
  let traps=0;
  const trap=()=>{traps++;throw Error('unexpected proxy trap');};
+ try{
+  Object.defineProperty(Object.prototype,'branchless',{get:trap,configurable:true});
+  assert.equal(verifyReceipt(baseReceipt()).reason,'RECEIPT_UNKNOWN');
+ }finally{
+  delete Object.prototype.branchless;
+ }
  const getterBranchless=baseReceipt();
  Object.defineProperty(getterBranchless,'branchless',{get:trap,enumerable:true});
  assert.equal(verifyReceipt(getterBranchless).reason,'RECEIPT_UNKNOWN');
