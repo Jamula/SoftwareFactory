@@ -146,6 +146,7 @@ const PULL_REQUIRED_KEYS = [
   'closedAt'
 ];
 const PULL_OPTIONAL_KEYS = [
+  'headSha',
   'mergeSha',
   'mainVerifiedSha',
   'mainVerified',
@@ -168,7 +169,33 @@ const OTEL_REQUIRED_KEYS = [
   'ciRuns',
   'interventions'
 ];
-const OTEL_OPTIONAL_KEYS = ['traceparents'];
+const OTEL_OPTIONAL_KEYS = ['traceparents', 'outcomeBindings', 'guardrails'];
+
+const OUTCOME_BINDING_KEYS = [
+  'issueNumber',
+  'traceId',
+  'dispatchReceiptId',
+  'ciReceiptId',
+  'verifyMainReceiptId',
+  'acceptanceReceiptId'
+];
+
+const GUARDRAIL_KEYS = [
+  'coverageHead',
+  'minLinePercent',
+  'minBranchPercent',
+  'coveredLines',
+  'totalLines',
+  'coveredBranches',
+  'totalBranches',
+  'independentReviewVerified',
+  'reworkRounds',
+  'reopenedCount',
+  'failedMainCount',
+  'unauthorizedWriteCount',
+  'duplicateDispatchCount',
+  'budgetViolationCount'
+];
 
 const CI_RUN_KEYS = [
   'id',
@@ -267,6 +294,8 @@ const boundedCount = (n, max = 1000) => nonnegInt(n) && n <= max;
 const validCohort = s => typeof s === 'string' && /^[a-z0-9][a-z0-9-]{0,63}$/.test(s);
 const validIdToken = s => typeof s === 'string' && /^[A-Za-z0-9._:-]{1,96}$/.test(s);
 const sha40 = s => typeof s === 'string' && /^[0-9a-f]{40}$/.test(s);
+const traceHex = s => typeof s === 'string' && /^(?!0{32}$)[0-9a-f]{32}$/.test(s);
+const MAX_SOURCE_ELEMENTS = 100000000;
 const validOptTimestamp = (ts, observedMs) =>
   ts === null || (nonnegInt(ts) && ts <= observedMs);
 
@@ -415,6 +444,7 @@ function parsePulls(rawPulls, query) {
     if (raw.cohort !== query.cohort) {
       return {ok: false, reason: 'COHORT_MISMATCH'};
     }
+    const headSha = ownOption(raw, 'headSha', null);
     const mergeSha = ownOption(raw, 'mergeSha', null);
     const mainVerifiedSha = ownOption(raw, 'mainVerifiedSha', null);
     const mainVerified = ownOption(raw, 'mainVerified', false);
@@ -428,6 +458,7 @@ function parsePulls(rawPulls, query) {
         !validOptTimestamp(raw.createdAt, query.observedMs) ||
         !validOptTimestamp(raw.mergedAt, query.observedMs) ||
         !validOptTimestamp(raw.closedAt, query.observedMs) ||
+        (headSha !== null && !sha40(headSha)) ||
         (mergeSha !== null && !sha40(mergeSha)) ||
         (mainVerifiedSha !== null && !sha40(mainVerifiedSha)) ||
         typeof mainVerified !== 'boolean' ||
@@ -446,6 +477,7 @@ function parsePulls(rawPulls, query) {
       createdAt: raw.createdAt,
       mergedAt: raw.mergedAt,
       closedAt: raw.closedAt,
+      headSha,
       mergeSha,
       mainVerifiedSha,
       mainVerified,
@@ -1063,6 +1095,23 @@ function finalizeOtelTimingMetric(metric, spec, durations, counts, overdueOpenCo
   };
 }
 
+function emptyGuardrailSummary(status) {
+  return {
+    status,
+    coverageHead: null,
+    minLinePercent: null,
+    minBranchPercent: null,
+    coveredLines: null,
+    totalLines: null,
+    coveredBranches: null,
+    totalBranches: null,
+    independentReviewVerified: false,
+    reworkRounds: null,
+    reopenedCount: null,
+    safetyViolations: null
+  };
+}
+
 function buildNotProvidedOtel() {
   return {
     status: 'not-provided',
@@ -1109,6 +1158,7 @@ function buildNotProvidedOtel() {
       zeroRoutineVerified: false,
       sloMet: null
     },
+    guardrails: emptyGuardrailSummary('not-provided'),
     receiptEvidence: null
   };
 }
@@ -1130,10 +1180,20 @@ function parseOtelReceipts(rawReceipts, rawTraceparents, expectedSource, query) 
   }
 
   const receiptsById = new Map();
+  const inWindowReceiptsById = new Map();
   const stageRows = [];
   const outcomeCounts = {eligible: 0, blocked: 0, failed: 0, unknown: 0};
   const blockedByReason = {};
   const stageEventCounts = {
+    reconcile: 0,
+    dispatch: 0,
+    ci: 0,
+    review: 0,
+    mergeShadow: 0,
+    verifyMain: 0,
+    acceptance: 0
+  };
+  const eligibleStageEventCounts = {
     reconcile: 0,
     dispatch: 0,
     ci: 0,
@@ -1171,6 +1231,7 @@ function parseOtelReceipts(rawReceipts, rawTraceparents, expectedSource, query) 
     receiptsById.set(receipt.receiptId, receipt);
 
     if (receipt.observedMs < query.fromMs || receipt.observedMs >= query.toMs) continue;
+    inWindowReceiptsById.set(receipt.receiptId, receipt);
 
     stageRows.push(...projected.rows);
     outcomeCounts[receipt.outcome]++;
@@ -1178,7 +1239,12 @@ function parseOtelReceipts(rawReceipts, rawTraceparents, expectedSource, query) 
       blockedByReason[receipt.reason] = (blockedByReason[receipt.reason] ?? 0) + 1;
     }
     const stageCounterKey = receiptStageKeyMap.get(receipt.stage);
-    if (stageCounterKey !== undefined) stageEventCounts[stageCounterKey]++;
+    if (stageCounterKey !== undefined) {
+      stageEventCounts[stageCounterKey]++;
+      if (receipt.outcome === 'eligible') {
+        eligibleStageEventCounts[stageCounterKey]++;
+      }
+    }
 
     if (receipt.correlation.traceId !== null) correlatedReceiptCount++;
     else uncorrelatedReceiptCount++;
@@ -1214,6 +1280,7 @@ function parseOtelReceipts(rawReceipts, rawTraceparents, expectedSource, query) 
 
   return {
     ok: true,
+    inWindowReceiptsById,
     receiptEvidence: {
       schemaVersion: EXECUTION_RECEIPT_SCHEMA_VERSION,
       source: expectedSource,
@@ -1221,7 +1288,9 @@ function parseOtelReceipts(rawReceipts, rawTraceparents, expectedSource, query) 
       correlatedReceiptCount,
       uncorrelatedReceiptCount,
       verifiedTraceparentCount,
+      verifiedOutcomeBindingCount: 0,
       stageEventCounts,
+      eligibleStageEventCounts,
       outcomeCounts,
       blockedByReason,
       quota: {
@@ -1244,7 +1313,7 @@ function parseCiRuns(rawCiRuns, query) {
   const durations = [];
   const queueDurations = [];
   const executionDurations = [];
-  const completedPullHeads = new Set();
+  const completedPullHeadTraces = new Map();
   const counts = {cohort: 0, completed: 0, censored: 0, unknown: 0};
   const spec = AUTONOMOUS_OTEL_OBJECTIVES.standardAutomatedCiMs;
   let overdueOpenCount = 0;
@@ -1269,8 +1338,12 @@ function parseCiRuns(rawCiRuns, query) {
         !validOptTimestamp(run.completedAt, query.observedMs)) {
       return {ok: false, reason: 'INVALID_CI_RUN'};
     }
-    if (run.traceparent !== null && !parseTraceparent(run.traceparent).valid) {
-      return {ok: false, reason: 'INVALID_OTEL_TRACEPARENT'};
+    let parsedTrace = null;
+    if (run.traceparent !== null) {
+      parsedTrace = parseTraceparent(run.traceparent);
+      if (!parsedTrace.valid) {
+        return {ok: false, reason: 'INVALID_OTEL_TRACEPARENT'};
+      }
     }
 
     const prior = seen.get(run.id);
@@ -1313,7 +1386,13 @@ function parseCiRuns(rawCiRuns, query) {
       durations.push(run.completedAt - run.candidateEventAt);
       queueDurations.push(run.startedAt - run.candidateEventAt);
       executionDurations.push(run.completedAt - run.startedAt);
-      completedPullHeads.add(`${run.pullNumber}:${run.headSha}`);
+      const headKey = `${run.pullNumber}:${run.headSha}`;
+      let traceSet = completedPullHeadTraces.get(headKey);
+      if (traceSet === undefined) {
+        traceSet = new Set();
+        completedPullHeadTraces.set(headKey, traceSet);
+      }
+      if (parsedTrace !== null) traceSet.add(parsedTrace.traceId);
     }
   }
 
@@ -1322,9 +1401,154 @@ function parseCiRuns(rawCiRuns, query) {
     durations,
     queueDurations,
     executionDurations,
-    completedPullHeads,
+    completedPullHeadTraces,
     counts,
     overdueOpenCount
+  };
+}
+
+function parseOutcomeBindings(
+  rawBindings,
+  inWindowReceiptsById,
+  completedPullHeadTraces,
+  otelAcceptedInWindow,
+  pullsByNumber,
+  linkGraph
+) {
+  if (rawBindings === null) {
+    return {ok: true, allAcceptedBound: false, verifiedOutcomeBindingCount: 0};
+  }
+  if (!denseDataArray(rawBindings, 2000)) {
+    return {ok: false, reason: 'INVALID_OUTCOME_BINDING'};
+  }
+  const byIssue = new Map();
+  const seenAcceptanceReceipts = new Set();
+
+  for (const binding of rawBindings) {
+    if (!exactRecord(binding, OUTCOME_BINDING_KEYS) ||
+        !positiveInt(binding.issueNumber) ||
+        !traceHex(binding.traceId)) {
+      return {ok: false, reason: 'INVALID_OUTCOME_BINDING'};
+    }
+    if (byIssue.has(binding.issueNumber) ||
+        seenAcceptanceReceipts.has(binding.acceptanceReceiptId)) {
+      return {ok: false, reason: 'DUPLICATE_OUTCOME_BINDING'};
+    }
+    const stagePairs = [
+      ['dispatch', binding.dispatchReceiptId],
+      ['ci', binding.ciReceiptId],
+      ['verify-main', binding.verifyMainReceiptId],
+      ['acceptance', binding.acceptanceReceiptId]
+    ];
+    for (const [expectedStage, receiptId] of stagePairs) {
+      const receipt = inWindowReceiptsById.get(receiptId);
+      if (receipt === undefined ||
+          receipt.stage !== expectedStage ||
+          receipt.outcome !== 'eligible' ||
+          receipt.correlation.traceId !== binding.traceId ||
+          receipt.quota.state !== 'verified-included' ||
+          receipt.cost.state !== 'verified-zero') {
+        return {ok: false, reason: 'INVALID_OUTCOME_BINDING'};
+      }
+    }
+    seenAcceptanceReceipts.add(binding.acceptanceReceiptId);
+    byIssue.set(binding.issueNumber, binding);
+  }
+
+  let verifiedCount = 0;
+  for (const {issue} of otelAcceptedInWindow) {
+    const binding = byIssue.get(issue.number);
+    if (binding === undefined) continue;
+    const reqPulls = issue.requiredPullNumbers !== null
+      ? issue.requiredPullNumbers.map(num => pullsByNumber.get(num))
+      : linkGraph.pullsByIssue.get(issue.number);
+    const ciLineageVerified = reqPulls.every(p =>
+      p.headSha !== null &&
+      completedPullHeadTraces.get(`${p.number}:${p.headSha}`)?.has(binding.traceId) === true
+    );
+    if (ciLineageVerified) verifiedCount++;
+  }
+
+  const allAcceptedBound = otelAcceptedInWindow.length > 0 &&
+    verifiedCount === otelAcceptedInWindow.length;
+  return {
+    ok: true,
+    allAcceptedBound,
+    verifiedOutcomeBindingCount: verifiedCount
+  };
+}
+
+function parseGuardrails(rawGuardrails, correlationResult, query) {
+  if (rawGuardrails === null) {
+    return {ok: true, summary: emptyGuardrailSummary('unknown')};
+  }
+  if (isHistoricalProxyObject(rawGuardrails)) {
+    return {ok: false, reason: 'PROVENANCE_ISOLATION_VIOLATION'};
+  }
+  const floorLine = query.repositoryId === SOFTWARE_FACTORY_REPOSITORY_ID ? 98 : 95;
+  const floorBranch = query.repositoryId === SOFTWARE_FACTORY_REPOSITORY_ID ? 95 : 90;
+  if (!exactRecord(rawGuardrails, GUARDRAIL_KEYS) ||
+      !sha40(rawGuardrails.coverageHead) ||
+      !positiveInt(rawGuardrails.minLinePercent) ||
+      rawGuardrails.minLinePercent < floorLine ||
+      rawGuardrails.minLinePercent > 100 ||
+      !positiveInt(rawGuardrails.minBranchPercent) ||
+      rawGuardrails.minBranchPercent < floorBranch ||
+      rawGuardrails.minBranchPercent > 100 ||
+      !positiveInt(rawGuardrails.totalLines) ||
+      rawGuardrails.totalLines > MAX_SOURCE_ELEMENTS ||
+      !nonnegInt(rawGuardrails.coveredLines) ||
+      rawGuardrails.coveredLines > rawGuardrails.totalLines ||
+      !positiveInt(rawGuardrails.totalBranches) ||
+      rawGuardrails.totalBranches > MAX_SOURCE_ELEMENTS ||
+      !nonnegInt(rawGuardrails.coveredBranches) ||
+      rawGuardrails.coveredBranches > rawGuardrails.totalBranches ||
+      typeof rawGuardrails.independentReviewVerified !== 'boolean' ||
+      !boundedCount(rawGuardrails.reworkRounds, 1000000) ||
+      !boundedCount(rawGuardrails.reopenedCount, 1000000) ||
+      !boundedCount(rawGuardrails.failedMainCount, 1000000) ||
+      !boundedCount(rawGuardrails.unauthorizedWriteCount, 1000000) ||
+      !boundedCount(rawGuardrails.duplicateDispatchCount, 1000000) ||
+      !boundedCount(rawGuardrails.budgetViolationCount, 1000000)) {
+    return {ok: false, reason: 'INVALID_GUARDRAIL_EVIDENCE'};
+  }
+  const actualReopened = correlationResult.acceptedInWindowIssues.reduce(
+    (sum, {issue}) => sum + issue.reopenedCount,
+    0
+  );
+  if (rawGuardrails.reopenedCount !== actualReopened) {
+    return {ok: false, reason: 'INVALID_GUARDRAIL_EVIDENCE'};
+  }
+  const linePass = rawGuardrails.coveredLines * 100 >=
+    rawGuardrails.minLinePercent * rawGuardrails.totalLines;
+  const branchPass = rawGuardrails.coveredBranches * 100 >=
+    rawGuardrails.minBranchPercent * rawGuardrails.totalBranches;
+  const safetyPass = rawGuardrails.failedMainCount === 0 &&
+    rawGuardrails.unauthorizedWriteCount === 0 &&
+    rawGuardrails.duplicateDispatchCount === 0 &&
+    rawGuardrails.budgetViolationCount === 0;
+  const passed = linePass && branchPass && rawGuardrails.independentReviewVerified && safetyPass;
+  return {
+    ok: true,
+    summary: {
+      status: passed ? 'passed' : 'failed',
+      coverageHead: rawGuardrails.coverageHead,
+      minLinePercent: rawGuardrails.minLinePercent,
+      minBranchPercent: rawGuardrails.minBranchPercent,
+      coveredLines: rawGuardrails.coveredLines,
+      totalLines: rawGuardrails.totalLines,
+      coveredBranches: rawGuardrails.coveredBranches,
+      totalBranches: rawGuardrails.totalBranches,
+      independentReviewVerified: rawGuardrails.independentReviewVerified,
+      reworkRounds: rawGuardrails.reworkRounds,
+      reopenedCount: rawGuardrails.reopenedCount,
+      safetyViolations: {
+        failedMainCount: rawGuardrails.failedMainCount,
+        unauthorizedWriteCount: rawGuardrails.unauthorizedWriteCount,
+        duplicateDispatchCount: rawGuardrails.duplicateDispatchCount,
+        budgetViolationCount: rawGuardrails.budgetViolationCount
+      }
+    }
   };
 }
 
@@ -1577,6 +1801,23 @@ function buildAutonomousOtelSection(rawOtel, issues, pulls, linkGraph, correlati
   }
 
   const pullsByNumber = new Map(pulls.map(p => [p.number, p]));
+  const rawOutcomeBindings = ownOption(rawOtel, 'outcomeBindings', null);
+  const outcomeBindingResult = parseOutcomeBindings(
+    rawOutcomeBindings,
+    receiptResult.inWindowReceiptsById,
+    ciResult.completedPullHeadTraces,
+    otelAcceptedInWindow,
+    pullsByNumber,
+    linkGraph
+  );
+  if (!outcomeBindingResult.ok) return outcomeBindingResult;
+  receiptResult.receiptEvidence.verifiedOutcomeBindingCount =
+    outcomeBindingResult.verifiedOutcomeBindingCount;
+
+  const rawGuardrails = ownOption(rawOtel, 'guardrails', null);
+  const guardrailResult = parseGuardrails(rawGuardrails, correlationResult, query);
+  if (!guardrailResult.ok) return guardrailResult;
+
   const interventionsResult = parseInterventions(
     rawOtel.interventions,
     correlationResult.acceptedInWindowIssues,
@@ -1630,18 +1871,12 @@ function buildAutonomousOtelSection(rawOtel, issues, pulls, linkGraph, correlati
     ciResult.counts.unknown === 0;
   const otelStatus = rawOtel.complete && zeroUnknownTimings ? 'measured' : 'partial';
 
-  const allRequiredPullsCiVerified = otelAcceptedInWindow.every(({issue}) => {
-    const reqPulls = issue.requiredPullNumbers !== null
-      ? issue.requiredPullNumbers.map(num => pullsByNumber.get(num))
-      : linkGraph.pullsByIssue.get(issue.number);
-    return reqPulls.every(p => ciResult.completedPullHeads.has(`${p.number}:${p.mergeSha}`));
-  });
   const ev = receiptResult.receiptEvidence;
   const affirmativeReceipts = ev.inWindowReceiptCount >= otelAcceptedInWindow.length &&
-    ev.stageEventCounts.dispatch > 0 &&
-    ev.stageEventCounts.ci > 0 &&
-    ev.stageEventCounts.verifyMain > 0 &&
-    ev.stageEventCounts.acceptance >= otelAcceptedInWindow.length &&
+    ev.eligibleStageEventCounts.dispatch > 0 &&
+    ev.eligibleStageEventCounts.ci > 0 &&
+    ev.eligibleStageEventCounts.verifyMain > 0 &&
+    ev.eligibleStageEventCounts.acceptance >= otelAcceptedInWindow.length &&
     ev.uncorrelatedReceiptCount === 0 &&
     ev.outcomeCounts.failed === 0 &&
     ev.outcomeCounts.unknown === 0 &&
@@ -1655,9 +1890,10 @@ function buildAutonomousOtelSection(rawOtel, issues, pulls, linkGraph, correlati
     correlationResult.throughput.complete &&
     pureOtelPopulation &&
     otelAcceptedInWindow.length >= MIN_COMPARABLE_ACCEPTED_UNITS &&
-    allRequiredPullsCiVerified &&
+    outcomeBindingResult.allAcceptedBound &&
     affirmativeReceipts &&
-    interventionsResult.summary.zeroRoutineVerified;
+    interventionsResult.summary.zeroRoutineVerified &&
+    guardrailResult.summary.status === 'passed';
 
   return {
     ok: true,
@@ -1671,6 +1907,7 @@ function buildAutonomousOtelSection(rawOtel, issues, pulls, linkGraph, correlati
       issueReadyToOutcomeMs,
       standardAutomatedCiMs,
       routineHumanInterventions: interventionsResult.summary,
+      guardrails: guardrailResult.summary,
       receiptEvidence: receiptResult.receiptEvidence
     }
   };
@@ -1699,6 +1936,7 @@ const SNAPSHOT_OTEL_KEYS = [
   'issueReadyToOutcomeMs',
   'standardAutomatedCiMs',
   'routineHumanInterventions',
+  'guardrails',
   'receiptEvidence'
 ];
 const SNAPSHOT_INTERVENTION_KEYS = [
@@ -1715,6 +1953,44 @@ const SNAPSHOT_INTERVENTION_KEYS = [
   'zeroRoutineVerified',
   'sloMet'
 ];
+const SNAPSHOT_GUARDRAIL_KEYS = [
+  'status',
+  'coverageHead',
+  'minLinePercent',
+  'minBranchPercent',
+  'coveredLines',
+  'totalLines',
+  'coveredBranches',
+  'totalBranches',
+  'independentReviewVerified',
+  'reworkRounds',
+  'reopenedCount',
+  'safetyViolations'
+];
+
+function validPassedGuardrailSnapshot(guard, repositoryId) {
+  const floorLine = repositoryId === SOFTWARE_FACTORY_REPOSITORY_ID ? 98 : 95;
+  const floorBranch = repositoryId === SOFTWARE_FACTORY_REPOSITORY_ID ? 95 : 90;
+  return positiveInt(guard.minLinePercent) &&
+    guard.minLinePercent >= floorLine &&
+    guard.minLinePercent <= 100 &&
+    positiveInt(guard.minBranchPercent) &&
+    guard.minBranchPercent >= floorBranch &&
+    guard.minBranchPercent <= 100 &&
+    positiveInt(guard.totalLines) &&
+    guard.totalLines <= MAX_SOURCE_ELEMENTS &&
+    nonnegInt(guard.coveredLines) &&
+    guard.coveredLines <= guard.totalLines &&
+    guard.coveredLines * 100 >= guard.minLinePercent * guard.totalLines &&
+    positiveInt(guard.totalBranches) &&
+    guard.totalBranches <= MAX_SOURCE_ELEMENTS &&
+    nonnegInt(guard.coveredBranches) &&
+    guard.coveredBranches <= guard.totalBranches &&
+    guard.coveredBranches * 100 >= guard.minBranchPercent * guard.totalBranches &&
+    guard.independentReviewVerified === true &&
+    boundedCount(guard.reworkRounds, 1000000) &&
+    boundedCount(guard.reopenedCount, 1000000);
+}
 
 function validBaselineSnapshot(baseline) {
   if (!exactRecord(baseline, REPORT_SNAPSHOT_KEYS) ||
@@ -1736,7 +2012,18 @@ function validBaselineSnapshot(baseline) {
        !otelProvenanceSet.has(baseline.autonomousOtel.provenance)) ||
       typeof baseline.autonomousOtel.autonomousClaimEligible !== 'boolean' ||
       !exactRecord(baseline.autonomousOtel.routineHumanInterventions, SNAPSHOT_INTERVENTION_KEYS) ||
-      typeof baseline.autonomousOtel.routineHumanInterventions.zeroRoutineVerified !== 'boolean') {
+      typeof baseline.autonomousOtel.routineHumanInterventions.zeroRoutineVerified !== 'boolean' ||
+      !exactRecord(baseline.autonomousOtel.guardrails, SNAPSHOT_GUARDRAIL_KEYS) ||
+      !['not-provided', 'unknown', 'passed', 'failed'].includes(baseline.autonomousOtel.guardrails.status)) {
+    return false;
+  }
+  const inter = baseline.autonomousOtel.routineHumanInterventions;
+  if (inter.zeroRoutineVerified &&
+      (inter.totalRoutineCount !== 0 || !boundedCount(inter.totalGovernanceCount, 2000000))) {
+    return false;
+  }
+  if (baseline.autonomousOtel.guardrails.status === 'passed' &&
+      !validPassedGuardrailSnapshot(baseline.autonomousOtel.guardrails, baseline.repositoryId)) {
     return false;
   }
   const expectedElapsedDays = (baseline.window.toMs - baseline.window.fromMs) / DAY_MS;
@@ -1809,6 +2096,37 @@ function evaluateBaselineComparison(baseline, currentReport) {
       !baseline.autonomousOtel.routineHumanInterventions.zeroRoutineVerified ||
       !currentReport.autonomousOtel.routineHumanInterventions.zeroRoutineVerified) {
     return {ok: true, comparison: unavailable('INSUFFICIENT_COMPARABLE_EVIDENCE')};
+  }
+
+  const baseGuard = baseline.autonomousOtel.guardrails;
+  const currGuard = currentReport.autonomousOtel.guardrails;
+  const countOrRateIncreased = (currVal, baseVal) =>
+    currVal > baseVal ||
+    BigInt(currVal) * BigInt(baseOtelOutcomes) > BigInt(baseVal) * BigInt(currOtelOutcomes);
+
+  const baseInterTotal = baseline.autonomousOtel.routineHumanInterventions.totalRoutineCount +
+    baseline.autonomousOtel.routineHumanInterventions.totalGovernanceCount;
+  const currInterTotal = currentReport.autonomousOtel.routineHumanInterventions.totalRoutineCount +
+    currentReport.autonomousOtel.routineHumanInterventions.totalGovernanceCount;
+
+  const coverageRegressed = () =>
+    BigInt(currGuard.coveredLines) * BigInt(baseGuard.totalLines) <
+      BigInt(baseGuard.coveredLines) * BigInt(currGuard.totalLines) ||
+    BigInt(currGuard.coveredBranches) * BigInt(baseGuard.totalBranches) <
+      BigInt(baseGuard.coveredBranches) * BigInt(currGuard.totalBranches);
+
+  if (baseGuard.status !== 'passed' ||
+      currGuard.status !== 'passed' ||
+      baseGuard.minLinePercent !== currGuard.minLinePercent ||
+      baseGuard.minBranchPercent !== currGuard.minBranchPercent ||
+      coverageRegressed() ||
+      countOrRateIncreased(
+        currGuard.reworkRounds + currGuard.reopenedCount,
+        baseGuard.reworkRounds + baseGuard.reopenedCount
+      ) ||
+      countOrRateIncreased(currGuard.reopenedCount, baseGuard.reopenedCount) ||
+      countOrRateIncreased(currInterTotal, baseInterTotal)) {
+    return {ok: true, comparison: unavailable('GUARDRAIL_UNVERIFIED_OR_REGRESSED')};
   }
 
   const multiplier = currOtelOutcomes / baseOtelOutcomes;

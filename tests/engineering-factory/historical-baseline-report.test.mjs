@@ -77,8 +77,9 @@ function makePull(number, patch = {}) {
     createdAt: 1_200_000 + number * 100,
     mergedAt: 1_450_000 + number * 100,
     closedAt: 1_450_000 + number * 100,
-    mergeSha: SHA_A,
-    mainVerifiedSha: SHA_A,
+    headSha: SHA_A,
+    mergeSha: SHA_B,
+    mainVerifiedSha: SHA_B,
     mainVerified: true,
     mainVerifiedAt: 1_500_000 + number * 100,
     otelVerified: true,
@@ -120,6 +121,26 @@ function makeIntervention(issueNumber, patch = {}) {
     verified: true,
     routineCount: 0,
     governanceCount: 0,
+    ...patch
+  };
+}
+
+function makeGuardrails(patch = {}) {
+  return {
+    coverageHead: SHA_B,
+    minLinePercent: 98,
+    minBranchPercent: 95,
+    coveredLines: 990,
+    totalLines: 1000,
+    coveredBranches: 490,
+    totalBranches: 500,
+    independentReviewVerified: true,
+    reworkRounds: 1,
+    reopenedCount: 0,
+    failedMainCount: 0,
+    unauthorizedWriteCount: 0,
+    duplicateDispatchCount: 0,
+    budgetViolationCount: 0,
     ...patch
   };
 }
@@ -261,12 +282,16 @@ test('T01 & T04: strictly separates historical proxies from all 5 verified auton
       createdAt: prCreatedAt,
       mergedAt,
       closedAt: mergedAt,
+      headSha: SHA_A, // pre-squash candidate head
+      mergeSha: SHA_B, // resulting squash commit on main
+      mainVerifiedSha: SHA_B,
       mainVerifiedAt
     }));
     links.push(makeLink(i, 100 + i, {
       evidenceKind: ALLOWED_EXPLICIT_LINK_KINDS[i % ALLOWED_EXPLICIT_LINK_KINDS.length]
     }));
     ciRuns.push(makeCiRun(`ci-${i}`, 100 + i, {
+      headSha: SHA_A,
       candidateEventAt: prCreatedAt + 1_000,
       startedAt: prCreatedAt + 3_000, // 2s runner queue wait
       completedAt: prCreatedAt + 29_000 // 28s total (<75s initial, <=30s stretch), 26s execution
@@ -277,6 +302,15 @@ test('T01 & T04: strictly separates historical proxies from all 5 verified auton
       governanceCount: i === 1 ? 1 : 0
     }));
   }
+
+  const outcomeBindings = Array.from({length: 5}, (_, idx) => ({
+    issueNumber: idx + 1,
+    traceId: TRACE_1,
+    dispatchReceiptId: 'gh-1-dispatch',
+    ciReceiptId: 'gh-1-ci',
+    verifyMainReceiptId: 'gh-1-main',
+    acceptanceReceiptId: `gh-${idx + 1}-accept`
+  }));
 
   const receipts = [
     makeHostedReceipt('gh-1-reconcile', 'reconcile'),
@@ -290,9 +324,9 @@ test('T01 & T04: strictly separates historical proxies from all 5 verified auton
       outcome: 'blocked',
       reason: 'LEASE'
     }),
-    makeHostedReceipt('gh-1-blocked-lease-2', 'evaluate', {
+    makeHostedReceipt('gh-1-blocked-accept', 'acceptance', {
       outcome: 'blocked',
-      reason: 'LEASE'
+      reason: 'REVIEW'
     }),
     makeHostedReceipt('gh-prior-window', 'dispatch', {observedMs: 500_000})
   ];
@@ -309,7 +343,9 @@ test('T01 & T04: strictly separates historical proxies from all 5 verified auton
       receipts,
       ciRuns,
       interventions,
-      traceparents: [{receiptId: 'gh-1-dispatch', traceparent: TRACEPARENT_1}]
+      traceparents: [{receiptId: 'gh-1-dispatch', traceparent: TRACEPARENT_1}],
+      outcomeBindings,
+      guardrails: makeGuardrails()
     }
   });
 
@@ -317,6 +353,7 @@ test('T01 & T04: strictly separates historical proxies from all 5 verified auton
   assert.equal(report.reason, 'MEASURED_REPORT');
   assert.equal(report.autonomousOtel.status, 'measured');
   assert.equal(report.autonomousOtel.autonomousClaimEligible, true);
+  assert.equal(report.autonomousOtel.guardrails.status, 'passed');
 
   // Historical proxy reflects 2h+ backlog wait, strictly quarantined from autonomous 90s ready->firstPr
   assert.equal(report.historicalProxies.issueCreatedToFirstPrMs.p50Ms, 7_290_000);
@@ -351,7 +388,17 @@ test('T01 & T04: strictly separates historical proxies from all 5 verified auton
   assert.equal(ev.correlatedReceiptCount, 13);
   assert.equal(ev.uncorrelatedReceiptCount, 0);
   assert.equal(ev.verifiedTraceparentCount, 1);
+  assert.equal(ev.verifiedOutcomeBindingCount, 5);
   assert.deepEqual(ev.stageEventCounts, {
+    reconcile: 1,
+    dispatch: 1,
+    ci: 1,
+    review: 1,
+    mergeShadow: 1,
+    verifyMain: 1,
+    acceptance: 6
+  });
+  assert.deepEqual(ev.eligibleStageEventCounts, {
     reconcile: 1,
     dispatch: 1,
     ci: 1,
@@ -360,29 +407,36 @@ test('T01 & T04: strictly separates historical proxies from all 5 verified auton
     verifyMain: 1,
     acceptance: 5
   });
-  assert.deepEqual(ev.blockedByReason, {LEASE: 2});
-  assert.equal(ev.stageRows.length, 11);
+  assert.deepEqual(ev.blockedByReason, {LEASE: 1, REVIEW: 1});
+  assert.equal(ev.stageRows.length, 12);
 
-  // Missing receipts, missing CI runs, uncorrelated receipts, unknown quota, or unknown cost block autonomous claims
+  // Missing bindings, CI run against squash SHA instead of headSha, missing guardrails, blocked-only stages,
+  // uncorrelated receipts, unknown quota, or unknown cost all keep autonomousClaimEligible false
   for (const otelOverride of [
-    {receipts: []},
+    {outcomeBindings: null},
+    {outcomeBindings: outcomeBindings.slice(0, 4)},
+    {guardrails: null},
+    {guardrails: makeGuardrails({independentReviewVerified: false})},
+    {guardrails: makeGuardrails({coveredLines: 970})},
+    {guardrails: makeGuardrails({failedMainCount: 1})},
     {ciRuns: []},
-    {ciRuns: ciRuns.slice(0, 4)},
+    {ciRuns: ciRuns.map(r => ({...r, headSha: SHA_B}))}, // CI against mergeSha instead of candidate headSha
+    {ciRuns: ciRuns.map(r => ({...r, traceparent: null}))}, // CI lacking trace lineage
     {
       receipts: [
-        ...receipts.slice(0, 11),
+        ...receipts,
         makeHostedReceipt('gh-uncorrelated', 'dispatch', {correlation: {traceId: null, spanId: null}})
       ]
     },
     {
       receipts: [
-        ...receipts.slice(0, 11),
+        ...receipts,
         makeHostedReceipt('gh-unknown-quota', 'dispatch', {quota: {verified: false}})
       ]
     },
     {
       receipts: [
-        ...receipts.slice(0, 11),
+        ...receipts,
         makeHostedReceipt('gh-unknown-cost', 'dispatch', {cost: {verified: false}})
       ]
     }
@@ -399,11 +453,50 @@ test('T01 & T04: strictly separates historical proxies from all 5 verified auton
         receipts,
         ciRuns,
         interventions,
+        outcomeBindings,
+        guardrails: makeGuardrails(),
         ...otelOverride
       }
     });
     assert.equal(blockedClaim.valid, true);
     assert.equal(blockedClaim.autonomousOtel.autonomousClaimEligible, false);
+  }
+
+  // Blocked receipts or reused acceptance receipts in outcomeBindings fail closed
+  for (const [badBindings, expectedReason] of [
+    ['not-array', 'INVALID_OUTCOME_BINDING'],
+    [[{bad: 1}], 'INVALID_OUTCOME_BINDING'],
+    [
+      [
+        outcomeBindings[0],
+        {...outcomeBindings[1], acceptanceReceiptId: 'gh-1-accept'} // reused acceptance receipt!
+      ],
+      'DUPLICATE_OUTCOME_BINDING'
+    ],
+    [
+      [
+        {...outcomeBindings[0], acceptanceReceiptId: 'gh-1-blocked-accept'} // blocked stage receipt!
+      ],
+      'INVALID_OUTCOME_BINDING'
+    ]
+  ]) {
+    const badRes = buildHistoricalAndOtelEvidenceReport({
+      query: baseQuery(),
+      authorizedRepositories: baseAuth(),
+      issues,
+      pulls,
+      links,
+      otel: {
+        provenance: 'verified-autonomous-otel',
+        complete: true,
+        receipts,
+        ciRuns,
+        interventions,
+        outcomeBindings: badBindings
+      }
+    });
+    assert.equal(badRes.valid, false);
+    assert.equal(badRes.reason, expectedReason);
   }
 
   // Queue wait before first job start is included in standardAutomatedCiMs and cannot disguise a 10m queue delay
@@ -910,12 +1003,20 @@ test('T03: repeatable baseline comparison evaluates 2x-25x checkpoints and block
   assert.equal(AUTONOMOUS_OTEL_OBJECTIVES.issueReadyToOutcomeMs.initialMs, 1_500_000);
   assert.equal(AUTONOMOUS_OTEL_OBJECTIVES.standardAutomatedCiMs.initialMs, 75_000);
 
-  function buildWindowCohort(fromMs, toMs, count, provenance = 'verified-autonomous-otel', cohort = 'small-comparable') {
+  function buildWindowCohort(
+    fromMs,
+    toMs,
+    count,
+    provenance = 'verified-autonomous-otel',
+    cohort = 'small-comparable',
+    guardrailPatch = {}
+  ) {
     const issues = [];
     const pulls = [];
     const links = [];
     const ciRuns = [];
     const interventions = [];
+    const outcomeBindings = [];
     const receiptSource = provenance === 'verified-autonomous-otel' ? 'github-hosted' : 'synthetic';
     const makeWindowReceipt = (id, stage) => createExecutionReceipt({
       source: receiptSource,
@@ -931,10 +1032,13 @@ test('T03: repeatable baseline comparison evaluates 2x-25x checkpoints and block
       humanTouches: {verified: true, count: 0},
       correlation: {traceId: TRACE_1, spanId: SPAN_1}
     });
+    const dispatchId = `r-${fromMs}-dispatch`;
+    const ciId = `r-${fromMs}-ci`;
+    const mainId = `r-${fromMs}-main`;
     const receipts = [
-      makeWindowReceipt(`r-${fromMs}-dispatch`, 'dispatch'),
-      makeWindowReceipt(`r-${fromMs}-ci`, 'ci'),
-      makeWindowReceipt(`r-${fromMs}-main`, 'verify-main')
+      makeWindowReceipt(dispatchId, 'dispatch'),
+      makeWindowReceipt(ciId, 'ci'),
+      makeWindowReceipt(mainId, 'verify-main')
     ];
     for (let i = 1; i <= count; i++) {
       const createdAt = fromMs + i * 1000;
@@ -943,6 +1047,7 @@ test('T03: repeatable baseline comparison evaluates 2x-25x checkpoints and block
       const mergedAt = prCreatedAt + 120_000;
       const mainVerifiedAt = mergedAt + 30_000;
       const acceptedAt = mainVerifiedAt + 30_000;
+      const acceptId = `r-${fromMs}-accept-${i}`;
       issues.push(makeIssue(i, {
         cohort,
         createdAt,
@@ -956,16 +1061,28 @@ test('T03: repeatable baseline comparison evaluates 2x-25x checkpoints and block
         createdAt: prCreatedAt,
         mergedAt,
         closedAt: mergedAt,
+        headSha: SHA_A,
+        mergeSha: SHA_B,
+        mainVerifiedSha: SHA_B,
         mainVerifiedAt
       }));
       links.push(makeLink(i, 1000 + i));
       ciRuns.push(makeCiRun(`ci-${fromMs}-${i}`, 1000 + i, {
         cohort,
+        headSha: SHA_A,
         candidateEventAt: prCreatedAt + 1_000,
         startedAt: prCreatedAt + 2_000,
         completedAt: prCreatedAt + 25_000
       }));
-      receipts.push(makeWindowReceipt(`r-${fromMs}-accept-${i}`, 'acceptance'));
+      receipts.push(makeWindowReceipt(acceptId, 'acceptance'));
+      outcomeBindings.push({
+        issueNumber: i,
+        traceId: TRACE_1,
+        dispatchReceiptId: dispatchId,
+        ciReceiptId: ciId,
+        verifyMainReceiptId: mainId,
+        acceptanceReceiptId: acceptId
+      });
       interventions.push(makeIntervention(i, {cohort}));
     }
     return {
@@ -985,7 +1102,9 @@ test('T03: repeatable baseline comparison evaluates 2x-25x checkpoints and block
         complete: true,
         receipts,
         ciRuns,
-        interventions
+        interventions,
+        outcomeBindings,
+        guardrails: makeGuardrails({reworkRounds: 0, ...guardrailPatch})
       }
     };
   }
@@ -1005,6 +1124,58 @@ test('T03: repeatable baseline comparison evaluates 2x-25x checkpoints and block
   assert.deepEqual(compared.baselineComparison.reachedCheckpoints, [2, 5]);
   assert.equal(compared.baselineComparison.highestCheckpointReached, 5);
   assert.equal(compared.baselineComparison.autonomousSpeedClaimEligible, true);
+
+  // Missing guardrails, regressed coverage, or increased rework block baseline comparison
+  const noGuardrailCurr = buildWindowCohort(87_400_000, 173_800_000, 10);
+  noGuardrailCurr.otel.guardrails = null;
+  assert.equal(
+    buildHistoricalAndOtelEvidenceReport({...noGuardrailCurr, baseline: baselineReport}).baselineComparison.reason,
+    'GUARDRAIL_UNVERIFIED_OR_REGRESSED'
+  );
+  assert.equal(
+    buildHistoricalAndOtelEvidenceReport({
+      ...buildWindowCohort(87_400_000, 173_800_000, 10, 'verified-autonomous-otel', 'small-comparable', {
+        coveredLines: 985 // regressed from 990/1000
+      }),
+      baseline: baselineReport
+    }).baselineComparison.reason,
+    'GUARDRAIL_UNVERIFIED_OR_REGRESSED'
+  );
+  assert.equal(
+    buildHistoricalAndOtelEvidenceReport({
+      ...buildWindowCohort(87_400_000, 173_800_000, 10, 'verified-autonomous-otel', 'small-comparable', {
+        coveredBranches: 485 // regressed from 490/500
+      }),
+      baseline: baselineReport
+    }).baselineComparison.reason,
+    'GUARDRAIL_UNVERIFIED_OR_REGRESSED'
+  );
+  assert.equal(
+    buildHistoricalAndOtelEvidenceReport({
+      ...buildWindowCohort(87_400_000, 173_800_000, 10, 'verified-autonomous-otel', 'small-comparable', {
+        reworkRounds: 1 // increased from 0
+      }),
+      baseline: baselineReport
+    }).baselineComparison.reason,
+    'GUARDRAIL_UNVERIFIED_OR_REGRESSED'
+  );
+
+  // Invalid guardrail inputs fail closed
+  for (const [badGuardrail, expectedReason] of [
+    [{provenance: 'historical-github-proxy'}, 'PROVENANCE_ISOLATION_VIOLATION'],
+    [{bad: 1}, 'INVALID_GUARDRAIL_EVIDENCE'],
+    [makeGuardrails({minLinePercent: 97}), 'INVALID_GUARDRAIL_EVIDENCE'], // below SoftwareFactory 98% floor
+    [makeGuardrails({minBranchPercent: 94}), 'INVALID_GUARDRAIL_EVIDENCE'], // below SoftwareFactory 95% floor
+    [makeGuardrails({reopenedCount: 3}), 'INVALID_GUARDRAIL_EVIDENCE'] // mismatches actual reopened issues
+  ]) {
+    assert.equal(
+      buildHistoricalAndOtelEvidenceReport({
+        ...currentInput,
+        otel: {...currentInput.otel, guardrails: badGuardrail}
+      }).reason,
+      expectedReason
+    );
+  }
 
   // Mixed OTel + non-OTel accepted population cannot manufacture a 5x autonomous speedup or claim eligibility
   const mixedInput = buildWindowCohort(87_400_000, 173_800_000, 25);
@@ -1046,6 +1217,26 @@ test('T03: repeatable baseline comparison evaluates 2x-25x checkpoints and block
         ...baselineReport.throughput,
         complete: false,
         acceptedOutcomesPerDay: 5
+      }
+    },
+    {
+      ...baselineReport,
+      autonomousOtel: {
+        ...baselineReport.autonomousOtel,
+        routineHumanInterventions: {
+          ...baselineReport.autonomousOtel.routineHumanInterventions,
+          totalRoutineCount: 2
+        }
+      }
+    },
+    {
+      ...baselineReport,
+      autonomousOtel: {
+        ...baselineReport.autonomousOtel,
+        guardrails: {
+          ...baselineReport.autonomousOtel.guardrails,
+          coveredLines: 10 // claims status: 'passed' while below 98% floor
+        }
       }
     }
   ]) {
