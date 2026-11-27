@@ -23,6 +23,7 @@ function buildZip(entries,{comment=''}={}){
   let offset=0;
   for(const entry of entries){
     const nameBuf=Buffer.isBuffer(entry.name)?entry.name:Buffer.from(entry.name,'utf8');
+    const localNameBuf=entry.localName===undefined?nameBuf:(Buffer.isBuffer(entry.localName)?entry.localName:Buffer.from(entry.localName,'utf8'));
     const raw=Buffer.isBuffer(entry.data)?entry.data:Buffer.from(entry.data,'utf8');
     const method=entry.method??8;
     const flags=entry.flags??(entry.streaming?0x0008:0);
@@ -34,12 +35,12 @@ function buildZip(entries,{comment=''}={}){
     const local=Buffer.alloc(30);
     local.writeUInt32LE(0x04034b50,0);
     local.writeUInt16LE(20,4);
-    local.writeUInt16LE(flags,6);
+    local.writeUInt16LE(entry.localFlags??flags,6);
     local.writeUInt16LE(entry.localMethod??method,8);
     local.writeUInt32LE(entry.streaming?0:actualCrc,14);
     local.writeUInt32LE(entry.streaming?0:compSize,18);
     local.writeUInt32LE(entry.streaming?0:uncompSize,22);
-    local.writeUInt16LE(nameBuf.length,26);
+    local.writeUInt16LE(localNameBuf.length,26);
     local.writeUInt16LE(0,28);
 
     const descriptor=entry.streaming?Buffer.alloc(16):Buffer.alloc(0);
@@ -64,9 +65,9 @@ function buildZip(entries,{comment=''}={}){
     cen.writeUInt16LE(0,32);
     cen.writeUInt32LE(entry.localOffset??offset,42);
 
-    localParts.push(local,nameBuf,payload,descriptor);
+    localParts.push(local,localNameBuf,payload,descriptor);
     centralParts.push(cen,nameBuf);
-    offset+=local.length+nameBuf.length+payload.length+descriptor.length;
+    offset+=local.length+localNameBuf.length+payload.length+descriptor.length;
   }
   const cdBuf=Buffer.concat(centralParts);
   const commentBuf=Buffer.from(comment,'utf8');
@@ -215,6 +216,10 @@ test('readDashboardZipJsonEntries rejects corrupt, encrypted, path-traversal, un
   assert.throws(()=>readDashboardZipJsonEntries(buildZip([{name:'traces/a.json',data:'{}',uncompSize:4_000_001}])),/oversize/);
   assert.throws(()=>readDashboardZipJsonEntries(buildZip([{name:'traces/a.json',data:'{}',localOffset:999999}])),/corrupt local header/);
   assert.throws(()=>readDashboardZipJsonEntries(buildZip([{name:'traces/a.json',data:'{}',method:8,localMethod:0}])),/corrupt entry payload/);
+  assert.throws(()=>readDashboardZipJsonEntries(buildZip([{name:'traces/a.json',data:'{}',flags:0,localFlags:0x0008}])),/corrupt entry payload/);
+  assert.throws(()=>readDashboardZipJsonEntries(buildZip([{name:'traces/a.json',localName:'../evil.json',data:'{}'}])),/corrupt entry payload/);
+  assert.throws(()=>readDashboardZipJsonEntries(buildZip([{name:'traces/a.json',localName:'../bad/a.json',data:'{}'}])),/corrupt entry payload/);
+  assert.throws(()=>readDashboardZipJsonEntries(buildZip([{name:'consolelogs/a.txt',localName:'../evil.txt',data:'ok'}])),/corrupt entry payload/);
   assert.throws(()=>readDashboardZipJsonEntries(buildZip([{name:'traces/a.json',data:'{}',method:99,compressed:Buffer.from('x')}])),/unsupported compression/);
   assert.throws(()=>readDashboardZipJsonEntries(buildZip([{name:'traces/a.json',data:'{}',method:0,crc:12345}])),/entry integrity mismatch/);
   assert.throws(()=>readDashboardZipJsonEntries(buildZip([{name:'traces/a.json',data:'{}',method:0,uncompSize:99}])),/entry integrity mismatch/);

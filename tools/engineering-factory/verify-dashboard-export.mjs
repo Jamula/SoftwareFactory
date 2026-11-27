@@ -58,23 +58,27 @@ export function readDashboardZipJsonEntries(buffer){
        localOffset===0xffffffff||seenOffsets.has(localOffset))
       throw Error('unsupported zip entry');
     seenOffsets.add(localOffset);
-    const name=decoder.decode(buffer.subarray(pos+46,pos+46+nameLen));
+    const nameBytes=buffer.subarray(pos+46,pos+46+nameLen);
+    const name=decoder.decode(nameBytes);
     pos=nextPos;
     const parts=name.split('/');
     if(name.startsWith('/')||name.includes('\\')||name.includes('\0')||parts.includes('..'))
       throw Error('unsafe archive path');
-    if(parts.length<2||!name.endsWith('.json')||(parts[0]!=='traces'&&parts[0]!=='structuredlogs'))
-      continue;
-    if(uncompSize>MAX_ENTRY_BYTES||compSize>MAX_ARCHIVE_BYTES||uncompSize>MAX_TOTAL_UNCOMPRESSED_BYTES-totalUncompressed)
-      throw Error('oversize');
-    totalUncompressed+=uncompSize;
     if(localOffset+30>cdOffset||buffer.readUInt32LE(localOffset)!==LOC_SIG)throw Error('corrupt local header');
+    const localFlags=buffer.readUInt16LE(localOffset+6);
     const localMethod=buffer.readUInt16LE(localOffset+8);
     const localNameLen=buffer.readUInt16LE(localOffset+26);
     const localExtraLen=buffer.readUInt16LE(localOffset+28);
     const dataStart=localOffset+30+localNameLen+localExtraLen;
     const dataEnd=dataStart+compSize;
-    if(localMethod!==method||dataEnd>cdOffset)throw Error('corrupt entry payload');
+    if(localFlags!==flags||localMethod!==method||dataEnd>cdOffset||
+       !buffer.subarray(localOffset+30,localOffset+30+localNameLen).equals(nameBytes))
+      throw Error('corrupt entry payload');
+    if(parts.length<2||!name.endsWith('.json')||(parts[0]!=='traces'&&parts[0]!=='structuredlogs'))
+      continue;
+    if(uncompSize>MAX_ENTRY_BYTES||compSize>MAX_ARCHIVE_BYTES||uncompSize>MAX_TOTAL_UNCOMPRESSED_BYTES-totalUncompressed)
+      throw Error('oversize');
+    totalUncompressed+=uncompSize;
     const raw=buffer.subarray(dataStart,dataEnd);
     let content;
     if(method===0)content=raw;
