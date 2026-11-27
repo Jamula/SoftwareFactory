@@ -1088,6 +1088,49 @@ test('verifies compiler-shaped multi-job lock (activation -> agent -> detection 
   const fmHash = computeFrontmatterSha256(md);
   const bHash = computeBodySha256(md);
 
+  const githubScriptSha = '3a2844b7e9c422d3c10d287c895573f7108da1b3';
+  const defaultDetectionSteps = [
+    '      - name: Check if detection needed',
+    '        id: detection_guard',
+    '        if: always()',
+    '        run: echo "run_detection=true" >> "$GITHUB_OUTPUT"',
+    '      - name: Execute threat detection with AWF',
+    '        id: detection_agentic_execution',
+    '        run: threat-detect --engine copilot',
+    '      - name: Redact secrets in detection logs',
+    '        id: redact_detection_logs',
+    "        if: always() && steps.detection_guard.outputs.run_detection == 'true'",
+    `        uses: actions/github-script@${githubScriptSha}`,
+    '        with:',
+    "          script: const { main } = require('/tmp/gh-aw/actions/redact_secrets.cjs'); await main();",
+    '      - name: Redact secrets in detection artifacts',
+    '        id: redact_detection_artifacts',
+    "        if: always() && steps.detection_guard.outputs.run_detection == 'true'",
+    `        uses: actions/github-script@${githubScriptSha}`,
+    '        with:',
+    "          script: const { main } = require('/tmp/gh-aw/actions/redact_secrets.cjs'); await main();",
+    '      - name: Parse and conclude threat detection',
+    '        id: detection_conclusion',
+    "        if: always() && steps.detection_guard.outputs.run_detection == 'false' || (always() && steps.detection_guard.outputs.run_detection == 'true' && steps.redact_detection_logs.outcome == 'success' && steps.redact_detection_artifacts.outcome == 'success')",
+    `        uses: actions/github-script@${githubScriptSha}`,
+    '        env:',
+    '          RUN_DETECTION: ${{ steps.detection_guard.outputs.run_detection }}',
+    '          DETECTION_AGENTIC_EXECUTION_OUTCOME: ${{ steps.detection_agentic_execution.outcome }}',
+    '          GH_AW_DETECTION_CONTINUE_ON_ERROR: "false"',
+    '        with:',
+    '          script: |',
+    '            try {',
+    "              const { setupGlobals } = require('/tmp/gh-aw/actions/setup_globals.cjs');",
+    '              setupGlobals(core, github, context, exec, io, getOctokit);',
+    "              const { main } = require('/tmp/gh-aw/actions/parse_threat_detection_results.cjs');",
+    '              await main();',
+    '            } catch (loadErr) {',
+    "              core.setOutput('conclusion', 'failure');",
+    "              core.setOutput('success', 'false');",
+    '              core.setFailed(String(loadErr));',
+    '            }'
+  ].join('\n');
+
   const buildCompilerLock = ({
     onTrigger = '  pull_request_target:',
     activationPerms = '      actions: read\n      contents: read',
@@ -1104,6 +1147,7 @@ test('verifies compiler-shaped multi-job lock (activation -> agent -> detection 
       '        if: always()',
       '        run: rm -f /tmp/gh-aw/agent_usage.json'
     ].join('\n'),
+    detectionSteps = defaultDetectionSteps,
     safeIf = "(!cancelled()) && needs.agent.result == 'success' && needs.detection.result == 'success' && needs.detection.outputs.detection_success == 'true'",
     safeCheckoutWith = [
       '          persist-credentials: false',
@@ -1147,9 +1191,7 @@ test('verifies compiler-shaped multi-job lock (activation -> agent -> detection 
     detectionOutputs,
     '    steps:',
     detectionHousekeeping,
-    '      - name: Threat detection',
-    '        id: detection_conclusion',
-    '        run: echo "success=true"',
+    detectionSteps,
     '  safe_outputs:',
     '    needs: [activation, agent, detection]',
     `    if: ${safeIf}`,
@@ -1261,6 +1303,46 @@ test('verifies compiler-shaped multi-job lock (activation -> agent -> detection 
       detectionOutputs: '    outputs:\n      detection_success: ${{ steps.cond_step.outputs.success }}'
     })
   }).reason, 'MISSING_THREAT_SCAN_GATE');
+
+  // Action-based detection_conclusion MUST fail closed when preceding core scan step is missing or conditional,
+  // or when its condition, env bindings, or script violate threat_detection_steps.go's fail-closed contract!
+  for (const mutatedDetectionSteps of [
+    // Preceding core scan step missing (only housekeeping run step exists)
+    defaultDetectionSteps.replace(
+      '      - name: Execute threat detection with AWF\n        id: detection_agentic_execution\n        run: threat-detect --engine copilot\n',
+      ''
+    ),
+    // Preceding core scan step is conditional (if: always()) instead of unconditional
+    defaultDetectionSteps.replace(
+      '        id: detection_agentic_execution\n        run: threat-detect --engine copilot',
+      '        id: detection_agentic_execution\n        if: always()\n        run: threat-detect --engine copilot\n      - name: Dummy unconditional\n        run: echo "noop"'
+    ),
+    // Permissive GH_AW_DETECTION_CONTINUE_ON_ERROR: "true" on detection_conclusion
+    defaultDetectionSteps.replace('GH_AW_DETECTION_CONTINUE_ON_ERROR: "false"', 'GH_AW_DETECTION_CONTINUE_ON_ERROR: "true"'),
+    // Hardcoded RUN_DETECTION: "false" bypass on detection_conclusion
+    defaultDetectionSteps.replace('RUN_DETECTION: ${{ steps.detection_guard.outputs.run_detection }}', 'RUN_DETECTION: "false"'),
+    // Script omits parse_threat_detection_results.cjs or hardcodes success
+    defaultDetectionSteps.replace('parse_threat_detection_results.cjs', 'noop.cjs'),
+    defaultDetectionSteps.replace("core.setOutput('success', 'false');", "core.setOutput('success', 'true');"),
+    // Tampered step conditions on redact_detection_logs or detection_conclusion
+    defaultDetectionSteps.replace(
+      "        id: redact_detection_logs\n        if: always() && steps.detection_guard.outputs.run_detection == 'true'",
+      '        id: redact_detection_logs\n        if: always() && false'
+    ),
+    defaultDetectionSteps.replace(
+      "        if: always() && steps.detection_guard.outputs.run_detection == 'false' || (always() && steps.detection_guard.outputs.run_detection == 'true' && steps.redact_detection_logs.outcome == 'success' && steps.redact_detection_artifacts.outcome == 'success')",
+      '        if: always() && false'
+    ),
+    defaultDetectionSteps.replace(
+      "        if: always() && steps.detection_guard.outputs.run_detection == 'false' || (always() && steps.detection_guard.outputs.run_detection == 'true' && steps.redact_detection_logs.outcome == 'success' && steps.redact_detection_artifacts.outcome == 'success')",
+      "        if: always() && steps.detection_guard.outputs.run_detection == 'false' || false"
+    )
+  ]) {
+    assert.equal(verifyGhAwWorkflowLock({
+      markdownSource: md,
+      lockYamlSource: buildCompilerLock({detectionSteps: mutatedDetectionSteps})
+    }).reason, 'MISSING_THREAT_SCAN_GATE');
+  }
 
   assert.equal(verifyGhAwWorkflowLock({
     markdownSource: md,

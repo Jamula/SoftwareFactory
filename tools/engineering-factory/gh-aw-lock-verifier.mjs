@@ -769,14 +769,77 @@ function astHasUnsafeStatusOverride(node, negated = false) {
 }
 
 const STEP_OUTPUT_REF_RE = /^\$\{\{\s*steps\.([A-Za-z_][A-Za-z0-9_-]*)\.outputs\.[A-Za-z_][A-Za-z0-9_-]*\s*\}\}$/;
+const STEP_OUTCOME_REF_RE = /^\$\{\{\s*steps\.([A-Za-z_][A-Za-z0-9_-]*)\.outcome\s*\}\}$/;
+const DETECTION_GUARD_REF_RE = /^\$\{\{\s*steps\.detection_guard\.outputs\.run_detection\s*\}\}$/;
+const FORBIDDEN_SUCCESS_OVERRIDE_RE = /setOutput\(\s*['"](?:success|conclusion)['"]\s*,\s*['"](?:true|success)['"]\s*\)/;
 const VERIFIED_SCAN_OUTPUT_KEYS = Object.freeze(['scan_verified', 'detection_success', 'detection_conclusion']);
 
-function declaresVerifiedStepOutput(job, outputName, unconditionalStepIds) {
+function isDetectionGuardCompare(node, expectedLiteral) {
+  return isIdentCompareLiteral(node, '==', 'steps.detection_guard.outputs.run_detection', expectedLiteral);
+}
+
+function isStepOutcomeSuccess(node, stepId) {
+  return isIdentCompareLiteral(node, '==', `steps.${stepId}.outcome`, 'success');
+}
+
+function isCompilerDetectionStepIf(ast) {
+  const conjuncts = collectMandatoryConjuncts(ast);
+  return conjuncts.length === 2 &&
+    isAlwaysZeroArgCall(conjuncts[0]) &&
+    isDetectionGuardCompare(conjuncts[1], 'true');
+}
+
+function isCompilerDetectionConclusionIf(ast) {
+  if (ast.kind !== 'Or') return false;
+  const skippedBranch = collectMandatoryConjuncts(ast.left);
+  const redactedBranch = collectMandatoryConjuncts(ast.right);
+  return skippedBranch.length === 2 &&
+    isAlwaysZeroArgCall(skippedBranch[0]) &&
+    isDetectionGuardCompare(skippedBranch[1], 'false') &&
+    redactedBranch.length === 4 &&
+    isAlwaysZeroArgCall(redactedBranch[0]) &&
+    isDetectionGuardCompare(redactedBranch[1], 'true') &&
+    isStepOutcomeSuccess(redactedBranch[2], 'redact_detection_logs') &&
+    isStepOutcomeSuccess(redactedBranch[3], 'redact_detection_artifacts');
+}
+
+function isAllowedThreatScanStepIf(step, stepAst) {
+  if (isAlwaysZeroArgCall(stepAst)) return true;
+  if (step.id === 'redact_detection_logs' || step.id === 'redact_detection_artifacts') {
+    return isCompilerDetectionStepIf(stepAst);
+  }
+  if (step.id === 'detection_conclusion') {
+    return isCompilerDetectionConclusionIf(stepAst);
+  }
+  return false;
+}
+
+function isValidActionConclusionProducer(step, precedingUnconditionalStepIds) {
+  if (step.id !== 'detection_conclusion' ||
+      typeof step.uses !== 'string' ||
+      !step.uses.toLowerCase().startsWith('actions/github-script@') ||
+      !isMapObject(step.env) ||
+      step.env.GH_AW_DETECTION_CONTINUE_ON_ERROR !== 'false' ||
+      typeof step.env.RUN_DETECTION !== 'string' ||
+      !DETECTION_GUARD_REF_RE.test(step.env.RUN_DETECTION.trim()) ||
+      typeof step.env.DETECTION_AGENTIC_EXECUTION_OUTCOME !== 'string' ||
+      !isMapObject(step.with) ||
+      typeof step.with.script !== 'string' ||
+      step.with.script.includes('${{') ||
+      !step.with.script.includes('parse_threat_detection_results.cjs') ||
+      FORBIDDEN_SUCCESS_OVERRIDE_RE.test(step.with.script)) {
+    return false;
+  }
+  const outcomeMatch = STEP_OUTCOME_REF_RE.exec(step.env.DETECTION_AGENTIC_EXECUTION_OUTCOME.trim());
+  return outcomeMatch !== null && precedingUnconditionalStepIds.has(outcomeMatch[1]);
+}
+
+function declaresVerifiedStepOutput(job, outputName, validScanOutputStepIds) {
   if (!isMapObject(job.outputs) || typeof job.outputs[outputName] !== 'string') {
     return false;
   }
   const match = STEP_OUTPUT_REF_RE.exec(job.outputs[outputName].trim());
-  return match !== null && unconditionalStepIds.has(match[1]);
+  return match !== null && validScanOutputStepIds.has(match[1]);
 }
 
 function isValidIssuesLabel(label) {
@@ -1046,7 +1109,8 @@ export function verifyGhAwWorkflowLock(input) {
       }
     }
 
-    const unconditionalStepIds = new Set();
+    const validScanOutputStepIds = new Set();
+    const precedingUnconditionalScanStepIds = new Set();
     let jobHasWriteScope = false;
     if (isSafeOutput) {
       if (!isMapObject(job.permissions)) return deny('EXCESSIVE_SAFE_OUTPUT_PERMISSION');
@@ -1064,7 +1128,7 @@ export function verifyGhAwWorkflowLock(input) {
     } else {
       const jobPerms = isReadOnlyPermissions(job.permissions);
       if (!jobPerms.ok) return deny('AGENT_JOB_WRITE_PERMISSION');
-      if (isThreatScan) threatScanJobs.push({jobId, job, unconditionalStepIds});
+      if (isThreatScan) threatScanJobs.push({jobId, job, validScanOutputStepIds});
       else evaluationJobIds.push({jobId, job});
     }
 
@@ -1076,7 +1140,7 @@ export function verifyGhAwWorkflowLock(input) {
         if (!isSafeOutput && toleratesError(step)) return deny('MISSING_THREAT_SCAN_GATE');
         if (isThreatScan && step.if !== undefined) {
           const stepAst = parseIfExpression(step.if);
-          if (stepAst === null || !isAlwaysZeroArgCall(stepAst)) {
+          if (stepAst === null || !isAllowedThreatScanStepIf(step, stepAst)) {
             return deny('MISSING_THREAT_SCAN_GATE');
           }
         }
@@ -1102,6 +1166,9 @@ export function verifyGhAwWorkflowLock(input) {
               return deny('UNTRUSTED_SAFE_OUTPUT_CHECKOUT');
             }
           }
+          if (isThreatScan && isValidActionConclusionProducer(step, precedingUnconditionalScanStepIds)) {
+            validScanOutputStepIds.add(step.id);
+          }
         }
         if (step.run !== undefined) {
           if (typeof step.run !== 'string' || step.run.includes('${{')) {
@@ -1110,7 +1177,8 @@ export function verifyGhAwWorkflowLock(input) {
           if (isThreatScan && step.if === undefined && step.run.trim().length > 0) {
             hasUnconditionalThreatScanRunStep = true;
             if (typeof step.id === 'string' && /^[A-Za-z_][A-Za-z0-9_-]*$/.test(step.id)) {
-              unconditionalStepIds.add(step.id);
+              precedingUnconditionalScanStepIds.add(step.id);
+              validScanOutputStepIds.add(step.id);
             }
           }
         }
@@ -1121,7 +1189,7 @@ export function verifyGhAwWorkflowLock(input) {
           if (!isMapObject(job.outputs)) return deny('MISSING_THREAT_SCAN_GATE');
           for (const verifiedKey of VERIFIED_SCAN_OUTPUT_KEYS) {
             if (Object.hasOwn(job.outputs, verifiedKey) &&
-                !declaresVerifiedStepOutput(job, verifiedKey, unconditionalStepIds)) {
+                !declaresVerifiedStepOutput(job, verifiedKey, validScanOutputStepIds)) {
               return deny('MISSING_THREAT_SCAN_GATE');
             }
           }
@@ -1208,13 +1276,13 @@ export function verifyGhAwWorkflowLock(input) {
       if (!hasWriteScope) return hasResultSuccess;
       const scanEntry = threatScanById.get(scanId);
       const verifiedByScanOutput =
-        declaresVerifiedStepOutput(scanEntry.job, 'scan_verified', scanEntry.unconditionalStepIds) &&
+        declaresVerifiedStepOutput(scanEntry.job, 'scan_verified', scanEntry.validScanOutputStepIds) &&
         safeConjuncts.some(c => isIdentCompareLiteral(c, '==', `needs.${scanId}.outputs.scan_verified`, 'true'));
       const verifiedByDetectionSuccess =
-        declaresVerifiedStepOutput(scanEntry.job, 'detection_success', scanEntry.unconditionalStepIds) &&
+        declaresVerifiedStepOutput(scanEntry.job, 'detection_success', scanEntry.validScanOutputStepIds) &&
         safeConjuncts.some(c => isIdentCompareLiteral(c, '==', `needs.${scanId}.outputs.detection_success`, 'true'));
       const verifiedByDetectionConclusion =
-        declaresVerifiedStepOutput(scanEntry.job, 'detection_conclusion', scanEntry.unconditionalStepIds) &&
+        declaresVerifiedStepOutput(scanEntry.job, 'detection_conclusion', scanEntry.validScanOutputStepIds) &&
         safeConjuncts.some(c => isIdentCompareLiteral(c, '==', `needs.${scanId}.outputs.detection_conclusion`, 'success'));
       return hasResultSuccess && (verifiedByScanOutput || verifiedByDetectionSuccess || verifiedByDetectionConclusion);
     });
