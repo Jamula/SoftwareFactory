@@ -677,21 +677,44 @@ test('fences same-generation lease resurrection, checkpoint clobbering, proto pa
       assert.equal(capStore.exportSnapshot(1600).ok, true);
     } finally { capStore.close(); remoteResStore.close(); }
 
-    // Migrating a 4-column coordinator_lane_work table adds checkpoint_revision, and post-release revision divergence is rejected.
+    // Preserves 4-column coordinator_lane_work schema for rollback compatibility with prior versions,
+    // handles re-upgrade after a reverted 4-column claim, and rejects post-release revision divergence.
     withDb(upgradeFile => {
-      const legacyFourCol = new DatabaseSync(upgradeFile);
-      legacyFourCol.exec("CREATE TABLE coordinator_lanes (lane_id TEXT PRIMARY KEY, generation INTEGER NOT NULL, owner TEXT NOT NULL, lease_until INTEGER NOT NULL, payload TEXT NOT NULL); CREATE TABLE coordinator_lane_work (lane_id TEXT PRIMARY KEY, generation INTEGER NOT NULL, work_key TEXT, work_generation INTEGER); INSERT INTO coordinator_lanes VALUES ('api', 1, 'w', 0, '{}'); INSERT INTO coordinator_lane_work VALUES ('api', 1, NULL, NULL);");
-      legacyFourCol.close();
       const upgraded = createSQLiteStateStore(upgradeFile);
+      const c = upgraded.claim('api', 'w', 1000, 1000);
+      assert.equal(upgraded.checkpoint('api', c.generation, 'w', {v: 1}, 1100), true);
+      assert.equal(upgraded.release('api', c.generation, 'w', 1200), true);
+      upgraded.close();
+
+      // Simulate reverted prior version executing 4-value INSERT INTO coordinator_lane_work VALUES(?,?,?,?).
+      const rolledBackDb = new DatabaseSync(upgradeFile);
+      const legacyPutAssoc = rolledBackDb.prepare(
+        'INSERT INTO coordinator_lane_work VALUES(?,?,?,?) ON CONFLICT(lane_id) DO UPDATE SET generation=excluded.generation, work_key=excluded.work_key, work_generation=excluded.work_generation'
+      );
+      rolledBackDb.prepare("UPDATE coordinator_lanes SET generation=2, lease_until=3000, payload='{}' WHERE lane_id='api'").run();
+      legacyPutAssoc.run('api', 2, null, null);
+      rolledBackDb.close();
+
+      const reupgraded = createSQLiteStateStore(upgradeFile);
       const postReleaseRemote = createSQLiteStateStore(':memory:');
       try {
-        const prc = postReleaseRemote.claim('api', 'w', 1000, 1000);
-        postReleaseRemote.checkpoint('api', prc.generation, 'w', {done: true}, 1100);
-        postReleaseRemote.release('api', prc.generation, 'w', 1200);
-        const postReleaseSnap = postReleaseRemote.exportSnapshot(1300).snapshot;
-        assert.equal(upgraded.importSnapshot(postReleaseSnap, 1400).reason, 'ACTIVE_OWNERSHIP_CONFLICT');
+        assert.equal(reupgraded.exportSnapshot(2000).snapshot.lanes[0].checkpointRevision, 0);
+        assert.equal(reupgraded.checkpoint('api', 2, 'w', {v: 2}, 2100), true);
+        assert.equal(reupgraded.exportSnapshot(2200).snapshot.lanes[0].checkpointRevision, 1);
+        assert.equal(reupgraded.release('api', 2, 'w', 2300), true);
+
+        const prc1 = postReleaseRemote.claim('api', 'w', 1000, 1000);
+        postReleaseRemote.release('api', prc1.generation, 'w', 1100);
+        const prc2 = postReleaseRemote.claim('api', 'w', 2000, 1000);
+        postReleaseRemote.checkpoint('api', prc2.generation, 'w', {v: 2}, 2100);
+        postReleaseRemote.checkpoint('api', prc2.generation, 'w', {v: 3}, 2150);
+        postReleaseRemote.release('api', prc2.generation, 'w', 2300);
+        postReleaseRemote.exportSnapshot(2310);
+        postReleaseRemote.exportSnapshot(2320);
+        const postReleaseSnap = postReleaseRemote.exportSnapshot(2400).snapshot;
+        assert.equal(reupgraded.importSnapshot(postReleaseSnap, 2500).reason, 'ACTIVE_OWNERSHIP_CONFLICT');
       } finally {
-        upgraded.close();
+        reupgraded.close();
         postReleaseRemote.close();
       }
     });
@@ -707,7 +730,7 @@ test('fences same-generation lease resurrection, checkpoint clobbering, proto pa
       assert.equal(corruptLocal.importSnapshot(nextSnap, 7800).reason, 'CORRUPT_STATE');
       db.exec("DELETE FROM coordinator_lanes; DELETE FROM coordinator_lane_work; DELETE FROM coordinator_work_claims;");
       const insertLane = db.prepare("INSERT INTO coordinator_lanes VALUES (?, 1, 'w', 0, '{}')");
-      const insertAssoc = db.prepare('INSERT INTO coordinator_lane_work VALUES (?, 1, NULL, NULL, 0)');
+      const insertAssoc = db.prepare('INSERT INTO coordinator_lane_work VALUES (?, 1, NULL, NULL)');
       for (let i = 0; i < 250; i++) {
         insertLane.run(`lane-${i}`);
         insertAssoc.run(`lane-${i}`);

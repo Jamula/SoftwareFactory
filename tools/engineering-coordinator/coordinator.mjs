@@ -1,3 +1,4 @@
+import {performance} from 'node:perf_hooks';
 import {planLanes} from './planner.mjs';
 
 const failed = reason => ({shadow: true, completed: [], reason});
@@ -33,6 +34,7 @@ export async function runTick({
     } catch { return failed('ACTIVE_RESERVATIONS_UNAVAILABLE'); }
   }
   const outcomes = await Promise.allSettled(plan.scheduled.map(async item => {
+    const monotonicDeadline = performance.now() + executionBudgetMs;
     const workKey = `${config.project.repository.toLowerCase()}#${item.id}`;
     const claim = store.claim(item.lane, workerId, now, config.limits.leaseMs,
       config.limits.maxConcurrentLanes, workKey);
@@ -44,13 +46,18 @@ export async function runTick({
     let lastObservedTime = now;
     let elapsedTimerMs = 0;
     let releaseClaim = true;
+    let inspecting = false;
+    let deadlineExpired = false;
+    const cancellation = new AbortController();
     const baseIntervalMs = Math.floor(config.limits.leaseMs / 3);
+    const timedOut = () => deadlineExpired || performance.now() >= monotonicDeadline;
     const sampleClock = () => {
+      if (timedOut()) return {reason: 'EXECUTION_TIMEOUT'};
       let currentTime;
       try { currentTime = clock(); } catch { return {reason: 'CLOCK_UNAVAILABLE'}; }
       if (!Number.isSafeInteger(currentTime) || currentTime < lastObservedTime) return {reason: 'CLOCK_UNAVAILABLE'};
       lastObservedTime = currentTime;
-      return currentTime >= executionDeadline ? {reason: 'EXECUTION_TIMEOUT'} : {time: currentTime};
+      return currentTime >= executionDeadline || timedOut() ? {reason: 'EXECUTION_TIMEOUT'} : {time: currentTime};
     };
     const renewLease = () => {
       const observed = sampleClock();
@@ -63,39 +70,42 @@ export async function runTick({
           observed : {reason: 'LEASE_LOST'};
       } catch { return {reason: 'LEASE_UNAVAILABLE'}; }
     };
-    const raceWithDeadline = (operation, tickCheck, onAbort) => {
-      const remainingMs = Math.min(executionBudgetMs - elapsedTimerMs, executionDeadline - lastObservedTime);
-      let stepMs = Math.min(baseIntervalMs, remainingMs);
-      let timer;
-      const failure = new Promise(resolve => {
-        const schedule = () => {
-          timer = setInterval(() => {
-            elapsedTimerMs += stepMs;
-            const checked = elapsedTimerMs >= executionBudgetMs ? {reason: 'EXECUTION_TIMEOUT'} : tickCheck();
-            if (checked.reason) {
-              clearInterval(timer);
-              resolve(checked);
-              onAbort?.();
-              return;
-            }
-            const nextStepMs = Math.min(baseIntervalMs, executionBudgetMs - elapsedTimerMs,
-              executionDeadline - checked.time);
-            if (nextStepMs < stepMs) {
-              clearInterval(timer);
-              stepMs = nextStepMs;
-              schedule();
-            }
-          }, stepMs);
-        };
-        schedule();
-      });
-      return Promise.race([
-        Promise.resolve().then(operation).then(value => ({value})),
-        failure
-      ]).finally(() => clearInterval(timer));
-    };
+    let laneTimer;
+    const laneFailure = new Promise(resolve => {
+      let stepMs = Math.min(baseIntervalMs, executionBudgetMs);
+      const schedule = () => {
+        laneTimer = setInterval(() => {
+          elapsedTimerMs += stepMs;
+          const checked = elapsedTimerMs >= executionBudgetMs || timedOut() ?
+            {reason: 'EXECUTION_TIMEOUT'} :
+            (inspecting ? renewLease() : sampleClock());
+          if (checked.reason) {
+            deadlineExpired = true;
+            clearInterval(laneTimer);
+            if (inspecting) releaseClaim = false;
+            resolve(checked);
+            if (inspecting) cancellation.abort();
+            return;
+          }
+          const nextStepMs = Math.min(baseIntervalMs, executionBudgetMs - elapsedTimerMs,
+            executionDeadline - checked.time);
+          if (nextStepMs < stepMs) {
+            clearInterval(laneTimer);
+            stepMs = nextStepMs;
+            schedule();
+          }
+        }, stepMs);
+      };
+      schedule();
+    });
+    const raceLane = operation => Promise.race([
+      Promise.resolve().then(operation).then(value => ({value})),
+      laneFailure
+    ]);
     try {
-      const firstRead = await raceWithDeadline(() => tracker.readTask(item.id), sampleClock);
+      if (timedOut())
+        return {lane: item.lane, taskId: item.id, state: 'blocked', reason: 'EXECUTION_TIMEOUT'};
+      const firstRead = await raceLane(() => tracker.readTask(item.id));
       if (firstRead.reason)
         return {lane: item.lane, taskId: item.id, state: 'blocked', reason: firstRead.reason};
       const evidence = firstRead.value;
@@ -106,22 +116,22 @@ export async function runTick({
       const beforeInspection = renewLease();
       if (beforeInspection.reason)
         return {lane: item.lane, taskId: item.id, state: 'blocked', reason: beforeInspection.reason};
-      const cancellation = new AbortController();
-      const inspection = await raceWithDeadline(
-        () => agent.inspect(byId.get(item.id),
-          {mode: 'shadow', projectKey: config.project.key, signal: cancellation.signal}),
-        renewLease,
-        () => {
-          releaseClaim = false;
-          cancellation.abort();
-        }
-      );
+      inspecting = true;
+      let inspection;
+      try {
+        inspection = await raceLane(() => agent.inspect(byId.get(item.id),
+          {mode: 'shadow', projectKey: config.project.key, signal: cancellation.signal}));
+      } finally {
+        inspecting = false;
+      }
       if (inspection.reason)
         return {lane: item.lane, taskId: item.id, state: 'blocked', reason: inspection.reason};
+      if (timedOut())
+        return {lane: item.lane, taskId: item.id, state: 'blocked', reason: 'EXECUTION_TIMEOUT'};
       const review = inspection.value;
       if (!review?.accepted || review.shadow !== true)
         return {lane: item.lane, state: 'blocked', reason: 'AGENT_REVIEW_FAILED'};
-      const secondRead = await raceWithDeadline(() => tracker.readTask(item.id), sampleClock);
+      const secondRead = await raceLane(() => tracker.readTask(item.id));
       if (secondRead.reason)
         return {lane: item.lane, taskId: item.id, state: 'blocked', reason: secondRead.reason};
       const finalEvidence = secondRead.value;
@@ -141,6 +151,7 @@ export async function runTick({
     } catch {
       return {lane: item.lane, taskId: item.id, state: 'blocked', reason: 'LANE_FAILED'};
     } finally {
+      clearInterval(laneTimer);
       if (releaseClaim)
         store.release(item.lane, claim.generation, workerId, lastObservedTime, workKey, claim.workGeneration);
     }

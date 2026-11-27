@@ -156,10 +156,9 @@ export function createSQLiteStateStore(filename) {
     db.exec('BEGIN IMMEDIATE');
     const exists = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='coordinator_lane_work'").get();
     if (!exists) {
-      db.exec("CREATE TABLE coordinator_lane_work (lane_id TEXT PRIMARY KEY, generation INTEGER NOT NULL, work_key TEXT, work_generation INTEGER, checkpoint_revision INTEGER NOT NULL DEFAULT 0); INSERT INTO coordinator_lane_work SELECT lane_id, generation, '', 0, 0 FROM coordinator_lanes");
-    } else if (!db.prepare("SELECT 1 FROM pragma_table_info('coordinator_lane_work') WHERE name='checkpoint_revision'").get()) {
-      db.exec('ALTER TABLE coordinator_lane_work ADD COLUMN checkpoint_revision INTEGER NOT NULL DEFAULT 0');
+      db.exec("CREATE TABLE coordinator_lane_work (lane_id TEXT PRIMARY KEY, generation INTEGER NOT NULL, work_key TEXT, work_generation INTEGER); INSERT INTO coordinator_lane_work SELECT lane_id, generation, '', 0 FROM coordinator_lanes");
     }
+    db.exec('CREATE TABLE IF NOT EXISTS coordinator_lane_checkpoints (lane_id TEXT PRIMARY KEY, generation INTEGER NOT NULL, checkpoint_revision INTEGER NOT NULL)');
     db.exec('CREATE TABLE IF NOT EXISTS coordinator_snapshot_fence (id INTEGER PRIMARY KEY CHECK (id = 1), snapshot_generation INTEGER NOT NULL, last_snapshot_at INTEGER NOT NULL, observed_at INTEGER NOT NULL); INSERT OR IGNORE INTO coordinator_snapshot_fence VALUES (1, 0, 0, 0)');
     db.exec('COMMIT');
   } catch (error) {
@@ -170,7 +169,7 @@ export function createSQLiteStateStore(filename) {
   const read = db.prepare('SELECT lane_id, generation, owner, lease_until, payload FROM coordinator_lanes WHERE lane_id = ?');
   const countLanes = db.prepare('SELECT count(*) AS total FROM coordinator_lanes');
   const countWork = db.prepare('SELECT count(*) AS total FROM coordinator_work_claims');
-  const exportLanes = db.prepare('SELECT l.lane_id, l.generation, l.owner, l.lease_until, l.payload, w.work_key, w.work_generation, w.checkpoint_revision FROM coordinator_lanes AS l LEFT JOIN coordinator_lane_work AS w ON w.lane_id = l.lane_id AND w.generation = l.generation ORDER BY l.lane_id ASC');
+  const exportLanes = db.prepare('SELECT l.lane_id, l.generation, l.owner, l.lease_until, l.payload, w.work_key, w.work_generation, coalesce(c.checkpoint_revision, 0) AS checkpoint_revision FROM coordinator_lanes AS l LEFT JOIN coordinator_lane_work AS w ON w.lane_id = l.lane_id AND w.generation = l.generation LEFT JOIN coordinator_lane_checkpoints AS c ON c.lane_id = l.lane_id AND c.generation = l.generation ORDER BY l.lane_id ASC');
   const exportWork = db.prepare('SELECT work_key, lane_id, generation, owner, lease_until FROM coordinator_work_claims ORDER BY work_key ASC');
   const exportReservations = db.prepare('SELECT lane_id, expires FROM coordinator_reservations WHERE expires > ? ORDER BY lane_id ASC');
   const readFence = db.prepare('SELECT snapshot_generation, last_snapshot_at, observed_at FROM coordinator_snapshot_fence WHERE id = 1');
@@ -181,8 +180,9 @@ export function createSQLiteStateStore(filename) {
   const prune = db.prepare('DELETE FROM coordinator_reservations WHERE expires <= ?');
   const reserve = db.prepare('INSERT INTO coordinator_reservations(lane_id,expires) VALUES(?,?) ON CONFLICT(lane_id) DO UPDATE SET expires=max(coordinator_reservations.expires,excluded.expires)');
   const put = db.prepare('INSERT INTO coordinator_lanes(lane_id,generation,owner,lease_until,payload) VALUES(?,?,?,?,?) ON CONFLICT(lane_id) DO UPDATE SET generation=excluded.generation, owner=excluded.owner, lease_until=excluded.lease_until, payload=excluded.payload');
-  const putAssociation = db.prepare('INSERT INTO coordinator_lane_work(lane_id,generation,work_key,work_generation,checkpoint_revision) VALUES(?,?,?,?,?) ON CONFLICT(lane_id) DO UPDATE SET generation=excluded.generation, work_key=excluded.work_key, work_generation=excluded.work_generation, checkpoint_revision=excluded.checkpoint_revision');
-  const bumpCheckpointRevision = db.prepare('UPDATE coordinator_lane_work SET checkpoint_revision = checkpoint_revision + 1 WHERE lane_id = ? AND generation = ? AND checkpoint_revision < 9007199254740991');
+  const putAssociation = db.prepare('INSERT INTO coordinator_lane_work VALUES(?,?,?,?) ON CONFLICT(lane_id) DO UPDATE SET generation=excluded.generation, work_key=excluded.work_key, work_generation=excluded.work_generation');
+  const putCheckpointRevision = db.prepare('INSERT INTO coordinator_lane_checkpoints(lane_id,generation,checkpoint_revision) VALUES(?,?,?) ON CONFLICT(lane_id) DO UPDATE SET generation=excluded.generation, checkpoint_revision=excluded.checkpoint_revision');
+  const bumpCheckpointRevision = db.prepare('INSERT INTO coordinator_lane_checkpoints(lane_id,generation,checkpoint_revision) VALUES(?,?,1) ON CONFLICT(lane_id) DO UPDATE SET checkpoint_revision = CASE WHEN coordinator_lane_checkpoints.generation = excluded.generation THEN coordinator_lane_checkpoints.checkpoint_revision + 1 ELSE 1 END, generation = excluded.generation WHERE coordinator_lane_checkpoints.generation != excluded.generation OR coordinator_lane_checkpoints.checkpoint_revision < 9007199254740991');
   const association = ' AND EXISTS (SELECT 1 FROM coordinator_lane_work WHERE coordinator_lane_work.lane_id=coordinator_lanes.lane_id AND coordinator_lane_work.generation=coordinator_lanes.generation AND work_key IS ? AND work_generation IS ?)';
   const update = db.prepare('UPDATE coordinator_lanes SET payload=? WHERE lane_id=? AND generation=? AND owner=? AND lease_until>?' + association);
   const renewLease = db.prepare('UPDATE coordinator_lanes SET lease_until=? WHERE lane_id=? AND generation=? AND owner=? AND lease_until>?' + association);
@@ -247,7 +247,8 @@ export function createSQLiteStateStore(filename) {
         const payload = current?.payload ?? '{}';
         const state = JSON.parse(payload);
         put.run(laneId, generation, owner, now + leaseMs, payload);
-        putAssociation.run(laneId, generation, workKey, workGeneration, 0);
+        putAssociation.run(laneId, generation, workKey, workGeneration);
+        putCheckpointRevision.run(laneId, generation, 0);
         if (workKey !== null) putWork.run(workKey, laneId, workGeneration, owner, now + leaseMs);
         bumpObserved.run(now);
         db.exec('COMMIT');
@@ -480,7 +481,8 @@ export function createSQLiteStateStore(filename) {
         prune.run(now);
         for (const lane of content.lanes) {
           put.run(lane.laneId, lane.generation, lane.owner, lane.leaseUntil, encodedPayloads.get(lane.laneId));
-          putAssociation.run(lane.laneId, lane.generation, lane.workKey, lane.workGeneration, lane.checkpointRevision);
+          putAssociation.run(lane.laneId, lane.generation, lane.workKey, lane.workGeneration);
+          putCheckpointRevision.run(lane.laneId, lane.generation, lane.checkpointRevision);
         }
         for (const claim of content.workClaims)
           putWork.run(claim.workKey, claim.laneId, claim.generation, claim.owner, claim.leaseUntil);

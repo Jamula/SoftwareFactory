@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {mkdtempSync, rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
+import {performance} from 'node:perf_hooks';
 import {runTick as executeTick} from '../../tools/engineering-coordinator/coordinator.mjs';
 import {createSQLiteStateStore} from '../../tools/engineering-coordinator/sqlite-state-store.mjs';
 
@@ -588,6 +589,78 @@ test('enforces timer-bounded deadline when clock stalls and handles pre/post-ins
     config: config(), tasks: tasks(), store: backingStore, tracker, agent,
     workerId: 'worker', now: 1000, policy: null
   })).reason, 'SCHEDULING_POLICY_UNKNOWN');
+});
+
+test('enforces a single lane-wide deadline across sequential partial waits and synchronous monotonic overruns', async t => {
+  t.mock.timers.enable({apis: ['setInterval']});
+  let monoNow = 0;
+  t.mock.method(performance, 'now', () => monoNow);
+  const backingStore = store();
+
+  // Three sequential 250ms phases (750ms total) with stalled clock must fail at exact 600ms maxExecutionMs.
+  const read1 = Promise.withResolvers();
+  const inspectPhase = Promise.withResolvers();
+  const read2 = Promise.withResolvers();
+  let phaseReads = 0;
+  let seqCheckpoints = 0;
+  let seqReleases = 0;
+  const sequential = runTick({
+    config: config(), tasks: [tasks()[0]], workerId: 'worker', now: 1000, maxExecutionMs: 600,
+    tracker: {readTask: () => ++phaseReads === 1 ? read1.promise : read2.promise},
+    agent: {inspect: () => inspectPhase.promise},
+    store: {
+      ...backingStore,
+      checkpoint: () => { seqCheckpoints++; return true; },
+      release: () => { seqReleases++; return true; }
+    }
+  });
+  await Promise.resolve();
+  monoNow += 250;
+  t.mock.timers.tick(250);
+  read1.resolve({accepted: true, task: {id: 1, state: 'approved'}});
+  await Promise.resolve();
+  await Promise.resolve();
+  monoNow += 250;
+  t.mock.timers.tick(250);
+  inspectPhase.resolve({shadow: true, accepted: true, findings: []});
+  await Promise.resolve();
+  await Promise.resolve();
+  monoNow += 100;
+  t.mock.timers.tick(100);
+  assert.equal((await sequential).completed[0].reason, 'EXECUTION_TIMEOUT');
+  assert.equal(seqCheckpoints, 0);
+  assert.equal(seqReleases, 1);
+
+  // Synchronous monotonic overrun during claim (before firstRead) and during inspect (before accepting review).
+  let syncReads = 0;
+  const syncPreRead = await runTick({
+    config: config(), tasks: [tasks()[0]], workerId: 'worker', now: 1000, maxExecutionMs: 100,
+    store: {
+      ...backingStore,
+      claim: (...args) => {
+        const claimed = backingStore.claim(...args);
+        monoNow += 200;
+        return claimed;
+      }
+    },
+    tracker: {readTask: async id => { syncReads++; return {accepted: true, task: {id, state: 'approved'}}; }},
+    agent
+  });
+  assert.equal(syncPreRead.completed[0].reason, 'EXECUTION_TIMEOUT');
+  assert.equal(syncReads, 0);
+
+  let postInspectReads = 0;
+  const syncInspect = await runTick({
+    config: config(), tasks: [tasks()[0]], workerId: 'worker', now: 1000, maxExecutionMs: 100,
+    store: backingStore,
+    tracker: {readTask: async id => { postInspectReads++; return {accepted: true, task: {id, state: 'approved'}}; }},
+    agent: {inspect: async () => {
+      monoNow += 200;
+      return {shadow: true, accepted: true, findings: []};
+    }}
+  });
+  assert.equal(syncInspect.completed[0].reason, 'EXECUTION_TIMEOUT');
+  assert.equal(postInspectReads, 1);
 });
 
 test('recovers cross-run state across stateless SQLite stores via fenced snapshots', async () => {
