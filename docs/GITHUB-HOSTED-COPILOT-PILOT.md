@@ -30,7 +30,8 @@ Offline evaluators never fabricate live owner billing settings or check off `#10
      ```bash
      (
        set -euo pipefail
-       test ! -e .github/workflows/copilot-hosted-pilot.yml
+       workflow_check="$(gh api 'repos/Jamula/SoftwareFactory/git/trees/refs%2Fheads%2Fmain?recursive=1' --jq 'if .truncated != false then "TRUNCATED" elif any(.tree[]; .path == ".github/workflows/copilot-hosted-pilot.yml") then "PRESENT" else "ABSENT" end')"
+       test "$workflow_check" = "ABSENT"
        gh secret list --repo Jamula/SoftwareFactory
        envs="$(gh api --paginate repos/Jamula/SoftwareFactory/environments --jq '.environments[].name')"
        if printf '%s\n' "$envs" | grep -Fx 'factory-copilot-pilot' >/dev/null; then
