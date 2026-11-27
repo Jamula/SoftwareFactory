@@ -15,7 +15,9 @@ import {
 } from '../../tools/engineering-factory/consumer-onboarding.mjs';
 
 const examples = JSON.parse(await readFile(new URL('../../tools/engineering-factory/example-policies.json', import.meta.url)));
-const reviewedSha = '1'.repeat(40);
+const shadowWorkflowSource = await readFile(new URL('../../.github/workflows/shadow-tests.yml', import.meta.url), 'utf8');
+const reviewedWorkflowSha = 'afc3d223f287b029db32672908097efc67a259c9';
+const reviewedCheckoutSha = shadowWorkflowSource.match(/^\s*ref:\s*([0-9a-f]{40})\s*$/m)?.[1] ?? '1'.repeat(40);
 const altSha = '2'.repeat(40);
 const head = 'a'.repeat(40);
 const base = 'b'.repeat(40);
@@ -120,9 +122,10 @@ function makeOnboardingPackage(policy, {
     autoActivate: false,
     productionDeployEnabled: false,
     workflowPin: {
-      uses: `${REUSABLE_WORKFLOW_PREFIX}${reviewedSha}`,
-      reviewedFactorySha: reviewedSha,
-      checkoutRef: reviewedSha,
+      uses: `${REUSABLE_WORKFLOW_PREFIX}${reviewedWorkflowSha}`,
+      reviewedWorkflowSha,
+      checkoutRef: reviewedCheckoutSha,
+      reviewedCheckoutSha,
       permissions: 'contents:read',
       persistCredentials: false
     },
@@ -180,13 +183,15 @@ test('component catalog and baseline constants are frozen and read-only', () => 
   }
 });
 
-test('verifyWorkflowPin requires immutable matching 40-hex SHAs and least-privilege flags', () => {
+test('verifyWorkflowPin requires immutable dual 40-hex SHAs and least-privilege flags', () => {
   const validPin = familyTreePkg.workflowPin;
+  assert.notEqual(reviewedWorkflowSha, reviewedCheckoutSha);
   assert.deepEqual(verifyWorkflowPin(validPin), {
     valid: true,
     reason: 'PIN_VERIFIED',
     shadow: true,
-    pinnedSha: reviewedSha
+    pinnedWorkflowSha: reviewedWorkflowSha,
+    pinnedCheckoutSha: reviewedCheckoutSha
   });
 
   const getterPin = { ...validPin };
@@ -198,17 +203,24 @@ test('verifyWorkflowPin requires immutable matching 40-hex SHAs and least-privil
     new Proxy({ ...validPin }, {}),
     Object.create(null),
     { ...validPin, extra: true },
-    { uses: 1, reviewedFactorySha: reviewedSha, checkoutRef: reviewedSha, permissions: 'contents:read', persistCredentials: false },
+    { ...validPin, uses: 1 },
     { ...validPin, permissions: 123 },
     { ...validPin, persistCredentials: 'false' },
     getterPin,
-    { wrongKey: 1, reviewedFactorySha: reviewedSha, checkoutRef: reviewedSha, permissions: 'contents:read', persistCredentials: false }
+    {
+      wrongKey: 1,
+      reviewedWorkflowSha,
+      checkoutRef: reviewedCheckoutSha,
+      reviewedCheckoutSha,
+      permissions: 'contents:read',
+      persistCredentials: false
+    }
   ]) {
     assert.equal(verifyWorkflowPin(bad).reason, 'PIN_SCHEMA_INVALID');
   }
 
   assert.equal(
-    verifyWorkflowPin({ ...validPin, uses: `other/repo/.github/workflows/shadow-tests.yml@${reviewedSha}` }).reason,
+    verifyWorkflowPin({ ...validPin, uses: `other/repo/.github/workflows/shadow-tests.yml@${reviewedWorkflowSha}` }).reason,
     'PIN_WORKFLOW_UNTRUSTED'
   );
 
@@ -216,8 +228,9 @@ test('verifyWorkflowPin requires immutable matching 40-hex SHAs and least-privil
     { ...validPin, uses: `${REUSABLE_WORKFLOW_PREFIX}main` },
     { ...validPin, uses: `${REUSABLE_WORKFLOW_PREFIX}v1.0.0` },
     { ...validPin, uses: `${REUSABLE_WORKFLOW_PREFIX}${'A'.repeat(40)}` },
-    { ...validPin, reviewedFactorySha: 'refs/heads/main' },
-    { ...validPin, checkoutRef: '1234567' }
+    { ...validPin, reviewedWorkflowSha: 'refs/heads/main' },
+    { ...validPin, checkoutRef: '1234567' },
+    { ...validPin, reviewedCheckoutSha: 'v1.0.0' }
   ]) {
     assert.equal(verifyWorkflowPin(badPin).reason, 'PIN_REF_NOT_IMMUTABLE_SHA');
   }
@@ -228,6 +241,11 @@ test('verifyWorkflowPin requires immutable matching 40-hex SHAs and least-privil
   );
   assert.equal(
     verifyWorkflowPin({ ...validPin, checkoutRef: altSha }).reason,
+    'PIN_SHA_MISMATCH'
+  );
+  // Assuming workflow SHA automatically updates internal shadow-tests.yml checkoutRef fails closed
+  assert.equal(
+    verifyWorkflowPin({ ...validPin, reviewedCheckoutSha: reviewedWorkflowSha }).reason,
     'PIN_SHA_MISMATCH'
   );
   assert.equal(
@@ -248,7 +266,8 @@ test('verifies three independent synthetic stack profiles without live activatio
     assert.equal(standalone.reason, 'ONBOARDING_CONTRACT_VERIFIED');
     assert.equal(standalone.shadow, true);
     assert.equal(standalone.liveActivation, false);
-    assert.equal(standalone.pinnedSha, reviewedSha);
+    assert.equal(standalone.pinnedWorkflowSha, reviewedWorkflowSha);
+    assert.equal(standalone.pinnedCheckoutSha, reviewedCheckoutSha);
 
     const registered = verifyConsumerOnboardingPackage(pkg, registry);
     assert.equal(registered.valid, true);
@@ -461,20 +480,62 @@ test('enforces per-repository credential isolation and blocks cross-repo secret 
   );
 });
 
-test('requires complete exact-reason shadow denial replay suite and rollback contract', () => {
+test('requires complete exact-mutation shadow denial replay suite and rollback contract', () => {
   const suite = familyTreePkg.replaySuite;
+  const cand = suite.eligibleCandidate;
+
+  // Null remainingCredits is also a valid missing-quota scenario
+  assert.equal(
+    verifyConsumerOnboardingPackage({
+      ...familyTreePkg,
+      replaySuite: {
+        ...suite,
+        missingQuota: { ...cand, remainingCredits: null }
+      }
+    }).valid,
+    true
+  );
+
   for (const badSuite of [
     null,
-    { ...suite, killSwitchPolicy: { ...suite.killSwitchPolicy, extra: true } },
-    { ...suite, killSwitchPolicy: { ...suite.killSwitchPolicy, repository: 'example/other' } },
     { ...suite, eligibleCandidate: suite.missingQuota },
+    { ...suite, killSwitchPolicy: { ...suite.killSwitchPolicy, extra: true } },
     { ...suite, killSwitchPolicy: { ...suite.killSwitchPolicy, killSwitch: false } },
-    { ...suite, staleReview: suite.eligibleCandidate },
+    { ...suite, killSwitchPolicy: { ...familyTreePkg.policy, mode: 'disabled', killSwitch: false } },
+    { ...suite, staleReview: cand },
     { ...suite, staleReview: suite.wrongRepository },
-    { ...suite, dismissedReview: suite.eligibleCandidate },
-    { ...suite, commentedBotReview: suite.eligibleCandidate },
-    { ...suite, wrongRepository: suite.eligibleCandidate },
-    { ...suite, missingQuota: suite.eligibleCandidate }
+    { ...suite, staleReview: { ...cand, issue: 99, reviews: [] } },
+    { ...suite, staleReview: { ...cand, reviews: 'bad' } },
+    { ...suite, staleReview: { ...cand, reviews: [] } },
+    { ...suite, staleReview: { ...cand, reviews: [{}] } },
+    { ...suite, staleReview: { ...cand, reviews: [{ reviewer: 'synthetic-reviewer', head: base, state: 'DISMISSED' }] } },
+    { ...suite, staleReview: { ...cand, reviews: [{ reviewer: 'synthetic-reviewer', head: 'bad', state: 'APPROVED' }] } },
+    { ...suite, staleReview: { ...cand, reviews: [{ reviewer: 'untrusted-reviewer', head, state: 'APPROVED' }] } },
+    { ...suite, dismissedReview: cand },
+    { ...suite, dismissedReview: { ...cand, issue: 99, reviews: [] } },
+    { ...suite, dismissedReview: { ...cand, reviews: 'bad' } },
+    { ...suite, dismissedReview: { ...cand, reviews: [] } },
+    { ...suite, dismissedReview: { ...cand, reviews: [{}] } },
+    { ...suite, dismissedReview: { ...cand, reviews: [{ reviewer: 'synthetic-reviewer', head: base, state: 'DISMISSED' }] } },
+    { ...suite, dismissedReview: { ...cand, reviews: [{ reviewer: 'untrusted-reviewer', head, state: 'APPROVED' }] } },
+    { ...suite, commentedBotReview: cand },
+    { ...suite, commentedBotReview: { ...cand, issue: 99, reviews: [] } },
+    { ...suite, commentedBotReview: { ...cand, reviews: 'bad' } },
+    { ...suite, commentedBotReview: { ...cand, reviews: [] } },
+    { ...suite, commentedBotReview: { ...cand, reviews: [{ reviewer: 'copilot-pull-request-reviewer[bot]', head, state: 'COMMENTED' }] } },
+    { ...suite, commentedBotReview: { ...cand, reviews: [{ reviewer: 'human-reviewer', head, state: 'COMMENTED', summaryDisposition: 'clear' }] } },
+    { ...suite, commentedBotReview: { ...cand, reviews: [{ reviewer: 'copilot-pull-request-reviewer[bot]', head: base, state: 'COMMENTED', summaryDisposition: 'clear' }] } },
+    { ...suite, commentedBotReview: { ...cand, reviews: [{ reviewer: 'copilot-pull-request-reviewer[bot]', head, state: 'DISMISSED', summaryDisposition: 'clear' }] } },
+    { ...suite, commentedBotReview: { ...cand, reviews: [{ reviewer: 'copilot-pull-request-reviewer[bot]', head, state: 'COMMENTED', summaryDisposition: 'actionable' }] } },
+    { ...suite, wrongRepository: cand },
+    { ...suite, wrongRepository: null },
+    { ...suite, wrongRepository: { ...cand, repository: '' } },
+    { ...suite, wrongRepository: { ...cand, repository: 'invalid-slug' } },
+    { ...suite, wrongRepository: { ...cand, repository: 'EXAMPLE/FAMILY-TREE' } },
+    { ...suite, missingQuota: cand },
+    { ...suite, missingQuota: { ...cand, activeCount: 1 } },
+    { ...suite, missingQuota: { ...cand, remainingCredits: 500 } },
+    { ...suite, missingQuota: { ...cand, remainingCredits: 'none' } }
   ]) {
     assert.equal(
       verifyConsumerOnboardingPackage({ ...familyTreePkg, replaySuite: badSuite }).reason,
@@ -556,7 +617,7 @@ test('planConsumerBootstrap creates dry-run pinned plans, preserves stricter gat
   const baseRequest = {
     repository: 'example/new-consumer',
     repositoryId: 900404,
-    reviewedFactorySha: reviewedSha,
+    workflowPin: familyTreePkg.workflowPin,
     checks: [{ name: 'ci-gate', appId: 45678 }],
     owners: [{ prefix: 'src/', owner: 'synthetic-owner' }],
     reviewers: ['synthetic-reviewer'],
@@ -577,10 +638,21 @@ test('planConsumerBootstrap creates dry-run pinned plans, preserves stricter gat
   assert.equal(blankPlan.mutatesGitHub, false);
   assert.equal(blankPlan.reviewablePrRequired, true);
   assert.equal(blankPlan.idempotentNoOp, false);
+  assert.equal(blankPlan.pinnedWorkflowSha, reviewedWorkflowSha);
+  assert.equal(blankPlan.pinnedCheckoutSha, reviewedCheckoutSha);
   assert.deepEqual(blankPlan.policy.coverage, { line: 95, branch: 90 });
   assert.equal(blankPlan.policy.mode, 'disabled');
   assert.equal(blankPlan.policy.killSwitch, true);
   assert.equal(blankPlan.filesToWrite.length, 2);
+
+  // Mismatched workflow vs shadow-tests.yml checkout SHA fails closed in bootstrap
+  assert.equal(
+    planConsumerBootstrap({
+      ...baseRequest,
+      workflowPin: { ...familyTreePkg.workflowPin, reviewedCheckoutSha: reviewedWorkflowSha }
+    }).reason,
+    'PIN_SHA_MISMATCH'
+  );
 
   // Partial match writes only missing file; full match is idempotent no-op
   const partialPlan = planConsumerBootstrap({
@@ -622,14 +694,39 @@ test('planConsumerBootstrap creates dry-run pinned plans, preserves stricter gat
   assert.equal(conflictPlan.reason, 'EXISTING_FILE_CONFLICT');
   assert.deepEqual(conflictPlan.conflicts, ['.github/softwarefactory-policy.json']);
 
+  // Case-variant existing path is also flagged as a conflict
+  const caseConflictPlan = planConsumerBootstrap({
+    ...baseRequest,
+    existingState: {
+      ...baseRequest.existingState,
+      existingFiles: [{ path: '.GITHUB/softwarefactory-policy.json', content: blankPlan.filesToWrite[1].content }]
+    }
+  });
+  assert.equal(caseConflictPlan.valid, false);
+  assert.equal(caseConflictPlan.reason, 'EXISTING_FILE_CONFLICT');
+
+  // Matching record followed by divergent duplicate path fails closed instead of IDEMPOTENT_NOOP
+  const duplicatePathPlan = planConsumerBootstrap({
+    ...baseRequest,
+    existingState: {
+      ...baseRequest.existingState,
+      existingFiles: [
+        blankPlan.filesToWrite[0],
+        blankPlan.filesToWrite[1],
+        { path: '.github/softwarefactory-policy.json', content: '{"divergent":true}\n' }
+      ]
+    }
+  });
+  assert.equal(duplicatePathPlan.valid, false);
+  assert.equal(duplicatePathPlan.reason, 'EXISTING_STATE_INVALID');
+
   for (const badReq of [
     null,
     { ...baseRequest, repository: '' },
     { ...baseRequest, repository: 'invalid-slug' },
     { ...baseRequest, repository: 'jamula/softwarefactory' },
     { ...baseRequest, repositoryId: 0 },
-    { ...baseRequest, repositoryId: FACTORY_REPOSITORY_ID },
-    { ...baseRequest, reviewedFactorySha: 'main' }
+    { ...baseRequest, repositoryId: FACTORY_REPOSITORY_ID }
   ]) {
     assert.equal(planConsumerBootstrap(badReq).reason, 'BOOTSTRAP_REQUEST_INVALID');
   }
@@ -642,7 +739,8 @@ test('planConsumerBootstrap creates dry-run pinned plans, preserves stricter gat
     { ...baseRequest.existingState, existingFiles: 'bad' },
     { ...baseRequest.existingState, existingFiles: [{ path: '', content: 'x' }] },
     { ...baseRequest.existingState, existingFiles: [{ path: 'a.yml', content: 123 }] },
-    { ...baseRequest.existingState, existingFiles: [{ path: 'a.yml' }] }
+    { ...baseRequest.existingState, existingFiles: [{ path: 'a.yml' }] },
+    { ...baseRequest.existingState, existingFiles: [{ path: 'a.yml', content: '1' }, { path: 'A.YML', content: '2' }] }
   ]) {
     assert.equal(planConsumerBootstrap({ ...baseRequest, existingState: badState }).reason, 'EXISTING_STATE_INVALID');
   }
