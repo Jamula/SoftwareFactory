@@ -903,6 +903,13 @@ function evaluateIssueCorrelation(issue, linkedPulls, hasDanglingLink) {
   };
 }
 
+function isPostCutoffIssue(issue, toMs) {
+  if (issue.createdAt !== null && issue.createdAt >= toMs) return true;
+  return issue.readyAt !== null &&
+    issue.readyAt >= toMs &&
+    (issue.createdAt === null || issue.readyAt >= issue.createdAt);
+}
+
 function buildCorrelationAndThroughput(issues, pulls, linkGraph, query, hasOtel) {
   const multiPrIssueNumbers = [];
   const multiIssuePullNumbers = [];
@@ -940,6 +947,7 @@ function buildCorrelationAndThroughput(issues, pulls, linkGraph, query, hasOtel)
   let acceptedOutcomesInWindow = 0;
   let otelVerifiedAcceptedOutcomesInWindow = 0;
   let censoredOutcomesInWindow = 0;
+  let unknownInScopeCount = 0;
   const acceptedInWindowIssues = [];
   const evaluatedByIssue = new Map();
 
@@ -984,6 +992,9 @@ function buildCorrelationAndThroughput(issues, pulls, linkGraph, query, hasOtel)
       counts.unacceptedClosedIssues++;
     } else {
       counts.unknownIssues++;
+      if (!isPostCutoffIssue(issue, query.toMs)) {
+        unknownInScopeCount++;
+      }
     }
 
     issueOutcomes.push({
@@ -1010,7 +1021,7 @@ function buildCorrelationAndThroughput(issues, pulls, linkGraph, query, hasOtel)
   }
 
   const throughputComplete = query.historicalSourceComplete &&
-    counts.unknownIssues === 0 &&
+    unknownInScopeCount === 0 &&
     counts.danglingExplicitLinks === 0;
   const elapsedDays = (query.toMs - query.fromMs) / DAY_MS;
 
@@ -1031,7 +1042,7 @@ function buildCorrelationAndThroughput(issues, pulls, linkGraph, query, hasOtel)
       acceptedOutcomesInWindow,
       otelVerifiedAcceptedOutcomesInWindow,
       censoredOutcomesInWindow,
-      unknownOutcomeCount: counts.unknownIssues,
+      unknownOutcomeCount: unknownInScopeCount,
       acceptedOutcomesPerDay: throughputComplete ? acceptedOutcomesInWindow / elapsedDays : null,
       otelVerifiedAcceptedOutcomesPerDay: throughputComplete && hasOtel
         ? otelVerifiedAcceptedOutcomesInWindow / elapsedDays
@@ -1481,7 +1492,8 @@ function parseOutcomeBindings(
   interventionsSummary,
   inWindowHumanTouchSum,
   pullsByNumber,
-  linkGraph
+  linkGraph,
+  queryToMs
 ) {
   if (rawBindings === null) {
     return {ok: true, allAcceptedBound: false, verifiedOutcomeBindingCount: 0};
@@ -1573,29 +1585,34 @@ function parseOutcomeBindings(
     if (ciAndMainReceiptsVerified) verifiedCount++;
   }
 
-  if (interventionsSummary.status === 'measured') {
-    for (const rec of preCutoffReceiptsById.values()) {
-      if (rec.correlation.traceId !== null && acceptedTraceIds.has(rec.correlation.traceId)) {
-        acceptedTraceReceipts.set(rec.receiptId, rec);
-      }
+  for (const rec of preCutoffReceiptsById.values()) {
+    if (rec.correlation.traceId !== null && acceptedTraceIds.has(rec.correlation.traceId)) {
+      acceptedTraceReceipts.set(rec.receiptId, rec);
     }
+  }
+  let acceptedTraceHasUnknownTouches = false;
+  let acceptedTouchSum = 0;
+  for (const rec of acceptedTraceReceipts.values()) {
+    if (rec.humanTouches.state === 'verified') {
+      acceptedTouchSum += rec.humanTouches.count;
+    } else {
+      acceptedTraceHasUnknownTouches = true;
+    }
+  }
+
+  if (interventionsSummary.status === 'measured') {
     const allowedCohortTouches = interventionsSummary.totalRoutineCount +
       interventionsSummary.totalGovernanceCount;
-    let acceptedTouchSum = 0;
-    for (const rec of acceptedTraceReceipts.values()) {
-      if (rec.humanTouches.state === 'verified') {
-        acceptedTouchSum += rec.humanTouches.count;
-      }
-    }
     if (acceptedTouchSum > allowedCohortTouches) {
       return {ok: false, reason: 'CONFLICTING_INTERVENTION_EVIDENCE'};
     }
-    const everyIssueVerified = issues.length > 0 && issues.every(iss => {
+    const inScopeIssues = issues.filter(iss => !isPostCutoffIssue(iss, queryToMs));
+    const everyIssueVerified = inScopeIssues.length > 0 && inScopeIssues.every(iss => {
       const row = interventionsByIssue.get(iss.number);
       return row !== undefined && row.verified;
     });
     if (everyIssueVerified) {
-      const allIssuesAllowedTouches = issues.reduce((sum, iss) => {
+      const allIssuesAllowedTouches = inScopeIssues.reduce((sum, iss) => {
         const row = interventionsByIssue.get(iss.number);
         return sum + row.routineCount + row.governanceCount;
       }, 0);
@@ -1605,7 +1622,8 @@ function parseOutcomeBindings(
     }
   }
 
-  const allAcceptedBound = otelAcceptedInWindow.length > 0 &&
+  const allAcceptedBound = !acceptedTraceHasUnknownTouches &&
+    otelAcceptedInWindow.length > 0 &&
     verifiedCount === otelAcceptedInWindow.length;
   return {
     ok: true,
@@ -1948,7 +1966,7 @@ function buildAutonomousOtelSection(rawOtel, issues, pulls, linkGraph, correlati
   const otelAcceptedInWindow = [];
 
   for (const issue of issues) {
-    if (!issue.otelVerified) continue;
+    if (!issue.otelVerified || isPostCutoffIssue(issue, query.toMs)) continue;
     const linkedPulls = linkGraph.pullsByIssue.get(issue.number) ?? [];
     const hasDangling = linkGraph.danglingIssues.has(issue.number);
     const evaluated = correlationResult.evaluatedByIssue.get(issue.number);
@@ -2072,7 +2090,8 @@ function buildAutonomousOtelSection(rawOtel, issues, pulls, linkGraph, correlati
     interventionsResult.summary,
     receiptResult.receiptEvidence.humanTouches.totalCount,
     pullsByNumber,
-    linkGraph
+    linkGraph,
+    query.toMs
   );
   if (!outcomeBindingResult.ok) return outcomeBindingResult;
   receiptResult.receiptEvidence.verifiedOutcomeBindingCount =

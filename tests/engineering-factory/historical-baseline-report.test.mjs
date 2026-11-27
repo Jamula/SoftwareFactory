@@ -580,6 +580,65 @@ test('T01 & T04: strictly separates historical proxies from all 5 verified auton
   assert.equal(carryoverReport.throughput.otelVerifiedAcceptedOutcomesInWindow, 5);
   assert.equal(carryoverReport.autonomousOtel.autonomousClaimEligible, true);
 
+  // Unknown humanTouches on a pre-window receipt from an accepted carryover trace withholds autonomousClaimEligible!
+  const carryoverUnknownTouch = buildHistoricalAndOtelEvidenceReport({
+    query: baseQuery({fromMs: 8_550_000}),
+    authorizedRepositories: baseAuth(),
+    issues,
+    pulls,
+    links,
+    otel: {
+      provenance: 'verified-autonomous-otel',
+      complete: true,
+      receipts: [
+        ...receipts,
+        makeHostedReceipt('gh-prewindow-unknown-touch', 'reconcile', {
+          observedMs: 8_100_000,
+          humanTouches: {verified: false}
+        })
+      ],
+      ciRuns,
+      interventions,
+      outcomeBindings,
+      guardrails: makeGuardrails(prNums)
+    }
+  });
+  assert.equal(carryoverUnknownTouch.valid, true);
+  assert.equal(carryoverUnknownTouch.autonomousOtel.autonomousClaimEligible, false);
+
+  // Post-cutoff OTel issue (created/closed >= query.toMs with acceptanceVerified: false) does not pollute window unknowns!
+  const withPostCutoffIssue = buildHistoricalAndOtelEvidenceReport({
+    query: baseQuery(),
+    authorizedRepositories: baseAuth(),
+    issues: [
+      ...issues,
+      makeIssue(99, {
+        state: 'closed',
+        createdAt: 87_500_000,
+        readyAt: 87_510_000,
+        closedAt: 87_600_000,
+        acceptedAt: null,
+        acceptanceVerified: false,
+        requiredPullNumbers: null
+      })
+    ],
+    pulls,
+    links,
+    otel: {
+      provenance: 'verified-autonomous-otel',
+      complete: true,
+      receipts,
+      ciRuns,
+      interventions,
+      outcomeBindings,
+      guardrails: makeGuardrails(prNums)
+    }
+  });
+  assert.equal(withPostCutoffIssue.valid, true);
+  assert.equal(withPostCutoffIssue.reason, 'MEASURED_REPORT');
+  assert.equal(withPostCutoffIssue.autonomousOtel.issueReadyToOutcomeMs.counts.unknown, 0);
+  assert.equal(withPostCutoffIssue.autonomousOtel.autonomousClaimEligible, true);
+
   // Open unfinished issue with accounted governance touch on a separate trace does not falsely conflict!
   const openTrace = '3'.repeat(32);
   const openSpan = '4'.repeat(16);
