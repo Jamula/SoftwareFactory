@@ -1034,6 +1034,7 @@ export function buildMafBoundedRepairHandoff(input) {
 const SF_REPOSITORY_ID = 1471342715;
 const SF_REPOSITORY_SLUG = 'Jamula/SoftwareFactory';
 const DOTNET_MAF_SPECIALIST_WORKFLOW = '.NET MAF specialist agents';
+const KNOWN_EXECUTION_SUBJOBS = new Set(['test-coverage', 'linux-aspire-runtime']);
 const CHECK_KINDS_SET = new Set(CHECK_CONSOLIDATION_KINDS);
 const CHECK_TRIGGERS_SET = new Set([
   'pull_request',
@@ -1238,7 +1239,7 @@ export function defaultSoftwareFactoryConsolidationProposal() {
       {
         context: 'test-coverage',
         workflow: 'Factory validation',
-        kind: 'reporting',
+        kind: 'required-execution',
         platforms: ['linux'],
         triggers: [...standardTriggers],
         trustedProducer: true,
@@ -1247,7 +1248,7 @@ export function defaultSoftwareFactoryConsolidationProposal() {
       {
         context: 'linux-aspire-runtime',
         workflow: 'Factory validation',
-        kind: 'reporting',
+        kind: 'required-execution',
         platforms: ['linux'],
         triggers: [...standardTriggers],
         trustedProducer: true,
@@ -1460,6 +1461,11 @@ export function evaluateCheckConsolidationParity(input) {
   }
 
   const consolidatedChecks = [];
+  for (const check of [...input.baselineChecks, ...input.proposedChecks]) {
+    if (KNOWN_EXECUTION_SUBJOBS.has(check.context) && check.kind !== 'required-execution') {
+      return consolidationBlocked('UNVERIFIED_CHECK_CONSOLIDATION', classification, [], preservedGates);
+    }
+  }
   for (const baseCheck of input.baselineChecks) {
     if (baseCheck.kind === 'disabled-shadow-inventory') continue;
     const retained = proposedByContext.get(baseCheck.context);

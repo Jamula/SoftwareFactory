@@ -1300,8 +1300,8 @@ test('evaluateCheckConsolidationParity verifies 12-to-8 check consolidation and 
 
   assert.equal(verified.classification.baseline.totalCount, 13);
   assert.equal(verified.classification.baseline.meaningfulCount, 12);
-  assert.equal(verified.classification.baseline.requiredExecution.length, 7);
-  assert.equal(verified.classification.baseline.reporting.length, 5);
+  assert.equal(verified.classification.baseline.requiredExecution.length, 9);
+  assert.equal(verified.classification.baseline.reporting.length, 3);
   assert.deepEqual(verified.classification.baseline.disabledShadowInventory, ['inventory']);
 
   assert.equal(verified.classification.proposed.totalCount, 9);
@@ -1557,6 +1557,24 @@ test('evaluateCheckConsolidationParity blocks any proposal dropping mandatory ex
     c => c.context !== 'pinned-synthetic-replay'
   );
   assert.equal(evaluateCheckConsolidationParity(execIntoReporting).reason, 'UNVERIFIED_CHECK_CONSOLIDATION');
+
+  for (const subjob of ['test-coverage', 'linux-aspire-runtime']) {
+    const subjobIntoReporting = defaultSoftwareFactoryConsolidationProposal();
+    subjobIntoReporting.baselineChecks.find(c => c.context === subjob).consolidatedInto = 'upload-coverage-javascript';
+    assert.equal(
+      evaluateCheckConsolidationParity(subjobIntoReporting).reason,
+      'UNVERIFIED_CHECK_CONSOLIDATION',
+      subjob
+    );
+
+    const subjobMisclassified = defaultSoftwareFactoryConsolidationProposal();
+    subjobMisclassified.baselineChecks.find(c => c.context === subjob).kind = 'reporting';
+    assert.equal(
+      evaluateCheckConsolidationParity(subjobMisclassified).reason,
+      'UNVERIFIED_CHECK_CONSOLIDATION',
+      subjob
+    );
+  }
 
   const retainedDowngrade = defaultSoftwareFactoryConsolidationProposal();
   retainedDowngrade.proposedChecks.find(c => c.context === 'pinned-synthetic-replay').kind = 'reporting';
