@@ -260,8 +260,10 @@ function parseScalar(token) {
     const parts = inner.split(',');
     const list = [];
     for (const part of parts) {
-      const item = parseScalar(part.trim());
-      if (!item.ok || (typeof item.value === 'object' && item.value !== null)) return {ok: false};
+      const trimmedPart = part.trim();
+      if (trimmedPart.startsWith('[') || trimmedPart.startsWith('{')) return {ok: false};
+      const item = parseScalar(trimmedPart);
+      if (!item.ok) return {ok: false};
       list.push(item.value);
     }
     return {ok: true, value: list};
@@ -749,6 +751,36 @@ function verifyEvaluationGuards(rawIf) {
   return {ok: true};
 }
 
+function isAlwaysZeroArgCall(node) {
+  return node.kind === 'Call' && node.name === 'always' && node.args.length === 0;
+}
+
+function astHasUnsafeStatusOverride(node, negated = false) {
+  if (node.kind === 'Not') return astHasUnsafeStatusOverride(node.expr, !negated);
+  if (node.kind === 'Call') {
+    if (node.name === 'failure') return true;
+    if (node.name === 'cancelled' && !negated) return true;
+    return node.args.some(arg => astHasUnsafeStatusOverride(arg, false));
+  }
+  if (node.kind === 'And' || node.kind === 'Or' || node.kind === 'Compare') {
+    return astHasUnsafeStatusOverride(node.left, false) || astHasUnsafeStatusOverride(node.right, false);
+  }
+  return false;
+}
+
+function declaresNonEmptyOutput(job, outputName) {
+  return isMapObject(job.outputs) &&
+    typeof job.outputs[outputName] === 'string' &&
+    job.outputs[outputName].trim().length > 0;
+}
+
+function isValidIssuesLabel(label) {
+  return typeof label === 'string' &&
+    label.length >= 1 &&
+    label.length <= 33 &&
+    Buffer.byteLength(label, 'utf8') <= 33 &&
+    /\S/.test(label);
+}
 function toleratesError(entity) {
   return entity['continue-on-error'] !== undefined && entity['continue-on-error'] !== false;
 }
@@ -792,7 +824,7 @@ function isValidWorkQueueToolConfig(workQueue) {
     if (!ALLOWED_WORK_QUEUE_TOOL_KEYS.has(key)) return false;
     if ((key === 'require-assignment' || key === 'worker') && typeof value !== 'boolean') return false;
     if (key === 'issues' && typeof value !== 'boolean' &&
-        (!isMapObject(value) || Object.keys(value).some(k => k !== 'label' || typeof value[k] !== 'string'))) {
+        (!isMapObject(value) || Object.keys(value).some(k => k !== 'label' || !isValidIssuesLabel(value[k])))) {
       return false;
     }
     if (key === 'memory' && !isValidWorkQueueMemoryConfig(value)) return false;
@@ -1032,11 +1064,17 @@ export function verifyGhAwWorkflowLock(input) {
 
     if (job.uses === undefined) {
       if (!Array.isArray(job.steps) || job.steps.length === 0) return deny('INVALID_LOCK_YAML');
-      let hasThreatScanRunStep = false;
+      let hasUnconditionalThreatScanRunStep = false;
       for (const step of job.steps) {
         if (!isMapObject(step)) return deny('INVALID_LOCK_YAML');
         if (!isSafeOutput && toleratesError(step)) return deny('MISSING_THREAT_SCAN_GATE');
-        if (isThreatScan && step.if !== undefined) return deny('MISSING_THREAT_SCAN_GATE');
+        if (isThreatScan && step.if !== undefined) {
+          const stepAst = parseIfExpression(step.if);
+          if (stepAst === null || astHasUnsafeStatusOverride(stepAst) ||
+              !collectMandatoryConjuncts(stepAst).some(isAlwaysZeroArgCall)) {
+            return deny('MISSING_THREAT_SCAN_GATE');
+          }
+        }
         if (stepAttemptsMainMerge(step)) return deny('MAIN_MERGE_FORBIDDEN_IN_GHAW');
         if (step.uses !== undefined) {
           if (!isPinnedUses(step.uses)) return deny('UNPINNED_ACTION_REFERENCE');
@@ -1064,10 +1102,12 @@ export function verifyGhAwWorkflowLock(input) {
           if (typeof step.run !== 'string' || step.run.includes('${{')) {
             return deny('UNSAFE_RUN_INTERPOLATION');
           }
-          if (isThreatScan && step.run.trim().length > 0) hasThreatScanRunStep = true;
+          if (isThreatScan && step.if === undefined && step.run.trim().length > 0) {
+            hasUnconditionalThreatScanRunStep = true;
+          }
         }
       }
-      if (isThreatScan && !hasThreatScanRunStep) return deny('MISSING_THREAT_SCAN_GATE');
+      if (isThreatScan && !hasUnconditionalThreatScanRunStep) return deny('MISSING_THREAT_SCAN_GATE');
     }
   }
 
@@ -1101,12 +1141,22 @@ export function verifyGhAwWorkflowLock(input) {
     }
     if (job.if !== undefined) {
       const scanAst = parseIfExpression(job.if);
-      if (scanAst === null || (scanAst.kind === 'Literal' && scanAst.value === false) || astHasBypassCall(scanAst)) {
+      if (scanAst === null || (scanAst.kind === 'Literal' && scanAst.value === false) ||
+          astHasUnsafeStatusOverride(scanAst)) {
         return deny('MISSING_THREAT_SCAN_GATE');
       }
       const scanConjuncts = collectMandatoryConjuncts(scanAst);
-      if (!evaluationJobIds.every(evalJob =>
-          scanConjuncts.some(c => isIdentCompareLiteral(c, '==', `needs.${evalJob.jobId}.result`, 'success')))) {
+      const hasAlwaysConjunct = scanConjuncts.some(isAlwaysZeroArgCall);
+      if (astHasBypassCall(scanAst) && !hasAlwaysConjunct) {
+        return deny('MISSING_THREAT_SCAN_GATE');
+      }
+      const validEvalGate = evaluationJobIds.every(evalJob =>
+        scanConjuncts.some(c =>
+          isIdentCompareLiteral(c, '==', `needs.${evalJob.jobId}.result`, 'success') ||
+          (hasAlwaysConjunct && isIdentCompareLiteral(c, '!=', `needs.${evalJob.jobId}.result`, 'skipped'))
+        )
+      );
+      if (!validEvalGate) {
         return deny('MISSING_THREAT_SCAN_GATE');
       }
     }
@@ -1127,7 +1177,7 @@ export function verifyGhAwWorkflowLock(input) {
     const safeAst = parseIfExpression(job.if);
     if (safeAst === null) return deny('MISSING_THREAT_SCAN_GATE');
     if (safeAst.kind === 'Literal' && safeAst.value === false) continue;
-    if (astHasBypassCall(safeAst) || !evaluationJobIds.every(evalJob => needs.includes(evalJob.jobId))) {
+    if (astHasUnsafeStatusOverride(safeAst) || !evaluationJobIds.every(evalJob => needs.includes(evalJob.jobId))) {
       return deny('MISSING_THREAT_SCAN_GATE');
     }
     const safeConjuncts = collectMandatoryConjuncts(safeAst);
@@ -1138,12 +1188,13 @@ export function verifyGhAwWorkflowLock(input) {
         isIdentCompareLiteral(c, '==', `needs.${scanId}.result`, 'success'));
       if (!hasWriteScope) return hasResultSuccess;
       const scanJob = threatScanById.get(scanId);
-      const declaresScanOutput = isMapObject(scanJob.outputs) &&
-        typeof scanJob.outputs.scan_verified === 'string' &&
-        scanJob.outputs.scan_verified.trim().length > 0;
-      const hasOutputVerified = safeConjuncts.some(c =>
-        isIdentCompareLiteral(c, '==', `needs.${scanId}.outputs.scan_verified`, 'true'));
-      return hasResultSuccess && declaresScanOutput && hasOutputVerified;
+      const verifiedByScanOutput = declaresNonEmptyOutput(scanJob, 'scan_verified') &&
+        safeConjuncts.some(c => isIdentCompareLiteral(c, '==', `needs.${scanId}.outputs.scan_verified`, 'true'));
+      const verifiedByDetectionSuccess = declaresNonEmptyOutput(scanJob, 'detection_success') &&
+        safeConjuncts.some(c => isIdentCompareLiteral(c, '==', `needs.${scanId}.outputs.detection_success`, 'true'));
+      const verifiedByDetectionConclusion = declaresNonEmptyOutput(scanJob, 'detection_conclusion') &&
+        safeConjuncts.some(c => isIdentCompareLiteral(c, '==', `needs.${scanId}.outputs.detection_conclusion`, 'success'));
+      return hasResultSuccess && (verifiedByScanOutput || verifiedByDetectionSuccess || verifiedByDetectionConclusion);
     });
     if (!allEvalSucceeded || !scanSucceeded) {
       return deny('MISSING_THREAT_SCAN_GATE');

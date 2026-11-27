@@ -563,6 +563,183 @@ test('enforces bounded execution TTL (1..3_600_000 ms), clamps renewals, fences 
     candidate: makeIssueCandidate({issueNumber: 7, runId: 1009}),
     nowMs: 81000
   })).reason, 'WORK_ALREADY_COMPLETED');
+
+  // Regression: in-flight renewal race!
+  // Lease A expires at t=100; A begins renewal at t=90 (initial readRef deferred),
+  // B claims the same lane/paths at t=100 (atomically fencing expired A),
+  // and A's CAS retry MUST fail closed with STALE_GENERATION instead of reactivating A alongside B!
+  const raceStore = createInMemoryWorkQueueRefStore();
+  const leaseA = await claimWorkQueueLease({
+    refStore: raceStore,
+    config,
+    candidate: makeIssueCandidate({
+      issueNumber: 200,
+      lane: 'factory',
+      ownedPaths: ['tools/engineering-factory/race.mjs'],
+      workerId: 'worker-A',
+      runId: 5001,
+      leaseTtlMs: 100,
+      maxExecutionMs: 500
+    }),
+    nowMs: 0
+  });
+  assert.equal(leaseA.ok, true);
+  assert.equal(leaseA.lease.leaseExpiresAtMs, 100);
+
+  let injectedCompetingClaim = false;
+  const interleavedStore = {
+    async readRef(ref) {
+      return raceStore.readRef(ref);
+    },
+    async compareAndSwapRef(req) {
+      if (!injectedCompetingClaim) {
+        injectedCompetingClaim = true;
+        const claimB = await claimWorkQueueLease({
+          refStore: raceStore,
+          config,
+          candidate: makeIssueCandidate({
+            issueNumber: 201,
+            lane: 'factory',
+            ownedPaths: ['tools/engineering-factory/race.mjs'],
+            workerId: 'worker-B',
+            runId: 5002,
+            leaseTtlMs: 100,
+            maxExecutionMs: 500
+          }),
+          nowMs: 100
+        });
+        assert.equal(claimB.ok, true);
+      }
+      return raceStore.compareAndSwapRef(req);
+    }
+  };
+
+  const racingRenewal = await renewWorkQueueLease({
+    refStore: interleavedStore,
+    config,
+    workId: leaseA.lease.workId,
+    workerId: 'worker-A',
+    generation: leaseA.lease.generation,
+    leaseTtlMs: 60,
+    nowMs: 90,
+    maxCasAttempts: 3
+  });
+  assert.equal(racingRenewal.ok, false);
+  assert.equal(racingRenewal.reason, 'STALE_GENERATION');
+
+  const finalRaceEntries = raceStore.readRef().state.entries;
+  const activeAfterRace = finalRaceEntries.filter(e => e.status === 'leased');
+  assert.equal(activeAfterRace.length, 1);
+  assert.equal(activeAfterRace[0].workerId, 'worker-B');
+
+  // Invalid config and config-level stop on renewWorkQueueLease fail closed
+  assert.equal((await renewWorkQueueLease({
+    refStore: raceStore,
+    config: {},
+    workId: activeAfterRace[0].workId,
+    workerId: 'worker-B',
+    generation: activeAfterRace[0].generation,
+    leaseTtlMs: 50,
+    nowMs: 110
+  })).reason, 'INVALID_PROJECT_CONFIG');
+  assert.equal((await renewWorkQueueLease({
+    refStore: raceStore,
+    config: makeConfig({execution: {enabled: true, mode: 'shadow', stop: true}}),
+    workId: activeAfterRace[0].workId,
+    workerId: 'worker-B',
+    generation: activeAfterRace[0].generation,
+    leaseTtlMs: 50,
+    nowMs: 110
+  })).reason, 'STOPPED');
+
+  // Defense-in-depth in renewWorkQueueLease: reject renewal if persisted state has another active entry
+  // holding the same lane, overlapping paths, or exceeding maxConcurrentLanes!
+  const makeSeededActive = (issueNumber, lane, ownedPath, generation) => ({
+    workId: `${REPO_ID}:issue:${issueNumber}`,
+    targetType: 'issue',
+    repository: REPO,
+    repositoryId: REPO_ID,
+    issueNumber,
+    pullNumber: null,
+    headSha: null,
+    lane,
+    ownedPaths: [ownedPath],
+    status: 'leased',
+    generation,
+    attempts: 1,
+    maxAttempts: 2,
+    workerId: `worker-${issueNumber}`,
+    runId: 6000 + issueNumber,
+    runAttempt: 1,
+    claimedAtMs: 100,
+    leaseTtlMs: 500,
+    leaseExpiresAtMs: 600,
+    maxExecutionMs: 1000,
+    executionDeadlineMs: 1100
+  });
+
+  const laneConflictStore = createInMemoryWorkQueueRefStore({
+    schemaVersion: 1,
+    protocol: 'v3',
+    sequence: 2,
+    nextGeneration: 3,
+    entries: [
+      makeSeededActive(301, 'factory', 'tools/engineering-factory/a.mjs', 1),
+      makeSeededActive(302, 'factory', 'tools/engineering-factory/b.mjs', 2)
+    ],
+    recoveryReceipts: []
+  });
+  assert.equal((await renewWorkQueueLease({
+    refStore: laneConflictStore,
+    config,
+    workId: `${REPO_ID}:issue:301`,
+    workerId: 'worker-301',
+    generation: 1,
+    leaseTtlMs: 100,
+    nowMs: 200
+  })).reason, 'LANE_RESERVED');
+
+  const pathOverlapStore = createInMemoryWorkQueueRefStore({
+    schemaVersion: 1,
+    protocol: 'v3',
+    sequence: 2,
+    nextGeneration: 3,
+    entries: [
+      makeSeededActive(303, 'factory', 'tools/engineering-factory', 1),
+      makeSeededActive(304, 'coordinator', 'tools/engineering-factory/sub.mjs', 2)
+    ],
+    recoveryReceipts: []
+  });
+  assert.equal((await renewWorkQueueLease({
+    refStore: pathOverlapStore,
+    config,
+    workId: `${REPO_ID}:issue:303`,
+    workerId: 'worker-303',
+    generation: 1,
+    leaseTtlMs: 100,
+    nowMs: 200
+  })).reason, 'OWNED_PATHS_OVERLAP');
+
+  const capExceededStore = createInMemoryWorkQueueRefStore({
+    schemaVersion: 1,
+    protocol: 'v3',
+    sequence: 2,
+    nextGeneration: 3,
+    entries: [
+      makeSeededActive(305, 'factory', 'tools/engineering-factory/a.mjs', 1),
+      makeSeededActive(306, 'coordinator', 'tools/engineering-coordinator/b.mjs', 2)
+    ],
+    recoveryReceipts: []
+  });
+  assert.equal((await renewWorkQueueLease({
+    refStore: capExceededStore,
+    config: makeConfig({limits: {maxConcurrentLanes: 1, leaseMs: 60000, maxAttempts: 2, baseDelayMs: 100, maxDelayMs: 1000}}),
+    workId: `${REPO_ID}:issue:305`,
+    workerId: 'worker-305',
+    generation: 1,
+    leaseTtlMs: 100,
+    nowMs: 200
+  })).reason, 'CAPACITY_FULL');
 });
 
 test('reconcileWorkQueueRunStates handles launch_failed, worker_terminated, run_terminal, run_missing, expiry, maxAttempts, and stop', async () => {
@@ -1301,6 +1478,16 @@ test('retries transient CAS conflicts and fails closed on proxies, store errors,
   assert.equal((await reconcileWorkQueueRunStates({
     refStore: backing,
     observedRuns: [{workId: 'w', runId: 1, runAttempt: 1, leaseGeneration: 1, runState: 'launch_failed', conclusion: 'failure'}],
+    nowMs: 1
+  })).reason, 'INVALID_RECONCILE_INPUT');
+  assert.equal((await reconcileWorkQueueRunStates({
+    refStore: backing,
+    observedRuns: [{workId: 'w', runId: 1, runAttempt: 1, leaseGeneration: 1, runState: 'run_terminal'}],
+    nowMs: 1
+  })).reason, 'INVALID_RECONCILE_INPUT');
+  assert.equal((await reconcileWorkQueueRunStates({
+    refStore: backing,
+    observedRuns: [{workId: 'w', runId: 1, runAttempt: 1, leaseGeneration: 1, runState: 'run_terminal', conclusion: null}],
     nowMs: 1
   })).reason, 'INVALID_RECONCILE_INPUT');
   assert.equal((await reconcileWorkQueueRunStates({

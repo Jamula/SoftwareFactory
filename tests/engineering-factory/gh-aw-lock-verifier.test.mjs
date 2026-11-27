@@ -920,6 +920,10 @@ test('covers YAML edge cases: quoted keys, block scalars in sequences, empty map
   for (const badFm of [
     '---\nsafe-outputs: invalid_scalar\n---\n# Body',
     '---\ntools:\n  work-queue: invalid_scalar\n---\n# Body',
+    '---\nif: "vars.FACTORY_GHAW_ENABLED == \'true\' && !endsWith(github.actor, \'[bot]\')"\ntools:\n  work-queue:\n    issues:\n      label: ""\n---\n# Body',
+    '---\nif: "vars.FACTORY_GHAW_ENABLED == \'true\' && !endsWith(github.actor, \'[bot]\')"\ntools:\n  work-queue:\n    issues:\n      label: "   "\n---\n# Body',
+    `---\nif: "vars.FACTORY_GHAW_ENABLED == 'true' && !endsWith(github.actor, '[bot]')"\ntools:\n  work-queue:\n    issues:\n      label: ${'a'.repeat(34)}\n---\n# Body`,
+    `---\narr: ${'['.repeat(20000)}${']'.repeat(20000)}\n---\n# Body`,
     '---\nif: "vars.FACTORY_GHAW_ENABLED == \'true\' && !endsWith(github.actor, \'[bot]\')"\ntools:\n  work-queue:\n    memory:\n      path: state.json\n---\n# Body',
     `---\nif: "vars.FACTORY_GHAW_ENABLED == 'true' && !endsWith(github.actor, '[bot]')"\ntools:\n  work-queue:\n    memory:\n      path: ../escape.json\n      target-repo: Jamula/SoftwareFactory\n      base-revision: ${checkoutSha}\n      branch-prefix: p\n      schema:\n        type: object\n---\n# Body`,
     `---\nif: "vars.FACTORY_GHAW_ENABLED == 'true' && !endsWith(github.actor, '[bot]')"\ntools:\n  work-queue:\n    memory:\n      path: state.json\n      target-repo: bad_repo\n      base-revision: ${checkoutSha}\n      branch-prefix: p\n      schema:\n        type: object\n---\n# Body`,
@@ -1066,6 +1070,18 @@ test('verifies compiler-shaped multi-job lock (activation -> agent -> detection 
     activationPerms = '      actions: read\n      contents: read',
     activationIf = "${{ vars.FACTORY_GHAW_ENABLED == 'true' && !endsWith(github.actor, '[bot]') }}",
     agentIf = "${{ needs.activation.result == 'success' }}",
+    detectionIf = "always() && needs.agent.result != 'skipped'",
+    detectionOutputs = [
+      '    outputs:',
+      '      detection_success: ${{ steps.detection_conclusion.outputs.success }}',
+      '      detection_conclusion: ${{ steps.detection_conclusion.outputs.conclusion }}'
+    ].join('\n'),
+    detectionHousekeeping = [
+      '      - name: Clear agent token usage',
+      '        if: always()',
+      '        run: rm -f /tmp/gh-aw/agent_usage.json'
+    ].join('\n'),
+    safeIf = "(!cancelled()) && needs.agent.result == 'success' && needs.detection.result == 'success' && needs.detection.outputs.detection_success == 'true'",
     safeCheckoutWith = [
       '          persist-credentials: false',
       '          repository: ${{ github.repository }}',
@@ -1100,20 +1116,20 @@ test('verifies compiler-shaped multi-job lock (activation -> agent -> detection 
     '      - name: Agent step',
     '        run: echo "agent"',
     '  detection:',
-    '    needs: [agent]',
-    "    if: ${{ needs.agent.result == 'success' }}",
+    '    needs: [agent, activation]',
+    `    if: ${detectionIf}`,
     '    runs-on: ubuntu-latest',
     '    permissions:',
     '      contents: read',
-    '    outputs:',
-    '      scan_verified: ${{ steps.detect.outputs.scan_verified }}',
+    detectionOutputs,
     '    steps:',
+    detectionHousekeeping,
     '      - name: Threat detection',
-    '        id: detect',
-    '        run: echo "scan_verified=true"',
+    '        id: detection_conclusion',
+    '        run: echo "success=true"',
     '  safe_outputs:',
-    '    needs: [agent, detection]',
-    "    if: ${{ needs.agent.result == 'success' && needs.detection.result == 'success' && needs.detection.outputs.scan_verified == 'true' }}",
+    '    needs: [activation, agent, detection]',
+    `    if: ${safeIf}`,
     '    runs-on: ubuntu-latest',
     '    permissions:',
     '      issues: write',
@@ -1184,6 +1200,35 @@ test('verifies compiler-shaped multi-job lock (activation -> agent -> detection 
     }),
     trustedControlPlaneShas: [unallowlistedSha]
   }).valid, true);
+
+  // Also accept detection_conclusion == 'success' gating on safe_outputs, while rejecting skippable housekeeping or missing agent success!
+  assert.equal(verifyGhAwWorkflowLock({
+    markdownSource: md,
+    lockYamlSource: buildCompilerLock({
+      safeIf: "always() && needs.agent.result == 'success' && needs.detection.result == 'success' && needs.detection.outputs.detection_conclusion == 'success'"
+    })
+  }).valid, true);
+
+  assert.equal(verifyGhAwWorkflowLock({
+    markdownSource: md,
+    lockYamlSource: buildCompilerLock({
+      safeIf: "(!cancelled()) && needs.agent.result != 'skipped' && needs.detection.result == 'success' && needs.detection.outputs.detection_success == 'true'"
+    })
+  }).reason, 'MISSING_THREAT_SCAN_GATE');
+
+  assert.equal(verifyGhAwWorkflowLock({
+    markdownSource: md,
+    lockYamlSource: buildCompilerLock({
+      detectionHousekeeping: '      - name: Bad conditional step\n        if: vars.SKIP == \'true\'\n        run: echo "skip"'
+    })
+  }).reason, 'MISSING_THREAT_SCAN_GATE');
+
+  assert.equal(verifyGhAwWorkflowLock({
+    markdownSource: md,
+    lockYamlSource: buildCompilerLock({
+      detectionIf: "failure() && needs.agent.result != 'skipped'"
+    })
+  }).reason, 'MISSING_THREAT_SCAN_GATE');
 
   for (const badShas of [null, ['not-a-sha'], new Array(1)]) {
     assert.equal(verifyGhAwWorkflowLock({
