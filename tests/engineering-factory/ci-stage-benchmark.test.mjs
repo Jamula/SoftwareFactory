@@ -267,7 +267,10 @@ test('evaluateCiCriticalPath computes max(endMs) - eventAtMs across parallel lan
   assert.equal(report.sloMissCount, 1);
   assert.equal(report.failedOrCancelledCount, 1);
   assert.equal(report.incompleteOrMismatchedCount, 2);
-  assert.equal(report.sameHeadRetryCount, 3); // 1 on SHA_D + 2 on SHA_E
+  assert.equal(report.sameHeadRetryCount, 3); // 1 on SHA_D + 2 on SHA_E (1 cold + 1 unattributed)
+  assert.equal(report.unattributedRetryCount, 1);
+  assert.equal(report.missingAttemptCount, 2);
+  assert.equal(report.incompleteAttemptHistory, true);
 
   assert.equal(report.cohorts.warm.sampleCount, 3);
   assert.equal(report.cohorts.warm.p50Ms, 55_000);
@@ -284,10 +287,225 @@ test('evaluateCiCriticalPath computes max(endMs) - eventAtMs across parallel lan
   assert.equal(report.cohorts.cold.sloMissCount, 1);
   assert.equal(report.cohorts.cold.failedOrCancelledCount, 1);
   assert.equal(report.cohorts.cold.incompleteOrMismatchedCount, 1);
-  assert.equal(report.cohorts.cold.sameHeadRetryCount, 2);
+  assert.equal(report.cohorts.cold.sameHeadRetryCount, 1);
   assert.equal(report.cohorts.cold.lanes.linux.targetMissCount, 1);
   assert.equal(report.cohorts.cold.lanes.windows.targetMissCount, 1);
   assert.equal(report.cohorts.cold.lanes.security.targetMissCount, 0);
+});
+
+test('evaluateCiCriticalPath isolates required-check critical path from slow optional checks, requires explicit independentReviewHeadSha, and aggregates same-head attempts order-invariantly', () => {
+  // 1 & 3: Mandatory checks finish at 30s while slow optional advisory finishes at 120s;
+  // independentReviewAtMs without independentReviewHeadSha stays null (unknown head).
+  const optionalSlowReport = evaluateCiCriticalPath([
+    {
+      runId: 'warm-30s-required-120s-optional',
+      headSha: SHA_A,
+      cacheCohort: 'warm',
+      eventAtMs: 0,
+      independentReviewAtMs: 45_000, // missing independentReviewHeadSha -> must NOT be credited
+      checks: [
+        ...makePassingChecks(SHA_A, 0, {
+          linuxStart: 1_000,
+          linuxBuildEnd: 28_000,
+          coverageQueued: 15_000,
+          coverageStart: 16_000,
+          coverageEnd: 22_000,
+          windowsStart: 2_000,
+          windowsEnd: 30_000,
+          securityStart: 1_500,
+          securityEnd: 27_000
+        }),
+        {
+          context: 'slow-optional-benchmark',
+          lane: 'windows',
+          headSha: SHA_A,
+          conclusion: 'success',
+          queuedAtMs: 10_000,
+          startedAtMs: 25_000,
+          completedAtMs: 120_000
+        }
+      ]
+    },
+    {
+      runId: 'warm-null-review-head',
+      headSha: SHA_B,
+      cacheCohort: 'warm',
+      eventAtMs: 0,
+      independentReviewAtMs: 40_000,
+      independentReviewHeadSha: null, // explicit null review head -> unknown
+      checks: makePassingChecks(SHA_B, 0, {
+        linuxStart: 1_000,
+        linuxBuildEnd: 25_000,
+        coverageQueued: 12_000,
+        coverageStart: 13_000,
+        coverageEnd: 20_000,
+        windowsStart: 2_000,
+        windowsEnd: 29_000,
+        securityStart: 1_500,
+        securityEnd: 26_000
+      })
+    }
+  ]);
+
+  assert.equal(optionalSlowReport.valid, true);
+  assert.equal(optionalSlowReport.sampleCount, 2);
+  assert.equal(optionalSlowReport.p50Ms, 29_000);
+  assert.equal(optionalSlowReport.p95Ms, 30_000);
+  assert.equal(optionalSlowReport.sloMissCount, 0);
+  assert.equal(optionalSlowReport.p50MeetsStandardTarget, true);
+  assert.equal(optionalSlowReport.p50MeetsStretchTarget, true);
+  assert.equal(optionalSlowReport.independentReviewMs.sampleCount, 0);
+  assert.equal(optionalSlowReport.independentReviewMs.p50Ms, null);
+
+  const firstRun = optionalSlowReport.runs[0];
+  assert.equal(firstRun.eventToLastRequiredCheckMs, 30_000);
+  assert.equal(firstRun.allObservedChecksDurationMs, 120_000);
+  assert.equal(firstRun.firstJobStartToLastCheckMs, 29_000);
+  assert.equal(firstRun.runnerQueueWaitMs, 2_000);
+  assert.equal(firstRun.lanes.windows.durationMs, 30_000);
+  assert.equal(firstRun.meetsStandardSlo, true);
+  assert.equal(firstRun.meetsFastFeedbackStretch, true);
+  assert.equal(firstRun.independentReviewMs, null);
+  assert.equal(firstRun.mergeReadinessCriticalPathMs, null);
+  assert.equal(optionalSlowReport.runs[1].independentReviewMs, null);
+
+  // Custom stricter policy requiredCheckContexts includes extra required context in critical path
+  const customRequired = evaluateCiCriticalPath(
+    [
+      {
+        runId: 'custom-policy-run',
+        headSha: SHA_A,
+        cacheCohort: 'warm',
+        eventAtMs: 0,
+        checks: [
+          ...makePassingChecks(SHA_A, 0, {
+            linuxBuildEnd: 28_000,
+            windowsEnd: 30_000,
+            securityEnd: 27_000
+          }),
+          {
+            context: 'consumer-e2e',
+            lane: 'linux',
+            headSha: SHA_A,
+            conclusion: 'success',
+            queuedAtMs: 0,
+            startedAtMs: 2_000,
+            completedAtMs: 80_000
+          }
+        ]
+      }
+    ],
+    [...MANDATORY_CI_CHECK_CONTEXTS, 'consumer-e2e']
+  );
+  assert.equal(customRequired.valid, true);
+  assert.equal(customRequired.p50Ms, 80_000);
+  assert.equal(customRequired.sloMissCount, 1);
+
+  for (const badRequired of [
+    null,
+    ['build-test', 'upload-coverage-javascript', 'windows-aspire-runtime'], // missing CodeQL
+    [...MANDATORY_CI_CHECK_CONTEXTS, 'CodeQL'], // duplicate
+    [...MANDATORY_CI_CHECK_CONTEXTS, '']
+  ]) {
+    assert.equal(evaluateCiCriticalPath([
+      {
+        runId: 'r1',
+        headSha: SHA_A,
+        cacheCohort: 'warm',
+        eventAtMs: 0,
+        checks: makePassingChecks(SHA_A, 0)
+      }
+    ], badRequired).reason, 'REQUIRED_CONTEXTS_INVALID');
+  }
+
+  // 4: Order-invariant per-head retry aggregation on incomplete [1, 3] vs [3, 1] and tied attempts
+  const attempt1Cold = {
+    runId: 'head-d-attempt-1',
+    headSha: SHA_D,
+    cacheCohort: 'cold',
+    eventAtMs: 1_000,
+    attempt: 1,
+    checks: [
+      ...makePassingChecks(SHA_D, 1_000).slice(0, 3),
+      {
+        context: 'CodeQL',
+        lane: 'security',
+        headSha: SHA_D,
+        conclusion: 'timed_out',
+        queuedAtMs: 1_000,
+        startedAtMs: 2_000,
+        completedAtMs: 60_000
+      }
+    ]
+  };
+  const attempt3Warm = {
+    runId: 'head-d-attempt-3',
+    headSha: SHA_D,
+    cacheCohort: 'warm',
+    eventAtMs: 90_000,
+    attempt: 3,
+    checks: makePassingChecks(SHA_D, 90_000, {
+      linuxBuildEnd: 40_000,
+      windowsEnd: 48_000,
+      securityEnd: 44_000
+    })
+  };
+  const sameTimestampA = {
+    runId: 'head-e-run-a',
+    headSha: SHA_E,
+    cacheCohort: 'cold',
+    eventAtMs: 5_000,
+    checks: makePassingChecks(SHA_E, 5_000, {windowsEnd: 50_000})
+  };
+  const sameTimestampB = {
+    runId: 'head-e-run-b',
+    headSha: SHA_E,
+    cacheCohort: 'warm',
+    eventAtMs: 5_000,
+    checks: makePassingChecks(SHA_E, 5_000, {windowsEnd: 42_000})
+  };
+  const diffTimestampA = {
+    runId: 'head-f-early',
+    headSha: SHA_F,
+    cacheCohort: 'cold',
+    eventAtMs: 2_000,
+    checks: makePassingChecks(SHA_F, 2_000, {windowsEnd: 52_000})
+  };
+  const diffTimestampB = {
+    runId: 'head-f-late',
+    headSha: SHA_F,
+    cacheCohort: 'warm',
+    eventAtMs: 8_000,
+    checks: makePassingChecks(SHA_F, 8_000, {windowsEnd: 45_000})
+  };
+
+  const forward = evaluateCiCriticalPath([
+    attempt1Cold, attempt3Warm, sameTimestampA, sameTimestampB, diffTimestampA, diffTimestampB
+  ]);
+  const reversed = evaluateCiCriticalPath([
+    diffTimestampB, diffTimestampA, sameTimestampB, sameTimestampA, attempt3Warm, attempt1Cold
+  ]);
+
+  assert.equal(forward.sameHeadRetryCount, 4); // 2 on SHA_D + 1 on SHA_E + 1 on SHA_F
+  assert.equal(forward.unattributedRetryCount, 1); // missing attempt 2 on SHA_D
+  assert.equal(forward.missingAttemptCount, 1);
+  assert.equal(forward.incompleteAttemptHistory, true);
+  assert.equal(forward.cohorts.cold.sameHeadRetryCount, 0); // initial attempts never miscounted as retries
+  assert.equal(forward.cohorts.warm.sameHeadRetryCount, 3);
+
+  assert.equal(reversed.sameHeadRetryCount, forward.sameHeadRetryCount);
+  assert.equal(reversed.unattributedRetryCount, forward.unattributedRetryCount);
+  assert.equal(reversed.missingAttemptCount, forward.missingAttemptCount);
+  assert.equal(reversed.incompleteAttemptHistory, forward.incompleteAttemptHistory);
+  assert.deepEqual(reversed.cohorts, forward.cohorts);
+  assert.equal(reversed.p50Ms, forward.p50Ms);
+  assert.equal(reversed.p95Ms, forward.p95Ms);
+
+  const forwardById = new Map(forward.runs.map(r => [r.runId, r]));
+  const reversedById = new Map(reversed.runs.map(r => [r.runId, r]));
+  for (const id of forwardById.keys()) {
+    assert.deepEqual(reversedById.get(id), forwardById.get(id));
+  }
 });
 
 test('evaluateCiCriticalPath fails closed on proxies, non-plain objects, non-data descriptors, duplicates, and malformed checks', () => {
@@ -588,6 +806,7 @@ function makeManifestInput(overrides = {}) {
       dotnet: '10.0.404',
       aspireCli: '17.0.0'
     },
+    packageJsonSha256: hashLockedContent('{"name":"softwarefactory","private":true}'),
     packageLockSha256: hashLockedContent('{"name":"softwarefactory","lockfileVersion":3}'),
     globalJsonSha256: hashLockedContent('{"sdk":{"version":"10.0.404","rollForward":"disable"}}'),
     appHostSha256: hashLockedContent('#:package Aspire.Hosting.AppHost@17.0.0'),
@@ -627,7 +846,14 @@ test('buildExactInputCacheManifest derives deterministic SHA-256 keys, enforces 
   assert.equal(winMain.entries.nuget.nugetLockBound, true);
   assert.deepEqual(winMain, win32Alias);
 
-  // Every input digest rotation changes its exact target key deterministically
+  // Every input digest rotation (including package.json-only with identical lockfile) changes its exact target key
+  const manifestOnlyChanged = buildExactInputCacheManifest(
+    makeManifestInput({packageJsonSha256: '7'.repeat(64)})
+  );
+  assert.notEqual(manifestOnlyChanged.keys.npm, linuxPr.keys.npm);
+  assert.notEqual(manifestOnlyChanged.entries.npm.inputSha256, linuxPr.entries.npm.inputSha256);
+  assert.equal(manifestOnlyChanged.keys.nuget, linuxPr.keys.nuget);
+
   const lockChanged = buildExactInputCacheManifest(makeManifestInput({packageLockSha256: '1'.repeat(64)}));
   assert.notEqual(lockChanged.keys.npm, linuxPr.keys.npm);
   assert.equal(lockChanged.keys.nuget, linuxPr.keys.nuget);
@@ -697,7 +923,23 @@ test('buildExactInputCacheManifest derives deterministic SHA-256 keys, enforces 
   assert.equal(forkDenied.allowProtectedCacheWrite, false);
   assert.equal(forkDenied.reuseEligible, false);
 
-  // Digest mismatch on nugetLockSha256 or observed entry invalidates reuse fail-closed
+  // Digest mismatch on packageJsonSha256, nugetLockSha256, or observed entry invalidates reuse fail-closed
+  const packageJsonMismatch = buildExactInputCacheManifest(makeManifestInput({
+    packageJsonSha256: '7'.repeat(64),
+    observedCache: {npm: makeObserved(linuxPr, 'npm')}
+  }));
+  assert.equal(packageJsonMismatch.valid, false);
+  assert.equal(packageJsonMismatch.reason, 'DIGEST_MISMATCH');
+  assert.equal(packageJsonMismatch.reuseEligible, false);
+
+  const omittedPackageJson = makeManifestInput();
+  delete omittedPackageJson.packageJsonSha256;
+  const missingManifestDenied = buildExactInputCacheManifest(omittedPackageJson);
+  assert.equal(missingManifestDenied.valid, false);
+  assert.equal(missingManifestDenied.reason, 'MANIFEST_INPUT_INVALID');
+  assert.equal(missingManifestDenied.reuseEligible, false);
+  assert.equal(missingManifestDenied.allowProtectedCacheWrite, false);
+
   const nugetLockMismatch = buildExactInputCacheManifest(makeManifestInput({
     nugetLockSha256: '6'.repeat(64),
     observedCache: {nuget: makeObserved(nugetLockAdded, 'nuget')}

@@ -220,6 +220,9 @@ function ciCriticalPathBlocked(reason) {
     failedOrCancelledCount: 0,
     incompleteOrMismatchedCount: 0,
     sameHeadRetryCount: 0,
+    unattributedRetryCount: 0,
+    missingAttemptCount: 0,
+    incompleteAttemptHistory: false,
     firstJobStartToLastCheckMs: {p50Ms: null, p95Ms: null},
     runnerQueueWaitMs: {p50Ms: null, p95Ms: null},
     independentReviewMs: {sampleCount: 0, p50Ms: null, p95Ms: null},
@@ -260,18 +263,19 @@ function validateCheck(check, eventAtMs) {
   return null;
 }
 
-export function evaluateCiCriticalPath(runs) {
+export function evaluateCiCriticalPath(runs, requiredCheckContexts = MANDATORY_CI_CHECK_CONTEXTS) {
+  if (!isExactArray(requiredCheckContexts, 32) ||
+      !requiredCheckContexts.every(isContextName) ||
+      new Set(requiredCheckContexts).size !== requiredCheckContexts.length ||
+      !MANDATORY_CI_CHECK_CONTEXTS.every(ctx => requiredCheckContexts.includes(ctx))) {
+    return ciCriticalPathBlocked('REQUIRED_CONTEXTS_INVALID');
+  }
   if (!isExactArray(runs, 2000) || runs.length === 0) {
     return ciCriticalPathBlocked('RUNS_INVALID');
   }
+
   const seenRunIds = new Set();
-  const seenHeads = new Set();
-  const overall = createCohortAccumulator('all');
-  const cohortBuckets = {
-    cold: createCohortAccumulator('cold'),
-    warm: createCohortAccumulator('warm')
-  };
-  const evaluatedRuns = [];
+  const normalizedRuns = [];
 
   for (const run of runs) {
     if (!isPlainDataObject(run, RUN_REQUIRED_KEYS, RUN_OPTIONAL_KEYS) ||
@@ -305,26 +309,95 @@ export function evaluateCiCriticalPath(runs) {
       byContext.set(check.context, check);
     }
 
-    const retryDelta = seenHeads.has(run.headSha) ? 1 : attempt - 1;
-    seenHeads.add(run.headSha);
+    normalizedRuns.push({
+      run,
+      attempt,
+      hasReviewTime,
+      hasReviewHead,
+      byContext
+    });
+  }
 
+  const runsByHead = new Map();
+  for (const entry of normalizedRuns) {
+    let group = runsByHead.get(entry.run.headSha);
+    if (group === undefined) {
+      group = [];
+      runsByHead.set(entry.run.headSha, group);
+    }
+    group.push(entry);
+  }
+
+  let unattributedRetryCount = 0;
+  let missingAttemptCount = 0;
+  const retryMetaByRunId = new Map();
+
+  for (const group of runsByHead.values()) {
+    group.sort((a, b) =>
+      a.attempt - b.attempt ||
+      a.run.eventAtMs - b.run.eventAtMs ||
+      a.run.runId.localeCompare(b.run.runId)
+    );
+    let prevAttempt = 0;
+    for (let i = 0; i < group.length; i++) {
+      const current = group[i];
+      if (i === 0) {
+        const observedRetry = current.attempt > 1 ? 1 : 0;
+        const missingPriorAttempts = current.attempt - 1;
+        const unattributed = current.attempt > 2 ? current.attempt - 2 : 0;
+        unattributedRetryCount += unattributed;
+        missingAttemptCount += missingPriorAttempts;
+        retryMetaByRunId.set(current.run.runId, {
+          observedRetry,
+          unattributedRetryGap: unattributed,
+          missingPriorAttempts
+        });
+      } else {
+        const gap = current.attempt > prevAttempt ? current.attempt - prevAttempt - 1 : 0;
+        unattributedRetryCount += gap;
+        missingAttemptCount += gap;
+        retryMetaByRunId.set(current.run.runId, {
+          observedRetry: 1,
+          unattributedRetryGap: gap,
+          missingPriorAttempts: gap
+        });
+      }
+      if (current.attempt > prevAttempt) {
+        prevAttempt = current.attempt;
+      }
+    }
+  }
+
+  const requiredContextSet = new Set(requiredCheckContexts);
+  const overall = createCohortAccumulator('all');
+  overall.sameHeadRetryCount += unattributedRetryCount;
+  const cohortBuckets = {
+    cold: createCohortAccumulator('cold'),
+    warm: createCohortAccumulator('warm')
+  };
+  const evaluatedRuns = [];
+
+  for (const {run, hasReviewTime, hasReviewHead, byContext} of normalizedRuns) {
+    const retryMeta = retryMetaByRunId.get(run.runId);
     const bucket = cohortBuckets[run.cacheCohort];
-    overall.sameHeadRetryCount += retryDelta;
-    bucket.sameHeadRetryCount += retryDelta;
+    overall.sameHeadRetryCount += retryMeta.observedRetry;
+    bucket.sameHeadRetryCount += retryMeta.observedRetry;
 
     const hasFailedOrCancelled = run.checks.some(
-      check => check.headSha === run.headSha && FAILURE_CONCLUSIONS.has(check.conclusion)
+      check => requiredContextSet.has(check.context) &&
+        check.headSha === run.headSha &&
+        FAILURE_CONCLUSIONS.has(check.conclusion)
     );
     const allHeadAligned = run.checks.every(check => check.headSha === run.headSha);
-    const mandatoryPassed = allHeadAligned && MANDATORY_CI_CHECK_CONTEXTS.every(ctx => {
+    const mandatoryPassed = allHeadAligned && requiredCheckContexts.every(ctx => {
       const item = byContext.get(ctx);
       return item !== undefined && item.conclusion === 'success';
     });
 
-    const reviewHeadMatches = !hasReviewHead || run.independentReviewHeadSha === run.headSha;
-    const independentReviewMs = hasReviewTime && reviewHeadMatches
-      ? run.independentReviewAtMs - run.eventAtMs
-      : null;
+    const independentReviewMs =
+      hasReviewTime && hasReviewHead && run.independentReviewHeadSha === run.headSha
+        ? run.independentReviewAtMs - run.eventAtMs
+        : null;
 
     if (hasFailedOrCancelled) {
       overall.failedOrCancelledCount++;
@@ -335,10 +408,12 @@ export function evaluateCiCriticalPath(runs) {
         cacheCohort: run.cacheCohort,
         status: 'failed-or-cancelled',
         eligibleSample: false,
-        sameHeadRetryCount: retryDelta,
+        sameHeadRetryCount: retryMeta.observedRetry,
+        missingPriorAttempts: retryMeta.missingPriorAttempts,
         gateWaived: false,
         cancelledBySlo: false,
         eventToLastRequiredCheckMs: null,
+        allObservedChecksDurationMs: null,
         firstJobStartToLastCheckMs: null,
         runnerQueueWaitMs: null,
         independentReviewMs,
@@ -359,10 +434,12 @@ export function evaluateCiCriticalPath(runs) {
         cacheCohort: run.cacheCohort,
         status: 'incomplete-or-head-mismatch',
         eligibleSample: false,
-        sameHeadRetryCount: retryDelta,
+        sameHeadRetryCount: retryMeta.observedRetry,
+        missingPriorAttempts: retryMeta.missingPriorAttempts,
         gateWaived: false,
         cancelledBySlo: false,
         eventToLastRequiredCheckMs: null,
+        allObservedChecksDurationMs: null,
         firstJobStartToLastCheckMs: null,
         runnerQueueWaitMs: null,
         independentReviewMs,
@@ -374,16 +451,19 @@ export function evaluateCiCriticalPath(runs) {
       continue;
     }
 
-    const activeChecks = run.checks.filter(check => check.conclusion === 'success');
-    const firstJobStartMs = Math.min(...activeChecks.map(check => check.startedAtMs));
-    const lastCheckEndMs = Math.max(...activeChecks.map(check => check.completedAtMs));
+    const requiredChecks = requiredCheckContexts.map(ctx => byContext.get(ctx));
+    const firstJobStartMs = Math.min(...requiredChecks.map(check => check.startedAtMs));
+    const lastCheckEndMs = Math.max(...requiredChecks.map(check => check.completedAtMs));
     const eventToLastRequiredCheckMs = lastCheckEndMs - run.eventAtMs;
     const firstJobStartToLastCheckMs = lastCheckEndMs - firstJobStartMs;
-    const runnerQueueWaitMs = Math.max(...activeChecks.map(check => check.startedAtMs - check.queuedAtMs));
+    const runnerQueueWaitMs = Math.max(...requiredChecks.map(check => check.startedAtMs - check.queuedAtMs));
+    const completedChecks = run.checks.filter(check => check.completedAtMs !== null);
+    const allObservedChecksDurationMs =
+      Math.max(...completedChecks.map(check => check.completedAtMs)) - run.eventAtMs;
 
     const lanes = {};
     for (const lane of CI_LANES) {
-      const laneChecks = activeChecks.filter(check => check.lane === lane);
+      const laneChecks = requiredChecks.filter(check => check.lane === lane);
       const laneEndMs = Math.max(...laneChecks.map(check => check.completedAtMs));
       const durationMs = laneEndMs - run.eventAtMs;
       lanes[lane] = {
@@ -427,10 +507,12 @@ export function evaluateCiCriticalPath(runs) {
       cacheCohort: run.cacheCohort,
       status: 'eligible',
       eligibleSample: true,
-      sameHeadRetryCount: retryDelta,
+      sameHeadRetryCount: retryMeta.observedRetry,
+      missingPriorAttempts: retryMeta.missingPriorAttempts,
       gateWaived: false,
       cancelledBySlo: false,
       eventToLastRequiredCheckMs,
+      allObservedChecksDurationMs,
       firstJobStartToLastCheckMs,
       runnerQueueWaitMs,
       independentReviewMs,
@@ -451,7 +533,7 @@ export function evaluateCiCriticalPath(runs) {
       fastFeedbackStretchMs: FAST_FEEDBACK_STRETCH_MS,
       laneTargetMs: LANE_TARGET_MS
     },
-    mandatoryCheckContexts: [...MANDATORY_CI_CHECK_CONTEXTS],
+    mandatoryCheckContexts: [...requiredCheckContexts],
     sloIsTimeoutOrGateWaiver: false,
     fullVerificationRequired: true,
     skipRequiredChecks: false,
@@ -464,6 +546,9 @@ export function evaluateCiCriticalPath(runs) {
     failedOrCancelledCount: summary.failedOrCancelledCount,
     incompleteOrMismatchedCount: summary.incompleteOrMismatchedCount,
     sameHeadRetryCount: summary.sameHeadRetryCount,
+    unattributedRetryCount,
+    missingAttemptCount,
+    incompleteAttemptHistory: missingAttemptCount > 0,
     firstJobStartToLastCheckMs: summary.firstJobStartToLastCheckMs,
     runnerQueueWaitMs: summary.runnerQueueWaitMs,
     independentReviewMs: summary.independentReviewMs,
@@ -596,10 +681,10 @@ export function analyzeAspireRuntimeStages(stageSample) {
 const MANIFEST_REQUIRED_KEYS = [
   'repositoryId', 'repository', 'trustedSource', 'isFork',
   'os', 'arch', 'toolchain',
-  'packageLockSha256', 'globalJsonSha256', 'appHostSha256'
+  'packageJsonSha256', 'packageLockSha256', 'globalJsonSha256', 'appHostSha256'
 ];
 const MANIFEST_OPTIONAL_KEYS = [
-  'branchProtected', 'packageJsonSha256', 'nugetLockSha256', 'observedCache'
+  'branchProtected', 'nugetLockSha256', 'observedCache'
 ];
 const OBSERVED_CACHE_TARGETS = ['npm', 'nuget', 'aspire-cli'];
 const OBSERVED_ENTRY_KEYS = [
@@ -649,12 +734,6 @@ export function buildExactInputCacheManifest(input) {
     return manifestBlocked('INVALID_DIGEST');
   }
 
-  const packageJsonDigest = Object.hasOwn(input, 'packageJsonSha256')
-    ? input.packageJsonSha256
-    : (isSha256(input.packageLockSha256)
-      ? sha256Hex(['package-lock-bound-manifest', input.packageLockSha256])
-      : input.packageLockSha256);
-
   const {rid, normalizedOs} = resolveRunnerRid(input.os, input.arch);
   const ciExpected = {
     repositoryId: input.repositoryId,
@@ -668,7 +747,7 @@ export function buildExactInputCacheManifest(input) {
     dotnet: input.toolchain.dotnet,
     apphostConfiguration: PINNED_APPHOST_CONFIGURATION,
     aspire: input.toolchain.aspireCli,
-    packageJsonDigest,
+    packageJsonDigest: input.packageJsonSha256,
     packageLockDigest: input.packageLockSha256,
     apphostDigest: input.appHostSha256,
     globalJsonDigest: input.globalJsonSha256
