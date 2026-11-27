@@ -233,6 +233,17 @@ test('planUnifiedWorkQueue bridges shadow-runtime tasks with planner.mjs lanes, 
     shadowInput: {...shadowInput, tasks: [{id: 1, priority: 0, state: 'invalid', dependencies: [], paths: ['docs/a.md']}]},
     nowMs: 0
   }).reason, 'INVALID_TASKS');
+
+  // Regression: malformed task.dependencies (null, number, empty string, sparse array, revoked proxy) must fail closed without throwing
+  const revokedDeps = Proxy.revocable([], {});
+  revokedDeps.revoke();
+  for (const badDeps of [null, 42, '', new Array(1), revokedDeps.proxy]) {
+    assert.equal(planUnifiedWorkQueue({
+      config,
+      shadowInput: {...shadowInput, tasks: [{id: 1, priority: 0, state: 'approved', dependencies: badDeps, paths: ['docs/a.md']}]},
+      nowMs: 0
+    }).reason, 'INVALID_TASKS');
+  }
   assert.equal(planUnifiedWorkQueue({
     config,
     shadowInput: {...shadowInput, tasks: [{id: 1, priority: 0, state: 'approved', dependencies: [], paths: ['unowned/file.mjs']}]},
@@ -528,33 +539,52 @@ test('reconcileWorkQueueRunStates handles launch_failed, worker_terminated, run_
   });
   const c4 = await claimWorkQueueLease({
     refStore, config, nowMs: 1000,
-    candidate: makeIssueCandidate({issueNumber: 4, lane: 'l4', ownedPaths: ['src/d/4.mjs'], runId: 104, leaseTtlMs: 5000, maxExecutionMs: 10000})
+    candidate: makeIssueCandidate({issueNumber: 4, lane: 'l4', ownedPaths: ['src/d/4.mjs'], runId: 104, runAttempt: 2, leaseTtlMs: 5000, maxExecutionMs: 10000})
   });
+  assert.equal(c4.ok, true);
+  assert.equal(c4.lease.runAttempt, 2);
 
   // Emergency stop blocks crash recovery mutations
   const stopped = await reconcileWorkQueueRunStates({
     refStore,
-    observedRuns: [{workId: c1.lease.workId, runId: 101, runState: 'launch_failed'}],
+    observedRuns: [{workId: c1.lease.workId, runId: 101, runAttempt: 1, leaseGeneration: c1.lease.generation, runState: 'launch_failed'}],
     nowMs: 2000,
     stop: true
   });
   assert.equal(stopped.ok, false);
   assert.equal(stopped.reason, 'STOPPED');
 
+  // Config-level stop also blocks crash recovery mutations; invalid config fails closed
+  assert.equal((await reconcileWorkQueueRunStates({
+    refStore,
+    config: {},
+    observedRuns: [],
+    nowMs: 2000
+  })).reason, 'INVALID_PROJECT_CONFIG');
+  assert.equal((await reconcileWorkQueueRunStates({
+    refStore,
+    config: makeConfig({execution: {enabled: true, mode: 'shadow', stop: true}}),
+    observedRuns: [],
+    nowMs: 2000
+  })).reason, 'STOPPED');
+
   // Reconcile all 4 states + expired c4 + unknown workId
   const reconciled = await reconcileWorkQueueRunStates({
     refStore,
+    config,
     observedRuns: [
-      {workId: c1.lease.workId, runId: 101, runState: 'launch_failed'},
-      {workId: c2.lease.workId, runId: 102, runState: 'worker_terminated'},
-      {workId: c3.lease.workId, runId: 103, runState: 'run_terminal', conclusion: 'success'},
-      {workId: `${REPO_ID}:issue:999`, runId: 999, runState: 'run_missing'}
+      {workId: c1.lease.workId, runId: 101, runAttempt: 1, leaseGeneration: c1.lease.generation, runState: 'launch_failed'},
+      {workId: c2.lease.workId, runId: 102, runAttempt: 1, leaseGeneration: c2.lease.generation, runState: 'worker_terminated'},
+      {workId: c3.lease.workId, runId: 103, runAttempt: 1, leaseGeneration: c3.lease.generation, runState: 'run_terminal', conclusion: 'success'},
+      {workId: `${REPO_ID}:issue:999`, runId: 999, runAttempt: 1, leaseGeneration: 1, runState: 'run_missing'}
     ],
     nowMs: 7000
   });
   assert.equal(reconciled.ok, true);
   assert.equal(reconciled.reason, 'ORPHANS_RECLAIMED');
   assert.equal(reconciled.receipts.length, 4);
+  assert.equal(reconciled.receipts[3].workId, c4.lease.workId);
+  assert.equal(reconciled.receipts[3].previousRunAttempt, 2);
   assert.equal(reconciled.skipped.length, 1);
   assert.equal(reconciled.skipped[0].reason, 'UNKNOWN_WORK_ID');
 
@@ -573,52 +603,118 @@ test('reconcileWorkQueueRunStates handles launch_failed, worker_terminated, run_
     nowMs: 7500
   })).reason, 'STALE_GENERATION');
 
-  // Re-claim c1 for attempt 2 of 2, then crash with run_missing -> transitions to exhausted!
+  // Re-claim c1 for attempt 2 of 2 (reusing runId 201, runAttempt 2), verify runAttempt & leaseGeneration matching
   const retryClaim = await claimWorkQueueLease({
     refStore, config, nowMs: 8000,
-    candidate: makeIssueCandidate({issueNumber: 1, lane: 'l1', ownedPaths: ['src/a/1.mjs'], runId: 201})
+    candidate: makeIssueCandidate({issueNumber: 1, lane: 'l1', ownedPaths: ['src/a/1.mjs'], runId: 201, runAttempt: 2, leaseTtlMs: 3000, maxExecutionMs: 20000})
   });
   assert.equal(retryClaim.ok, true);
   assert.equal(retryClaim.lease.attempts, 2);
   assert.equal(retryClaim.lease.generation, 9);
+  assert.equal(retryClaim.lease.runAttempt, 2);
 
-  // Stale run report for old runId 101 is ignored without disturbing active runId 201
-  const staleReport = await reconcileWorkQueueRunStates({
-    refStore,
-    observedRuns: [{workId: c1.lease.workId, runId: 101, runState: 'worker_terminated'}],
-    nowMs: 8500
-  });
-  assert.equal(staleReport.ok, true);
-  assert.equal(staleReport.reason, 'NO_ORPHANS_DETECTED');
-  assert.equal(staleReport.skipped[0].reason, 'STALE_OR_INACTIVE_RUN');
+  // Same runId 201 with mismatched runAttempt (1 vs 2) or mismatched leaseGeneration (1 vs 9) is rejected as stale!
+  for (const mismatchObs of [
+    {workId: c1.lease.workId, runId: 201, runAttempt: 1, leaseGeneration: retryClaim.lease.generation, runState: 'run_terminal', conclusion: 'success'},
+    {workId: c1.lease.workId, runId: 201, runAttempt: 2, leaseGeneration: c1.lease.generation, runState: 'worker_terminated'}
+  ]) {
+    const staleReport = await reconcileWorkQueueRunStates({
+      refStore,
+      observedRuns: [mismatchObs],
+      nowMs: 8500
+    });
+    assert.equal(staleReport.ok, true);
+    assert.equal(staleReport.reason, 'NO_ORPHANS_DETECTED');
+    assert.equal(staleReport.skipped[0].reason, 'STALE_OR_INACTIVE_RUN');
+  }
 
-  // Now runId 201 goes run_missing -> attempts (2) >= maxAttempts (2) -> exhausted!
-  const exhaustedRec = await reconcileWorkQueueRunStates({
+  // Regression: once retryClaim's lease expires (t=12000 >= 11000), a stale observation for old runId 101
+  // MUST record STALE_OR_INACTIVE_RUN AND still reclaim the expired replacement lease!
+  const stalePlusExpired = await reconcileWorkQueueRunStates({
     refStore,
-    observedRuns: [{workId: c1.lease.workId, runId: 201, runState: 'run_missing'}],
-    nowMs: 9000
+    observedRuns: [{workId: c1.lease.workId, runId: 101, runAttempt: 1, leaseGeneration: c1.lease.generation, runState: 'worker_terminated'}],
+    nowMs: 12000
   });
-  assert.equal(exhaustedRec.ok, true);
-  assert.equal(exhaustedRec.receipts[0].outcome, 'exhausted');
+  assert.equal(stalePlusExpired.ok, true);
+  assert.equal(stalePlusExpired.reason, 'ORPHANS_RECLAIMED');
+  assert.equal(stalePlusExpired.skipped.length, 1);
+  assert.equal(stalePlusExpired.skipped[0].reason, 'STALE_OR_INACTIVE_RUN');
+  assert.equal(stalePlusExpired.receipts.length, 1);
+  assert.equal(stalePlusExpired.receipts[0].runState, 'lease_expired');
+  assert.equal(stalePlusExpired.receipts[0].outcome, 'exhausted');
 
   // Further claim on c1 fails closed with RETRY_CEILING_EXHAUSTED
   assert.equal((await claimWorkQueueLease({
-    refStore, config, nowMs: 9500,
+    refStore, config, nowMs: 12500,
     candidate: makeIssueCandidate({issueNumber: 1, lane: 'l1', ownedPaths: ['src/a/1.mjs'], runId: 301})
   })).reason, 'RETRY_CEILING_EXHAUSTED');
 
-  // Also verify run_terminal with failure conclusion on c2
+  // Regression: terminal 'success' arriving AFTER leaseExpiresAtMs (even before executionDeadlineMs)
+  // MUST NOT mark completed — it must reclaim as lease_expired!
   const c2Retry = await claimWorkQueueLease({
-    refStore, config, nowMs: 9500,
-    candidate: makeIssueCandidate({issueNumber: 2, lane: 'l2', ownedPaths: ['src/b/2.mjs'], runId: 202})
+    refStore, config, nowMs: 13000,
+    candidate: makeIssueCandidate({issueNumber: 2, lane: 'l2', ownedPaths: ['src/b/2.mjs'], runId: 202, leaseTtlMs: 2000, maxExecutionMs: 20000})
   });
   assert.equal(c2Retry.ok, true);
-  const c2FailedTerminal = await reconcileWorkQueueRunStates({
+  const lateTerminalSuccess = await reconcileWorkQueueRunStates({
     refStore,
-    observedRuns: [{workId: c2.lease.workId, runId: 202, runState: 'run_terminal', conclusion: 'failure'}],
-    nowMs: 10000
+    observedRuns: [{
+      workId: c2Retry.lease.workId,
+      runId: 202,
+      runAttempt: 1,
+      leaseGeneration: c2Retry.lease.generation,
+      runState: 'run_terminal',
+      conclusion: 'success'
+    }],
+    nowMs: 16000
   });
-  assert.equal(c2FailedTerminal.receipts[0].outcome, 'exhausted');
+  assert.equal(lateTerminalSuccess.ok, true);
+  assert.equal(lateTerminalSuccess.receipts[0].runState, 'lease_expired');
+  assert.equal(lateTerminalSuccess.receipts[0].outcome, 'exhausted');
+
+  // Regression: candidate maxAttempts > config.limits.maxAttempts is rejected, and tightened config.limits.maxAttempts clamps reclamation
+  const strictOneAttemptCfg = makeConfig({
+    limits: {maxConcurrentLanes: 4, leaseMs: 60000, maxAttempts: 1, baseDelayMs: 100, maxDelayMs: 1000},
+    lanes: config.lanes
+  });
+  assert.equal((await claimWorkQueueLease({
+    refStore,
+    config: strictOneAttemptCfg,
+    nowMs: 17000,
+    candidate: makeIssueCandidate({issueNumber: 90, lane: 'l4', ownedPaths: ['src/d/90.mjs'], maxAttempts: 3})
+  })).reason, 'RETRY_CEILING_EXCEEDED');
+
+  // c4 was requeued with attempts=1, maxAttempts=2 under earlier config; re-claiming under strictOneAttemptCfg rejects with RETRY_CEILING_EXHAUSTED!
+  assert.equal((await claimWorkQueueLease({
+    refStore,
+    config: strictOneAttemptCfg,
+    nowMs: 17000,
+    candidate: makeIssueCandidate({issueNumber: 4, lane: 'l4', ownedPaths: ['src/d/4.mjs'], runId: 404})
+  })).reason, 'RETRY_CEILING_EXHAUSTED');
+
+  // Claim fresh task 91 under 2-attempt config, then reconcile failure under strictOneAttemptCfg -> clamped to exhausted!
+  const c91 = await claimWorkQueueLease({
+    refStore,
+    config,
+    nowMs: 17000,
+    candidate: makeIssueCandidate({issueNumber: 91, lane: 'l4', ownedPaths: ['src/d/91.mjs'], runId: 910})
+  });
+  assert.equal(c91.ok, true);
+  const clampedReconcile = await reconcileWorkQueueRunStates({
+    refStore,
+    config: strictOneAttemptCfg,
+    observedRuns: [{
+      workId: c91.lease.workId,
+      runId: 910,
+      runAttempt: 1,
+      leaseGeneration: c91.lease.generation,
+      runState: 'run_missing'
+    }],
+    nowMs: 17500
+  });
+  assert.equal(clampedReconcile.ok, true);
+  assert.equal(clampedReconcile.receipts[0].maxAttempts, 1);
+  assert.equal(clampedReconcile.receipts[0].outcome, 'exhausted');
 });
 
 test('retries transient CAS conflicts and fails closed on proxies, store errors, cancelled work, and invalid options', async () => {
@@ -755,7 +851,7 @@ test('retries transient CAS conflicts and fails closed on proxies, store errors,
   })).reason, 'CAS_CONFLICT_EXHAUSTED');
   assert.equal((await reconcileWorkQueueRunStates({
     refStore: alwaysConflictStore,
-    observedRuns: [{workId: activeClaim2.lease.workId, runId: 2002, runState: 'worker_terminated'}],
+    observedRuns: [{workId: activeClaim2.lease.workId, runId: 2002, runAttempt: 1, leaseGeneration: activeClaim2.lease.generation, runState: 'worker_terminated'}],
     nowMs: 10500,
     maxCasAttempts: 1
   })).reason, 'CAS_CONFLICT_EXHAUSTED');
@@ -794,7 +890,7 @@ test('retries transient CAS conflicts and fails closed on proxies, store errors,
   })).reason, 'REF_STORE_UNAVAILABLE');
   assert.equal((await reconcileWorkQueueRunStates({
     refStore: throwingWriteStore,
-    observedRuns: [{workId: activeClaim2.lease.workId, runId: 2002, runState: 'worker_terminated'}],
+    observedRuns: [{workId: activeClaim2.lease.workId, runId: 2002, runAttempt: 1, leaseGeneration: activeClaim2.lease.generation, runState: 'worker_terminated'}],
     nowMs: 10500
   })).reason, 'REF_STORE_UNAVAILABLE');
 
@@ -838,12 +934,17 @@ test('retries transient CAS conflicts and fails closed on proxies, store errors,
   })).reason, 'FORCE_UPDATE_FORBIDDEN');
   assert.equal((await reconcileWorkQueueRunStates({
     refStore: backing,
-    observedRuns: [{workId: 'w', runId: 1, runState: 'unknown_state'}],
+    observedRuns: [{workId: 'w', runId: 1, runAttempt: 1, leaseGeneration: 1, runState: 'unknown_state'}],
     nowMs: 1
   })).reason, 'INVALID_RECONCILE_INPUT');
   assert.equal((await reconcileWorkQueueRunStates({
     refStore: backing,
-    observedRuns: [{workId: 'w', runId: 1, runState: 'launch_failed', conclusion: 'failure'}],
+    observedRuns: [{workId: 'w', runId: 1, runAttempt: 1, leaseGeneration: 1, runState: 'launch_failed', conclusion: 'failure'}],
+    nowMs: 1
+  })).reason, 'INVALID_RECONCILE_INPUT');
+  assert.equal((await reconcileWorkQueueRunStates({
+    refStore: backing,
+    observedRuns: [{workId: 'w', runId: 1, runState: 'launch_failed'}],
     nowMs: 1
   })).reason, 'INVALID_RECONCILE_INPUT');
 
@@ -859,6 +960,8 @@ test('retries transient CAS conflicts and fails closed on proxies, store errors,
     [makeIssueCandidate({traceparent: 'invalid'}), 'INVALID_CANDIDATE'],
     [makeIssueCandidate({lockSha256: 'invalid'}), 'INVALID_CANDIDATE'],
     [makeIssueCandidate({maxAttempts: 9}), 'INVALID_CANDIDATE'],
+    [makeIssueCandidate({maxAttempts: 4}), 'RETRY_CEILING_EXCEEDED'],
+    [makeIssueCandidate({runAttempt: 0}), 'INVALID_CANDIDATE'],
     [makeIssueCandidate({pullNumber: 1}), 'INVALID_CANDIDATE'],
     [makePrCandidate({issueNumber: 1}), 'INVALID_CANDIDATE']
   ]) {
@@ -963,6 +1066,7 @@ test('retries transient CAS conflicts and fails closed on proxies, store errors,
       runState: 'worker_terminated',
       conclusion: null,
       previousRunId: 1,
+      previousRunAttempt: 1,
       previousGeneration: 5,
       reclaimedGeneration: 3,
       attempts: 1,
@@ -990,6 +1094,7 @@ test('retries transient CAS conflicts and fails closed on proxies, store errors,
     maxAttempts: 2,
     workerId: 'worker-seed',
     runId: idx + 1,
+    runAttempt: 1,
     claimedAtMs: 100,
     leaseTtlMs: 1000,
     leaseExpiresAtMs: 100,
@@ -1009,6 +1114,7 @@ test('retries transient CAS conflicts and fails closed on proxies, store errors,
       runState: 'worker_terminated',
       conclusion: null,
       previousRunId: 1,
+      previousRunAttempt: 1,
       previousGeneration: 1,
       reclaimedGeneration: 2,
       attempts: 1,

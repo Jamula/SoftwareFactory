@@ -1,3 +1,5 @@
+// Frontmatter canonical JSON hash and # gh-aw-metadata schema match github/gh-aw
+// v1.2.2 (399a445fe2d8926c616b54b1b82a16b5b2be4445, MIT License, Copyright GitHub, Inc.).
 import {createHash} from 'node:crypto';
 import {types} from 'node:util';
 
@@ -16,9 +18,11 @@ const SEMVER_RE = /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const PINNED_USES_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*@[a-f0-9]{40}$/;
 const KEY_RE = /^[A-Za-z0-9_.-]+$/;
 const FORBIDDEN_OBJECT_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+const SUPPORTED_METADATA_SCHEMAS = new Set(['v1', 'v2', 'v3', 'v4']);
 const THREAT_SCAN_JOB_IDS = new Set(['threat-and-policy-scan', 'threat-scan', 'threat_scan', 'policy-scan']);
 const ALLOWED_SAFE_OUTPUT_SCOPES = new Set(['contents', 'issues', 'pull-requests', 'discussions']);
 const FORBIDDEN_SAFE_OUTPUT_WRITES = new Set(['contents', 'workflows', 'actions', 'administration', 'packages', 'id-token', 'security-events', 'statuses', 'checks']);
+const BYPASS_CALL_NAMES = new Set(['always', 'failure', 'cancelled']);
 
 const deny = reason => Object.freeze({
   shadow: true,
@@ -56,21 +60,96 @@ function normalizeText(source) {
   return lf;
 }
 
+function scanTemplateExpressions(markdownBody) {
+  const found = [];
+  let offset = 0;
+  while (offset < markdownBody.length) {
+    const start = markdownBody.indexOf('${{', offset);
+    if (start === -1) break;
+    let inSingle = false;
+    let end = start + 3;
+    while (end < markdownBody.length) {
+      if (markdownBody[end] === "'") {
+        inSingle = !inSingle;
+      } else if (!inSingle && markdownBody[end] === '}' && markdownBody[end + 1] === '}') {
+        break;
+      }
+      end++;
+    }
+    if (end >= markdownBody.length) {
+      offset = start + 3;
+      continue;
+    }
+    found.push({
+      expression: markdownBody.slice(start, end + 2),
+      content: markdownBody.slice(start + 3, end)
+    });
+    offset = end + 2;
+  }
+  return found;
+}
+
+function marshalCanonicalJson(value) {
+  if (Array.isArray(value)) {
+    return `[${value.map(item => marshalCanonicalJson(item)).join(',')}]`;
+  }
+  if (value !== null && typeof value === 'object') {
+    const keys = Object.keys(value).sort();
+    return `{${keys.map(key => `${JSON.stringify(key)}:${marshalCanonicalJson(value[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
 function extractFrontmatterParts(markdownSource) {
   const normalized = normalizeText(markdownSource);
-  if (normalized === null || !normalized.startsWith('---\n')) return null;
-  const match = /^---\n([\s\S]*?)\n---(?:\n|$)/.exec(normalized);
-  if (!match || match[1].trim().length === 0) return null;
+  if (normalized === null) return null;
+  const lines = normalized.split('\n');
+  if (lines[0].trim() !== '---') return null;
+  let endIndex = -1;
+  for (let i = 1; i < lines.length; i++) {
+    if (lines[i].trim() === '---') {
+      endIndex = i;
+      break;
+    }
+  }
+  if (endIndex === -1) return null;
+  const frontmatterText = lines.slice(1, endIndex).join('\n');
+  const markdownBody = lines.slice(endIndex + 1).join('\n');
+  const normalizedFrontmatter = frontmatterText.trim();
+  if (normalizedFrontmatter.length === 0) return null;
+  if (/^imports\s*:/m.test(frontmatterText) || /\{\{#(?:runtime-import|import)\??/.test(markdownBody)) {
+    return null;
+  }
+  const inlinedImports = /^inlined-imports:\s*true\s*$/m.test(frontmatterText);
+  const canonical = {'frontmatter-text': normalizedFrontmatter};
+  if (inlinedImports) {
+    const normalizedBody = markdownBody.trim();
+    if (normalizedBody.length > 0) canonical['body-text'] = normalizedBody;
+  } else {
+    const relevant = [...new Set(
+      scanTemplateExpressions(markdownBody)
+        .filter(item => item.content.includes('env.') || item.content.includes('vars.'))
+        .map(item => item.expression)
+    )].sort();
+    if (relevant.length > 0) canonical['template-expressions'] = relevant;
+  }
   return {
-    innerYaml: match[1],
-    canonicalBlock: `---\n${match[1]}\n---`
+    innerYaml: frontmatterText,
+    normalizedBody: markdownBody.trim(),
+    canonicalJson: marshalCanonicalJson(canonical)
   };
 }
 
 export function computeFrontmatterSha256(markdownSource) {
   const extracted = extractFrontmatterParts(markdownSource);
   if (extracted === null) return null;
-  return createHash('sha256').update(extracted.canonicalBlock, 'utf8').digest('hex');
+  return createHash('sha256').update(extracted.canonicalJson, 'utf8').digest('hex');
+}
+
+export function computeBodySha256(markdownSource) {
+  const extracted = extractFrontmatterParts(markdownSource);
+  if (extracted === null) return null;
+  return createHash('sha256').update(extracted.normalizedBody, 'utf8').digest('hex');
 }
 
 function compareSemver(left, right) {
@@ -161,9 +240,16 @@ function parseScalar(token) {
     return {ok: true, value: list};
   }
   if (token.startsWith("'") && token.endsWith("'") && token.length >= 2) {
-    const body = token.slice(1, -1);
-    const unescaped = body.replace(/''/g, "'");
-    if (body.replace(/''/g, '').includes("'")) return {ok: false};
+    let unescaped = '';
+    for (let i = 1; i < token.length - 1; i++) {
+      if (token[i] === "'") {
+        if (token[i + 1] !== "'" || i + 1 >= token.length - 1) return {ok: false};
+        unescaped += "'";
+        i++;
+      } else {
+        unescaped += token[i];
+      }
+    }
     return {ok: true, value: unescaped};
   }
   if (token.startsWith('"') && token.endsWith('"') && token.length >= 2) {
@@ -365,20 +451,275 @@ function isMapObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-function extractLockHeaders(normalizedLock) {
-  const headers = Object.create(null);
+function extractLockMetadata(normalizedLock) {
+  let metadata = null;
+  let legacyHash = null;
+  const customHeaders = Object.create(null);
   const lines = normalizedLock.split('\n');
   for (const line of lines) {
     const trimmed = line.trim();
     if (trimmed.length === 0) continue;
     if (!trimmed.startsWith('#')) break;
-    const match = /^#\s*(gh-aw-[a-z0-9-]+):\s*(\S+)\s*$/.exec(trimmed);
-    if (match) {
-      if (Object.hasOwn(headers, match[1])) return null;
-      headers[match[1]] = match[2];
+    const commentBody = trimmed.slice(1).trim();
+    if (commentBody.startsWith('gh-aw-metadata:')) {
+      if (metadata !== null) return {ok: false, reason: 'INVALID_LOCK_METADATA'};
+      const jsonText = commentBody.slice('gh-aw-metadata:'.length).trim();
+      let parsed;
+      try {
+        parsed = JSON.parse(jsonText);
+      } catch {
+        return {ok: false, reason: 'INVALID_LOCK_METADATA'};
+      }
+      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed) ||
+          Object.getPrototypeOf(parsed) !== Object.prototype || Object.hasOwn(parsed, '__proto__')) {
+        return {ok: false, reason: 'INVALID_LOCK_METADATA'};
+      }
+      metadata = parsed;
+      continue;
+    }
+    if (commentBody.startsWith('frontmatter-hash:')) {
+      if (legacyHash !== null) return {ok: false, reason: 'INVALID_LOCK_METADATA'};
+      const candidate = commentBody.slice('frontmatter-hash:'.length).trim();
+      if (!HEX64_RE.test(candidate)) return {ok: false, reason: 'FRONTMATTER_HASH_MISSING'};
+      legacyHash = candidate;
+      continue;
+    }
+    const kvMatch = /^(gh-aw-[a-z0-9-]+):\s*(\S+)$/.exec(commentBody);
+    if (kvMatch && kvMatch[1] !== 'gh-aw-manifest') {
+      if (Object.hasOwn(customHeaders, kvMatch[1])) return {ok: false, reason: 'INVALID_LOCK_METADATA'};
+      customHeaders[kvMatch[1]] = kvMatch[2];
     }
   }
-  return headers;
+  return {ok: true, metadata, legacyHash, customHeaders};
+}
+
+function tokenizeIfExpression(inner) {
+  const tokens = [];
+  let i = 0;
+  while (i < inner.length) {
+    const ch = inner[i];
+    if (ch === ' ' || ch === '\n') {
+      i++;
+      continue;
+    }
+    const pair = inner.slice(i, i + 2);
+    if (pair === '&&' || pair === '||' || pair === '==' || pair === '!=') {
+      tokens.push({type: pair, value: pair});
+      i += 2;
+      continue;
+    }
+    if (ch === '!' || ch === '(' || ch === ')' || ch === ',') {
+      tokens.push({type: ch, value: ch});
+      i++;
+      continue;
+    }
+    if (ch === "'") {
+      let str = '';
+      i++;
+      let closed = false;
+      while (i < inner.length) {
+        if (inner[i] === "'") {
+          if (inner[i + 1] === "'") {
+            str += "'";
+            i += 2;
+            continue;
+          }
+          i++;
+          closed = true;
+          break;
+        }
+        str += inner[i];
+        i++;
+      }
+      if (!closed) return null;
+      tokens.push({type: 'str', value: str});
+      continue;
+    }
+    const identMatch = /^[A-Za-z_][A-Za-z0-9_-]*(?:\.[A-Za-z_][A-Za-z0-9_-]*)*/.exec(inner.slice(i));
+    if (identMatch) {
+      const word = identMatch[0];
+      if (word === 'true' || word === 'false') {
+        tokens.push({type: 'bool', value: word === 'true'});
+      } else {
+        tokens.push({type: 'ident', value: word});
+      }
+      i += word.length;
+      continue;
+    }
+    const numMatch = /^(?:0|[1-9]\d*)/.exec(inner.slice(i));
+    if (numMatch) {
+      const n = Number(numMatch[0]);
+      if (!Number.isSafeInteger(n)) return null;
+      tokens.push({type: 'num', value: n});
+      i += numMatch[0].length;
+      continue;
+    }
+    return null;
+  }
+  return tokens;
+}
+
+function parseIfExpression(rawCondition) {
+  if (rawCondition === false) return {kind: 'Literal', value: false};
+  if (typeof rawCondition !== 'string') return null;
+  const trimmed = rawCondition.trim();
+  if (trimmed.length === 0) return null;
+  let inner = trimmed;
+  if (trimmed.includes('${{') || trimmed.includes('}}')) {
+    if (!trimmed.startsWith('${{') || !trimmed.endsWith('}}')) return null;
+    inner = trimmed.slice(3, -2).trim();
+    if (inner.length === 0) return null;
+  }
+  const tokens = tokenizeIfExpression(inner);
+  if (tokens === null || tokens.length === 0) return null;
+
+  let pos = 0;
+  function parseOr() {
+    let left = parseAnd();
+    if (left === null) return null;
+    while (pos < tokens.length && tokens[pos].type === '||') {
+      pos++;
+      const right = parseAnd();
+      if (right === null) return null;
+      left = {kind: 'Or', left, right};
+    }
+    return left;
+  }
+  function parseAnd() {
+    let left = parseNot();
+    if (left === null) return null;
+    while (pos < tokens.length && tokens[pos].type === '&&') {
+      pos++;
+      const right = parseNot();
+      if (right === null) return null;
+      left = {kind: 'And', left, right};
+    }
+    return left;
+  }
+  function parseNot() {
+    if (pos < tokens.length && tokens[pos].type === '!') {
+      pos++;
+      const expr = parseNot();
+      return expr === null ? null : {kind: 'Not', expr};
+    }
+    return parseCompare();
+  }
+  function parseCompare() {
+    const left = parsePrimary();
+    if (left === null) return null;
+    if (pos < tokens.length && (tokens[pos].type === '==' || tokens[pos].type === '!=')) {
+      const op = tokens[pos].type;
+      pos++;
+      const right = parsePrimary();
+      if (right === null) return null;
+      if (pos < tokens.length && (tokens[pos].type === '==' || tokens[pos].type === '!=')) return null;
+      return {kind: 'Compare', op, left, right};
+    }
+    return left;
+  }
+  function parsePrimary() {
+    if (pos >= tokens.length) return null;
+    const tok = tokens[pos];
+    if (tok.type === '(') {
+      pos++;
+      const expr = parseOr();
+      if (expr === null || pos >= tokens.length || tokens[pos].type !== ')') return null;
+      pos++;
+      return expr;
+    }
+    if (tok.type === 'str' || tok.type === 'bool' || tok.type === 'num') {
+      pos++;
+      return {kind: 'Literal', value: tok.value};
+    }
+    if (tok.type === 'ident') {
+      pos++;
+      if (pos < tokens.length && tokens[pos].type === '(') {
+        if (tok.value.includes('.')) return null;
+        pos++;
+        const args = [];
+        if (pos < tokens.length && tokens[pos].type !== ')') {
+          while (true) {
+            const arg = parseOr();
+            if (arg === null) return null;
+            args.push(arg);
+            if (pos < tokens.length && tokens[pos].type === ',') {
+              pos++;
+              continue;
+            }
+            break;
+          }
+        }
+        if (pos >= tokens.length || tokens[pos].type !== ')') return null;
+        pos++;
+        return {kind: 'Call', name: tok.value.toLowerCase(), args};
+      }
+      return {kind: 'Ident', path: tok.value};
+    }
+    return null;
+  }
+
+  const ast = parseOr();
+  return ast !== null && pos === tokens.length ? ast : null;
+}
+
+function collectMandatoryConjuncts(node) {
+  if (node.kind === 'And') {
+    return [...collectMandatoryConjuncts(node.left), ...collectMandatoryConjuncts(node.right)];
+  }
+  return [node];
+}
+
+function astHasBypassCall(node) {
+  if (node.kind === 'Call') {
+    return BYPASS_CALL_NAMES.has(node.name) || node.args.some(astHasBypassCall);
+  }
+  if (node.kind === 'And' || node.kind === 'Or' || node.kind === 'Compare') {
+    return astHasBypassCall(node.left) || astHasBypassCall(node.right);
+  }
+  if (node.kind === 'Not') return astHasBypassCall(node.expr);
+  return false;
+}
+
+function isIdentCompareLiteral(node, op, expectedPath, expectedLiteral) {
+  if (node.kind !== 'Compare' || node.op !== op) return false;
+  if (node.left.kind === 'Ident' && node.right.kind === 'Literal') {
+    return node.left.path === expectedPath && node.right.value === expectedLiteral;
+  }
+  if (node.right.kind === 'Ident' && node.left.kind === 'Literal') {
+    return node.right.path === expectedPath && node.left.value === expectedLiteral;
+  }
+  return false;
+}
+
+function isNotEndsWithBot(node) {
+  if (node.kind !== 'Not' || node.expr.kind !== 'Call' || node.expr.name !== 'endswith') return false;
+  const args = node.expr.args;
+  return args.length === 2 &&
+    args[0].kind === 'Ident' && args[0].path === 'github.actor' &&
+    args[1].kind === 'Literal' && args[1].value === '[bot]';
+}
+
+function verifyEvaluationGuards(rawIf) {
+  const ast = parseIfExpression(rawIf);
+  if (ast === null || astHasBypassCall(ast)) {
+    return {ok: false, reason: 'MISSING_DEFAULT_OFF_GUARD'};
+  }
+  const conjuncts = collectMandatoryConjuncts(ast);
+  const hasEnable = conjuncts.some(c => isIdentCompareLiteral(c, '==', 'vars.FACTORY_GHAW_ENABLED', 'true'));
+  if (!hasEnable) return {ok: false, reason: 'MISSING_DEFAULT_OFF_GUARD'};
+
+  const hasEndsWithBot = conjuncts.some(isNotEndsWithBot);
+  const hasExplicitBotExclusions =
+    conjuncts.some(c => isIdentCompareLiteral(c, '!=', 'github.actor', 'copilot-swe-agent[bot]')) &&
+    conjuncts.some(c => isIdentCompareLiteral(c, '!=', 'github.actor', 'github-actions[bot]'));
+  if (!hasEndsWithBot && !hasExplicitBotExclusions) {
+    return {ok: false, reason: 'MISSING_BOT_LOOP_GUARD'};
+  }
+  return {ok: true};
+}
+
+function toleratesError(entity) {
+  return entity['continue-on-error'] !== undefined && entity['continue-on-error'] !== false;
 }
 
 function targetsMainMerge(mergeConfig) {
@@ -465,22 +806,6 @@ function isPinnedUses(ref) {
   return typeof ref === 'string' && !ref.includes('..') && PINNED_USES_RE.test(ref);
 }
 
-function hasBotLoopGuard(condition) {
-  return typeof condition === 'string' && (
-    condition.includes("!endsWith(github.actor, '[bot]')") ||
-    condition.includes('!endsWith(github.actor, "[bot]")') ||
-    (condition.includes("github.actor != 'copilot-swe-agent[bot]'") &&
-     condition.includes("github.actor != 'github-actions[bot]'"))
-  );
-}
-
-function hasDefaultOffGuard(condition) {
-  return typeof condition === 'string' && (
-    condition.includes("vars.FACTORY_GHAW_ENABLED == 'true'") ||
-    condition.includes('vars.FACTORY_GHAW_ENABLED == "true"')
-  );
-}
-
 function stepAttemptsMainMerge(step) {
   if (typeof step.name === 'string' && /merge[-_ ]pull[-_ ]request/i.test(step.name)) return true;
   if (typeof step.run === 'string' && (/\bgh\s+pr\s+merge\b/.test(step.run) || /merge-pull-request/.test(step.run))) {
@@ -511,20 +836,41 @@ export function verifyGhAwWorkflowLock(input) {
   const frontmatter = parseStrictYaml(extracted.innerYaml);
   if (frontmatter === null) return deny('INVALID_FRONTMATTER');
 
-  const computedSha256 = createHash('sha256').update(extracted.canonicalBlock, 'utf8').digest('hex');
-  const headers = extractLockHeaders(normalizedLock);
-  if (headers === null || !HEX64_RE.test(headers['gh-aw-frontmatter-sha256'] ?? '')) {
+  const computedSha256 = createHash('sha256').update(extracted.canonicalJson, 'utf8').digest('hex');
+  const computedBodySha256 = createHash('sha256').update(extracted.normalizedBody, 'utf8').digest('hex');
+
+  const headerInfo = extractLockMetadata(normalizedLock);
+  if (!headerInfo.ok) return deny(headerInfo.reason);
+  const {metadata, legacyHash, customHeaders} = headerInfo;
+
+  if (metadata !== null) {
+    if (!SUPPORTED_METADATA_SCHEMAS.has(metadata.schema_version) ||
+        (metadata.strict !== undefined && typeof metadata.strict !== 'boolean') ||
+        (metadata.dry_run !== undefined && typeof metadata.dry_run !== 'boolean') ||
+        (metadata.compiler_version !== undefined && typeof metadata.compiler_version !== 'string') ||
+        (metadata.body_hash !== undefined && !HEX64_RE.test(metadata.body_hash))) {
+      return deny('INVALID_LOCK_METADATA');
+    }
+    if (!HEX64_RE.test(metadata.frontmatter_hash ?? '')) return deny('FRONTMATTER_HASH_MISSING');
+    if (metadata.frontmatter_hash !== computedSha256) return deny('FRONTMATTER_HASH_MISMATCH');
+    if (metadata.body_hash !== undefined && metadata.body_hash !== computedBodySha256) {
+      return deny('BODY_HASH_MISMATCH');
+    }
+    if (metadata.compiler_version !== undefined && metadata.compiler_version !== releaseCheck.release.version) {
+      return deny('PINNED_RELEASE_MISMATCH');
+    }
+  } else if (legacyHash !== null) {
+    if (legacyHash !== computedSha256) return deny('FRONTMATTER_HASH_MISMATCH');
+  } else {
     return deny('FRONTMATTER_HASH_MISSING');
   }
-  if (headers['gh-aw-frontmatter-sha256'] !== computedSha256) {
-    return deny('FRONTMATTER_HASH_MISMATCH');
-  }
-  if (headers['gh-aw-version'] !== releaseCheck.release.version ||
-      headers['gh-aw-commit'] !== releaseCheck.release.commit) {
+
+  if ((customHeaders['gh-aw-version'] !== undefined && customHeaders['gh-aw-version'] !== releaseCheck.release.version) ||
+      (customHeaders['gh-aw-commit'] !== undefined && customHeaders['gh-aw-commit'] !== releaseCheck.release.commit)) {
     return deny('PINNED_RELEASE_MISMATCH');
   }
 
-  const policyCheck = inspectFrontmatterPolicy(frontmatter, releaseCheck.isNewerVerified, headers);
+  const policyCheck = inspectFrontmatterPolicy(frontmatter, releaseCheck.isNewerVerified, customHeaders);
   if (!policyCheck.ok) return deny(policyCheck.reason);
 
   const lockDoc = parseStrictYaml(normalizedLock);
@@ -550,8 +896,16 @@ export function verifyGhAwWorkflowLock(input) {
     const isThreatScan = THREAT_SCAN_JOB_IDS.has(jobId);
     const isSafeOutput = jobId.startsWith('safe-outputs') || jobId.startsWith('safe_outputs');
 
-    if (job.uses !== undefined && !isPinnedUses(job.uses)) {
-      return deny('UNPINNED_ACTION_REFERENCE');
+    if (!isSafeOutput && toleratesError(job)) {
+      return deny('MISSING_THREAT_SCAN_GATE');
+    }
+
+    if (job.uses !== undefined) {
+      if (!isPinnedUses(job.uses)) return deny('UNPINNED_ACTION_REFERENCE');
+      if (job.uses.toLowerCase().startsWith('github/gh-aw/') &&
+          job.uses.slice(job.uses.indexOf('@') + 1) !== releaseCheck.release.commit) {
+        return deny('PINNED_RELEASE_MISMATCH');
+      }
     }
 
     if (isSafeOutput) {
@@ -574,12 +928,23 @@ export function verifyGhAwWorkflowLock(input) {
       if (!Array.isArray(job.steps) || job.steps.length === 0) return deny('INVALID_LOCK_YAML');
       for (const step of job.steps) {
         if (!isMapObject(step)) return deny('INVALID_LOCK_YAML');
+        if (!isSafeOutput && toleratesError(step)) return deny('MISSING_THREAT_SCAN_GATE');
         if (stepAttemptsMainMerge(step)) return deny('MAIN_MERGE_FORBIDDEN_IN_GHAW');
         if (step.uses !== undefined) {
           if (!isPinnedUses(step.uses)) return deny('UNPINNED_ACTION_REFERENCE');
-          if (step.uses.startsWith('actions/checkout@')) {
+          const usesLower = step.uses.toLowerCase();
+          if (usesLower.startsWith('github/gh-aw/') &&
+              step.uses.slice(step.uses.indexOf('@') + 1) !== releaseCheck.release.commit) {
+            return deny('PINNED_RELEASE_MISMATCH');
+          }
+          if (usesLower.startsWith('actions/checkout@')) {
             if (!isMapObject(step.with) || step.with['persist-credentials'] !== false) {
               return deny('CHECKOUT_CREDENTIALS_PERSISTED');
+            }
+            if (typeof step.with.repository === 'string' &&
+                step.with.repository.toLowerCase() === 'github/gh-aw' &&
+                step.with.ref !== releaseCheck.release.commit) {
+              return deny('PINNED_RELEASE_MISMATCH');
             }
           }
         }
@@ -594,8 +959,8 @@ export function verifyGhAwWorkflowLock(input) {
 
   if (evaluationJobIds.length === 0) return deny('MISSING_EVALUATION_JOB');
   for (const {job} of evaluationJobIds) {
-    if (!hasDefaultOffGuard(job.if)) return deny('MISSING_DEFAULT_OFF_GUARD');
-    if (!hasBotLoopGuard(job.if)) return deny('MISSING_BOT_LOOP_GUARD');
+    const guardVerdict = verifyEvaluationGuards(job.if);
+    if (!guardVerdict.ok) return deny(guardVerdict.reason);
   }
 
   if (threatScanJobs.length === 0) return deny('MISSING_THREAT_SCAN_GATE');
@@ -605,11 +970,43 @@ export function verifyGhAwWorkflowLock(input) {
     if (needs === null || !evaluationJobIds.every(evalJob => needs.includes(evalJob.jobId))) {
       return deny('MISSING_THREAT_SCAN_GATE');
     }
+    if (job.if !== undefined) {
+      const scanAst = parseIfExpression(job.if);
+      if (scanAst === null || (scanAst.kind === 'Literal' && scanAst.value === false) || astHasBypassCall(scanAst)) {
+        return deny('MISSING_THREAT_SCAN_GATE');
+      }
+      const scanConjuncts = collectMandatoryConjuncts(scanAst);
+      if (!evaluationJobIds.every(evalJob =>
+          scanConjuncts.some(c => isIdentCompareLiteral(c, '==', `needs.${evalJob.jobId}.result`, 'success')))) {
+        return deny('MISSING_THREAT_SCAN_GATE');
+      }
+    }
   }
 
   for (const {job} of safeOutputJobs) {
     const needs = normalizeNeeds(job.needs);
-    if (needs === null || !needs.some(dep => threatScanIds.has(dep))) {
+    const matchingScans = needs === null ? [] : needs.filter(dep => threatScanIds.has(dep));
+    if (needs === null || matchingScans.length === 0) {
+      return deny('MISSING_THREAT_SCAN_GATE');
+    }
+    if (job.if === undefined) {
+      if (!evaluationJobIds.every(evalJob => needs.includes(evalJob.jobId))) {
+        return deny('MISSING_THREAT_SCAN_GATE');
+      }
+      continue;
+    }
+    const safeAst = parseIfExpression(job.if);
+    if (safeAst === null) return deny('MISSING_THREAT_SCAN_GATE');
+    if (safeAst.kind === 'Literal' && safeAst.value === false) continue;
+    if (astHasBypassCall(safeAst) || !evaluationJobIds.every(evalJob => needs.includes(evalJob.jobId))) {
+      return deny('MISSING_THREAT_SCAN_GATE');
+    }
+    const safeConjuncts = collectMandatoryConjuncts(safeAst);
+    const allEvalSucceeded = evaluationJobIds.every(evalJob =>
+      safeConjuncts.some(c => isIdentCompareLiteral(c, '==', `needs.${evalJob.jobId}.result`, 'success')));
+    const scanSucceeded = matchingScans.every(scanId =>
+      safeConjuncts.some(c => isIdentCompareLiteral(c, '==', `needs.${scanId}.result`, 'success')));
+    if (!allEvalSucceeded || !scanSucceeded) {
       return deny('MISSING_THREAT_SCAN_GATE');
     }
   }
@@ -621,6 +1018,7 @@ export function verifyGhAwWorkflowLock(input) {
     liveMerge: false,
     reason: 'GHAW_LOCK_VERIFIED',
     frontmatterSha256: computedSha256,
+    bodySha256: computedBodySha256,
     lockSha256: createHash('sha256').update(normalizedLock, 'utf8').digest('hex'),
     pinnedRelease: releaseCheck.release,
     workQueueProtocol: policyCheck.protocol

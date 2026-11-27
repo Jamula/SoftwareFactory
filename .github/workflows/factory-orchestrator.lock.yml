@@ -1,8 +1,6 @@
-# Compiled lock workflow for .github/workflows/factory-orchestrator.md
-# gh-aw-repository: github/gh-aw
-# gh-aw-version: v1.2.2
+# gh-aw-metadata: {"schema_version":"v4","frontmatter_hash":"5157be55db69c037ec8e865482ede837819c6c4d124cd9225cb6a1a274a8e043","body_hash":"4eea01b377888dd55ca770509760169d08d63159511b06725f78eb9364aedecb","compiler_version":"v1.2.2","strict":true,"agent_id":"copilot"}
+# gh-aw-manifest: {"version":1,"secrets":[],"actions":[{"repo":"actions/checkout","sha":"3d3c42e5aac5ba805825da76410c181273ba90b1","version":"v7.0.1"},{"repo":"actions/setup-node","sha":"949feb2413d6458794dcd2491c4babbbce0c15c1","version":"v7.1.0"}]}
 # gh-aw-commit: 399a445fe2d8926c616b54b1b82a16b5b2be4445
-# gh-aw-frontmatter-sha256: 49e9839d6f03a9124a60a5ff303d8958548358f1e3b746e8029c387ca36cb293
 # gh-aw-work-queue-protocol: v3
 
 name: Factory gh-aw outer orchestrator

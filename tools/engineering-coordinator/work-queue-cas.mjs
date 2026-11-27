@@ -94,6 +94,7 @@ function cloneEntry(entry) {
     maxAttempts: entry.maxAttempts,
     workerId: entry.workerId,
     runId: entry.runId,
+    runAttempt: entry.runAttempt,
     claimedAtMs: entry.claimedAtMs,
     leaseTtlMs: entry.leaseTtlMs,
     leaseExpiresAtMs: entry.leaseExpiresAtMs,
@@ -113,6 +114,7 @@ function cloneReceipt(receipt) {
     runState: receipt.runState,
     conclusion: receipt.conclusion,
     previousRunId: receipt.previousRunId,
+    previousRunAttempt: receipt.previousRunAttempt,
     previousGeneration: receipt.previousGeneration,
     reclaimedGeneration: receipt.reclaimedGeneration,
     attempts: receipt.attempts,
@@ -131,7 +133,7 @@ function expectedWorkId(entry) {
 function isValidQueueEntry(entry) {
   const required = [
     'workId', 'targetType', 'repository', 'repositoryId', 'issueNumber', 'pullNumber', 'headSha',
-    'lane', 'ownedPaths', 'status', 'generation', 'attempts', 'maxAttempts', 'workerId', 'runId',
+    'lane', 'ownedPaths', 'status', 'generation', 'attempts', 'maxAttempts', 'workerId', 'runId', 'runAttempt',
     'claimedAtMs', 'leaseTtlMs', 'leaseExpiresAtMs', 'maxExecutionMs', 'executionDeadlineMs'
   ];
   if (!isPlainRecord(entry, required, ['traceparent', 'lockSha256'])) return false;
@@ -140,7 +142,7 @@ function isValidQueueEntry(entry) {
       !VALID_ENTRY_STATUSES.has(entry.status) || !positive(entry.generation) ||
       !positive(entry.attempts) || !Number.isSafeInteger(entry.maxAttempts) ||
       entry.maxAttempts < 1 || entry.maxAttempts > 5 || entry.attempts > entry.maxAttempts ||
-      !WORKER_ID_RE.test(entry.workerId) || !positive(entry.runId) ||
+      !WORKER_ID_RE.test(entry.workerId) || !positive(entry.runId) || !positive(entry.runAttempt) ||
       !nonnegative(entry.claimedAtMs) || !boundedTtl(entry.leaseTtlMs) ||
       !boundedTtl(entry.maxExecutionMs) || entry.maxExecutionMs < entry.leaseTtlMs ||
       !nonnegative(entry.leaseExpiresAtMs) || !nonnegative(entry.executionDeadlineMs) ||
@@ -163,7 +165,7 @@ function isValidQueueEntry(entry) {
 
 function isValidReceipt(receipt) {
   const required = [
-    'workId', 'repositoryId', 'targetType', 'runState', 'conclusion', 'previousRunId',
+    'workId', 'repositoryId', 'targetType', 'runState', 'conclusion', 'previousRunId', 'previousRunAttempt',
     'previousGeneration', 'reclaimedGeneration', 'attempts', 'maxAttempts', 'outcome', 'reclaimedAtMs'
   ];
   if (!isPlainRecord(receipt, required)) return false;
@@ -171,7 +173,8 @@ function isValidReceipt(receipt) {
       (receipt.targetType !== 'issue' && receipt.targetType !== 'pull_request') ||
       (!VALID_RUN_STATES.has(receipt.runState) && receipt.runState !== 'lease_expired') ||
       (receipt.conclusion !== null && !VALID_CONCLUSIONS.has(receipt.conclusion)) ||
-      !positive(receipt.previousRunId) || !positive(receipt.previousGeneration) ||
+      !positive(receipt.previousRunId) || !positive(receipt.previousRunAttempt) ||
+      !positive(receipt.previousGeneration) ||
       !positive(receipt.reclaimedGeneration) || receipt.reclaimedGeneration <= receipt.previousGeneration ||
       !positive(receipt.attempts) || !Number.isSafeInteger(receipt.maxAttempts) ||
       receipt.maxAttempts < 1 || receipt.maxAttempts > 5 ||
@@ -337,6 +340,7 @@ export function planUnifiedWorkQueue(input) {
   for (let i = 0; i < shadow.tasks.length; i++) {
     const task = shadow.tasks[i];
     if (!isPlainRecord(task, ['id', 'priority', 'state', 'dependencies', 'paths'], ['lane']) ||
+        !isDenseArray(task.dependencies, MAX_ENTRIES) ||
         !isValidPathSet(task.paths) ||
         !['approved', 'active', 'accepted', 'pending', 'blocked'].includes(task.state)) {
       return denyPlan('INVALID_TASKS');
@@ -416,12 +420,13 @@ async function readValidatedSnapshot(refStore) {
 }
 
 function validateCandidate(candidate, config, nowMs) {
-  const optional = ['issueNumber', 'pullNumber', 'headSha', 'maxExecutionMs', 'maxAttempts', 'traceparent', 'lockSha256'];
+  const optional = ['issueNumber', 'pullNumber', 'headSha', 'runAttempt', 'maxExecutionMs', 'maxAttempts', 'traceparent', 'lockSha256'];
   const required = ['targetType', 'repository', 'repositoryId', 'lane', 'ownedPaths', 'workerId', 'runId', 'leaseTtlMs'];
   if (!isPlainRecord(candidate, required, optional)) return {ok: false, reason: 'INVALID_CANDIDATE'};
+  const runAttempt = candidate.runAttempt === undefined ? 1 : candidate.runAttempt;
   if (!REPO_RE.test(candidate.repository) || candidate.repository.includes('..') ||
       !positive(candidate.repositoryId) || !WORKER_ID_RE.test(candidate.workerId) ||
-      !positive(candidate.runId) || !isValidPathSet(candidate.ownedPaths)) {
+      !positive(candidate.runId) || !positive(runAttempt) || !isValidPathSet(candidate.ownedPaths)) {
     return {ok: false, reason: 'INVALID_CANDIDATE'};
   }
   if (candidate.repository !== config.project.repository) {
@@ -444,6 +449,9 @@ function validateCandidate(candidate, config, nowMs) {
   if (!Number.isSafeInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 5) {
     return {ok: false, reason: 'INVALID_CANDIDATE'};
   }
+  if (maxAttempts > config.limits.maxAttempts) {
+    return {ok: false, reason: 'RETRY_CEILING_EXCEEDED'};
+  }
   if (candidate.traceparent !== undefined && !TRACEPARENT_RE.test(candidate.traceparent)) {
     return {ok: false, reason: 'INVALID_CANDIDATE'};
   }
@@ -460,6 +468,7 @@ function validateCandidate(candidate, config, nowMs) {
       issueNumber: candidate.issueNumber,
       pullNumber: null,
       headSha: null,
+      runAttempt,
       maxExecutionMs,
       maxAttempts
     };
@@ -474,6 +483,7 @@ function validateCandidate(candidate, config, nowMs) {
       issueNumber: null,
       pullNumber: candidate.pullNumber,
       headSha: candidate.headSha,
+      runAttempt,
       maxExecutionMs,
       maxAttempts
     };
@@ -536,11 +546,14 @@ export async function claimWorkQueueLease(options) {
   return executeCasTransition(options.refStore, maxCasAttempts, state => {
     const existingIndex = state.entries.findIndex(item => item.workId === checked.workId);
     const existing = existingIndex >= 0 ? state.entries[existingIndex] : null;
+    const effectiveMaxAttempts = existing === null
+      ? checked.maxAttempts
+      : Math.min(existing.maxAttempts, checked.maxAttempts, options.config.limits.maxAttempts);
     if (existing !== null) {
       if (isLeaseActive(existing, options.nowMs)) return {abort: true, result: denyMutation('DUPLICATE_ACTIVE_CLAIM')};
       if (existing.status === 'completed') return {abort: true, result: denyMutation('WORK_ALREADY_COMPLETED')};
       if (existing.status === 'cancelled') return {abort: true, result: denyMutation('WORK_CANCELLED')};
-      if (existing.status === 'exhausted' || existing.attempts >= existing.maxAttempts) {
+      if (existing.status === 'exhausted' || existing.attempts >= effectiveMaxAttempts) {
         return {abort: true, result: denyMutation('RETRY_CEILING_EXHAUSTED')};
       }
     } else if (state.entries.length >= MAX_ENTRIES) {
@@ -566,7 +579,6 @@ export async function claimWorkQueueLease(options) {
     const leaseExpiresAtMs = Math.min(executionDeadlineMs, options.nowMs + options.candidate.leaseTtlMs);
     const generation = state.nextGeneration;
     const attempts = existing === null ? 1 : existing.attempts + 1;
-    const maxAttempts = existing === null ? checked.maxAttempts : existing.maxAttempts;
 
     const nextEntry = {
       workId: checked.workId,
@@ -581,9 +593,10 @@ export async function claimWorkQueueLease(options) {
       status: 'leased',
       generation,
       attempts,
-      maxAttempts,
+      maxAttempts: effectiveMaxAttempts,
       workerId: options.candidate.workerId,
       runId: options.candidate.runId,
+      runAttempt: checked.runAttempt,
       claimedAtMs: options.nowMs,
       leaseTtlMs: options.candidate.leaseTtlMs,
       leaseExpiresAtMs,
@@ -746,12 +759,17 @@ export async function settleWorkQueueLease(options) {
 }
 
 export async function reconcileWorkQueueRunStates(options) {
-  if (!isPlainRecord(options, ['refStore', 'observedRuns', 'nowMs'], ['stop', 'force', 'maxCasAttempts'])) {
+  if (!isPlainRecord(options, ['refStore', 'observedRuns', 'nowMs'], ['stop', 'force', 'maxCasAttempts', 'config'])) {
     return denyMutation('INVALID_RECONCILE_INPUT');
   }
   if (options.force === true) return denyMutation('FORCE_UPDATE_FORBIDDEN');
   if (options.force !== undefined && options.force !== false) return denyMutation('INVALID_RECONCILE_INPUT');
-  if (options.stop !== undefined && options.stop !== false) {
+  if (options.config !== undefined && !validateProjectConfig(options.config)) {
+    return denyMutation('INVALID_PROJECT_CONFIG');
+  }
+  const stopConfigured = options.config !== undefined &&
+    (options.config.execution.stop !== false || options.config.execution.enabled !== true);
+  if ((options.stop !== undefined && options.stop !== false) || stopConfigured) {
     return Object.freeze({
       shadow: true,
       ok: false,
@@ -768,11 +786,13 @@ export async function reconcileWorkQueueRunStates(options) {
     return denyMutation('INVALID_RECONCILE_INPUT');
   }
 
+  const configuredCeiling = options.config !== undefined ? options.config.limits.maxAttempts : 5;
   const observationsByWorkId = new Map();
   for (let i = 0; i < options.observedRuns.length; i++) {
     const obs = options.observedRuns[i];
-    if (!isPlainRecord(obs, ['workId', 'runId', 'runState'], ['conclusion']) ||
-        typeof obs.workId !== 'string' || obs.workId.length === 0 || !positive(obs.runId) ||
+    if (!isPlainRecord(obs, ['workId', 'runId', 'runAttempt', 'leaseGeneration', 'runState'], ['conclusion']) ||
+        typeof obs.workId !== 'string' || obs.workId.length === 0 ||
+        !positive(obs.runId) || !positive(obs.runAttempt) || !positive(obs.leaseGeneration) ||
         !VALID_RUN_STATES.has(obs.runState) || observationsByWorkId.has(obs.workId)) {
       return denyMutation('INVALID_RECONCILE_INPUT');
     }
@@ -791,51 +811,66 @@ export async function reconcileWorkQueueRunStates(options) {
     const skipped = [];
 
     for (const entry of state.entries) {
+      const effectiveMaxAttempts = Math.min(entry.maxAttempts, configuredCeiling);
       const obs = observationsByWorkId.get(entry.workId);
       if (obs !== undefined) {
-        if (entry.status !== 'leased' || entry.runId !== obs.runId) {
-          skipped.push(Object.freeze({workId: entry.workId, runId: obs.runId, reason: 'STALE_OR_INACTIVE_RUN'}));
-          nextEntries.push({...entry, ownedPaths: [...entry.ownedPaths]});
-          continue;
+        const matchesLease = entry.status === 'leased' &&
+          entry.runId === obs.runId &&
+          entry.runAttempt === obs.runAttempt &&
+          entry.generation === obs.leaseGeneration;
+        if (!matchesLease) {
+          skipped.push(Object.freeze({
+            workId: entry.workId,
+            runId: obs.runId,
+            runAttempt: obs.runAttempt,
+            leaseGeneration: obs.leaseGeneration,
+            reason: 'STALE_OR_INACTIVE_RUN'
+          }));
+        } else {
+          const leaseStillActive = isLeaseActive(entry, options.nowMs);
+          const conclusion = obs.conclusion ?? null;
+          const terminalSuccess = obs.runState === 'run_terminal' && conclusion === 'success';
+          if (leaseStillActive || !terminalSuccess) {
+            const reclaimedGeneration = nextGeneration++;
+            const outcome = (leaseStillActive && terminalSuccess)
+              ? 'completed'
+              : (entry.attempts >= effectiveMaxAttempts ? 'exhausted' : 'requeued');
+            nextEntries.push({
+              ...entry,
+              ownedPaths: [...entry.ownedPaths],
+              maxAttempts: effectiveMaxAttempts,
+              status: outcome,
+              generation: reclaimedGeneration,
+              leaseExpiresAtMs: Math.min(entry.leaseExpiresAtMs, options.nowMs)
+            });
+            newReceipts.push({
+              workId: entry.workId,
+              repositoryId: entry.repositoryId,
+              targetType: entry.targetType,
+              runState: obs.runState,
+              conclusion,
+              previousRunId: entry.runId,
+              previousRunAttempt: entry.runAttempt,
+              previousGeneration: entry.generation,
+              reclaimedGeneration,
+              attempts: entry.attempts,
+              maxAttempts: effectiveMaxAttempts,
+              outcome,
+              reclaimedAtMs: options.nowMs
+            });
+            continue;
+          }
         }
-        const reclaimedGeneration = nextGeneration++;
-        const conclusion = obs.conclusion ?? null;
-        const succeeded = obs.runState === 'run_terminal' && conclusion === 'success' &&
-          options.nowMs <= entry.executionDeadlineMs;
-        const outcome = succeeded
-          ? 'completed'
-          : (entry.attempts >= entry.maxAttempts ? 'exhausted' : 'requeued');
-        nextEntries.push({
-          ...entry,
-          ownedPaths: [...entry.ownedPaths],
-          status: outcome,
-          generation: reclaimedGeneration,
-          leaseExpiresAtMs: Math.min(entry.leaseExpiresAtMs, options.nowMs)
-        });
-        newReceipts.push({
-          workId: entry.workId,
-          repositoryId: entry.repositoryId,
-          targetType: entry.targetType,
-          runState: obs.runState,
-          conclusion,
-          previousRunId: entry.runId,
-          previousGeneration: entry.generation,
-          reclaimedGeneration,
-          attempts: entry.attempts,
-          maxAttempts: entry.maxAttempts,
-          outcome,
-          reclaimedAtMs: options.nowMs
-        });
-        continue;
       }
 
       if (entry.status === 'leased' &&
           (options.nowMs >= entry.leaseExpiresAtMs || options.nowMs >= entry.executionDeadlineMs)) {
         const reclaimedGeneration = nextGeneration++;
-        const outcome = entry.attempts >= entry.maxAttempts ? 'exhausted' : 'requeued';
+        const outcome = entry.attempts >= effectiveMaxAttempts ? 'exhausted' : 'requeued';
         nextEntries.push({
           ...entry,
           ownedPaths: [...entry.ownedPaths],
+          maxAttempts: effectiveMaxAttempts,
           status: outcome,
           generation: reclaimedGeneration,
           leaseExpiresAtMs: Math.min(entry.leaseExpiresAtMs, options.nowMs)
@@ -847,10 +882,11 @@ export async function reconcileWorkQueueRunStates(options) {
           runState: 'lease_expired',
           conclusion: null,
           previousRunId: entry.runId,
+          previousRunAttempt: entry.runAttempt,
           previousGeneration: entry.generation,
           reclaimedGeneration,
           attempts: entry.attempts,
-          maxAttempts: entry.maxAttempts,
+          maxAttempts: effectiveMaxAttempts,
           outcome,
           reclaimedAtMs: options.nowMs
         });
@@ -862,7 +898,13 @@ export async function reconcileWorkQueueRunStates(options) {
 
     for (const [workId, obs] of observationsByWorkId.entries()) {
       if (!state.entries.some(item => item.workId === workId)) {
-        skipped.push(Object.freeze({workId, runId: obs.runId, reason: 'UNKNOWN_WORK_ID'}));
+        skipped.push(Object.freeze({
+          workId,
+          runId: obs.runId,
+          runAttempt: obs.runAttempt,
+          leaseGeneration: obs.leaseGeneration,
+          reason: 'UNKNOWN_WORK_ID'
+        }));
       }
     }
 

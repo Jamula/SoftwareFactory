@@ -5,6 +5,7 @@ import test from 'node:test';
 import {fileURLToPath} from 'node:url';
 import {
   PINNED_GHAW_RELEASE,
+  computeBodySha256,
   computeFrontmatterSha256,
   verifyGhAwWorkflowLock
 } from '../../tools/engineering-factory/gh-aw-lock-verifier.mjs';
@@ -13,8 +14,21 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const checkoutSha = '3d3c42e5aac5ba805825da76410c181273ba90b1';
 const setupNodeSha = '949feb2413d6458794dcd2491c4babbbce0c15c1';
 
+function makeMetadataLine({frontmatterHash, bodyHash, version = PINNED_GHAW_RELEASE.version, schemaVersion = 'v4'}) {
+  const payload = {
+    schema_version: schemaVersion,
+    frontmatter_hash: frontmatterHash
+  };
+  if (bodyHash !== undefined) payload.body_hash = bodyHash;
+  if (version !== null) payload.compiler_version = version;
+  payload.strict = true;
+  payload.agent_id = 'copilot';
+  return `# gh-aw-metadata: ${JSON.stringify(payload)}`;
+}
+
 function buildFixture({
   frontmatterExtra = '',
+  markdownBody = '# Synthetic orchestrator body',
   protocol = 'v3',
   version = PINNED_GHAW_RELEASE.version,
   commit = PINNED_GHAW_RELEASE.commit,
@@ -25,7 +39,9 @@ function buildFixture({
   persistCredentials = 'false',
   runBody = '          echo "shadow ok"',
   threatNeeds = '[evaluate]',
+  threatIf = "${{ vars.FACTORY_GHAW_ENABLED == 'true' && needs.evaluate.result == 'success' && !endsWith(github.actor, '[bot]') }}",
   safeNeeds = '[evaluate, threat-and-policy-scan]',
+  safeIf = '${{ false }}',
   safePerms = '      issues: write',
   extraHeader = ''
 } = {}) {
@@ -44,14 +60,14 @@ function buildFixture({
     frontmatterExtra,
     '---',
     '',
-    '# Synthetic orchestrator body'
+    markdownBody
   ].filter(Boolean).join('\n');
 
   const sha = computeFrontmatterSha256(markdownSource);
+  const bodySha = computeBodySha256(markdownSource);
   const lockYamlSource = [
-    `# gh-aw-version: ${version}`,
+    makeMetadataLine({frontmatterHash: sha, bodyHash: bodySha, version}),
     `# gh-aw-commit: ${commit}`,
-    `# gh-aw-frontmatter-sha256: ${sha}`,
     `# gh-aw-work-queue-protocol: ${protocol}`,
     extraHeader,
     'name: Synthetic orchestrator',
@@ -79,7 +95,7 @@ function buildFixture({
     '',
     '  threat-and-policy-scan:',
     `    needs: ${threatNeeds}`,
-    "    if: ${{ vars.FACTORY_GHAW_ENABLED == 'true' && !endsWith(github.actor, '[bot]') }}",
+    `    if: ${threatIf}`,
     '    runs-on: ubuntu-latest',
     '    permissions:',
     '      contents: read',
@@ -88,7 +104,7 @@ function buildFixture({
     '        run: echo "scan"',
     '  safe-outputs-comment:',
     `    needs: ${safeNeeds}`,
-    '    if: ${{ false }}',
+    `    if: ${safeIf}`,
     '    runs-on: ubuntu-latest',
     '    permissions:',
     safePerms,
@@ -97,18 +113,21 @@ function buildFixture({
     '        run: echo "noop"'
   ].filter(line => line !== null).join('\n');
 
-  return {markdownSource, lockYamlSource, sha};
+  return {markdownSource, lockYamlSource, sha, bodySha};
 }
 
-test('verifies tracked .github/workflows/factory-orchestrator.md and .lock.yml pair', () => {
+test('verifies tracked .github/workflows/factory-orchestrator.md and .lock.yml pair and matches github/gh-aw v1.2.2 compiler hash', () => {
   const mdPath = resolve(repoRoot, '.github/workflows/factory-orchestrator.md');
   const lockPath = resolve(repoRoot, '.github/workflows/factory-orchestrator.lock.yml');
   const markdownSource = readFileSync(mdPath, 'utf8');
   const lockYamlSource = readFileSync(lockPath, 'utf8');
 
   const expectedHash = computeFrontmatterSha256(markdownSource);
+  const expectedBodyHash = computeBodySha256(markdownSource);
   assert.match(expectedHash, /^[a-f0-9]{64}$/);
-  assert.ok(lockYamlSource.includes(`# gh-aw-frontmatter-sha256: ${expectedHash}`));
+  assert.match(expectedBodyHash, /^[a-f0-9]{64}$/);
+  assert.ok(lockYamlSource.includes(`"frontmatter_hash":"${expectedHash}"`));
+  assert.ok(lockYamlSource.includes(`"body_hash":"${expectedBodyHash}"`));
 
   const verdict = verifyGhAwWorkflowLock({markdownSource, lockYamlSource});
   assert.equal(verdict.valid, true);
@@ -117,9 +136,36 @@ test('verifies tracked .github/workflows/factory-orchestrator.md and .lock.yml p
   assert.equal(verdict.liveMerge, false);
   assert.equal(verdict.reason, 'GHAW_LOCK_VERIFIED');
   assert.equal(verdict.frontmatterSha256, expectedHash);
+  assert.equal(verdict.bodySha256, expectedBodyHash);
   assert.equal(verdict.workQueueProtocol, 'v3');
   assert.deepEqual(verdict.pinnedRelease, PINNED_GHAW_RELEASE);
   assert.equal(Object.isFrozen(verdict), true);
+
+  // Exact byte-for-byte parity with github/gh-aw@399a445fe2d8926c616b54b1b82a16b5b2be4445
+  // pkg/cli/workflows/example-blocked-domains.md -> example-blocked-domains.lock.yml
+  const upstreamExampleMd = [
+    '---',
+    'engine: copilot',
+    'on:',
+    '  workflow_dispatch:',
+    '    ',
+    'network:',
+    '  firewall: true',
+    '  allowed:',
+    '    - defaults',
+    '    - github',
+    '    - node',
+    '  blocked:',
+    '    - tracker.example.com',
+    '    - analytics.example.com',
+    '---',
+    '',
+    '# Example: Blocked Domains'
+  ].join('\n');
+  assert.equal(
+    computeFrontmatterSha256(upstreamExampleMd),
+    '80100e1eccadf076c6f02412860f8dfb229e60d1753790630cb4589468eee780'
+  );
 });
 
 test('normalizes CRLF frontmatter to identical SHA-256 and rejects malformed frontmatter', () => {
@@ -137,10 +183,23 @@ test('normalizes CRLF frontmatter to identical SHA-256 and rejects malformed fro
     '---\rname: bad\r---\r',
     'no frontmatter',
     '---\n   \n---\n',
-    '---\nname: unclosed'
+    '---\nname: unclosed',
+    '---\nimports:\n  - shared.md\n---\n# body',
+    '---\nname: ok\n---\n{{#runtime-import other.md}}'
   ]) {
     assert.equal(computeFrontmatterSha256(invalid), null);
+    assert.equal(computeBodySha256(invalid), null);
   }
+
+  // Template expressions (env./vars.) and inlined-imports: true affect frontmatter_hash per gh-aw spec
+  const withVarsA = '---\nengine: copilot\n---\nUse ${{ vars.ALPHA }} and ${{ github.actor }} and ${{ \'}\' && env.BETA }} and ${{ unclosed';
+  const withVarsB = '---\nengine: copilot\n---\nChanged prose only ${{ vars.ALPHA }} and ${{ \'}\' && env.BETA }}';
+  assert.equal(computeFrontmatterSha256(withVarsA), computeFrontmatterSha256(withVarsB));
+  assert.notEqual(computeFrontmatterSha256(withVarsA), computeFrontmatterSha256('---\nengine: copilot\n---\nNo vars'));
+
+  const inlinedA = '---\nengine: copilot\ninlined-imports: true\n---\nPrompt version A';
+  const inlinedB = '---\nengine: copilot\ninlined-imports: true\n---\nPrompt version B';
+  assert.notEqual(computeFrontmatterSha256(inlinedA), computeFrontmatterSha256(inlinedB));
 
   const base = buildFixture();
   const crlfVerdict = verifyGhAwWorkflowLock({
@@ -275,7 +334,8 @@ test('enforces pinned github/gh-aw release metadata and protocol v3 vs verified 
     '# Body'
   ].join('\n');
   const topHash = computeFrontmatterSha256(topProtocol);
-  const topLock = v3.lockYamlSource.replace(v3.sha, topHash);
+  const topBody = computeBodySha256(topProtocol);
+  const topLock = v3.lockYamlSource.replace(v3.sha, topHash).replace(v3.bodySha, topBody);
   assert.equal(verifyGhAwWorkflowLock({markdownSource: topProtocol, lockYamlSource: topLock}).reason,
     'WORK_QUEUE_PROTOCOL_UNSUPPORTED');
 
@@ -288,9 +348,10 @@ test('enforces pinned github/gh-aw release metadata and protocol v3 vs verified 
     '# Body'
   ].join('\n');
   const dqHash = computeFrontmatterSha256(directWorkQueue);
+  const dqBody = computeBodySha256(directWorkQueue);
   assert.equal(verifyGhAwWorkflowLock({
     markdownSource: directWorkQueue,
-    lockYamlSource: v3.lockYamlSource.replace(v3.sha, dqHash)
+    lockYamlSource: v3.lockYamlSource.replace(v3.sha, dqHash).replace(v3.bodySha, dqBody)
   }).reason, 'INVALID_WORK_QUEUE_BRANCH');
 
   const headerMismatch = buildFixture({protocol: 'v3'});
@@ -298,9 +359,27 @@ test('enforces pinned github/gh-aw release metadata and protocol v3 vs verified 
     markdownSource: headerMismatch.markdownSource,
     lockYamlSource: headerMismatch.lockYamlSource.replace('# gh-aw-work-queue-protocol: v3', '# gh-aw-work-queue-protocol: v4')
   }).reason, 'WORK_QUEUE_PROTOCOL_UNSUPPORTED');
+
+  // Verify github/gh-aw step action SHA and repository checkout ref match pinnedRelease.commit
+  const wrongGhAwAction = buildFixture({
+    checkoutUses: `github/gh-aw/actions/setup@${newerCommit}`
+  });
+  assert.equal(verifyGhAwWorkflowLock({
+    markdownSource: wrongGhAwAction.markdownSource,
+    lockYamlSource: wrongGhAwAction.lockYamlSource
+  }).reason, 'PINNED_RELEASE_MISMATCH');
+
+  const wrongGhAwRepoCheckout = v3.lockYamlSource.replace(
+    'persist-credentials: false',
+    `persist-credentials: false\n          repository: GitHub/gh-aw\n          ref: ${newerCommit}`
+  );
+  assert.equal(verifyGhAwWorkflowLock({
+    markdownSource: v3.markdownSource,
+    lockYamlSource: wrongGhAwRepoCheckout
+  }).reason, 'PINNED_RELEASE_MISMATCH');
 });
 
-test('enforces frontmatter hash integrity and strict YAML failure modes', () => {
+test('enforces # gh-aw-metadata:, legacy # frontmatter-hash:, body_hash, and strict YAML failure modes', () => {
   const base = buildFixture();
   assert.equal(verifyGhAwWorkflowLock({
     markdownSource: 'no frontmatter at all',
@@ -313,15 +392,24 @@ test('enforces frontmatter hash integrity and strict YAML failure modes', () => 
     lockYamlSource: base.lockYamlSource
   }).reason, 'INVALID_FRONTMATTER');
 
+  // Legacy # frontmatter-hash: header accepted only when exact-matched to canonical hash
+  const legacyLock = base.lockYamlSource.replace(
+    /^# gh-aw-metadata:.*$/m,
+    `# frontmatter-hash: ${base.sha}`
+  );
   assert.equal(verifyGhAwWorkflowLock({
     markdownSource: base.markdownSource,
-    lockYamlSource: base.lockYamlSource.replace(`# gh-aw-frontmatter-sha256: ${base.sha}\n`, '')
-  }).reason, 'FRONTMATTER_HASH_MISSING');
+    lockYamlSource: legacyLock
+  }).valid, true);
 
-  const dupHeader = buildFixture({extraHeader: `# gh-aw-version: ${PINNED_GHAW_RELEASE.version}`});
   assert.equal(verifyGhAwWorkflowLock({
-    markdownSource: dupHeader.markdownSource,
-    lockYamlSource: dupHeader.lockYamlSource
+    markdownSource: base.markdownSource,
+    lockYamlSource: legacyLock.replace(base.sha, 'f'.repeat(64))
+  }).reason, 'FRONTMATTER_HASH_MISMATCH');
+
+  assert.equal(verifyGhAwWorkflowLock({
+    markdownSource: base.markdownSource,
+    lockYamlSource: base.lockYamlSource.replace(/^# gh-aw-metadata:.*\n/m, '')
   }).reason, 'FRONTMATTER_HASH_MISSING');
 
   assert.equal(verifyGhAwWorkflowLock({
@@ -329,14 +417,60 @@ test('enforces frontmatter hash integrity and strict YAML failure modes', () => 
     lockYamlSource: base.lockYamlSource.replace(base.sha, 'f'.repeat(64))
   }).reason, 'FRONTMATTER_HASH_MISMATCH');
 
+  assert.equal(verifyGhAwWorkflowLock({
+    markdownSource: base.markdownSource,
+    lockYamlSource: base.lockYamlSource.replace(base.bodySha, 'e'.repeat(64))
+  }).reason, 'BODY_HASH_MISMATCH');
+
+  for (const badMeta of [
+    '# gh-aw-metadata: {bad json}',
+    '# gh-aw-metadata: []',
+    `# gh-aw-metadata: {"schema_version":"v99","frontmatter_hash":"${base.sha}"}`,
+    `# gh-aw-metadata: {"schema_version":"v4","frontmatter_hash":"${base.sha}","strict":"yes"}`,
+    `# gh-aw-metadata: {"schema_version":"v4","frontmatter_hash":"${base.sha}","dry_run":"yes"}`,
+    `# gh-aw-metadata: {"schema_version":"v4","frontmatter_hash":"${base.sha}","body_hash":"short"}`
+  ]) {
+    assert.equal(verifyGhAwWorkflowLock({
+      markdownSource: base.markdownSource,
+      lockYamlSource: base.lockYamlSource.replace(/^# gh-aw-metadata:.*$/m, badMeta)
+    }).reason, 'INVALID_LOCK_METADATA');
+  }
+
+  assert.equal(verifyGhAwWorkflowLock({
+    markdownSource: base.markdownSource,
+    lockYamlSource: base.lockYamlSource.replace('"compiler_version":"v1.2.2"', '"compiler_version":"v1.2.1"')
+  }).reason, 'PINNED_RELEASE_MISMATCH');
+
+  assert.equal(verifyGhAwWorkflowLock({
+    markdownSource: base.markdownSource,
+    lockYamlSource: `${makeMetadataLine({frontmatterHash: base.sha})}\n${ base.lockYamlSource}`
+  }).reason, 'INVALID_LOCK_METADATA');
+
+  assert.equal(verifyGhAwWorkflowLock({
+    markdownSource: base.markdownSource,
+    lockYamlSource: `# frontmatter-hash: ${base.sha}\n${legacyLock}`
+  }).reason, 'INVALID_LOCK_METADATA');
+
+  assert.equal(verifyGhAwWorkflowLock({
+    markdownSource: base.markdownSource,
+    lockYamlSource: legacyLock.replace(base.sha, 'short')
+  }).reason, 'FRONTMATTER_HASH_MISSING');
+
+  const dupHeader = buildFixture({extraHeader: `# gh-aw-commit: ${PINNED_GHAW_RELEASE.commit}`});
+  assert.equal(verifyGhAwWorkflowLock({
+    markdownSource: dupHeader.markdownSource,
+    lockYamlSource: dupHeader.lockYamlSource
+  }).reason, 'INVALID_LOCK_METADATA');
+
+  const metaLine = makeMetadataLine({frontmatterHash: base.sha, bodyHash: base.bodySha});
   for (const invalidLock of [
-    `# gh-aw-version: v1.2.2\n# gh-aw-commit: ${PINNED_GHAW_RELEASE.commit}\n# gh-aw-frontmatter-sha256: ${base.sha}\n---\nname: doc`,
-    `# gh-aw-version: v1.2.2\n# gh-aw-commit: ${PINNED_GHAW_RELEASE.commit}\n# gh-aw-frontmatter-sha256: ${base.sha}\n- list_root`,
-    `# gh-aw-version: v1.2.2\n# gh-aw-commit: ${PINNED_GHAW_RELEASE.commit}\n# gh-aw-frontmatter-sha256: ${base.sha}\nname: dup\nname: dup2`,
-    `# gh-aw-version: v1.2.2\n# gh-aw-commit: ${PINNED_GHAW_RELEASE.commit}\n# gh-aw-frontmatter-sha256: ${base.sha}\nname: &anchor val`,
-    `# gh-aw-version: v1.2.2\n# gh-aw-commit: ${PINNED_GHAW_RELEASE.commit}\n# gh-aw-frontmatter-sha256: ${base.sha}\nname: "unterminated`,
-    `# gh-aw-version: v1.2.2\n# gh-aw-commit: ${PINNED_GHAW_RELEASE.commit}\n# gh-aw-frontmatter-sha256: ${base.sha}\n"__proto__": bad`,
-    `# gh-aw-version: v1.2.2\n# gh-aw-commit: ${PINNED_GHAW_RELEASE.commit}\n# gh-aw-frontmatter-sha256: ${base.sha}\nname: valid_only`
+    `${metaLine}\n---\nname: doc`,
+    `${metaLine}\n- list_root`,
+    `${metaLine}\nname: dup\nname: dup2`,
+    `${metaLine}\nname: &anchor val`,
+    `${metaLine}\nname: "unterminated`,
+    `${metaLine}\n"__proto__": bad`,
+    `${metaLine}\nname: valid_only`
   ]) {
     assert.equal(verifyGhAwWorkflowLock({
       markdownSource: base.markdownSource,
@@ -381,11 +515,17 @@ test('enforces SHA-pinned uses, persist-credentials:false, no ${{}} in run, perm
     }).reason, 'UNPINNED_ACTION_REFERENCE');
   }
 
-  const persistedCreds = buildFixture({persistCredentials: 'true'});
-  assert.equal(verifyGhAwWorkflowLock({
-    markdownSource: persistedCreds.markdownSource,
-    lockYamlSource: persistedCreds.lockYamlSource
-  }).reason, 'CHECKOUT_CREDENTIALS_PERSISTED');
+  for (const mixedCheckout of [
+    `actions/checkout@${checkoutSha}`,
+    `Actions/checkout@${checkoutSha}`,
+    `ACTIONS/CHECKOUT@${checkoutSha}`
+  ]) {
+    const persistedCreds = buildFixture({checkoutUses: mixedCheckout, persistCredentials: 'true'});
+    assert.equal(verifyGhAwWorkflowLock({
+      markdownSource: persistedCreds.markdownSource,
+      lockYamlSource: persistedCreds.lockYamlSource
+    }).reason, 'CHECKOUT_CREDENTIALS_PERSISTED');
+  }
 
   const unsafeRun = buildFixture({runBody: '          echo "${{ inputs.issue_number }}"'});
   assert.equal(verifyGhAwWorkflowLock({
@@ -417,20 +557,100 @@ test('enforces SHA-pinned uses, persist-credentials:false, no ${{}} in run, perm
     lockYamlSource: threatWithoutEval.lockYamlSource
   }).reason, 'MISSING_THREAT_SCAN_GATE');
 
-  const missingDefaultOff = buildFixture({evaluateIf: "${{ !endsWith(github.actor, '[bot]') }}"});
-  assert.equal(verifyGhAwWorkflowLock({
-    markdownSource: missingDefaultOff.markdownSource,
-    lockYamlSource: missingDefaultOff.lockYamlSource
-  }).reason, 'MISSING_DEFAULT_OFF_GUARD');
+  // Regression tests: safe-outputs with always(), failure(), cancelled(), disjunction, or continue-on-error MUST fail closed!
+  for (const badSafeIf of [
+    '${{ always() }}',
+    "${{ always() && needs.threat-and-policy-scan.result == 'success' }}",
+    '${{ failure() }}',
+    '${{ cancelled() }}',
+    '${{ true }}',
+    "${{ needs.evaluate.result == 'success' || needs.threat-and-policy-scan.result == 'success' }}",
+    "${{ needs.threat-and-policy-scan.result == 'success' }}"
+  ]) {
+    const f = buildFixture({safeIf: badSafeIf});
+    assert.equal(verifyGhAwWorkflowLock({
+      markdownSource: f.markdownSource,
+      lockYamlSource: f.lockYamlSource
+    }).reason, 'MISSING_THREAT_SCAN_GATE');
+  }
 
-  const missingBotGuard = buildFixture({evaluateIf: "${{ vars.FACTORY_GHAW_ENABLED == 'true' }}"});
+  const validEnabledSafe = buildFixture({
+    safeIf: "${{ needs.evaluate.result == 'success' && needs.threat-and-policy-scan.result == 'success' }}"
+  });
   assert.equal(verifyGhAwWorkflowLock({
-    markdownSource: missingBotGuard.markdownSource,
-    lockYamlSource: missingBotGuard.lockYamlSource
-  }).reason, 'MISSING_BOT_LOOP_GUARD');
+    markdownSource: validEnabledSafe.markdownSource,
+    lockYamlSource: validEnabledSafe.lockYamlSource
+  }).valid, true);
+
+  // continue-on-error: true on evaluate or threat-and-policy-scan job or step MUST fail closed!
+  const evalJobContinue = buildFixture();
+  assert.equal(verifyGhAwWorkflowLock({
+    markdownSource: evalJobContinue.markdownSource,
+    lockYamlSource: evalJobContinue.lockYamlSource.replace('  evaluate:\n', '  evaluate:\n    continue-on-error: true\n')
+  }).reason, 'MISSING_THREAT_SCAN_GATE');
+
+  const scanStepContinue = buildFixture();
+  assert.equal(verifyGhAwWorkflowLock({
+    markdownSource: scanStepContinue.markdownSource,
+    lockYamlSource: scanStepContinue.lockYamlSource.replace('      - name: Scan\n', '      - name: Scan\n        continue-on-error: true\n')
+  }).reason, 'MISSING_THREAT_SCAN_GATE');
+
+  const scanBypassIf = buildFixture({threatIf: '${{ !always() }}'});
+  assert.equal(verifyGhAwWorkflowLock({
+    markdownSource: scanBypassIf.markdownSource,
+    lockYamlSource: scanBypassIf.lockYamlSource
+  }).reason, 'MISSING_THREAT_SCAN_GATE');
+
+  const scanMissingEvalSuccess = buildFixture({threatIf: '${{ true }}'});
+  assert.equal(verifyGhAwWorkflowLock({
+    markdownSource: scanMissingEvalSuccess.markdownSource,
+    lockYamlSource: scanMissingEvalSuccess.lockYamlSource
+  }).reason, 'MISSING_THREAT_SCAN_GATE');
+
+  const safeBooleanFalse = buildFixture({safeIf: 'false'});
+  assert.equal(verifyGhAwWorkflowLock({
+    markdownSource: safeBooleanFalse.markdownSource,
+    lockYamlSource: safeBooleanFalse.lockYamlSource
+  }).valid, true);
+
+  const safeMalformedIf = buildFixture({safeIf: "'${{ == }}'"});
+  assert.equal(verifyGhAwWorkflowLock({
+    markdownSource: safeMalformedIf.markdownSource,
+    lockYamlSource: safeMalformedIf.lockYamlSource
+  }).reason, 'MISSING_THREAT_SCAN_GATE');
+
+  // Regression tests: disjunctions (true || ..., ... || true), negations, !=, string literals, and bypass calls on evaluate MUST fail closed!
+  for (const bypassedDefaultOff of [
+    "${{ !endsWith(github.actor, '[bot]') }}",
+    "${{ true || vars.FACTORY_GHAW_ENABLED == 'true' && !endsWith(github.actor, '[bot]') }}",
+    "${{ vars.FACTORY_GHAW_ENABLED == 'true' && !endsWith(github.actor, '[bot]') || true }}",
+    "${{ !(vars.FACTORY_GHAW_ENABLED == 'true') && !endsWith(github.actor, '[bot]') }}",
+    "${{ vars.FACTORY_GHAW_ENABLED != 'true' && !endsWith(github.actor, '[bot]') }}",
+    "${{ inputs.note == 'vars.FACTORY_GHAW_ENABLED == ''true''' && !endsWith(github.actor, '[bot]') }}",
+    "${{ always() && vars.FACTORY_GHAW_ENABLED == 'true' && !endsWith(github.actor, '[bot]') }}"
+  ]) {
+    const f = buildFixture({evaluateIf: bypassedDefaultOff});
+    assert.equal(verifyGhAwWorkflowLock({
+      markdownSource: f.markdownSource,
+      lockYamlSource: f.lockYamlSource
+    }).reason, 'MISSING_DEFAULT_OFF_GUARD');
+  }
+
+  for (const bypassedBotGuard of [
+    "${{ vars.FACTORY_GHAW_ENABLED == 'true' }}",
+    "${{ vars.FACTORY_GHAW_ENABLED == 'true' && ( !endsWith(github.actor, '[bot]') || true ) }}",
+    "${{ vars.FACTORY_GHAW_ENABLED == 'true' && endsWith(github.actor, '[bot]') }}",
+    "${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.actor != 'copilot-swe-agent[bot]' }}"
+  ]) {
+    const f = buildFixture({evaluateIf: bypassedBotGuard});
+    assert.equal(verifyGhAwWorkflowLock({
+      markdownSource: f.markdownSource,
+      lockYamlSource: f.lockYamlSource
+    }).reason, 'MISSING_BOT_LOOP_GUARD');
+  }
 
   const explicitBotGuard = buildFixture({
-    evaluateIf: "${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.actor != 'copilot-swe-agent[bot]' && github.actor != 'github-actions[bot]' }}",
+    evaluateIf: "${{ 'true' == vars.FACTORY_GHAW_ENABLED && 'copilot-swe-agent[bot]' != github.actor && github.actor != 'github-actions[bot]' && (github.ref_protected == true) }}",
     threatNeeds: 'evaluate'
   });
   assert.equal(verifyGhAwWorkflowLock({
@@ -480,17 +700,17 @@ test('covers YAML edge cases: quoted keys, block scalars in sequences, empty map
     '# Body'
   ].join('\n');
   const sha = computeFrontmatterSha256(md);
+  const bodySha = computeBodySha256(md);
   const lock = [
-    `# gh-aw-version: ${PINNED_GHAW_RELEASE.version}`,
+    makeMetadataLine({frontmatterHash: sha, bodyHash: bodySha}),
     `# gh-aw-commit: ${PINNED_GHAW_RELEASE.commit}`,
-    `# gh-aw-frontmatter-sha256: ${sha}`,
     'name: Edge Lock',
     'on:',
     '  workflow_dispatch:',
     'permissions: {}',
     'jobs:',
     '  evaluate:',
-    '    if: vars.FACTORY_GHAW_ENABLED == "true" && !endsWith(github.actor, "[bot]")',
+    "    if: 1 == 1 && vars.FACTORY_GHAW_ENABLED == 'true' && !endsWith(github.actor, '[bot]')",
     '    runs-on: ubuntu-latest',
     '    permissions: {}',
     '    steps:',
@@ -507,31 +727,42 @@ test('covers YAML edge cases: quoted keys, block scalars in sequences, empty map
     '    permissions: {}',
     '    steps:',
     '      - name: Threat check',
-    '        run: echo "ok"'
+    '        run: echo "ok"',
+    '  safe-outputs-implicit:',
+    '    needs:',
+    '      - evaluate',
+    '      - threat-scan',
+    '    runs-on: ubuntu-latest',
+    '    permissions: {}',
+    '    steps:',
+    '      - run: echo "implicit success"'
   ].join('\n');
   const verdict = verifyGhAwWorkflowLock({markdownSource: md, lockYamlSource: lock});
   assert.equal(verdict.valid, true);
 
-  const noEvalLock = lock.replace('  evaluate:', '  threat-and-policy-scan:').replace('- evaluate', '- threat-and-policy-scan');
+  const noEvalLock = lock.replace('  evaluate:', '  threat-and-policy-scan:')
+    .replace('      - evaluate\n', '      - threat-and-policy-scan\n')
+    .replace('      - evaluate\n      - threat-scan', '      - threat-and-policy-scan\n      - threat-scan');
   assert.equal(verifyGhAwWorkflowLock({markdownSource: md, lockYamlSource: noEvalLock}).reason, 'MISSING_EVALUATION_JOB');
 
-  const noThreatLock = lock.replace('  threat-scan:\n    needs:\n      - evaluate\n    runs-on: ubuntu-latest\n    permissions: {}\n    steps:\n      - name: Threat check\n        run: echo "ok"', '');
+  const noThreatLock = lock
+    .replace('  threat-scan:\n    needs:\n      - evaluate\n    runs-on: ubuntu-latest\n    permissions: {}\n    steps:\n      - name: Threat check\n        run: echo "ok"\n', '')
+    .replace('  safe-outputs-implicit:\n    needs:\n      - evaluate\n      - threat-scan\n    runs-on: ubuntu-latest\n    permissions: {}\n    steps:\n      - run: echo "implicit success"', '');
   assert.equal(verifyGhAwWorkflowLock({markdownSource: md, lockYamlSource: noThreatLock}).reason, 'MISSING_THREAT_SCAN_GATE');
 
   const reusableUnpinned = lock.replace('    runs-on: ubuntu-latest\n    permissions: {}\n    steps:', '    uses: org/repo/.github/workflows/ci.yml@main\n    permissions: {}\n    steps:');
   assert.equal(verifyGhAwWorkflowLock({markdownSource: md, lockYamlSource: reusableUnpinned}).reason, 'UNPINNED_ACTION_REFERENCE');
 
   const reusablePinned = [
-    `# gh-aw-version: ${PINNED_GHAW_RELEASE.version}`,
+    makeMetadataLine({frontmatterHash: sha, bodyHash: bodySha}),
     `# gh-aw-commit: ${PINNED_GHAW_RELEASE.commit}`,
-    `# gh-aw-frontmatter-sha256: ${sha}`,
     'name: Reusable Lock',
     'on:',
     '  workflow_dispatch:',
     'permissions: {}',
     'jobs:',
     '  evaluate:',
-    '    if: vars.FACTORY_GHAW_ENABLED == "true" && !endsWith(github.actor, "[bot]")',
+    "    if: vars.FACTORY_GHAW_ENABLED == 'true' && !endsWith(github.actor, '[bot]')",
     `    uses: Jamula/SoftwareFactory/.github/workflows/reusable-replay-smoke.yml@${checkoutSha}`,
     '    permissions: {}',
     '  threat-scan:',
@@ -542,6 +773,12 @@ test('covers YAML edge cases: quoted keys, block scalars in sequences, empty map
     '      - run: echo "ok"'
   ].join('\n');
   assert.equal(verifyGhAwWorkflowLock({markdownSource: md, lockYamlSource: reusablePinned}).valid, true);
+
+  const reusableWrongGhAw = reusablePinned.replace(
+    `Jamula/SoftwareFactory/.github/workflows/reusable-replay-smoke.yml@${checkoutSha}`,
+    `github/gh-aw/.github/workflows/reusable.yml@${checkoutSha}`
+  );
+  assert.equal(verifyGhAwWorkflowLock({markdownSource: md, lockYamlSource: reusableWrongGhAw}).reason, 'PINNED_RELEASE_MISMATCH');
 
   const envMergeLock = lock.replace('MODE: shadow', 'SAFE_OUTPUT: merge-pull-request');
   assert.equal(verifyGhAwWorkflowLock({markdownSource: md, lockYamlSource: envMergeLock}).reason, 'MAIN_MERGE_FORBIDDEN_IN_GHAW');
@@ -631,11 +868,9 @@ test('covers YAML edge cases: quoted keys, block scalars in sequences, empty map
     pinnedRelease: {version: 123, commit: PINNED_GHAW_RELEASE.commit}
   }).reason, 'PINNED_RELEASE_INVALID');
 
-  // Lock structural denials: scalar job, scalar step, non-string run, safe-outputs write-all
+  // Lock structural denials: scalar job, scalar step, non-string run, safe-outputs write-all, malformed if expressions
   const scalarJobLock = [
-    `# gh-aw-version: ${PINNED_GHAW_RELEASE.version}`,
-    `# gh-aw-commit: ${PINNED_GHAW_RELEASE.commit}`,
-    `# gh-aw-frontmatter-sha256: ${sha}`,
+    makeMetadataLine({frontmatterHash: sha, bodyHash: bodySha}),
     'on:',
     '  workflow_dispatch:',
     'permissions: {}',
@@ -643,6 +878,32 @@ test('covers YAML edge cases: quoted keys, block scalars in sequences, empty map
     '  evaluate: invalid_job'
   ].join('\n');
   assert.equal(verifyGhAwWorkflowLock({markdownSource: md, lockYamlSource: scalarJobLock}).reason, 'INVALID_LOCK_YAML');
+
+  const implicitSafeMissingEvalNeed = lock.replace(
+    '  safe-outputs-implicit:\n    needs:\n      - evaluate\n      - threat-scan',
+    '  safe-outputs-implicit:\n    needs:\n      - threat-scan'
+  );
+  assert.equal(verifyGhAwWorkflowLock({markdownSource: md, lockYamlSource: implicitSafeMissingEvalNeed}).reason, 'MISSING_THREAT_SCAN_GATE');
+
+  for (const malformedEvalIf of [
+    '123',
+    "''",
+    "'${{ }}'",
+    "'prefix ${{ true }}'",
+    "'vars.X == ''unclosed'",
+    "'vars.X == 999999999999999999999999'",
+    "'vars.X > 1'",
+    "'a.b()'",
+    "'a == b == c'",
+    "'=='",
+    "'('",
+    "'endsWith(github.actor, )'"
+  ]) {
+    assert.equal(verifyGhAwWorkflowLock({
+      markdownSource: md,
+      lockYamlSource: lock.replace("1 == 1 && vars.FACTORY_GHAW_ENABLED == 'true' && !endsWith(github.actor, '[bot]')", malformedEvalIf)
+    }).reason, 'MISSING_DEFAULT_OFF_GUARD');
+  }
 
   const scalarStepLock = lock.replace('      - name: Threat check\n        run: echo "ok"', '      - scalar_step');
   assert.equal(verifyGhAwWorkflowLock({markdownSource: md, lockYamlSource: scalarStepLock}).reason, 'INVALID_LOCK_YAML');
