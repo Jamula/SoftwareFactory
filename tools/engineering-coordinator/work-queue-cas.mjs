@@ -9,6 +9,7 @@ export const MAX_LEASE_TTL_MS = 3600000;
 
 const MAX_ENTRIES = 250;
 const MAX_RECEIPTS = 250;
+const MAX_ARCHIVED_TERMINAL = 2000;
 const HEX40_RE = /^[a-f0-9]{40}$/;
 const HEX64_RE = /^[a-f0-9]{64}$/;
 const TRACEPARENT_RE = /^00-[a-f0-9]{32}-[a-f0-9]{16}-[a-f0-9]{2}$/;
@@ -16,9 +17,11 @@ const REPO_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const WORKER_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$/;
 const LANE_ID_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const VALID_ENTRY_STATUSES = new Set(['leased', 'requeued', 'completed', 'cancelled', 'exhausted']);
+const TERMINAL_ENTRY_STATUSES = new Set(['completed', 'cancelled', 'exhausted']);
 const VALID_RUN_STATES = new Set(['launch_failed', 'worker_terminated', 'run_terminal', 'run_missing']);
 const VALID_CONCLUSIONS = new Set([
-  'success', 'failure', 'timed_out', 'cancelled', 'startup_failure', 'action_required', 'stale'
+  'success', 'failure', 'neutral', 'cancelled', 'skipped',
+  'timed_out', 'action_required', 'stale', 'startup_failure'
 ]);
 
 const positive = value => Number.isSafeInteger(value) && value > 0;
@@ -191,8 +194,14 @@ function isValidReceipt(receipt) {
   return true;
 }
 
+function isValidArchivedEntry(item) {
+  return isPlainRecord(item, ['workId', 'status']) &&
+    typeof item.workId === 'string' && item.workId.length > 0 && item.workId.length <= 160 &&
+    TERMINAL_ENTRY_STATUSES.has(item.status);
+}
+
 function freezeValidatedState(state) {
-  if (!isPlainRecord(state, ['schemaVersion', 'protocol', 'sequence', 'nextGeneration', 'entries', 'recoveryReceipts']) ||
+  if (!isPlainRecord(state, ['schemaVersion', 'protocol', 'sequence', 'nextGeneration', 'entries', 'recoveryReceipts'], ['archivedTerminal']) ||
       state.schemaVersion !== 1 || (state.protocol !== 'v3' && state.protocol !== 'v4') ||
       !nonnegative(state.sequence) || !positive(state.nextGeneration) ||
       !isDenseArray(state.entries, MAX_ENTRIES) || !isDenseArray(state.recoveryReceipts, MAX_RECEIPTS)) {
@@ -207,19 +216,30 @@ function freezeValidatedState(state) {
     seenWorkIds.add(entry.workId);
     entries.push(cloneEntry(entry));
   }
+  const archived = [];
+  if (state.archivedTerminal !== undefined) {
+    if (!isDenseArray(state.archivedTerminal, MAX_ARCHIVED_TERMINAL)) return null;
+    for (const item of state.archivedTerminal) {
+      if (!isValidArchivedEntry(item) || seenWorkIds.has(item.workId)) return null;
+      seenWorkIds.add(item.workId);
+      archived.push(Object.freeze({workId: item.workId, status: item.status}));
+    }
+  }
   const receipts = [];
   for (const receipt of state.recoveryReceipts) {
     if (!isValidReceipt(receipt) || receipt.reclaimedGeneration >= state.nextGeneration) return null;
     receipts.push(cloneReceipt(receipt));
   }
-  return Object.freeze({
+  const frozen = {
     schemaVersion: 1,
     protocol: state.protocol,
     sequence: state.sequence,
     nextGeneration: state.nextGeneration,
     entries: Object.freeze(entries),
     recoveryReceipts: Object.freeze(receipts)
-  });
+  };
+  if (archived.length > 0) frozen.archivedTerminal = Object.freeze(archived);
+  return Object.freeze(frozen);
 }
 
 function computeStateOid(previousOid, state) {
@@ -306,12 +326,37 @@ const denyPlan = reason => Object.freeze({
   reason
 });
 
+function sanitizeSchedulingPolicy(policy) {
+  if (policy === undefined) return {ok: true, policy: undefined};
+  if (!isPlainRecord(policy, ['now', 'agingMs', 'riskCeiling', 'ready']) ||
+      !isDenseArray(policy.ready, MAX_ENTRIES)) {
+    return {ok: false};
+  }
+  const ready = [];
+  for (let i = 0; i < policy.ready.length; i++) {
+    const entry = policy.ready[i];
+    if (!isPlainRecord(entry, ['id', 'readySince', 'risk'])) return {ok: false};
+    ready.push({id: entry.id, readySince: entry.readySince, risk: entry.risk});
+  }
+  return {
+    ok: true,
+    policy: {
+      now: policy.now,
+      agingMs: policy.agingMs,
+      riskCeiling: policy.riskCeiling,
+      ready
+    }
+  };
+}
+
 export function planUnifiedWorkQueue(input) {
   if (!isPlainRecord(input, ['config', 'shadowInput', 'nowMs'], ['activeLeases', 'policy'])) {
     return denyPlan('INVALID_UNIFIED_PLAN_INPUT');
   }
   if (!nonnegative(input.nowMs)) return denyPlan('INVALID_UNIFIED_PLAN_INPUT');
   if (!validateProjectConfig(input.config)) return denyPlan('INVALID_PROJECT_CONFIG');
+  const checkedPolicy = sanitizeSchedulingPolicy(input.policy);
+  if (!checkedPolicy.ok) return denyPlan('SCHEDULING_POLICY_UNKNOWN');
 
   const shadow = input.shadowInput;
   if (!isPlainRecord(shadow, ['enabled', 'stop', 'capacity', 'quotaVerified', 'tasks'])) {
@@ -373,7 +418,7 @@ export function planUnifiedWorkQueue(input) {
     }
   };
 
-  const planned = planLanes(cappedConfig, normalizedTasks, activeReservations, input.policy);
+  const planned = planLanes(cappedConfig, normalizedTasks, activeReservations, checkedPolicy.policy);
   const frozenScheduled = Object.freeze(planned.scheduled.map(item => Object.freeze({
     id: item.id,
     lane: item.lane,
@@ -405,20 +450,31 @@ function isValidRefStore(refStore) {
     typeof refStore.readRef === 'function' && typeof refStore.compareAndSwapRef === 'function';
 }
 
+async function resolveStoreResponse(raw) {
+  if (raw === null || typeof raw !== 'object' || types.isProxy(raw)) return null;
+  let resolved = raw;
+  if (types.isPromise(raw)) {
+    if (Object.getPrototypeOf(raw) !== Promise.prototype || Object.hasOwn(raw, 'then')) {
+      return null;
+    }
+    resolved = await raw;
+  }
+  if (resolved === null || typeof resolved !== 'object' || types.isProxy(resolved) ||
+      Array.isArray(resolved) || Object.getPrototypeOf(resolved) !== Object.prototype ||
+      Object.hasOwn(resolved, 'then')) {
+    return null;
+  }
+  return resolved;
+}
+
 async function readValidatedSnapshot(refStore) {
   let snapshot;
   try {
-    const rawSnapshot = refStore.readRef(PROTECTED_WORK_QUEUE_REF);
-    if (rawSnapshot !== null && typeof rawSnapshot === 'object' && types.isProxy(rawSnapshot)) {
-      return {ok: false, reason: 'REF_STORE_UNAVAILABLE'};
-    }
-    snapshot = await rawSnapshot;
+    snapshot = await resolveStoreResponse(refStore.readRef(PROTECTED_WORK_QUEUE_REF));
   } catch {
     return {ok: false, reason: 'REF_STORE_UNAVAILABLE'};
   }
-  if (snapshot === null || typeof snapshot !== 'object' || types.isProxy(snapshot) ||
-      Array.isArray(snapshot) || Object.getPrototypeOf(snapshot) !== Object.prototype ||
-      !isOwnEnumerableData(snapshot, 'ok')) {
+  if (snapshot === null || !isOwnEnumerableData(snapshot, 'ok')) {
     return {ok: false, reason: 'REF_STORE_UNAVAILABLE'};
   }
   if (snapshot.ok === false) {
@@ -517,6 +573,19 @@ function resolveCasAttempts(maxCasAttempts) {
   return Number.isSafeInteger(maxCasAttempts) && maxCasAttempts >= 1 && maxCasAttempts <= 5 ? maxCasAttempts : null;
 }
 
+function buildNextState(state, sequence, nextGeneration, entries, recoveryReceipts, archivedTerminal) {
+  const next = {
+    schemaVersion: 1,
+    protocol: state.protocol,
+    sequence,
+    nextGeneration,
+    entries,
+    recoveryReceipts
+  };
+  if (archivedTerminal.length > 0) next.archivedTerminal = archivedTerminal;
+  return next;
+}
+
 async function executeCasTransition(refStore, maxCasAttempts, transformState) {
   for (let casAttempt = 1; casAttempt <= maxCasAttempts; casAttempt++) {
     const current = await readValidatedSnapshot(refStore);
@@ -526,22 +595,16 @@ async function executeCasTransition(refStore, maxCasAttempts, transformState) {
 
     let casResult;
     try {
-      const rawCasResult = refStore.compareAndSwapRef({
+      casResult = await resolveStoreResponse(refStore.compareAndSwapRef({
         ref: PROTECTED_WORK_QUEUE_REF,
         expectedOid: current.oid,
         nextState: step.nextState,
         force: false
-      });
-      if (rawCasResult !== null && typeof rawCasResult === 'object' && types.isProxy(rawCasResult)) {
-        return denyMutation('REF_STORE_UNAVAILABLE');
-      }
-      casResult = await rawCasResult;
+      }));
     } catch {
       return denyMutation('REF_STORE_UNAVAILABLE');
     }
-    if (casResult === null || typeof casResult !== 'object' || types.isProxy(casResult) ||
-        Array.isArray(casResult) || Object.getPrototypeOf(casResult) !== Object.prototype ||
-        !isOwnEnumerableData(casResult, 'ok')) {
+    if (casResult === null || !isOwnEnumerableData(casResult, 'ok')) {
       return denyMutation('REF_STORE_UNAVAILABLE');
     }
     if (casResult.ok === true) {
@@ -579,83 +642,128 @@ export async function claimWorkQueueLease(options) {
   const checked = validateCandidate(options.candidate, options.config, options.nowMs);
   if (!checked.ok) return denyMutation(checked.reason);
 
-  return executeCasTransition(options.refStore, maxCasAttempts, state => {
-    const existingIndex = state.entries.findIndex(item => item.workId === checked.workId);
+  // Snapshot all validated candidate fields and config limits BEFORE any async refStore read.
+  const refStore = options.refStore;
+  const claimNowMs = options.nowMs;
+  const maxConcurrentLanes = options.config.limits.maxConcurrentLanes;
+  const configMaxAttempts = options.config.limits.maxAttempts;
+  const snapCandidate = Object.freeze({
+    workId: checked.workId,
+    targetType: options.candidate.targetType,
+    repository: options.candidate.repository,
+    repositoryId: options.candidate.repositoryId,
+    issueNumber: checked.issueNumber,
+    pullNumber: checked.pullNumber,
+    headSha: checked.headSha,
+    lane: options.candidate.lane,
+    ownedPaths: Object.freeze([...options.candidate.ownedPaths]),
+    workerId: options.candidate.workerId,
+    runId: options.candidate.runId,
+    runAttempt: checked.runAttempt,
+    leaseTtlMs: options.candidate.leaseTtlMs,
+    maxExecutionMs: checked.maxExecutionMs,
+    maxAttempts: checked.maxAttempts,
+    traceparent: options.candidate.traceparent,
+    lockSha256: options.candidate.lockSha256
+  });
+
+  return executeCasTransition(refStore, maxCasAttempts, state => {
+    const archivedList = state.archivedTerminal ?? [];
+    const existingIndex = state.entries.findIndex(item => item.workId === snapCandidate.workId);
     const existing = existingIndex >= 0 ? state.entries[existingIndex] : null;
     const effectiveMaxAttempts = existing === null
-      ? checked.maxAttempts
-      : Math.min(existing.maxAttempts, checked.maxAttempts, options.config.limits.maxAttempts);
+      ? snapCandidate.maxAttempts
+      : Math.min(existing.maxAttempts, snapCandidate.maxAttempts, configMaxAttempts);
     if (existing !== null) {
-      if (isLeaseActive(existing, options.nowMs)) return {abort: true, result: denyMutation('DUPLICATE_ACTIVE_CLAIM')};
+      if (isLeaseActive(existing, claimNowMs)) return {abort: true, result: denyMutation('DUPLICATE_ACTIVE_CLAIM')};
       if (existing.status === 'completed') return {abort: true, result: denyMutation('WORK_ALREADY_COMPLETED')};
       if (existing.status === 'cancelled') return {abort: true, result: denyMutation('WORK_CANCELLED')};
       if (existing.status === 'exhausted' || existing.attempts >= effectiveMaxAttempts) {
         return {abort: true, result: denyMutation('RETRY_CEILING_EXHAUSTED')};
       }
-    } else if (state.entries.length >= MAX_ENTRIES) {
-      return {abort: true, result: denyMutation('QUEUE_CAPACITY_EXCEEDED')};
+    } else {
+      const archived = archivedList.find(item => item.workId === snapCandidate.workId);
+      if (archived !== undefined) {
+        if (archived.status === 'completed') return {abort: true, result: denyMutation('WORK_ALREADY_COMPLETED')};
+        if (archived.status === 'cancelled') return {abort: true, result: denyMutation('WORK_CANCELLED')};
+        return {abort: true, result: denyMutation('RETRY_CEILING_EXHAUSTED')};
+      }
     }
 
-    const activeEntries = state.entries.filter(item =>
-      item.workId !== checked.workId && isLeaseActive(item, options.nowMs));
+    let workingEntries = [...state.entries];
+    let nextArchived = [...archivedList];
+    if (existing === null && workingEntries.length >= MAX_ENTRIES) {
+      const evictIdx = workingEntries.findIndex(item => TERMINAL_ENTRY_STATUSES.has(item.status));
+      if (evictIdx < 0) {
+        return {abort: true, result: denyMutation('QUEUE_CAPACITY_EXCEEDED')};
+      }
+      const [evicted] = workingEntries.splice(evictIdx, 1);
+      nextArchived = [...nextArchived, {workId: evicted.workId, status: evicted.status}].slice(-MAX_ARCHIVED_TERMINAL);
+    }
+
+    const activeEntries = workingEntries.filter(item =>
+      item.workId !== snapCandidate.workId && isLeaseActive(item, claimNowMs));
     for (const active of activeEntries) {
-      if (options.candidate.ownedPaths.some(candidatePath =>
+      if (snapCandidate.ownedPaths.some(candidatePath =>
           active.ownedPaths.some(activePath => pathsOverlap(candidatePath, activePath)))) {
         return {abort: true, result: denyMutation('OWNED_PATHS_OVERLAP')};
       }
     }
-    if (activeEntries.some(active => active.lane === options.candidate.lane)) {
+    if (activeEntries.some(active => active.lane === snapCandidate.lane)) {
       return {abort: true, result: denyMutation('LANE_RESERVED')};
     }
-    if (activeEntries.length >= options.config.limits.maxConcurrentLanes) {
+    if (activeEntries.length >= maxConcurrentLanes) {
       return {abort: true, result: denyMutation('CAPACITY_FULL')};
     }
 
-    const executionDeadlineMs = options.nowMs + checked.maxExecutionMs;
-    const leaseExpiresAtMs = Math.min(executionDeadlineMs, options.nowMs + options.candidate.leaseTtlMs);
+    const executionDeadlineMs = claimNowMs + snapCandidate.maxExecutionMs;
+    const leaseExpiresAtMs = Math.min(executionDeadlineMs, claimNowMs + snapCandidate.leaseTtlMs);
     const generation = state.nextGeneration;
     const attempts = existing === null ? 1 : existing.attempts + 1;
 
     const nextEntry = {
-      workId: checked.workId,
-      targetType: options.candidate.targetType,
-      repository: options.candidate.repository,
-      repositoryId: options.candidate.repositoryId,
-      issueNumber: checked.issueNumber,
-      pullNumber: checked.pullNumber,
-      headSha: checked.headSha,
-      lane: options.candidate.lane,
-      ownedPaths: [...options.candidate.ownedPaths],
+      workId: snapCandidate.workId,
+      targetType: snapCandidate.targetType,
+      repository: snapCandidate.repository,
+      repositoryId: snapCandidate.repositoryId,
+      issueNumber: snapCandidate.issueNumber,
+      pullNumber: snapCandidate.pullNumber,
+      headSha: snapCandidate.headSha,
+      lane: snapCandidate.lane,
+      ownedPaths: [...snapCandidate.ownedPaths],
       status: 'leased',
       generation,
       attempts,
       maxAttempts: effectiveMaxAttempts,
-      workerId: options.candidate.workerId,
-      runId: options.candidate.runId,
-      runAttempt: checked.runAttempt,
-      claimedAtMs: options.nowMs,
-      leaseTtlMs: options.candidate.leaseTtlMs,
+      workerId: snapCandidate.workerId,
+      runId: snapCandidate.runId,
+      runAttempt: snapCandidate.runAttempt,
+      claimedAtMs: claimNowMs,
+      leaseTtlMs: snapCandidate.leaseTtlMs,
       leaseExpiresAtMs,
-      maxExecutionMs: checked.maxExecutionMs,
+      maxExecutionMs: snapCandidate.maxExecutionMs,
       executionDeadlineMs
     };
-    if (options.candidate.traceparent !== undefined) nextEntry.traceparent = options.candidate.traceparent;
-    if (options.candidate.lockSha256 !== undefined) nextEntry.lockSha256 = options.candidate.lockSha256;
+    if (snapCandidate.traceparent !== undefined) nextEntry.traceparent = snapCandidate.traceparent;
+    if (snapCandidate.lockSha256 !== undefined) nextEntry.lockSha256 = snapCandidate.lockSha256;
 
-    const nextEntries = [...state.entries];
-    if (existingIndex >= 0) nextEntries[existingIndex] = nextEntry;
-    else nextEntries.push(nextEntry);
+    if (existingIndex >= 0) {
+      const targetIdx = workingEntries.findIndex(item => item.workId === snapCandidate.workId);
+      workingEntries[targetIdx] = nextEntry;
+    } else {
+      workingEntries.push(nextEntry);
+    }
 
     return {
       abort: false,
-      nextState: {
-        schemaVersion: 1,
-        protocol: state.protocol,
-        sequence: state.sequence + 1,
-        nextGeneration: generation + 1,
-        entries: nextEntries,
-        recoveryReceipts: [...state.recoveryReceipts]
-      },
+      nextState: buildNextState(
+        state,
+        state.sequence + 1,
+        generation + 1,
+        workingEntries,
+        [...state.recoveryReceipts],
+        nextArchived
+      ),
       onApplied: (appliedOid, casAttempts) => Object.freeze({
         shadow: true,
         ok: true,
@@ -710,14 +818,14 @@ export async function renewWorkQueueLease(options) {
     nextEntries[index] = updated;
     return {
       abort: false,
-      nextState: {
-        schemaVersion: 1,
-        protocol: state.protocol,
-        sequence: state.sequence + 1,
-        nextGeneration: state.nextGeneration,
-        entries: nextEntries,
-        recoveryReceipts: [...state.recoveryReceipts]
-      },
+      nextState: buildNextState(
+        state,
+        state.sequence + 1,
+        state.nextGeneration,
+        nextEntries,
+        [...state.recoveryReceipts],
+        [...(state.archivedTerminal ?? [])]
+      ),
       onApplied: appliedOid => Object.freeze({
         shadow: true,
         ok: true,
@@ -774,14 +882,14 @@ export async function settleWorkQueueLease(options) {
     nextEntries[index] = updated;
     return {
       abort: false,
-      nextState: {
-        schemaVersion: 1,
-        protocol: state.protocol,
-        sequence: state.sequence + 1,
-        nextGeneration: state.nextGeneration,
-        entries: nextEntries,
-        recoveryReceipts: [...state.recoveryReceipts]
-      },
+      nextState: buildNextState(
+        state,
+        state.sequence + 1,
+        state.nextGeneration,
+        nextEntries,
+        [...state.recoveryReceipts],
+        [...(state.archivedTerminal ?? [])]
+      ),
       onApplied: appliedOid => Object.freeze({
         shadow: true,
         ok: true,
@@ -969,14 +1077,14 @@ export async function reconcileWorkQueueRunStates(options) {
     const mergedReceipts = [...state.recoveryReceipts, ...newReceipts].slice(-MAX_RECEIPTS);
     return {
       abort: false,
-      nextState: {
-        schemaVersion: 1,
-        protocol: state.protocol,
-        sequence: state.sequence + 1,
+      nextState: buildNextState(
+        state,
+        state.sequence + 1,
         nextGeneration,
-        entries: nextEntries,
-        recoveryReceipts: mergedReceipts
-      },
+        nextEntries,
+        mergedReceipts,
+        [...(state.archivedTerminal ?? [])]
+      ),
       onApplied: appliedOid => Object.freeze({
         shadow: true,
         ok: true,

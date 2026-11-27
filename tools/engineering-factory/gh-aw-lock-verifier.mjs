@@ -20,10 +20,19 @@ const KEY_RE = /^[A-Za-z0-9_.-]+$/;
 const FORBIDDEN_OBJECT_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 const SUPPORTED_METADATA_SCHEMAS = new Set(['v1', 'v2', 'v3', 'v4']);
 const ALLOWED_WORK_QUEUE_TOOL_KEYS = new Set(['require-assignment', 'worker', 'issues', 'memory']);
-const THREAT_SCAN_JOB_IDS = new Set(['threat-and-policy-scan', 'threat-scan', 'threat_scan', 'policy-scan']);
+const ALLOWED_WORK_QUEUE_MEMORY_KEYS = new Set([
+  'name', 'path', 'target-repo', 'base-revision', 'branch-prefix', 'max-bytes', 'schema'
+]);
+const REQUIRED_WORK_QUEUE_MEMORY_KEYS = ['path', 'target-repo', 'base-revision', 'branch-prefix', 'schema'];
+const HELPER_JOB_IDS = new Set(['activation', 'pre_activation', 'pre-activation', 'conclusion', 'unlock']);
+const ALLOWED_HELPER_READ_SCOPES = new Set(['contents', 'actions', 'metadata']);
+const THREAT_SCAN_JOB_IDS = new Set(['threat-and-policy-scan', 'threat-scan', 'threat_scan', 'policy-scan', 'detection']);
 const ALLOWED_SAFE_OUTPUT_SCOPES = new Set(['contents', 'issues', 'pull-requests', 'discussions']);
 const FORBIDDEN_SAFE_OUTPUT_WRITES = new Set(['contents', 'workflows', 'actions', 'administration', 'packages', 'id-token', 'security-events', 'statuses', 'checks']);
+const PR_HEAD_EVENTS = new Set(['pull_request', 'pull_request_review', 'pull_request_review_comment']);
 const BYPASS_CALL_NAMES = new Set(['always', 'failure', 'cancelled']);
+const MAX_IF_TOKENS = 64;
+const MAX_IF_DEPTH = 16;
 
 const isHex40 = value => typeof value === 'string' && HEX40_RE.test(value);
 const isHex64 = value => typeof value === 'string' && HEX64_RE.test(value);
@@ -510,6 +519,7 @@ function tokenizeIfExpression(inner) {
       i++;
       continue;
     }
+    if (tokens.length >= MAX_IF_TOKENS) return null;
     const pair = inner.slice(i, i + 2);
     if (pair === '&&' || pair === '||' || pair === '==' || pair === '!=') {
       tokens.push({type: pair, value: pair});
@@ -582,55 +592,58 @@ function parseIfExpression(rawCondition) {
   if (tokens === null || tokens.length === 0) return null;
 
   let pos = 0;
-  function parseOr() {
-    let left = parseAnd();
+  function parseOr(depth) {
+    if (depth > MAX_IF_DEPTH) return null;
+    let left = parseAnd(depth);
     if (left === null) return null;
     while (pos < tokens.length && tokens[pos].type === '||') {
       pos++;
-      const right = parseAnd();
+      const right = parseAnd(depth + 1);
       if (right === null) return null;
       left = {kind: 'Or', left, right};
     }
     return left;
   }
-  function parseAnd() {
-    let left = parseNot();
+  function parseAnd(depth) {
+    if (depth > MAX_IF_DEPTH) return null;
+    let left = parseNot(depth);
     if (left === null) return null;
     while (pos < tokens.length && tokens[pos].type === '&&') {
       pos++;
-      const right = parseNot();
+      const right = parseNot(depth);
       if (right === null) return null;
       left = {kind: 'And', left, right};
     }
     return left;
   }
-  function parseNot() {
+  function parseNot(depth) {
+    if (depth > MAX_IF_DEPTH) return null;
     if (pos < tokens.length && tokens[pos].type === '!') {
       pos++;
-      const expr = parseNot();
+      const expr = parseNot(depth + 1);
       return expr === null ? null : {kind: 'Not', expr};
     }
-    return parseCompare();
+    return parseCompare(depth);
   }
-  function parseCompare() {
-    const left = parsePrimary();
+  function parseCompare(depth) {
+    const left = parsePrimary(depth);
     if (left === null) return null;
     if (pos < tokens.length && (tokens[pos].type === '==' || tokens[pos].type === '!=')) {
       const op = tokens[pos].type;
       pos++;
-      const right = parsePrimary();
+      const right = parsePrimary(depth + 1);
       if (right === null) return null;
       if (pos < tokens.length && (tokens[pos].type === '==' || tokens[pos].type === '!=')) return null;
       return {kind: 'Compare', op, left, right};
     }
     return left;
   }
-  function parsePrimary() {
-    if (pos >= tokens.length) return null;
+  function parsePrimary(depth) {
+    if (depth > MAX_IF_DEPTH || pos >= tokens.length) return null;
     const tok = tokens[pos];
     if (tok.type === '(') {
       pos++;
-      const expr = parseOr();
+      const expr = parseOr(depth + 1);
       if (expr === null || pos >= tokens.length || tokens[pos].type !== ')') return null;
       pos++;
       return expr;
@@ -647,7 +660,7 @@ function parseIfExpression(rawCondition) {
         const args = [];
         if (pos < tokens.length && tokens[pos].type !== ')') {
           while (true) {
-            const arg = parseOr();
+            const arg = parseOr(depth + 1);
             if (arg === null) return null;
             args.push(arg);
             if (pos < tokens.length && tokens[pos].type === ',') {
@@ -666,7 +679,7 @@ function parseIfExpression(rawCondition) {
     return null;
   }
 
-  const ast = parseOr();
+  const ast = parseOr(0);
   return ast !== null && pos === tokens.length ? ast : null;
 }
 
@@ -740,6 +753,38 @@ function targetsMainMerge(mergeConfig) {
   return branchValue === 'main' || branchValue === 'refs/heads/main' || branchValue === '*';
 }
 
+function isValidWorkQueueMemoryConfig(memory) {
+  if (!isMapObject(memory)) return false;
+  const keys = Object.keys(memory);
+  if (!keys.every(key => ALLOWED_WORK_QUEUE_MEMORY_KEYS.has(key))) return false;
+  if (!REQUIRED_WORK_QUEUE_MEMORY_KEYS.every(key => Object.hasOwn(memory, key))) return false;
+  if (typeof memory.path !== 'string' || memory.path.length === 0 || memory.path.length > 256 ||
+      memory.path.startsWith('/') || memory.path.includes('\\') || memory.path.includes('..')) {
+    return false;
+  }
+  if (typeof memory['target-repo'] !== 'string' || memory['target-repo'].includes('..') ||
+      !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(memory['target-repo'])) {
+    return false;
+  }
+  if (!isHex40(memory['base-revision']) && !isHex64(memory['base-revision'])) {
+    return false;
+  }
+  if (typeof memory['branch-prefix'] !== 'string' || memory['branch-prefix'].length === 0 ||
+      memory['branch-prefix'].length > 120) {
+    return false;
+  }
+  if (!isMapObject(memory.schema)) return false;
+  if (memory.name !== undefined &&
+      (typeof memory.name !== 'string' || memory.name.length > 64 || !/^[A-Za-z][A-Za-z_0-9]*$/.test(memory.name))) {
+    return false;
+  }
+  if (memory['max-bytes'] !== undefined &&
+      (!Number.isSafeInteger(memory['max-bytes']) || memory['max-bytes'] < 1 || memory['max-bytes'] > 262144)) {
+    return false;
+  }
+  return true;
+}
+
 function isValidWorkQueueToolConfig(workQueue) {
   if (workQueue === true) return true;
   if (!isMapObject(workQueue)) return false;
@@ -750,7 +795,7 @@ function isValidWorkQueueToolConfig(workQueue) {
         (!isMapObject(value) || Object.keys(value).some(k => k !== 'label' || typeof value[k] !== 'string'))) {
       return false;
     }
-    if (key === 'memory' && !isMapObject(value)) return false;
+    if (key === 'memory' && !isValidWorkQueueMemoryConfig(value)) return false;
   }
   return true;
 }
@@ -822,6 +867,35 @@ function isReadOnlyPermissions(perms) {
   return {ok: false, hasWrite: false};
 }
 
+function isHelperReadOnlyPermissions(perms) {
+  if (!isMapObject(perms)) return false;
+  return Object.entries(perms).every(([scope, level]) =>
+    ALLOWED_HELPER_READ_SCOPES.has(scope) && level === 'read');
+}
+
+function isTrustedControlPlaneCheckout(withMap, hasPrHeadTrigger, releaseCommit) {
+  const repoOpt = withMap.repository;
+  if (repoOpt !== undefined) {
+    if (typeof repoOpt !== 'string') return false;
+    const trimmedRepo = repoOpt.trim();
+    if (trimmedRepo.toLowerCase() === 'github/gh-aw') {
+      return withMap.ref === releaseCommit;
+    }
+    if (trimmedRepo !== 'Jamula/SoftwareFactory' && trimmedRepo !== '${{ github.repository }}') {
+      return false;
+    }
+  }
+  const refOpt = withMap.ref;
+  if (refOpt === undefined) {
+    return !hasPrHeadTrigger;
+  }
+  if (typeof refOpt !== 'string') return false;
+  const trimmedRef = refOpt.trim();
+  return trimmedRef === 'refs/heads/main' ||
+    trimmedRef === 'main' ||
+    trimmedRef === '${{ github.workflow_sha }}' ||
+    isHex40(trimmedRef);
+}
 function normalizeNeeds(needsField) {
   if (typeof needsField === 'string') return [needsField];
   if (Array.isArray(needsField) && needsField.length > 0 && needsField.every(item => typeof item === 'string')) {
@@ -911,6 +985,8 @@ export function verifyGhAwWorkflowLock(input) {
     return deny(topPerms.hasWrite ? 'TOP_LEVEL_WRITE_PERMISSION' : 'INVALID_TOP_LEVEL_PERMISSIONS');
   }
 
+  const hasPrHeadTrigger = Object.keys(lockDoc.on).some(ev => PR_HEAD_EVENTS.has(ev));
+  const helperJobs = [];
   const evaluationJobIds = [];
   const threatScanJobs = [];
   const safeOutputJobs = [];
@@ -920,6 +996,7 @@ export function verifyGhAwWorkflowLock(input) {
     if (/merge[-_]pull[-_]request/i.test(jobId)) {
       return deny('MAIN_MERGE_FORBIDDEN_IN_GHAW');
     }
+    const isHelper = HELPER_JOB_IDS.has(jobId);
     const isThreatScan = THREAT_SCAN_JOB_IDS.has(jobId);
     const isSafeOutput = jobId.startsWith('safe-outputs') || jobId.startsWith('safe_outputs');
 
@@ -935,17 +1012,20 @@ export function verifyGhAwWorkflowLock(input) {
       }
     }
 
+    let jobHasWriteScope = false;
     if (isSafeOutput) {
       if (!isMapObject(job.permissions)) return deny('EXCESSIVE_SAFE_OUTPUT_PERMISSION');
-      let hasWriteScope = false;
       for (const [scope, level] of Object.entries(job.permissions)) {
         if (!ALLOWED_SAFE_OUTPUT_SCOPES.has(scope) || (level !== 'read' && level !== 'write') ||
             (level === 'write' && FORBIDDEN_SAFE_OUTPUT_WRITES.has(scope))) {
           return deny('EXCESSIVE_SAFE_OUTPUT_PERMISSION');
         }
-        if (level === 'write') hasWriteScope = true;
+        if (level === 'write') jobHasWriteScope = true;
       }
-      safeOutputJobs.push({jobId, job, hasWriteScope});
+      safeOutputJobs.push({jobId, job, hasWriteScope: jobHasWriteScope});
+    } else if (isHelper) {
+      if (!isHelperReadOnlyPermissions(job.permissions)) return deny('AGENT_JOB_WRITE_PERMISSION');
+      helperJobs.push({jobId, job});
     } else {
       const jobPerms = isReadOnlyPermissions(job.permissions);
       if (!jobPerms.ok) return deny('AGENT_JOB_WRITE_PERMISSION');
@@ -977,6 +1057,10 @@ export function verifyGhAwWorkflowLock(input) {
                 step.with.ref !== releaseCheck.release.commit) {
               return deny('PINNED_RELEASE_MISMATCH');
             }
+            if (jobHasWriteScope &&
+                !isTrustedControlPlaneCheckout(step.with, hasPrHeadTrigger, releaseCheck.release.commit)) {
+              return deny('UNTRUSTED_SAFE_OUTPUT_CHECKOUT');
+            }
           }
         }
         if (step.run !== undefined) {
@@ -990,10 +1074,25 @@ export function verifyGhAwWorkflowLock(input) {
     }
   }
 
+  const guardedHelperIds = new Set(
+    helperJobs.filter(({job}) => verifyEvaluationGuards(job.if).ok).map(({jobId}) => jobId)
+  );
+
   if (evaluationJobIds.length === 0) return deny('MISSING_EVALUATION_JOB');
   for (const {job} of evaluationJobIds) {
     const guardVerdict = verifyEvaluationGuards(job.if);
-    if (!guardVerdict.ok) return deny(guardVerdict.reason);
+    if (guardVerdict.ok) continue;
+    const evalNeeds = normalizeNeeds(job.needs);
+    const matchingGuardedHelpers = evalNeeds === null ? [] : evalNeeds.filter(dep => guardedHelperIds.has(dep));
+    if (matchingGuardedHelpers.length === 0) return deny(guardVerdict.reason);
+    if (job.if !== undefined) {
+      const evalAst = parseIfExpression(job.if);
+      if (evalAst === null || astHasBypassCall(evalAst)) return deny(guardVerdict.reason);
+      const evalConjuncts = collectMandatoryConjuncts(evalAst);
+      const inheritsHelperSuccess = matchingGuardedHelpers.some(helperId =>
+        evalConjuncts.some(c => isIdentCompareLiteral(c, '==', `needs.${helperId}.result`, 'success')));
+      if (!inheritsHelperSuccess) return deny(guardVerdict.reason);
+    }
   }
 
   if (threatScanJobs.length === 0) return deny('MISSING_THREAT_SCAN_GATE');

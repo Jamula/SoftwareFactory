@@ -794,7 +794,14 @@ test('covers YAML edge cases: quoted keys, block scalars in sequences, empty map
     '    issues:',
     '      label: sf',
     '    memory:',
-    '      path: state.json',
+    '      name: persist_work_queue_memory',
+    '      path: state/queue.json',
+    '      target-repo: Jamula/SoftwareFactory',
+    `      base-revision: ${checkoutSha}`,
+    '      branch-prefix: gh-aw/memory',
+    '      max-bytes: 4096',
+    '      schema:',
+    '        type: object',
     'safe-outputs:',
     '  merge-pull-request: false',
     'empty-section:',
@@ -913,6 +920,14 @@ test('covers YAML edge cases: quoted keys, block scalars in sequences, empty map
   for (const badFm of [
     '---\nsafe-outputs: invalid_scalar\n---\n# Body',
     '---\ntools:\n  work-queue: invalid_scalar\n---\n# Body',
+    '---\nif: "vars.FACTORY_GHAW_ENABLED == \'true\' && !endsWith(github.actor, \'[bot]\')"\ntools:\n  work-queue:\n    memory:\n      path: state.json\n---\n# Body',
+    `---\nif: "vars.FACTORY_GHAW_ENABLED == 'true' && !endsWith(github.actor, '[bot]')"\ntools:\n  work-queue:\n    memory:\n      path: ../escape.json\n      target-repo: Jamula/SoftwareFactory\n      base-revision: ${checkoutSha}\n      branch-prefix: p\n      schema:\n        type: object\n---\n# Body`,
+    `---\nif: "vars.FACTORY_GHAW_ENABLED == 'true' && !endsWith(github.actor, '[bot]')"\ntools:\n  work-queue:\n    memory:\n      path: state.json\n      target-repo: bad_repo\n      base-revision: ${checkoutSha}\n      branch-prefix: p\n      schema:\n        type: object\n---\n# Body`,
+    '---\nif: "vars.FACTORY_GHAW_ENABLED == \'true\' && !endsWith(github.actor, \'[bot]\')"\ntools:\n  work-queue:\n    memory:\n      path: state.json\n      target-repo: Jamula/SoftwareFactory\n      base-revision: not-a-sha\n      branch-prefix: p\n      schema:\n        type: object\n---\n# Body',
+    `---\nif: "vars.FACTORY_GHAW_ENABLED == 'true' && !endsWith(github.actor, '[bot]')"\ntools:\n  work-queue:\n    memory:\n      path: state.json\n      target-repo: Jamula/SoftwareFactory\n      base-revision: ${checkoutSha}\n      branch-prefix: ""\n      schema:\n        type: object\n---\n# Body`,
+    `---\nif: "vars.FACTORY_GHAW_ENABLED == 'true' && !endsWith(github.actor, '[bot]')"\ntools:\n  work-queue:\n    memory:\n      path: state.json\n      target-repo: Jamula/SoftwareFactory\n      base-revision: ${checkoutSha}\n      branch-prefix: p\n      name: 9bad\n      schema:\n        type: object\n---\n# Body`,
+    `---\nif: "vars.FACTORY_GHAW_ENABLED == 'true' && !endsWith(github.actor, '[bot]')"\ntools:\n  work-queue:\n    memory:\n      path: state.json\n      target-repo: Jamula/SoftwareFactory\n      base-revision: ${checkoutSha}\n      branch-prefix: p\n      max-bytes: 999999\n      schema:\n        type: object\n---\n# Body`,
+    `---\nif: "vars.FACTORY_GHAW_ENABLED == 'true' && !endsWith(github.actor, '[bot]')"\ntools:\n  work-queue:\n    memory:\n      path: state.json\n      target-repo: Jamula/SoftwareFactory\n      base-revision: ${checkoutSha}\n      branch-prefix: p\n      extra-key: true\n      schema:\n        type: object\n---\n# Body`,
     '---\nname: "bad\\xescape"\n---\n# Body',
     '---\njust_a_word_without_colon\n---\n# Body',
     '---\nempty_list_item: [a, ]\n---\n# Body',
@@ -1001,7 +1016,10 @@ test('covers YAML edge cases: quoted keys, block scalars in sequences, empty map
     "'a == b == c'",
     "'=='",
     "'('",
-    "'endsWith(github.actor, )'"
+    "'endsWith(github.actor, )'",
+    `'${'!'.repeat(5000)}true'`,
+    `'${'('.repeat(20)}true${')'.repeat(20)}'`,
+    `'${Array(40).fill('1 == 1').join(' && ')}'`
   ]) {
     assert.equal(verifyGhAwWorkflowLock({
       markdownSource: md,
@@ -1017,4 +1035,141 @@ test('covers YAML edge cases: quoted keys, block scalars in sequences, empty map
 
   const safeWriteAllLock = `${lock}\n  safe-outputs-bad:\n    needs: [threat-scan]\n    permissions: write-all\n    steps:\n      - run: echo "x"`;
   assert.equal(verifyGhAwWorkflowLock({markdownSource: md, lockYamlSource: safeWriteAllLock}).reason, 'EXCESSIVE_SAFE_OUTPUT_PERMISSION');
+});
+
+test('verifies compiler-shaped multi-job lock (activation -> agent -> detection -> safe_outputs) and enforces trusted safe-outputs checkout provenance', () => {
+  const md = [
+    '---',
+    'name: Compiler Shaped Workflow',
+    'engine: copilot',
+    'if: "vars.FACTORY_GHAW_ENABLED == \'true\' && !endsWith(github.actor, \'[bot]\')"',
+    'on:',
+    '  pull_request_target:',
+    'permissions: {}',
+    'tools:',
+    '  work-queue: true',
+    '---',
+    '# Body'
+  ].join('\n');
+  const fmHash = computeFrontmatterSha256(md);
+  const bHash = computeBodySha256(md);
+
+  const buildCompilerLock = ({
+    onTrigger = '  pull_request_target:',
+    activationPerms = '      actions: read\n      contents: read',
+    activationIf = "${{ vars.FACTORY_GHAW_ENABLED == 'true' && !endsWith(github.actor, '[bot]') }}",
+    agentIf = "${{ needs.activation.result == 'success' }}",
+    safeCheckoutWith = [
+      '          persist-credentials: false',
+      '          repository: ${{ github.repository }}',
+      '          ref: refs/heads/main'
+    ].join('\n')
+  } = {}) => [
+    makeMetadataLine({frontmatterHash: fmHash, bodyHash: bHash, schemaVersion: 'v4'}),
+    'name: "Compiler Shaped Workflow"',
+    '"on":',
+    onTrigger,
+    'permissions: {}',
+    'jobs:',
+    '  activation:',
+    `    if: ${activationIf}`,
+    '    runs-on: ubuntu-slim',
+    '    permissions:',
+    activationPerms,
+    '    steps:',
+    '      - name: Checkout gh-aw setup',
+    `        uses: actions/checkout@${checkoutSha}`,
+    '        with:',
+    '          repository: github/gh-aw',
+    `          ref: ${PINNED_GHAW_RELEASE.commit}`,
+    '          persist-credentials: false',
+    '  agent:',
+    '    needs: [activation]',
+    `    if: ${agentIf}`,
+    '    runs-on: ubuntu-latest',
+    '    permissions:',
+    '      contents: read',
+    '    steps:',
+    '      - name: Agent step',
+    '        run: echo "agent"',
+    '  detection:',
+    '    needs: [agent]',
+    "    if: ${{ needs.agent.result == 'success' }}",
+    '    runs-on: ubuntu-latest',
+    '    permissions:',
+    '      contents: read',
+    '    outputs:',
+    '      scan_verified: ${{ steps.detect.outputs.scan_verified }}',
+    '    steps:',
+    '      - name: Threat detection',
+    '        id: detect',
+    '        run: echo "scan_verified=true"',
+    '  safe_outputs:',
+    '    needs: [agent, detection]',
+    "    if: ${{ needs.agent.result == 'success' && needs.detection.result == 'success' && needs.detection.outputs.scan_verified == 'true' }}",
+    '    runs-on: ubuntu-latest',
+    '    permissions:',
+    '      issues: write',
+    '    steps:',
+    '      - name: Checkout control plane',
+    `        uses: actions/checkout@${checkoutSha}`,
+    '        with:',
+    safeCheckoutWith,
+    '      - name: Apply safe output',
+    '        run: echo "safe"'
+  ].join('\n');
+
+  const validCompilerVerdict = verifyGhAwWorkflowLock({
+    markdownSource: md,
+    lockYamlSource: buildCompilerLock()
+  });
+  assert.equal(validCompilerVerdict.valid, true);
+  assert.equal(validCompilerVerdict.reason, 'GHAW_LOCK_VERIFIED');
+
+  // Pinned github/gh-aw checkout inside safe_outputs is also trusted
+  assert.equal(verifyGhAwWorkflowLock({
+    markdownSource: md,
+    lockYamlSource: buildCompilerLock({
+      safeCheckoutWith: `          persist-credentials: false\n          repository: github/gh-aw\n          ref: ${PINNED_GHAW_RELEASE.commit}`
+    })
+  }).valid, true);
+
+  // Helper job requesting write permission is rejected
+  assert.equal(verifyGhAwWorkflowLock({
+    markdownSource: md,
+    lockYamlSource: buildCompilerLock({activationPerms: '      actions: write\n      contents: read'})
+  }).reason, 'AGENT_JOB_WRITE_PERMISSION');
+
+  // Agent job not inheriting guarded activation when agent lacks direct guards is rejected
+  assert.equal(verifyGhAwWorkflowLock({
+    markdownSource: md,
+    lockYamlSource: buildCompilerLock({activationIf: '${{ true }}'})
+  }).reason, 'MISSING_DEFAULT_OFF_GUARD');
+
+  assert.equal(verifyGhAwWorkflowLock({
+    markdownSource: md,
+    lockYamlSource: buildCompilerLock({agentIf: '${{ always() }}'})
+  }).reason, 'MISSING_DEFAULT_OFF_GUARD');
+
+  // Untrusted checkout refs/repos inside write-capable safe_outputs MUST fail closed!
+  for (const untrustedWith of [
+    '          persist-credentials: false\n          ref: ${{ github.event.pull_request.head.sha }}',
+    '          persist-credentials: false\n          repository: ${{ github.event.pull_request.head.repo.full_name }}\n          ref: refs/heads/main',
+    '          persist-credentials: false\n          repository: attacker/fork\n          ref: refs/heads/main',
+    '          persist-credentials: false\n          ref: feature/untrusted-branch'
+  ]) {
+    assert.equal(verifyGhAwWorkflowLock({
+      markdownSource: md,
+      lockYamlSource: buildCompilerLock({safeCheckoutWith: untrustedWith})
+    }).reason, 'UNTRUSTED_SAFE_OUTPUT_CHECKOUT');
+  }
+
+  // On pull_request trigger, write-capable checkout omitting explicit trusted ref MUST fail closed!
+  assert.equal(verifyGhAwWorkflowLock({
+    markdownSource: md,
+    lockYamlSource: buildCompilerLock({
+      onTrigger: '  pull_request:',
+      safeCheckoutWith: '          persist-credentials: false'
+    })
+  }).reason, 'UNTRUSTED_SAFE_OUTPUT_CHECKOUT');
 });

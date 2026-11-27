@@ -234,7 +234,35 @@ test('planUnifiedWorkQueue bridges shadow-runtime tasks with planner.mjs lanes, 
     nowMs: 0
   }).reason, 'INVALID_TASKS');
 
-  // Regression: malformed task.dependencies (null, number, empty string, sparse array, revoked proxy) must fail closed without throwing
+  // Regression: revoked Proxy policy and getter-backed policy/ready/entry fields fail closed without throwing or invoking getters
+  let policyTraps = 0;
+  const policyTrap = () => {
+    policyTraps++;
+    throw new Error('policy getter/trap must not run');
+  };
+  const revokedPolicy = Proxy.revocable({now: 0, agingMs: 1000, riskCeiling: 'low', ready: []}, {get: policyTrap});
+  revokedPolicy.revoke();
+  const getterPolicy = {now: 0, agingMs: 1000, riskCeiling: 'low'};
+  Object.defineProperty(getterPolicy, 'ready', {enumerable: true, get: policyTrap});
+  const getterReadyArr = [];
+  Object.defineProperty(getterReadyArr, '0', {enumerable: true, get: policyTrap});
+  getterReadyArr.length = 1;
+  const getterEntry = {id: 2, readySince: 0};
+  Object.defineProperty(getterEntry, 'risk', {enumerable: true, get: policyTrap});
+  for (const badPolicy of [
+    revokedPolicy.proxy,
+    getterPolicy,
+    {now: 0, agingMs: 1000, riskCeiling: 'low', ready: getterReadyArr},
+    {now: 0, agingMs: 1000, riskCeiling: 'low', ready: [getterEntry]}
+  ]) {
+    assert.equal(planUnifiedWorkQueue({
+      config,
+      shadowInput,
+      nowMs: 2000,
+      policy: badPolicy
+    }).reason, 'SCHEDULING_POLICY_UNKNOWN');
+  }
+  assert.equal(policyTraps, 0);
   const revokedDeps = Proxy.revocable([], {});
   revokedDeps.revoke();
   for (const badDeps of [null, 42, '', new Array(1), revokedDeps.proxy]) {
@@ -1022,7 +1050,36 @@ test('retries transient CAS conflicts and fails closed on proxies, store errors,
     readRef: ref => backing.readRef(ref),
     compareAndSwapRef: async () => null
   };
-  for (const unsafeStore of [proxyReadStore, revokedReadStore, getterReadStore, proxyCasStore, revokedCasStore, asyncNullCasStore]) {
+  // Thenable plain objects with throwing `get then()` accessors must NEVER invoke `then`!
+  const thenGetterReadObj = {ok: true, oid: ZERO_GIT_OID, state: null};
+  Object.defineProperty(thenGetterReadObj, 'then', {enumerable: true, get: badTrap});
+  const thenGetterReadStore = {
+    readRef: () => thenGetterReadObj,
+    compareAndSwapRef: () => ({ok: false})
+  };
+  const thenGetterCasObj = {ok: true, oid: HEAD_A};
+  Object.defineProperty(thenGetterCasObj, 'then', {enumerable: true, get: badTrap});
+  const thenGetterCasStore = {
+    readRef: ref => backing.readRef(ref),
+    compareAndSwapRef: () => thenGetterCasObj
+  };
+  const taggedPromise = Promise.resolve({ok: true, oid: ZERO_GIT_OID, state: null});
+  Object.defineProperty(taggedPromise, 'then', {enumerable: true, get: badTrap});
+  const taggedPromiseReadStore = {
+    readRef: () => taggedPromise,
+    compareAndSwapRef: () => ({ok: false})
+  };
+  for (const unsafeStore of [
+    proxyReadStore,
+    revokedReadStore,
+    getterReadStore,
+    proxyCasStore,
+    revokedCasStore,
+    asyncNullCasStore,
+    thenGetterReadStore,
+    thenGetterCasStore,
+    taggedPromiseReadStore
+  ]) {
     const res = await claimWorkQueueLease({
       refStore: unsafeStore,
       config,
@@ -1032,6 +1089,86 @@ test('retries transient CAS conflicts and fails closed on proxies, store errors,
     assert.equal(res.reason, 'REF_STORE_UNAVAILABLE');
   }
   assert.equal(proxyTrapCount, 0);
+
+  // Regression: mutating caller-owned candidate.ownedPaths or config.limits during async readRef()
+  // MUST NOT persist unvalidated paths or altered limits!
+  const mutatingBacking = createInMemoryWorkQueueRefStore();
+  const mutablePaths = ['docs/SAFE.md'];
+  const mutableCandidate = makeIssueCandidate({
+    issueNumber: 73,
+    lane: 'docs',
+    ownedPaths: mutablePaths
+  });
+  const mutableConfig = makeConfig();
+  const mutatingStore = {
+    async readRef(ref) {
+      const snap = mutatingBacking.readRef(ref);
+      await Promise.resolve();
+      mutablePaths[0] = '.github/workflows/evil.yml';
+      mutableCandidate.lane = 'hacked';
+      mutableConfig.limits.maxAttempts = 5;
+      return snap;
+    },
+    compareAndSwapRef(req) {
+      return mutatingBacking.compareAndSwapRef(req);
+    }
+  };
+  const snapshotSafeClaim = await claimWorkQueueLease({
+    refStore: mutatingStore,
+    config: mutableConfig,
+    candidate: mutableCandidate,
+    nowMs: 11000
+  });
+  assert.equal(snapshotSafeClaim.ok, true);
+  assert.deepEqual(snapshotSafeClaim.lease.ownedPaths, ['docs/SAFE.md']);
+  assert.equal(snapshotSafeClaim.lease.lane, 'docs');
+  assert.equal(snapshotSafeClaim.lease.maxAttempts, 2);
+
+  // Regression: 'neutral' and 'skipped' terminal conclusions are accepted and requeue/exhaust cleanly
+  const neutralClaim = await claimWorkQueueLease({
+    refStore: mutatingBacking,
+    config: makeConfig(),
+    candidate: makePrCandidate({pullNumber: 74, headSha: HEAD_A}),
+    nowMs: 11500
+  });
+  assert.equal(neutralClaim.ok, true);
+  const neutralReconciled = await reconcileWorkQueueRunStates({
+    refStore: mutatingBacking,
+    observedRuns: [{
+      workId: neutralClaim.lease.workId,
+      runId: 2002,
+      runAttempt: 1,
+      leaseGeneration: neutralClaim.lease.generation,
+      runState: 'run_terminal',
+      conclusion: 'neutral'
+    }],
+    nowMs: 12000
+  });
+  assert.equal(neutralReconciled.ok, true);
+  assert.equal(neutralReconciled.receipts[0].conclusion, 'neutral');
+  assert.equal(neutralReconciled.receipts[0].outcome, 'requeued');
+
+  const skippedRetry = await claimWorkQueueLease({
+    refStore: mutatingBacking,
+    config: makeConfig(),
+    candidate: makePrCandidate({pullNumber: 74, headSha: HEAD_A, runId: 2003}),
+    nowMs: 12500
+  });
+  const skippedReconciled = await reconcileWorkQueueRunStates({
+    refStore: mutatingBacking,
+    observedRuns: [{
+      workId: skippedRetry.lease.workId,
+      runId: 2003,
+      runAttempt: 1,
+      leaseGeneration: skippedRetry.lease.generation,
+      runState: 'run_terminal',
+      conclusion: 'skipped'
+    }],
+    nowMs: 13000
+  });
+  assert.equal(skippedReconciled.ok, true);
+  assert.equal(skippedReconciled.receipts[0].conclusion, 'skipped');
+  assert.equal(skippedReconciled.receipts[0].outcome, 'exhausted');
 
   // Revoked proxy safety across all entrypoints
   const revoked = Proxy.revocable({}, {});
@@ -1271,6 +1408,10 @@ test('retries transient CAS conflicts and fails closed on proxies, store errors,
     maxExecutionMs: 2000,
     executionDeadlineMs: 2100
   }));
+  // Compaction at 250 entries: completed entries are compacted into archivedTerminal to free active capacity
+  // while preserving durable completed/cancelled/exhausted deduplication!
+  fullEntries[1].status = 'cancelled';
+  fullEntries[2].status = 'exhausted';
   const fullStore = createInMemoryWorkQueueRefStore({
     schemaVersion: 1,
     protocol: 'v4',
@@ -1293,8 +1434,53 @@ test('retries transient CAS conflicts and fails closed on proxies, store errors,
       reclaimedAtMs: 150
     }]
   });
+  for (const issueNumber of [999, 1000, 1001]) {
+    const compactedClaim = await claimWorkQueueLease({
+      refStore: fullStore,
+      config,
+      candidate: makeIssueCandidate({issueNumber, lane: 'docs', ownedPaths: ['docs/NEW.md'], leaseTtlMs: 100, maxExecutionMs: 200}),
+      nowMs: 5000 + issueNumber * 500
+    });
+    assert.equal(compactedClaim.ok, true);
+  }
+  // Evicted issue #1 (completed), #2 (cancelled), and #3 (exhausted) remain durably deduplicated via archivedTerminal!
   assert.equal((await claimWorkQueueLease({
     refStore: fullStore,
+    config,
+    candidate: makeIssueCandidate({issueNumber: 1, lane: 'docs', ownedPaths: ['docs/NEW.md']}),
+    nowMs: 600000
+  })).reason, 'WORK_ALREADY_COMPLETED');
+  assert.equal((await claimWorkQueueLease({
+    refStore: fullStore,
+    config,
+    candidate: makeIssueCandidate({issueNumber: 2, lane: 'docs', ownedPaths: ['docs/NEW.md']}),
+    nowMs: 600000
+  })).reason, 'WORK_CANCELLED');
+  assert.equal((await claimWorkQueueLease({
+    refStore: fullStore,
+    config,
+    candidate: makeIssueCandidate({issueNumber: 3, lane: 'docs', ownedPaths: ['docs/NEW.md']}),
+    nowMs: 600000
+  })).reason, 'RETRY_CEILING_EXHAUSTED');
+
+  // Invalid archivedTerminal in persisted state is rejected
+  assert.throws(() => createInMemoryWorkQueueRefStore({
+    ...fullStore.readRef().state,
+    archivedTerminal: [{workId: '', status: 'completed'}]
+  }), /INVALID_INITIAL_WORK_QUEUE_STATE/);
+
+  // When all 250 entries are non-terminal ('requeued'), QUEUE_CAPACITY_EXCEEDED is returned!
+  const nonTerminalEntries = fullEntries.map(item => ({...item, status: 'requeued'}));
+  const nonTerminalFullStore = createInMemoryWorkQueueRefStore({
+    schemaVersion: 1,
+    protocol: 'v3',
+    sequence: 250,
+    nextGeneration: 251,
+    entries: nonTerminalEntries,
+    recoveryReceipts: []
+  });
+  assert.equal((await claimWorkQueueLease({
+    refStore: nonTerminalFullStore,
     config,
     candidate: makeIssueCandidate({issueNumber: 999, lane: 'docs', ownedPaths: ['docs/NEW.md']}),
     nowMs: 5000
