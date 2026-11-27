@@ -369,6 +369,80 @@ test('evaluateCiCriticalPath isolates required-check critical path from slow opt
   assert.equal(firstRun.mergeReadinessCriticalPathMs, null);
   assert.equal(optionalSlowReport.runs[1].independentReviewMs, null);
 
+  // Prerequisite validation job (test-coverage at 1_000ms) sets firstJobStartMs while
+  // required checks starting >=20_000ms set lastRequiredCheckEndMs (70_000ms -> 69_000ms span)
+  // and a 120_000ms optional check stays isolated in allObservedChecksDurationMs.
+  const prerequisiteReport = evaluateCiCriticalPath([
+    {
+      runId: 'prerequisite-and-optional-run',
+      headSha: SHA_C,
+      cacheCohort: 'warm',
+      eventAtMs: 0,
+      checks: [
+        {
+          context: 'test-coverage',
+          lane: 'linux',
+          headSha: SHA_C,
+          conclusion: 'success',
+          queuedAtMs: 0,
+          startedAtMs: 1_000,
+          completedAtMs: 19_000
+        },
+        {
+          context: 'build-test',
+          lane: 'linux',
+          headSha: SHA_C,
+          conclusion: 'success',
+          queuedAtMs: 19_000,
+          startedAtMs: 20_000,
+          completedAtMs: 22_000
+        },
+        {
+          context: 'upload-coverage-javascript',
+          lane: 'linux',
+          headSha: SHA_C,
+          conclusion: 'success',
+          queuedAtMs: 19_000,
+          startedAtMs: 20_500,
+          completedAtMs: 25_000
+        },
+        {
+          context: 'windows-aspire-runtime',
+          lane: 'windows',
+          headSha: SHA_C,
+          conclusion: 'success',
+          queuedAtMs: 18_000,
+          startedAtMs: 21_000,
+          completedAtMs: 70_000
+        },
+        {
+          context: 'CodeQL',
+          lane: 'security',
+          headSha: SHA_C,
+          conclusion: 'success',
+          queuedAtMs: 19_000,
+          startedAtMs: 20_000,
+          completedAtMs: 64_000
+        },
+        {
+          context: 'optional-advisory-suite',
+          lane: 'linux',
+          headSha: SHA_C,
+          conclusion: 'success',
+          queuedAtMs: 10_000,
+          startedAtMs: 30_000,
+          completedAtMs: 120_000
+        }
+      ]
+    }
+  ]);
+  assert.equal(prerequisiteReport.valid, true);
+  assert.equal(prerequisiteReport.sloMissCount, 0);
+  assert.equal(prerequisiteReport.runs[0].eventToLastRequiredCheckMs, 70_000);
+  assert.equal(prerequisiteReport.runs[0].firstJobStartToLastCheckMs, 69_000);
+  assert.equal(prerequisiteReport.runs[0].runnerQueueWaitMs, 3_000);
+  assert.equal(prerequisiteReport.runs[0].allObservedChecksDurationMs, 120_000);
+
   // Custom stricter policy requiredCheckContexts includes extra required context in critical path
   const customRequired = evaluateCiCriticalPath(
     [
@@ -450,15 +524,16 @@ test('evaluateCiCriticalPath isolates required-check critical path from slow opt
       securityEnd: 44_000
     })
   };
+  // Locale-independent UTF-16 code-unit tie-breaker ('I' = 0x0049 < 'i' = 0x0069 across en-US, tr-TR, etc.)
   const sameTimestampA = {
-    runId: 'head-e-run-a',
+    runId: 'I',
     headSha: SHA_E,
     cacheCohort: 'cold',
     eventAtMs: 5_000,
     checks: makePassingChecks(SHA_E, 5_000, {windowsEnd: 50_000})
   };
   const sameTimestampB = {
-    runId: 'head-e-run-b',
+    runId: 'i',
     headSha: SHA_E,
     cacheCohort: 'warm',
     eventAtMs: 5_000,

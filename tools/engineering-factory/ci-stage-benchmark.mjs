@@ -336,7 +336,7 @@ export function evaluateCiCriticalPath(runs, requiredCheckContexts = MANDATORY_C
     group.sort((a, b) =>
       a.attempt - b.attempt ||
       a.run.eventAtMs - b.run.eventAtMs ||
-      a.run.runId.localeCompare(b.run.runId)
+      (a.run.runId < b.run.runId ? -1 : 1)
     );
     let prevAttempt = 0;
     for (let i = 0; i < group.length; i++) {
@@ -452,11 +452,17 @@ export function evaluateCiCriticalPath(runs, requiredCheckContexts = MANDATORY_C
     }
 
     const requiredChecks = requiredCheckContexts.map(ctx => byContext.get(ctx));
-    const firstJobStartMs = Math.min(...requiredChecks.map(check => check.startedAtMs));
-    const lastCheckEndMs = Math.max(...requiredChecks.map(check => check.completedAtMs));
-    const eventToLastRequiredCheckMs = lastCheckEndMs - run.eventAtMs;
-    const firstJobStartToLastCheckMs = lastCheckEndMs - firstJobStartMs;
-    const runnerQueueWaitMs = Math.max(...requiredChecks.map(check => check.startedAtMs - check.queuedAtMs));
+    const startedChecks = run.checks.filter(check => check.startedAtMs !== null);
+    const firstJobStartMs = Math.min(...startedChecks.map(check => check.startedAtMs));
+    const lastRequiredCheckEndMs = Math.max(...requiredChecks.map(check => check.completedAtMs));
+    const eventToLastRequiredCheckMs = lastRequiredCheckEndMs - run.eventAtMs;
+    const firstJobStartToLastCheckMs = lastRequiredCheckEndMs - firstJobStartMs;
+    const prerequisiteAndRequiredChecks = startedChecks.filter(
+      check => requiredContextSet.has(check.context) || check.completedAtMs <= lastRequiredCheckEndMs
+    );
+    const runnerQueueWaitMs = Math.max(
+      ...prerequisiteAndRequiredChecks.map(check => check.startedAtMs - check.queuedAtMs)
+    );
     const completedChecks = run.checks.filter(check => check.completedAtMs !== null);
     const allObservedChecksDurationMs =
       Math.max(...completedChecks.map(check => check.completedAtMs)) - run.eventAtMs;
