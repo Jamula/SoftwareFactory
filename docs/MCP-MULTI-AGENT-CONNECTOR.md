@@ -33,14 +33,15 @@ This document defines SoftwareFactory's versioned, read-only, deterministic **MC
 
 1. **`get_repo_knowledge_map`**:
    - Validates `repositoryId` (and optional `repository` / `revision`) against `context.authorizedRepositories`. Cross-repository queries, missing authorization contexts, or `Jamula/SoftwareFactory` repository-ID mismatches (`1471342715`) fail closed (`UNAUTHORIZED_REPOSITORY`, `CROSS_REPO_ACCESS_DENIED`, `REPOSITORY_IDENTITY_MISMATCH`).
+   - Requires an explicit safe-integer freshness clock from `args.nowMs` or `context.nowMs` (never substituting `generatedAtMs`), failing closed with `FRESHNESS_TIMESTAMP_REQUIRED` if omitted or `CLOCK_MISMATCH` if caller and trusted context disagree.
    - Enforces `98%` line / `95%` branch coverage floors on `Jamula/SoftwareFactory` and `95%` line / `90%` branch (or stricter consumer policy, such as `97%/92%`) on enrolled consumers (`COVERAGE_FLOOR_VIOLATION` on any attempt to lower floors).
    - Returns sanitized lane ownership, component boundaries (via `softwareFactoryCatalog` or `validateProjectConfig` + `validateKnowledgeMap`), and immutable `architectureInvariants`.
 2. **`evaluate_gate_status`**:
-   - `mode: "candidate"` delegates to `evaluate` (`core.mjs`); `mode: "protected-squash"` delegates to `guardedSquashEvidence` (`protected-squash.mjs`).
+   - Enforces the enrolled repository's `coverageThresholds` (including stricter consumer gates such as `97%/92%`, plus `98%/95%` on `Jamula/SoftwareFactory` and `95%/90%` baseline) against `args.policy` (`mode: "candidate"`) and `args.evidence.policy` (`mode: "protected-squash"`) before delegating to `evaluate` (`core.mjs`) or `guardedSquashEvidence` (`protected-squash.mjs`).
    - Stamps `externalMergeAuthorityOnly: true`, `liveMerge: false`, and `allowDirectMergeOrPolicyWrite: false` on every response.
 3. **`get_bounded_work_item_context`**:
    - Validates W3C Trace Context `traceparent` (`00-<32 lowercase hex>-<16 lowercase hex>-<2 lowercase hex>`, rejecting all-zero `traceId` or `parentId` with `INVALID_TRACEPARENT`).
-   - Rejects (`secretHandling: "reject"`, default) or redacts (`secretHandling: "strip"`) secret-like tokens (`ghp_`, `ghs_`, `github_pat_`, `sk-`, `sk-ant-`, `Bearer `) without false-positiving hyphenated English terms such as `task-1` or `risk-class`.
+   - Rejects (`secretHandling: "reject"`, default) or redacts (`secretHandling: "strip"`) secret-like tokens (`ghp_`, `ghs_`, `github_pat_`, `sk-`, `sk-ant-`, and case-insensitive HTTP `Bearer ` schemes such as `Bearer`, `BEARER`, `bEaReR`) without false-positiving hyphenated English terms such as `task-1` or `risk-class`.
    - Rejects any `ownedPaths` overlapping `FORBIDDEN_CONTROL_PLANE_PATHS` or `.lock.yml` (`FORBIDDEN_CONTROL_PLANE_PATH`), returning bounded `{ ownedPaths, forbiddenControlPlanePaths, maxRepairIterations }`.
 4. **`validate_provider_isolation`**:
    - Executes `validateMultiAgentConnectorConfig(arguments)` for `github-copilot`, `openai-codex`, or `anthropic-claude` adapters.
@@ -64,18 +65,18 @@ Every connector configuration must declare `externalMergeAuthorityOnly: true`, `
 | Provider Family | Supported Adapters | Mandatory Isolation & Budget Invariants |
 | --- | --- | --- |
 | `github-copilot` (default) | `copilot-cloud-agent`, `microsoft-agents-ai-ichatclient`, `microsoft-extensions-ai-ichatclient` | `includedQuotaVerified === true`, `overageHardStopUsdCents === 0` (GitHub Billing `$0` overage hard-stops on AI Credits, Premium Requests, and Cloud Sandboxes/Actions), `unapprovedSpendUsdCents === 0`. |
-| `openai-codex` | `openai-codex-action`, `openai-agents-sdk`, `microsoft-extensions-ai-ichatclient` | `ownerAuthorized === true`, `unapprovedSpendUsdCents === 0`, `env.OPENAI_AGENTS_DISABLE_TRACING === "1"` (fails closed with `EXTERNAL_TRACING_NOT_DISABLED` if missing or not `"1"`), `externalTelemetryDisabled === true`, and `trustedBaseConfigRestored === true` (restoring `.codex/` configuration from the trusted base branch before execution so untrusted PR branches cannot tamper with sandbox or network settings). |
-| `anthropic-claude` | `claude-code-action`, `claude-agent-sdk`, `microsoft-extensions-ai-ichatclient` | `ownerAuthorized === true`, `unapprovedSpendUsdCents === 0` (owner-verified included capacity such as `CLAUDE_CODE_OAUTH_TOKEN` or explicitly capped budget, never embedded in metadata), `preToolUseOnFailure === "block"` (fails closed with `PRE_TOOL_HOOK_NOT_FAIL_CLOSED` if `"ignore"` or omitted), `externalTelemetryDisabled === true`, `trustedBaseConfigRestored === true`, and optional `SessionStore` `sessionCheckpoint` integrity (`64`-hex SHA-256 `sha256`, matching `40`-hex `headSha`, and cryptographic digest verification when `serializedState` is supplied). |
+| `openai-codex` | `openai-codex-action`, `openai-agents-sdk`, `microsoft-extensions-ai-ichatclient` | `ownerAuthorized === true`, `unapprovedSpendUsdCents === 0`, `includedQuotaVerified === true` (or explicit `authorizedSpendCapUsdCents > observedSpendUsdCents` with verified remaining cap), `env.OPENAI_AGENTS_DISABLE_TRACING === "1"` (fails closed with `EXTERNAL_TRACING_NOT_DISABLED` if missing or not `"1"`), `externalTelemetryDisabled === true`, and `trustedBaseConfigRestored === true` (restoring `.codex/` configuration from the trusted base branch before execution so untrusted PR branches cannot tamper with sandbox or network settings). |
+| `anthropic-claude` | `claude-code-action`, `claude-agent-sdk`, `microsoft-extensions-ai-ichatclient` | `ownerAuthorized === true`, `unapprovedSpendUsdCents === 0`, `includedQuotaVerified === true` (or explicit `authorizedSpendCapUsdCents > observedSpendUsdCents` with verified remaining cap; OAuth/API secrets never embedded in metadata), `preToolUseOnFailure === "block"` (fails closed with `PRE_TOOL_HOOK_NOT_FAIL_CLOSED` if `"ignore"` or omitted), `externalTelemetryDisabled === true`, `trustedBaseConfigRestored === true`, and optional `SessionStore` `sessionCheckpoint` integrity requiring `serializedState` bytes (`CHECKPOINT_STATE_MISSING` if omitted), `64`-hex SHA-256 cryptographic digest verification, and matching `40`-hex `headSha`. |
 
 ---
 
 ## Instant Rollback to Copilot-Only Execution
 
-`createCopilotOnlyRollbackState(reason)` provides deterministic single-step rollback whenever an external vendor adapter experiences quota exhaustion, hook/tracing misconfiguration, or operator revocation:
+`createCopilotOnlyRollbackState(reason, verifiedCopilotBudget)` provides deterministic single-step rollback whenever an external vendor adapter experiences quota exhaustion, hook/tracing misconfiguration, or operator revocation:
 
 - Immediately sets `externalConnectorsEnabled: false` and `disabledProviders: ["openai-codex", "anthropic-claude"]`.
-- Preserves `activeProviderFamily: "github-copilot"` and `preserveCopilotExecution: true` so `M01` (`gh-aw` + Copilot Cloud Agent/Automations) and `M02` (`.NET 10` MAF + Copilot) continue unaffected.
-- Emits a pre-validated frozen `fallbackConfig` (`copilot-cloud-agent`, `overageHardStopUsdCents: 0`, `unapprovedSpendUsdCents: 0`) and automatically redacts any accidental secret-like token in `reason` to `REDACTED_ROLLBACK_REASON`.
+- Preserves `activeProviderFamily: "github-copilot"` without fabricating Copilot budget evidence: when previously verified Copilot budget evidence (`includedQuotaVerified === true`, `overageHardStopUsdCents === 0`, `unapprovedSpendUsdCents === 0`) is supplied, `fallbackConfig` remains execution-ready (`budgetVerified: true`, `budgetRevalidationRequired: false`); when omitted or unverified, `fallbackConfig` sets `includedQuotaVerified: false`, `overageHardStopUsdCents: null`, and `budgetRevalidationRequired: true` so `validateMultiAgentConnectorConfig` fails closed until Copilot budget is re-verified.
+- Automatically redacts any accidental secret-like token in `reason` to `REDACTED_ROLLBACK_REASON`.
 
 ## Local Validation
 

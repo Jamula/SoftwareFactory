@@ -41,6 +41,7 @@ const codexConfig = (overrides = {}) => ({
   adapter: 'openai-codex-action',
   role: 'specialist',
   ownerAuthorized: true,
+  includedQuotaVerified: true,
   unapprovedSpendUsdCents: 0,
   env: { OPENAI_AGENTS_DISABLE_TRACING: '1' },
   externalTelemetryDisabled: true,
@@ -55,6 +56,7 @@ const claudeConfig = (overrides = {}) => ({
   adapter: 'claude-code-action',
   role: 'independent-reviewer',
   ownerAuthorized: true,
+  includedQuotaVerified: true,
   unapprovedSpendUsdCents: 0,
   preToolUseOnFailure: 'block',
   externalTelemetryDisabled: true,
@@ -239,19 +241,25 @@ test('validateMultiAgentConnectorConfig verifies Copilot, Codex, and Claude isol
   }
 
   for (const adapter of PROVIDER_ADAPTERS['openai-codex']) {
-    const res = validateMultiAgentConnectorConfig(codexConfig({ adapter, includedQuotaVerified: true }));
+    const res = validateMultiAgentConnectorConfig(codexConfig({ adapter }));
     assert.equal(res.valid, true);
     assert.equal(res.providerFamily, 'openai-codex');
     assert.equal(res.adapter, adapter);
     assert.equal(res.role, 'specialist');
   }
 
+  const cappedCodex = codexConfig({
+    authorizedSpendCapUsdCents: 500,
+    observedSpendUsdCents: 120
+  });
+  delete cappedCodex.includedQuotaVerified;
+  assert.equal(validateMultiAgentConnectorConfig(cappedCodex).valid, true);
+
   const serializedState = JSON.stringify({ turn: 2, summary: 'bounded checkpoint state' });
   const digest = createHash('sha256').update(serializedState, 'utf8').digest('hex');
   for (const adapter of PROVIDER_ADAPTERS['anthropic-claude']) {
     const res = validateMultiAgentConnectorConfig(claudeConfig({
       adapter,
-      includedQuotaVerified: true,
       headSha: HEAD_SHA,
       sessionCheckpoint: {
         sessionId: 'claude-session:01',
@@ -264,6 +272,14 @@ test('validateMultiAgentConnectorConfig verifies Copilot, Codex, and Claude isol
     assert.equal(res.providerFamily, 'anthropic-claude');
     assert.equal(res.sessionCheckpointVerified, true);
   }
+
+  const cappedClaude = claudeConfig({
+    includedQuotaVerified: false,
+    authorizedSpendCapUsdCents: 400,
+    observedSpendUsdCents: 0
+  });
+  assert.equal(validateMultiAgentConnectorConfig(cappedClaude).valid, true);
+  assert.equal(validateMultiAgentConnectorConfig(cappedClaude).sessionCheckpointVerified, false);
 });
 
 test('validateMultiAgentConnectorConfig fails closed on proxy, prototype, budget, tracing, and hook violations', () => {
@@ -293,6 +309,7 @@ test('validateMultiAgentConnectorConfig fails closed on proxy, prototype, budget
     copilotConfig({ unknownField: true }),
     copilotConfig({ headSha: 'not-a-sha' }),
     copilotConfig({ sessionCheckpoint: {} }),
+    copilotConfig({ authorizedSpendCapUsdCents: 100, observedSpendUsdCents: 0 }),
     codexConfig({ sessionCheckpoint: {} })
   ]) {
     assert.equal(validateMultiAgentConnectorConfig(invalid).reason, 'INVALID_CONNECTOR_CONFIG');
@@ -332,6 +349,26 @@ test('validateMultiAgentConnectorConfig fails closed on proxy, prototype, budget
     'UNTRUSTED_PROVIDER_CONFIG');
   assert.equal(validateMultiAgentConnectorConfig(codexConfig({ includedQuotaVerified: false })).reason,
     'INCLUDED_QUOTA_UNVERIFIED');
+  const codexMissingQuota = codexConfig();
+  delete codexMissingQuota.includedQuotaVerified;
+  assert.equal(validateMultiAgentConnectorConfig(codexMissingQuota).reason, 'INCLUDED_QUOTA_UNVERIFIED');
+  for (const invalidCap of [
+    { authorizedSpendCapUsdCents: 500 },
+    { observedSpendUsdCents: 10 },
+    { authorizedSpendCapUsdCents: 0, observedSpendUsdCents: 0 },
+    { authorizedSpendCapUsdCents: 500, observedSpendUsdCents: -1 },
+    { authorizedSpendCapUsdCents: 500, observedSpendUsdCents: 10, includedQuotaVerified: 'yes' }
+  ]) {
+    assert.equal(validateMultiAgentConnectorConfig(codexConfig(invalidCap)).reason,
+      'INVALID_AUTHORIZED_SPEND_CAP');
+  }
+  for (const exhaustedCap of [
+    { authorizedSpendCapUsdCents: 500, observedSpendUsdCents: 500 },
+    { authorizedSpendCapUsdCents: 500, observedSpendUsdCents: 600 }
+  ]) {
+    assert.equal(validateMultiAgentConnectorConfig(codexConfig(exhaustedCap)).reason,
+      'AUTHORIZED_SPEND_CAP_EXHAUSTED');
+  }
   assert.equal(validateMultiAgentConnectorConfig(copilotConfig({ env: [] })).reason,
     'INVALID_CONNECTOR_ENV');
   assert.equal(validateMultiAgentConnectorConfig(codexConfig({
@@ -356,13 +393,20 @@ test('validateMultiAgentConnectorConfig fails closed on proxy, prototype, budget
     'UNTRUSTED_PROVIDER_CONFIG');
   assert.equal(validateMultiAgentConnectorConfig(claudeConfig({ includedQuotaVerified: false })).reason,
     'INCLUDED_QUOTA_UNVERIFIED');
+  const claudeMissingQuota = claudeConfig();
+  delete claudeMissingQuota.includedQuotaVerified;
+  assert.equal(validateMultiAgentConnectorConfig(claudeMissingQuota).reason, 'INCLUDED_QUOTA_UNVERIFIED');
+  assert.equal(validateMultiAgentConnectorConfig(claudeConfig({
+    authorizedSpendCapUsdCents: 200,
+    observedSpendUsdCents: 200
+  })).reason, 'AUTHORIZED_SPEND_CAP_EXHAUSTED');
 
   const validHash = 'd'.repeat(64);
   for (const badCheckpoint of [
     null,
-    { sessionId: '', sha256: validHash, headSha: HEAD_SHA },
-    { sessionId: 'sess-1', sha256: 'short', headSha: HEAD_SHA },
-    { sessionId: 'sess-1', sha256: validHash, headSha: 'bad' },
+    { sessionId: '', sha256: validHash, headSha: HEAD_SHA, serializedState: '{}' },
+    { sessionId: 'sess-1', sha256: 'short', headSha: HEAD_SHA, serializedState: '{}' },
+    { sessionId: 'sess-1', sha256: validHash, headSha: 'bad', serializedState: '{}' },
     { sessionId: 'sess-1', sha256: validHash, headSha: HEAD_SHA, serializedState: 123 },
     { sessionId: 'sess-1', sha256: validHash, headSha: HEAD_SHA, serializedState: 'x'.repeat(MAX_MCP_REQUEST_BYTES + 1) }
   ]) {
@@ -372,11 +416,15 @@ test('validateMultiAgentConnectorConfig fails closed on proxy, prototype, budget
     })).reason, 'INVALID_SESSION_CHECKPOINT');
   }
   assert.equal(validateMultiAgentConnectorConfig(claudeConfig({
+    headSha: HEAD_SHA,
     sessionCheckpoint: { sessionId: 'sess-1', sha256: validHash, headSha: HEAD_SHA }
+  })).reason, 'CHECKPOINT_STATE_MISSING');
+  assert.equal(validateMultiAgentConnectorConfig(claudeConfig({
+    sessionCheckpoint: { sessionId: 'sess-1', sha256: validHash, headSha: HEAD_SHA, serializedState: '{}' }
   })).reason, 'SESSION_CHECKPOINT_HEAD_MISMATCH');
   assert.equal(validateMultiAgentConnectorConfig(claudeConfig({
     headSha: BASE_SHA,
-    sessionCheckpoint: { sessionId: 'sess-1', sha256: validHash, headSha: HEAD_SHA }
+    sessionCheckpoint: { sessionId: 'sess-1', sha256: validHash, headSha: HEAD_SHA, serializedState: '{}' }
   })).reason, 'SESSION_CHECKPOINT_HEAD_MISMATCH');
   assert.equal(validateMultiAgentConnectorConfig(claudeConfig({
     headSha: HEAD_SHA,
@@ -398,17 +446,42 @@ test('validateMultiAgentConnectorConfig fails closed on proxy, prototype, budget
   })).reason, 'SESSION_CHECKPOINT_DIGEST_MISMATCH');
 });
 
-test('createCopilotOnlyRollbackState produces a valid frozen Copilot-only fallback and redacts secrets', () => {
-  const rollback = createCopilotOnlyRollbackState('  EXTERNAL_PROVIDER_QUOTA_EXHAUSTED  ');
-  assert.equal(Object.isFrozen(rollback), true);
-  assert.equal(Object.isFrozen(rollback.fallbackConfig), true);
-  assert.equal(rollback.rollbackActive, true);
-  assert.equal(rollback.reason, 'EXTERNAL_PROVIDER_QUOTA_EXHAUSTED');
-  assert.equal(rollback.activeProviderFamily, 'github-copilot');
-  assert.equal(rollback.preserveCopilotExecution, true);
-  assert.equal(rollback.externalConnectorsEnabled, false);
-  assert.deepEqual(rollback.disabledProviders, ['openai-codex', 'anthropic-claude']);
-  assert.equal(validateMultiAgentConnectorConfig(rollback.fallbackConfig).valid, true);
+test('createCopilotOnlyRollbackState preserves verified Copilot budget evidence and fails closed when unverified', () => {
+  const unverifiedRollback = createCopilotOnlyRollbackState('  EXTERNAL_PROVIDER_QUOTA_EXHAUSTED  ');
+  assert.equal(Object.isFrozen(unverifiedRollback), true);
+  assert.equal(Object.isFrozen(unverifiedRollback.fallbackConfig), true);
+  assert.equal(unverifiedRollback.rollbackActive, true);
+  assert.equal(unverifiedRollback.reason, 'EXTERNAL_PROVIDER_QUOTA_EXHAUSTED');
+  assert.equal(unverifiedRollback.activeProviderFamily, 'github-copilot');
+  assert.equal(unverifiedRollback.budgetVerified, false);
+  assert.equal(unverifiedRollback.budgetRevalidationRequired, true);
+  assert.equal(unverifiedRollback.preserveCopilotExecution, false);
+  assert.equal(unverifiedRollback.externalConnectorsEnabled, false);
+  assert.equal(unverifiedRollback.fallbackConfig.includedQuotaVerified, false);
+  assert.equal(unverifiedRollback.fallbackConfig.overageHardStopUsdCents, null);
+  assert.deepEqual(unverifiedRollback.disabledProviders, ['openai-codex', 'anthropic-claude']);
+  assert.equal(validateMultiAgentConnectorConfig(unverifiedRollback.fallbackConfig).valid, false);
+  assert.equal(validateMultiAgentConnectorConfig(unverifiedRollback.fallbackConfig).reason, 'INCLUDED_QUOTA_UNVERIFIED');
+
+  for (const unverifiedBudget of [
+    null,
+    { providerFamily: 'openai-codex', includedQuotaVerified: true, overageHardStopUsdCents: 0, unapprovedSpendUsdCents: 0 },
+    { includedQuotaVerified: true, overageHardStopUsdCents: 100, unapprovedSpendUsdCents: 0 },
+    { includedQuotaVerified: true, overageHardStopUsdCents: 0, unapprovedSpendUsdCents: 1 },
+    { includedQuotaVerified: true, overageHardStopUsdCents: 0, unapprovedSpendUsdCents: 0, extra: 1 }
+  ]) {
+    const rb = createCopilotOnlyRollbackState('QUOTA_STOP', unverifiedBudget);
+    assert.equal(rb.budgetRevalidationRequired, true);
+    assert.equal(validateMultiAgentConnectorConfig(rb.fallbackConfig).valid, false);
+  }
+
+  const verifiedRollback = createCopilotOnlyRollbackState('CODEX_DISABLED', copilotConfig());
+  assert.equal(verifiedRollback.budgetVerified, true);
+  assert.equal(verifiedRollback.budgetRevalidationRequired, false);
+  assert.equal(verifiedRollback.preserveCopilotExecution, true);
+  assert.equal(verifiedRollback.fallbackConfig.includedQuotaVerified, true);
+  assert.equal(verifiedRollback.fallbackConfig.overageHardStopUsdCents, 0);
+  assert.equal(validateMultiAgentConnectorConfig(verifiedRollback.fallbackConfig).valid, true);
 
   for (const fallbackInput of [undefined, '', '   ', 'bad\nreason', 'x'.repeat(161)]) {
     assert.equal(createCopilotOnlyRollbackState(fallbackInput).reason, 'ROLLBACK_TO_COPILOT_ONLY');
@@ -485,7 +558,22 @@ test('handleMcpConnectorRequest enforces byte bounds, JSON-RPC 2.0 envelopes, no
   assert.equal(handleMcpConnectorRequest({ jsonrpc: '2.0', method: 'notifications/initialized', params: [] }).error.code, -32600);
 
   assert.equal(handleMcpConnectorRequest({ jsonrpc: '2.0', id: 2, method: 'ping', params: [] }).error.code, -32602);
-  assert.equal(handleMcpConnectorRequest({ jsonrpc: '2.0', id: 2, method: 'ping' }, { unexpected: true }).error.code, -32602);
+  for (const invalidCtx of [
+    null,
+    { unexpected: true },
+    { stop: 'true' },
+    { stop: 1 },
+    { stop: {} },
+    { killSwitch: 'true' },
+    { killSwitch: 1 },
+    { killSwitch: {} },
+    { nowMs: -1 },
+    { nowMs: '1000' }
+  ]) {
+    const ctxErr = handleMcpConnectorRequest({ jsonrpc: '2.0', id: 2, method: 'ping' }, invalidCtx);
+    assert.equal(ctxErr.error.code, -32602);
+    assert.equal(ctxErr.error.data.reason, 'INVALID_CONNECTOR_CONTEXT');
+  }
 
   const initRaw = JSON.stringify({
     jsonrpc: '2.0',
@@ -538,10 +626,17 @@ test('handleMcpConnectorRequest enforces byte bounds, JSON-RPC 2.0 envelopes, no
   );
   assert.equal(stopped.result.isError, true);
   assert.equal(stopped.result.structuredContent.reason, 'CONNECTOR_STOPPED');
+
+  const stoppedByStopFlag = handleMcpConnectorRequest(
+    { jsonrpc: '2.0', id: 9, method: 'tools/call', params: { name: 'get_repo_knowledge_map' } },
+    { stop: true, killSwitch: false }
+  );
+  assert.equal(stoppedByStopFlag.result.isError, true);
+  assert.equal(stoppedByStopFlag.result.structuredContent.reason, 'CONNECTOR_STOPPED');
 });
 
-test('tools/call get_repo_knowledge_map enforces authorizedRepositories and preserves stricter consumer thresholds', () => {
-  const ctx = authorizedContext();
+test('tools/call get_repo_knowledge_map enforces authorizedRepositories, explicit freshness timestamps, and consumer thresholds', () => {
+  const ctx = { ...authorizedContext(), nowMs: NOW_MS };
 
   const sfRes = handleMcpConnectorRequest({
     jsonrpc: '2.0',
@@ -549,13 +644,14 @@ test('tools/call get_repo_knowledge_map enforces authorizedRepositories and pres
     method: 'tools/call',
     params: {
       name: 'get_repo_knowledge_map',
-      arguments: { repositoryId: FACTORY_REPO_ID, repository: 'Jamula/SoftwareFactory' }
+      arguments: { repositoryId: FACTORY_REPO_ID, repository: 'Jamula/SoftwareFactory', nowMs: NOW_MS }
     }
-  }, ctx);
+  }, authorizedContext());
   assert.equal(sfRes.result.isError, false);
   const sfMap = sfRes.result.structuredContent;
   assert.deepEqual(JSON.parse(sfRes.result.content[0].text), sfMap);
   assert.equal(sfMap.authorized, true);
+  assert.equal(sfMap.verifiedAtMs, NOW_MS);
   assert.deepEqual(sfMap.coverageThresholds, { line: 98, branch: 95 });
   assert.equal(sfMap.architectureInvariants.externalMergeAuthorityOnly, true);
   assert.equal(sfMap.architectureInvariants.allowDirectMergeOrPolicyWrite, false);
@@ -576,7 +672,28 @@ test('tools/call get_repo_knowledge_map enforces authorizedRepositories and pres
   assert.equal(consumerRes.result.structuredContent.lanes.length, 2);
   assert.equal(consumerRes.result.structuredContent.lanes[1].specialist, null);
 
+  assert.equal(handleMcpConnectorRequest({
+    jsonrpc: '2.0',
+    id: 'km-missing-now',
+    method: 'tools/call',
+    params: {
+      name: 'get_repo_knowledge_map',
+      arguments: { repositoryId: CONSUMER_REPO_ID, revision: HEAD_SHA }
+    }
+  }, authorizedContext()).result.structuredContent.reason, 'FRESHNESS_TIMESTAMP_REQUIRED');
+
+  assert.equal(handleMcpConnectorRequest({
+    jsonrpc: '2.0',
+    id: 'km-mismatch-now',
+    method: 'tools/call',
+    params: {
+      name: 'get_repo_knowledge_map',
+      arguments: { repositoryId: CONSUMER_REPO_ID, revision: HEAD_SHA, nowMs: NOW_MS + 5 }
+    }
+  }, ctx).result.structuredContent.reason, 'CLOCK_MISMATCH');
+
   const laneOnlyCtx = {
+    nowMs: NOW_MS,
     authorizedRepositories: [
       {
         repositoryId: 33001100,
@@ -626,7 +743,7 @@ test('tools/call get_repo_knowledge_map enforces authorizedRepositories and pres
     jsonrpc: '2.0',
     id: 'km-no-rev',
     method: 'tools/call',
-    params: { name: 'get_repo_knowledge_map', arguments: { repositoryId: FACTORY_REPO_ID } }
+    params: { name: 'get_repo_knowledge_map', arguments: { repositoryId: FACTORY_REPO_ID, nowMs: NOW_MS } }
   }, {
     authorizedRepositories: [{ repositoryId: FACTORY_REPO_ID, repository: 'Jamula/SoftwareFactory' }]
   }).result.structuredContent.reason, 'REVISION_REQUIRED');
@@ -642,14 +759,14 @@ test('tools/call get_repo_knowledge_map enforces authorizedRepositories and pres
     jsonrpc: '2.0',
     id: 'km-no-ctx',
     method: 'tools/call',
-    params: { name: 'get_repo_knowledge_map', arguments: { repositoryId: FACTORY_REPO_ID } }
+    params: { name: 'get_repo_knowledge_map', arguments: { repositoryId: FACTORY_REPO_ID, nowMs: NOW_MS } }
   }, {}).result.structuredContent.reason, 'AUTHORIZATION_CONTEXT_INVALID');
 
   assert.equal(handleMcpConnectorRequest({
     jsonrpc: '2.0',
     id: 'km-spoof-id',
     method: 'tools/call',
-    params: { name: 'get_repo_knowledge_map', arguments: { repositoryId: FACTORY_REPO_ID } }
+    params: { name: 'get_repo_knowledge_map', arguments: { repositoryId: FACTORY_REPO_ID, nowMs: NOW_MS } }
   }, {
     authorizedRepositories: [{ repositoryId: FACTORY_REPO_ID, repository: 'Spoof/Repo', revision: HEAD_SHA }]
   }).result.structuredContent.reason, 'REPOSITORY_IDENTITY_MISMATCH');
@@ -658,7 +775,7 @@ test('tools/call get_repo_knowledge_map enforces authorizedRepositories and pres
     jsonrpc: '2.0',
     id: 'km-floor',
     method: 'tools/call',
-    params: { name: 'get_repo_knowledge_map', arguments: { repositoryId: FACTORY_REPO_ID } }
+    params: { name: 'get_repo_knowledge_map', arguments: { repositoryId: FACTORY_REPO_ID, nowMs: NOW_MS } }
   }, {
     authorizedRepositories: [{
       repositoryId: FACTORY_REPO_ID,
@@ -681,7 +798,7 @@ test('tools/call get_repo_knowledge_map enforces authorizedRepositories and pres
       jsonrpc: '2.0',
       id: 'km-auth-bad',
       method: 'tools/call',
-      params: { name: 'get_repo_knowledge_map', arguments: { repositoryId: 10 } }
+      params: { name: 'get_repo_knowledge_map', arguments: { repositoryId: 10, nowMs: NOW_MS } }
     }, { authorizedRepositories: badAuthList }).result.structuredContent.reason, 'AUTHORIZATION_CONTEXT_INVALID');
   }
 
@@ -689,7 +806,7 @@ test('tools/call get_repo_knowledge_map enforces authorizedRepositories and pres
     jsonrpc: '2.0',
     id: 'km-bad-pc',
     method: 'tools/call',
-    params: { name: 'get_repo_knowledge_map', arguments: { repositoryId: 10, revision: HEAD_SHA } }
+    params: { name: 'get_repo_knowledge_map', arguments: { repositoryId: 10, revision: HEAD_SHA, nowMs: NOW_MS } }
   }, {
     authorizedRepositories: [{ repositoryId: 10, repository: 'Synthetic/One', projectConfig: {} }]
   }).result.structuredContent.reason, 'INVALID_PROJECT_CONFIG');
@@ -702,13 +819,13 @@ test('tools/call get_repo_knowledge_map enforces authorizedRepositories and pres
       name: 'get_repo_knowledge_map',
       arguments: { repositoryId: CONSUMER_REPO_ID, revision: HEAD_SHA, nowMs: NOW_MS + 900_000 }
     }
-  }, ctx).result.structuredContent.reason, 'STALE_KNOWLEDGE_MAP');
+  }, authorizedContext()).result.structuredContent.reason, 'STALE_KNOWLEDGE_MAP');
 
   assert.equal(handleMcpConnectorRequest({
     jsonrpc: '2.0',
     id: 'km-unavail',
     method: 'tools/call',
-    params: { name: 'get_repo_knowledge_map', arguments: { repositoryId: 10, revision: HEAD_SHA } }
+    params: { name: 'get_repo_knowledge_map', arguments: { repositoryId: 10, revision: HEAD_SHA, nowMs: NOW_MS } }
   }, {
     authorizedRepositories: [{ repositoryId: 10, repository: 'Synthetic/One' }]
   }).result.structuredContent.reason, 'KNOWLEDGE_MAP_UNAVAILABLE');
@@ -717,7 +834,7 @@ test('tools/call get_repo_knowledge_map enforces authorizedRepositories and pres
     jsonrpc: '2.0',
     id: 'km-bad-lanes',
     method: 'tools/call',
-    params: { name: 'get_repo_knowledge_map', arguments: { repositoryId: 10, revision: HEAD_SHA } }
+    params: { name: 'get_repo_knowledge_map', arguments: { repositoryId: 10, revision: HEAD_SHA, nowMs: NOW_MS } }
   }, {
     authorizedRepositories: [{
       repositoryId: 10,
@@ -812,6 +929,161 @@ test('tools/call evaluate_gate_status delegates read-only to core.mjs and protec
 
   assert.equal(handleMcpConnectorRequest({
     jsonrpc: '2.0',
+    id: 'gate-unauth-cand-type',
+    method: 'tools/call',
+    params: {
+      name: 'evaluate_gate_status',
+      arguments: { mode: 'candidate', policy: { ...policy, repository: 123 }, snapshot }
+    }
+  }, ctx).result.structuredContent.reason, 'UNAUTHORIZED_REPOSITORY');
+
+  const spellbookReviewer = 'independent-human-reviewer';
+  const spellbookPolicy97 = {
+    ...policy,
+    repository: 'Synthetic/Spellbook',
+    reviewers: [spellbookReviewer],
+    coverage: { line: 97, branch: 92 }
+  };
+  const spellbookSnapshot97 = {
+    ...snapshot,
+    repository: 'Synthetic/Spellbook',
+    coverage: { head: HEAD_SHA, line: 97, branch: 92, complete: true },
+    reviews: [{ reviewer: spellbookReviewer, head: HEAD_SHA, state: 'APPROVED' }]
+  };
+  const spellbookCandidateOk = handleMcpConnectorRequest({
+    jsonrpc: '2.0',
+    id: 'gate-spellbook-cand-ok',
+    method: 'tools/call',
+    params: {
+      name: 'evaluate_gate_status',
+      arguments: { mode: 'candidate', policy: spellbookPolicy97, snapshot: spellbookSnapshot97 }
+    }
+  }, ctx);
+  assert.equal(spellbookCandidateOk.result.isError, false);
+  assert.equal(spellbookCandidateOk.result.structuredContent.eligible, true);
+
+  const spellbookWeakCand = handleMcpConnectorRequest({
+    jsonrpc: '2.0',
+    id: 'gate-spellbook-cand-weak',
+    method: 'tools/call',
+    params: {
+      name: 'evaluate_gate_status',
+      arguments: {
+        mode: 'candidate',
+        policy: { ...spellbookPolicy97, coverage: { line: 95, branch: 90 } },
+        snapshot: {
+          ...spellbookSnapshot97,
+          coverage: { head: HEAD_SHA, line: 95, branch: 90, complete: true }
+        }
+      }
+    }
+  }, ctx);
+  assert.equal(spellbookWeakCand.result.isError, true);
+  assert.equal(spellbookWeakCand.result.structuredContent.eligible, false);
+  assert.equal(spellbookWeakCand.result.structuredContent.reason, 'COVERAGE_FLOOR_VIOLATION');
+
+  const spellbookScope = {
+    repository: 'Synthetic/Spellbook',
+    repositoryId: CONSUMER_REPO_ID,
+    branch: 'main',
+    requiredChecks: policy.checks.map(c => c.name)
+  };
+  const spellbookIntent = {
+    repository: 'Synthetic/Spellbook',
+    repositoryId: CONSUMER_REPO_ID,
+    branch: 'main',
+    number: 12,
+    expectedHead: HEAD_SHA,
+    expectedBase: BASE_SHA
+  };
+  const spellbookSquashSnapshot = { ...spellbookSnapshot97 };
+  delete spellbookSquashSnapshot.reviews;
+  delete spellbookSquashSnapshot.threadsResolved;
+  delete spellbookSquashSnapshot.securityClear;
+  delete spellbookSquashSnapshot.coverage;
+  const spellbookEvidence97 = {
+    ...evidence,
+    repository: 'Synthetic/Spellbook',
+    repositoryId: CONSUMER_REPO_ID,
+    protection: {
+      ...evidence.protection,
+      repository: 'Synthetic/Spellbook',
+      repositoryId: CONSUMER_REPO_ID
+    },
+    policy: spellbookPolicy97,
+    snapshot: spellbookSquashSnapshot,
+    reviewHistory: [{ sequence: 1, reviewer: spellbookReviewer, head: HEAD_SHA, state: 'APPROVED' }],
+    coverageReports: [{ component: 'component', head: HEAD_SHA, lines: 97, lineTotal: 100, branches: 92, branchTotal: 100 }]
+  };
+  const spellbookSquashOk = handleMcpConnectorRequest({
+    jsonrpc: '2.0',
+    id: 'gate-spellbook-squash-ok',
+    method: 'tools/call',
+    params: {
+      name: 'evaluate_gate_status',
+      arguments: {
+        mode: 'protected-squash',
+        intent: spellbookIntent,
+        evidence: spellbookEvidence97,
+        scope: spellbookScope
+      }
+    }
+  }, ctx);
+  assert.equal(spellbookSquashOk.result.isError, false);
+  assert.equal(spellbookSquashOk.result.structuredContent.eligible, true);
+
+  const spellbookWeakSquash = handleMcpConnectorRequest({
+    jsonrpc: '2.0',
+    id: 'gate-spellbook-squash-weak',
+    method: 'tools/call',
+    params: {
+      name: 'evaluate_gate_status',
+      arguments: {
+        mode: 'protected-squash',
+        intent: spellbookIntent,
+        evidence: {
+          ...spellbookEvidence97,
+          policy: { ...spellbookPolicy97, coverage: { line: 95, branch: 90 } },
+          coverageReports: [{ component: 'component', head: HEAD_SHA, lines: 95, lineTotal: 100, branches: 90, branchTotal: 100 }]
+        },
+        scope: spellbookScope
+      }
+    }
+  }, ctx);
+  assert.equal(spellbookWeakSquash.result.isError, true);
+  assert.equal(spellbookWeakSquash.result.structuredContent.eligible, false);
+  assert.equal(spellbookWeakSquash.result.structuredContent.reason, 'COVERAGE_FLOOR_VIOLATION');
+
+  assert.equal(handleMcpConnectorRequest({
+    jsonrpc: '2.0',
+    id: 'gate-default-floor-violation',
+    method: 'tools/call',
+    params: {
+      name: 'evaluate_gate_status',
+      arguments: {
+        mode: 'candidate',
+        policy: { ...spellbookPolicy97, coverage: { line: 94, branch: 90 } },
+        snapshot: spellbookSnapshot97
+      }
+    }
+  }).result.structuredContent.reason, 'COVERAGE_FLOOR_VIOLATION');
+
+  assert.equal(handleMcpConnectorRequest({
+    jsonrpc: '2.0',
+    id: 'gate-squash-missing-policy',
+    method: 'tools/call',
+    params: {
+      name: 'evaluate_gate_status',
+      arguments: {
+        mode: 'protected-squash',
+        intent,
+        evidence: { ...evidence, policy: null }
+      }
+    }
+  }).result.structuredContent.reason, 'COVERAGE_FLOOR_VIOLATION');
+
+  assert.equal(handleMcpConnectorRequest({
+    jsonrpc: '2.0',
     id: 'gate-unauth-squash',
     method: 'tools/call',
     params: {
@@ -898,7 +1170,9 @@ test('tools/call get_bounded_work_item_context validates W3C traceparent, secret
     'fine grained github_pat_11AABBCC',
     'openai key sk-proj-998877',
     'anthropic key sk-ant-api03-998877',
-    'header Bearer eyJhbGciOiJIUzI1NiJ9'
+    'header Bearer eyJhbGciOiJIUzI1NiJ9',
+    'header BEARER upperCaseBearerSecret',
+    'header bEaReR mixedCaseBearerSecret'
   ]) {
     const rejected = handleMcpConnectorRequest({
       jsonrpc: '2.0',
@@ -930,8 +1204,11 @@ test('tools/call get_bounded_work_item_context validates W3C traceparent, secret
         repositoryId: FACTORY_REPO_ID,
         issueNumber: 136,
         traceparent: VALID_TRACEPARENT,
-        summary: 'Clean summary text',
-        notes: ['Auth header Bearer secretJwtValue and key sk-ant-999', 'No secret in second note'],
+        summary: 'Summary with BEARER topSecretHeader and GHP_NON_PREFIX',
+        notes: [
+          'Auth header bEaReR secretJwtValue and key sk-ant-999',
+          'No secret in second note'
+        ],
         ownedPaths: ['docs/MCP-MULTI-AGENT-CONNECTOR.md'],
         maxRepairIterations: 3,
         secretHandling: 'strip'
@@ -940,8 +1217,10 @@ test('tools/call get_bounded_work_item_context validates W3C traceparent, secret
   });
   assert.equal(strippedRes.result.isError, false);
   assert.equal(strippedRes.result.structuredContent.secretsStripped, true);
+  assert.equal(strippedRes.result.structuredContent.summary, 'Summary with [REDACTED] and GHP_NON_PREFIX');
   assert.equal(strippedRes.result.structuredContent.notes[0], 'Auth header [REDACTED] and key [REDACTED]');
   assert.equal(JSON.stringify(strippedRes).includes('secretJwtValue'), false);
+  assert.equal(JSON.stringify(strippedRes).includes('topSecretHeader'), false);
 
   for (const forbiddenOwned of [
     ['.github/workflows/ci.yml'],

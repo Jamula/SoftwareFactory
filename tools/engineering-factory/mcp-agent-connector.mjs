@@ -160,12 +160,17 @@ export const MCP_CONNECTOR_TOOLS = Object.freeze([
         includedQuotaVerified: Object.freeze({ type: 'boolean' }),
         overageHardStopUsdCents: Object.freeze({ type: 'integer' }),
         ownerAuthorized: Object.freeze({ type: 'boolean' }),
+        authorizedSpendCapUsdCents: Object.freeze({ type: 'integer', minimum: 1 }),
+        observedSpendUsdCents: Object.freeze({ type: 'integer', minimum: 0 }),
         externalTelemetryDisabled: Object.freeze({ type: 'boolean' }),
         trustedBaseConfigRestored: Object.freeze({ type: 'boolean' }),
         preToolUseOnFailure: Object.freeze({ type: 'string' }),
         env: Object.freeze({ type: 'object' }),
         headSha: Object.freeze({ type: 'string', pattern: '^[0-9a-f]{40}$' }),
-        sessionCheckpoint: Object.freeze({ type: 'object' })
+        sessionCheckpoint: Object.freeze({
+          type: 'object',
+          required: Object.freeze(['sessionId', 'sha256', 'headSha', 'serializedState'])
+        })
       })
     }),
     annotations: READ_ONLY_TOOL_ANNOTATIONS
@@ -183,6 +188,8 @@ const ALLOWED_CONFIG_KEYS = new Set([
   'includedQuotaVerified',
   'overageHardStopUsdCents',
   'ownerAuthorized',
+  'authorizedSpendCapUsdCents',
+  'observedSpendUsdCents',
   'externalTelemetryDisabled',
   'trustedBaseConfigRestored',
   'preToolUseOnFailure',
@@ -191,11 +198,11 @@ const ALLOWED_CONFIG_KEYS = new Set([
   'sessionCheckpoint'
 ]);
 const ENVELOPE_KEYS = new Set(['jsonrpc', 'method', 'id', 'params']);
-const ALLOWED_CONTEXT_KEYS = new Set(['authorizedRepositories', 'killSwitch', 'stop']);
+const ALLOWED_CONTEXT_KEYS = new Set(['authorizedRepositories', 'killSwitch', 'stop', 'nowMs']);
 const ZERO_TRACE_ID = '0'.repeat(32);
 const ZERO_PARENT_ID = '0'.repeat(16);
 const SECRET_TOKEN_PATTERN =
-  /(?<![A-Za-z0-9])(?:ghp_[A-Za-z0-9_]*|ghs_[A-Za-z0-9_]*|github_pat_[A-Za-z0-9_]*|sk-ant-[A-Za-z0-9_-]*|sk-[A-Za-z0-9_-]*|[Bb]earer[ \t]+\S*)/g;
+  /(?<![A-Za-z0-9])(?:ghp_[A-Za-z0-9_]*|ghs_[A-Za-z0-9_]*|github_pat_[A-Za-z0-9_]*|sk-ant-[A-Za-z0-9_-]*|sk-[A-Za-z0-9_-]*|[Bb][Ee][Aa][Rr][Ee][Rr][ \t]+\S*)/g;
 
 const ownData = (obj, key) => {
   const desc = Object.getOwnPropertyDescriptor(obj, key);
@@ -341,18 +348,39 @@ function validateSessionCheckpoint(checkpoint, expectedHeadSha) {
   if (expectedHeadSha === undefined || checkpoint.headSha !== expectedHeadSha) {
     return 'SESSION_CHECKPOINT_HEAD_MISMATCH';
   }
-  if (checkpoint.serializedState !== undefined) {
-    if (typeof checkpoint.serializedState !== 'string' ||
-        Buffer.byteLength(checkpoint.serializedState, 'utf8') > MAX_MCP_REQUEST_BYTES) {
-      return 'INVALID_SESSION_CHECKPOINT';
+  if (checkpoint.serializedState === undefined) {
+    return 'CHECKPOINT_STATE_MISSING';
+  }
+  if (typeof checkpoint.serializedState !== 'string' ||
+      Buffer.byteLength(checkpoint.serializedState, 'utf8') > MAX_MCP_REQUEST_BYTES) {
+    return 'INVALID_SESSION_CHECKPOINT';
+  }
+  if (containsSecretToken(checkpoint.serializedState)) {
+    return 'SECRET_MATERIAL_REJECTED';
+  }
+  const computedDigest = createHash('sha256').update(checkpoint.serializedState, 'utf8').digest('hex');
+  if (computedDigest !== checkpoint.sha256) {
+    return 'SESSION_CHECKPOINT_DIGEST_MISMATCH';
+  }
+  return null;
+}
+
+function validateExternalProviderBudget(config) {
+  const hasCapFields = config.authorizedSpendCapUsdCents !== undefined ||
+    config.observedSpendUsdCents !== undefined;
+  if (hasCapFields) {
+    if (!isPositiveInt(config.authorizedSpendCapUsdCents) ||
+        !isNonNegativeInt(config.observedSpendUsdCents) ||
+        (config.includedQuotaVerified !== undefined && typeof config.includedQuotaVerified !== 'boolean')) {
+      return 'INVALID_AUTHORIZED_SPEND_CAP';
     }
-    if (containsSecretToken(checkpoint.serializedState)) {
-      return 'SECRET_MATERIAL_REJECTED';
+    if (config.observedSpendUsdCents >= config.authorizedSpendCapUsdCents) {
+      return 'AUTHORIZED_SPEND_CAP_EXHAUSTED';
     }
-    const computedDigest = createHash('sha256').update(checkpoint.serializedState, 'utf8').digest('hex');
-    if (computedDigest !== checkpoint.sha256) {
-      return 'SESSION_CHECKPOINT_DIGEST_MISMATCH';
-    }
+    return null;
+  }
+  if (config.includedQuotaVerified !== true) {
+    return 'INCLUDED_QUOTA_UNVERIFIED';
   }
   return null;
 }
@@ -384,6 +412,7 @@ export function validateMultiAgentConnectorConfig(config) {
     return configDenied('INVALID_CONNECTOR_CONFIG');
   }
 
+  let sessionCheckpointVerified = false;
   if (config.providerFamily === 'github-copilot') {
     if (config.includedQuotaVerified !== true) {
       return configDenied('INCLUDED_QUOTA_UNVERIFIED');
@@ -394,7 +423,9 @@ export function validateMultiAgentConnectorConfig(config) {
     if (config.externalTelemetryDisabled !== undefined && config.externalTelemetryDisabled !== true) {
       return configDenied('EXTERNAL_TELEMETRY_NOT_DISABLED');
     }
-    if (config.sessionCheckpoint !== undefined) {
+    if (config.sessionCheckpoint !== undefined ||
+        config.authorizedSpendCapUsdCents !== undefined ||
+        config.observedSpendUsdCents !== undefined) {
       return configDenied('INVALID_CONNECTOR_CONFIG');
     }
   } else if (config.providerFamily === 'openai-codex') {
@@ -410,8 +441,9 @@ export function validateMultiAgentConnectorConfig(config) {
     if (config.trustedBaseConfigRestored !== true) {
       return configDenied('UNTRUSTED_PROVIDER_CONFIG');
     }
-    if (config.includedQuotaVerified !== undefined && config.includedQuotaVerified !== true) {
-      return configDenied('INCLUDED_QUOTA_UNVERIFIED');
+    const budgetError = validateExternalProviderBudget(config);
+    if (budgetError !== null) {
+      return configDenied(budgetError);
     }
     if (config.sessionCheckpoint !== undefined) {
       return configDenied('INVALID_CONNECTOR_CONFIG');
@@ -429,14 +461,16 @@ export function validateMultiAgentConnectorConfig(config) {
     if (config.trustedBaseConfigRestored !== true) {
       return configDenied('UNTRUSTED_PROVIDER_CONFIG');
     }
-    if (config.includedQuotaVerified !== undefined && config.includedQuotaVerified !== true) {
-      return configDenied('INCLUDED_QUOTA_UNVERIFIED');
+    const budgetError = validateExternalProviderBudget(config);
+    if (budgetError !== null) {
+      return configDenied(budgetError);
     }
     if (config.sessionCheckpoint !== undefined) {
       const checkpointError = validateSessionCheckpoint(config.sessionCheckpoint, config.headSha);
       if (checkpointError !== null) {
         return configDenied(checkpointError);
       }
+      sessionCheckpointVerified = true;
     }
   }
 
@@ -461,22 +495,30 @@ export function validateMultiAgentConnectorConfig(config) {
     allowDirectMergeOrPolicyWrite: false,
     unapprovedSpendUsdCents: 0,
     telemetryExportAllowed: false,
-    sessionCheckpointVerified: config.sessionCheckpoint !== undefined
+    sessionCheckpointVerified
   });
 }
 
-export function createCopilotOnlyRollbackState(reason) {
+export function createCopilotOnlyRollbackState(reason, verifiedCopilotBudget) {
   let normalizedReason = 'ROLLBACK_TO_COPILOT_ONLY';
   if (typeof reason === 'string' && reason.trim().length > 0 &&
       reason.trim().length <= 160 && !/[\u0000-\u001f\u007f]/.test(reason)) {
     normalizedReason = containsSecretToken(reason) ? 'REDACTED_ROLLBACK_REASON' : reason.trim();
   }
+  const budgetVerified = isPlainObject(verifiedCopilotBudget) &&
+    Object.keys(verifiedCopilotBudget).every(key => ALLOWED_CONFIG_KEYS.has(key)) &&
+    (verifiedCopilotBudget.providerFamily === undefined ||
+      verifiedCopilotBudget.providerFamily === 'github-copilot') &&
+    verifiedCopilotBudget.includedQuotaVerified === true &&
+    verifiedCopilotBudget.overageHardStopUsdCents === 0 &&
+    verifiedCopilotBudget.unapprovedSpendUsdCents === 0;
+
   const fallbackConfig = Object.freeze({
     providerFamily: 'github-copilot',
     adapter: 'copilot-cloud-agent',
     role: 'worker',
-    includedQuotaVerified: true,
-    overageHardStopUsdCents: 0,
+    includedQuotaVerified: budgetVerified,
+    overageHardStopUsdCents: budgetVerified ? 0 : null,
     unapprovedSpendUsdCents: 0,
     externalMergeAuthorityOnly: true,
     allowDirectMergeOrPolicyWrite: false,
@@ -488,7 +530,9 @@ export function createCopilotOnlyRollbackState(reason) {
     protocolVersion: CONNECTOR_PROTOCOL_VERSION,
     reason: normalizedReason,
     activeProviderFamily: 'github-copilot',
-    preserveCopilotExecution: true,
+    preserveCopilotExecution: budgetVerified,
+    budgetVerified,
+    budgetRevalidationRequired: !budgetVerified,
     externalConnectorsEnabled: false,
     disabledProviders: Object.freeze(['openai-codex', 'anthropic-claude']),
     externalMergeAuthorityOnly: true,
@@ -600,11 +644,10 @@ function buildSanitizedKnowledgeMap(entry, revision, nowMs) {
         entry.projectConfig.knowledgeMap === undefined) {
       return { ok: false, reason: 'INVALID_PROJECT_CONFIG' };
     }
-    const effectiveNowMs = nowMs === undefined ? entry.projectConfig.knowledgeMap.generatedAtMs : nowMs;
     const check = validateKnowledgeMap(entry.projectConfig.knowledgeMap, {
       repository: entry.repository,
       revision,
-      nowMs: effectiveNowMs,
+      nowMs,
       lanes: entry.projectConfig.lanes
     });
     if (!check.valid) {
@@ -687,6 +730,23 @@ function handleGetRepoKnowledgeMap(args, context) {
       reason: 'INVALID_KNOWLEDGE_MAP_ARGUMENTS'
     }, true);
   }
+  if (args.nowMs !== undefined && context.nowMs !== undefined && args.nowMs !== context.nowMs) {
+    return toolCallOutcome({
+      shadow: true,
+      readOnly: true,
+      authorized: false,
+      reason: 'CLOCK_MISMATCH'
+    }, true);
+  }
+  const effectiveNowMs = context.nowMs !== undefined ? context.nowMs : args.nowMs;
+  if (effectiveNowMs === undefined) {
+    return toolCallOutcome({
+      shadow: true,
+      readOnly: true,
+      authorized: false,
+      reason: 'FRESHNESS_TIMESTAMP_REQUIRED'
+    }, true);
+  }
   const auth = parseAuthorizedRepositories(context.authorizedRepositories);
   if (!auth.ok) {
     return toolCallOutcome({
@@ -730,7 +790,7 @@ function handleGetRepoKnowledgeMap(args, context) {
       reason: 'REVISION_REQUIRED'
     }, true);
   }
-  const mapped = buildSanitizedKnowledgeMap(entry, revision, args.nowMs);
+  const mapped = buildSanitizedKnowledgeMap(entry, revision, effectiveNowMs);
   if (!mapped.ok) {
     return toolCallOutcome({
       shadow: true,
@@ -748,6 +808,7 @@ function handleGetRepoKnowledgeMap(args, context) {
     repository: entry.repository,
     defaultBranch: entry.defaultBranch,
     revision,
+    verifiedAtMs: effectiveNowMs,
     coverageThresholds: entry.coverageThresholds,
     lanes: mapped.lanes,
     components: mapped.components,
@@ -763,6 +824,23 @@ function handleGetRepoKnowledgeMap(args, context) {
       protectedControlPlanePaths: FORBIDDEN_CONTROL_PLANE_PATHS
     })
   }, false);
+}
+
+function policyMeetsCoverageFloor(policy, minLine, minBranch) {
+  return isPlainObject(policy) &&
+    hasAllowedKeys(policy.coverage, ['line', 'branch']) &&
+    typeof policy.coverage.line === 'number' &&
+    typeof policy.coverage.branch === 'number' &&
+    policy.coverage.line >= minLine &&
+    policy.coverage.branch >= minBranch;
+}
+
+function defaultCoverageFloor(repository) {
+  const isFactory = typeof repository === 'string' &&
+    repository.toLowerCase() === 'jamula/softwarefactory';
+  return isFactory
+    ? { line: 98, branch: 95 }
+    : { line: 95, branch: 90 };
 }
 
 function handleEvaluateGateStatus(args, context) {
@@ -791,11 +869,18 @@ function handleEvaluateGateStatus(args, context) {
         !isPlainObject(args.policy) || !isPlainObject(args.snapshot)) {
       return deniedGate('INVALID_GATE_EVALUATION_ARGUMENTS');
     }
+    let requiredFloor = defaultCoverageFloor(args.policy.repository);
     if (authById !== null) {
-      const matched = [...authById.values()].some(entry => entry.repository === args.policy.repository);
+      const matched = typeof args.policy.repository === 'string'
+        ? [...authById.values()].find(entry => entry.repository === args.policy.repository)
+        : undefined;
       if (!matched) {
         return deniedGate('UNAUTHORIZED_REPOSITORY');
       }
+      requiredFloor = matched.coverageThresholds;
+    }
+    if (!policyMeetsCoverageFloor(args.policy, requiredFloor.line, requiredFloor.branch)) {
+      return deniedGate('COVERAGE_FLOOR_VIOLATION');
     }
     const decision = evaluateCandidate(args.policy, args.snapshot);
     return toolCallOutcome({
@@ -819,11 +904,16 @@ function handleEvaluateGateStatus(args, context) {
       return deniedGate('INVALID_GATE_EVALUATION_ARGUMENTS');
     }
     const targetScope = args.scope === undefined ? DEFAULT_FACTORY_SCOPE : args.scope;
+    let requiredFloor = defaultCoverageFloor(targetScope.repository);
     if (authById !== null) {
       const entry = authById.get(targetScope.repositoryId);
       if (!entry || entry.repository !== targetScope.repository) {
         return deniedGate('UNAUTHORIZED_REPOSITORY');
       }
+      requiredFloor = entry.coverageThresholds;
+    }
+    if (!policyMeetsCoverageFloor(args.evidence.policy, requiredFloor.line, requiredFloor.branch)) {
+      return deniedGate('COVERAGE_FLOOR_VIOLATION');
     }
     const decision = evaluateProtectedSquash(args.intent, args.evidence, targetScope);
     const eligible = decision.reason === 'SHADOW_SQUASH_ELIGIBLE';
@@ -1018,6 +1108,9 @@ export function handleMcpConnectorRequest(rawOrObject, context = {}) {
 
   if (!isPlainObject(context) ||
       Object.keys(context).some(key => !ALLOWED_CONTEXT_KEYS.has(key)) ||
+      (context.killSwitch !== undefined && typeof context.killSwitch !== 'boolean') ||
+      (context.stop !== undefined && typeof context.stop !== 'boolean') ||
+      (context.nowMs !== undefined && !isNonNegativeInt(context.nowMs)) ||
       !isDeepPlainValue(context)) {
     return jsonRpcError(responseId, -32602, 'INVALID_PARAMS', 'INVALID_CONNECTOR_CONTEXT');
   }
