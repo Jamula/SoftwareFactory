@@ -14,7 +14,7 @@ const FORBIDDEN_ENV=/^(?:OTEL_EXPORTER_OTLP_.+|OTEL_(?:TRACES|METRICS|LOGS)_EXPO
 function readTrustedCa(caPath) {
   if(typeof caPath!=='string'||!caPath.trim()||caPath.includes('\0'))return null;
   try {
-    const fd=openSync(caPath,constants.O_RDONLY|constants.O_NOFOLLOW);
+    const fd=openSync(caPath,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);
     try {
       const stat=fstatSync(fd);
       if(!stat.isFile()||stat.size<=0||stat.size>1048576||(stat.mode&0o444)===0)return null;

@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {execFileSync} from 'node:child_process';
 import crypto from 'node:crypto';
 import {chmodSync,mkdtempSync,rmSync,symlinkSync,writeFileSync} from 'node:fs';
 import {createServer} from 'node:http';
@@ -181,8 +182,14 @@ test('NODE_EXTRA_CA_CERTS rejects symlinks, unreadable, empty, oversized or malf
   const unreadablePath=join(dir,'unreadable.pem');
   writeFileSync(unreadablePath,certPem);
   chmodSync(unreadablePath,0o000);
+  const badPaths=['', '   ', validPath+'\0extra', join(dir,'missing.pem'), linkPath, dir, emptyPath, hugePath, nonPemPath, headerOnlyPath, truncatedCertPath, trailingGarbagePath, mixedKeyPath, unreadablePath];
+  if(process.platform!=='win32'){
+   const fifoPath=join(dir,'unopened.fifo');
+   execFileSync('mkfifo',[fifoPath]);
+   badPaths.push(fifoPath);
+  }
   try{
-   for(const bad of ['', '   ', validPath+'\0extra', join(dir,'missing.pem'), linkPath, dir, emptyPath, hugePath, nonPemPath, headerOnlyPath, truncatedCertPath, trailingGarbagePath, mixedKeyPath, unreadablePath]){
+   for(const bad of badPaths){
     assert.equal(validateLocalOtlpEnvironment(configuration,{NODE_EXTRA_CA_CERTS:bad}),null);
    }
    assert.equal(validateLocalOtlpEnvironment(configuration,{NODE_EXTRA_CA_CERTS:123}),null);
