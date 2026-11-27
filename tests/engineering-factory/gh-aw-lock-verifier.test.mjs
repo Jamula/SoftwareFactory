@@ -2018,6 +2018,10 @@ test('verifies Issue #5 event trigger matrix, 10-minute default-off recovery sch
     `      - uses: actions/checkout@${checkoutSha}\n`,
     `      - uses: actions/checkout@${checkoutSha}\n        env:\n          INPUT_REF: refs/pull/42/head\n`
   )).reason, 'UNTRUSTED_PR_CHECKOUT');
+  assert.equal(verifyEventTriggerMatrix(buildMatrixYaml().replace(
+    `      - uses: actions/checkout@${checkoutSha}\n`,
+    `      - uses: actions/checkout@${checkoutSha}\n        env:\n          GIT_CONFIG_COUNT: "1"\n`
+  )).reason, 'UNTRUSTED_PR_CHECKOUT');
   // Pinned github/gh-aw and allowlisted trustedControlPlaneShas checkouts pass; github.workflow_sha without protected provenance fails closed!
   const allowlistedMatrixSha = 'e'.repeat(40);
   assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({
@@ -2039,7 +2043,7 @@ test('verifies Issue #5 event trigger matrix, 10-minute default-off recovery sch
     checkoutWith: '          persist-credentials: false\n          ref: ${{ github.workflow_sha }}',
     stepRun: '          set -euo pipefail\n          test "$GITHUB_REF" = refs/heads/main\n          test "$GITHUB_REF_PROTECTED" = true\n          echo "ok"'
   })).valid, true);
-  // Also accept checkout occurring AFTER an earlier fail-closed preamble step!
+  // Also accept checkout occurring AFTER an earlier fail-closed preamble step (when checkout does NOT bypass failure via always())!
   assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({
     includeReview: false,
     evalIf: "${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.ref == 'refs/heads/main' && github.ref_protected == true && !endsWith(github.actor, '[bot]') }}",
@@ -2048,6 +2052,23 @@ test('verifies Issue #5 event trigger matrix, 10-minute default-off recovery sch
     `      - uses: actions/checkout@${checkoutSha}\n`,
     `      - name: Guard ref first\n        run: |\n          set -euo pipefail\n          test "$GITHUB_REF" = refs/heads/main\n          test "$GITHUB_REF_PROTECTED" = true\n      - uses: actions/checkout@${checkoutSha}\n`
   )).valid, true);
+  assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({
+    includeReview: false,
+    evalIf: "${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.ref == 'refs/heads/main' && github.ref_protected == true && !endsWith(github.actor, '[bot]') }}",
+    checkoutWith: '          persist-credentials: false\n          ref: ${{ github.workflow_sha }}'
+  }).replace(
+    `      - uses: actions/checkout@${checkoutSha}\n`,
+    `      - name: Guard ref first\n        run: |\n          set -euo pipefail\n          test "$GITHUB_REF" = refs/heads/main\n          test "$GITHUB_REF_PROTECTED" = true\n      - uses: actions/checkout@${checkoutSha}\n        if: always()\n`
+  )).reason, 'UNTRUSTED_PR_CHECKOUT');
+  assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({
+    includeReview: false,
+    evalIf: "${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.ref == 'refs/heads/main' && github.ref_protected == true && !endsWith(github.actor, '[bot]') }}",
+    checkoutWith: '          persist-credentials: false\n          ref: ${{ github.workflow_sha }}',
+    stepRun: '          set -euo pipefail\n          test "$GITHUB_REF" = refs/heads/main\n          test "$GITHUB_REF_PROTECTED" = true'
+  }).replace(
+    '          test "$GITHUB_REF_PROTECTED" = true\n',
+    '          test "$GITHUB_REF_PROTECTED" = true\n      - name: Bypass failed preamble\n        if: always()\n        run: node tools/engineering-factory/run.mjs --inventory\n'
+  )).reason, 'UNTRUSTED_PR_CHECKOUT');
   // Error-tolerant preamble (continue-on-error: true) OR repository code running BEFORE preamble MUST fail closed!
   assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({
     includeReview: false,

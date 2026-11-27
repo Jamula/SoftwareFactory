@@ -849,9 +849,12 @@ const ALLOWED_CHECKOUT_WITH_KEYS = new Set([
   'show-progress'
 ]);
 
-function hasInputEnvOverride(envValue) {
+function hasCheckoutEnvOverride(envValue) {
   return isMapObject(envValue) &&
-    Object.keys(envValue).some(key => key.toLowerCase().startsWith('input_'));
+    Object.keys(envValue).some(key => {
+      const lower = key.toLowerCase();
+      return lower.startsWith('input_') || lower.startsWith('git_');
+    });
 }
 
 function isSafeScanEnv(envValue) {
@@ -861,6 +864,7 @@ function isSafeScanEnv(envValue) {
     if (!VALID_ENV_KEY_RE.test(key)) return false;
     const lower = key.toLowerCase();
     return !lower.startsWith('input_') &&
+      !lower.startsWith('git_') &&
       !lower.startsWith('bash_func_') &&
       !lower.startsWith('github_') &&
       !lower.startsWith('npm_config_') &&
@@ -953,26 +957,37 @@ function resolveJobProtectedBranchProvenance(job, jobAst, expectedBranchRef, out
   let preambleCompleted = false;
   let onlyInertSetupSoFar = true;
   const pendingInertCheckoutIndices = [];
+  const promotedInertCheckoutIndices = [];
   const guardOutputStepIds = new Set();
   const trustedCheckoutStepIndices = new Set();
   for (let idx = 0; idx < job.steps.length; idx++) {
     const step = job.steps[idx];
+    const parsedStepIf = step.if === undefined
+      ? null
+      : (typeof step.if === 'string' ? parseIfExpression(step.if) : undefined);
+    const stepOverridesFailure = step.if !== undefined &&
+      (parsedStepIf === undefined || parsedStepIf === null || astHasBypassCall(parsedStepIf));
+    if (stepOverridesFailure) {
+      onlyInertSetupSoFar = false;
+      pendingInertCheckoutIndices.length = 0;
+      for (const prevIdx of promotedInertCheckoutIndices) {
+        trustedCheckoutStepIndices.delete(prevIdx);
+      }
+      promotedInertCheckoutIndices.length = 0;
+    }
     const usesLower = typeof step.uses === 'string' ? step.uses.toLowerCase() : null;
     if (usesLower !== null && usesLower.startsWith('actions/checkout@')) {
-      if (preambleCompleted) {
+      if (preambleCompleted && !stepOverridesFailure) {
         trustedCheckoutStepIndices.add(idx);
-      } else if (typeof step.if === 'string') {
-        const stepAst = parseIfExpression(step.if);
-        if (stepAst !== null && !astHasBypassCall(stepAst)) {
-          const stepConjuncts = collectMandatoryConjuncts(stepAst);
-          const gatedByPriorOptin = [...guardOutputStepIds].some(guardId =>
-            stepConjuncts.some(c =>
-              isIdentCompareLiteral(c, '==', `steps.${guardId}.outputs.enabled`, 'true')
-            )
-          );
-          if (gatedByPriorOptin) trustedCheckoutStepIndices.add(idx);
-        }
-      } else if (onlyInertSetupSoFar) {
+      } else if (!stepOverridesFailure && parsedStepIf !== null) {
+        const stepConjuncts = collectMandatoryConjuncts(parsedStepIf);
+        const gatedByPriorOptin = [...guardOutputStepIds].some(guardId =>
+          stepConjuncts.some(c =>
+            isIdentCompareLiteral(c, '==', `steps.${guardId}.outputs.enabled`, 'true')
+          )
+        );
+        if (gatedByPriorOptin) trustedCheckoutStepIndices.add(idx);
+      } else if (step.if === undefined && onlyInertSetupSoFar) {
         pendingInertCheckoutIndices.push(idx);
       }
     }
@@ -1002,6 +1017,7 @@ function resolveJobProtectedBranchProvenance(job, jobAst, expectedBranchRef, out
       if (onlyInertSetupSoFar) {
         for (const pendingIdx of pendingInertCheckoutIndices) {
           trustedCheckoutStepIndices.add(pendingIdx);
+          promotedInertCheckoutIndices.push(pendingIdx);
         }
       }
     }
@@ -1501,7 +1517,7 @@ export function verifyGhAwWorkflowLock(input) {
               return deny('PINNED_RELEASE_MISMATCH');
             }
             if (jobHasWriteScope &&
-                (hasInputEnvOverride(lockDoc.env) || hasInputEnvOverride(job.env) || hasInputEnvOverride(step.env) ||
+                (hasCheckoutEnvOverride(lockDoc.env) || hasCheckoutEnvOverride(job.env) || hasCheckoutEnvOverride(step.env) ||
                  !isTrustedControlPlaneCheckout(checkoutWith, releaseCheck.release.commit, trustedShas))) {
               return deny('UNTRUSTED_SAFE_OUTPUT_CHECKOUT');
             }
@@ -2174,7 +2190,7 @@ export function verifyEventTriggerMatrix(lockYamlSource, options) {
             if (checkoutWith === null || checkoutWith['persist-credentials'] !== false) {
               return deny('CHECKOUT_CREDENTIALS_PERSISTED');
             }
-            if (hasInputEnvOverride(lockDoc.env) || hasInputEnvOverride(job.env) || hasInputEnvOverride(step.env)) {
+            if (hasCheckoutEnvOverride(lockDoc.env) || hasCheckoutEnvOverride(job.env) || hasCheckoutEnvOverride(step.env)) {
               return deny('UNTRUSTED_PR_CHECKOUT');
             }
             let isGhAwCheckout = false;
