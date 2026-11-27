@@ -307,6 +307,17 @@ test('parameterizes consumer scopes while preserving consumer formal-approval an
   assert.equal(guardedSquashEvidence(consumerIntent, consumerEvidence(), inferredChecksScope).reason,
     'SHADOW_SQUASH_ELIGIBLE');
 
+  const maxLenRepo = `${'o'.repeat(39)}/${'r'.repeat(100)}`;
+  const maxLenScope = {repository: maxLenRepo, repositoryId: 555555, branch: 'main', requiredChecks: consumerScope.requiredChecks};
+  const maxLenIntent = {...consumerIntent, repository: maxLenRepo, repositoryId: 555555};
+  const maxLenEv = consumerEvidence();
+  maxLenEv.repository = maxLenRepo;
+  maxLenEv.repositoryId = 555555;
+  maxLenEv.protection = {...maxLenEv.protection, repository: maxLenRepo, repositoryId: 555555};
+  maxLenEv.policy = {...maxLenEv.policy, repository: maxLenRepo};
+  maxLenEv.snapshot = {...maxLenEv.snapshot, repository: maxLenRepo};
+  assert.equal(guardedSquashEvidence(maxLenIntent, maxLenEv, maxLenScope).reason, 'SHADOW_SQUASH_ELIGIBLE');
+
   const zeroNativeReview = consumerEvidence();
   zeroNativeReview.protection = {...zeroNativeReview.protection, review: false, requiredApprovingReviewCount: 0, hostedReviewGate: true};
   assert.equal(guardedSquashEvidence(consumerIntent, zeroNativeReview, consumerScope).reason,
@@ -523,6 +534,8 @@ test('aggregates read-only GitHub API metadata for required_approving_review_cou
     expectedComponents: ['component'],
     threads: {head, resolved: true},
     security: {head, clear: true},
+    hostedReviewGate: {...scope, verified: true},
+    noBypass: {...scope, verified: true, bypass: false},
     remainingCredits: 1,
     activeCount: 0,
     providerReady: true,
@@ -774,6 +787,37 @@ test('aggregates read-only GitHub API metadata for required_approving_review_cou
   }));
   assert.equal((await staticStoppedController.run(intent)).reason, 'STOPPED_OR_UNAUTHORIZED');
   assert.equal(simulatedWhileStopped, 0);
+
+  // Stop raised mid-readBranchHealth (after simulation) still holds dependent work
+  const midMainStopState = {};
+  let raiseStopDuringMain = false;
+  const baseMidApi = createGitHubApi(midMainStopState);
+  const midMainController = createShadowSquashController(createGitHubShadowTransport({
+    ...baseTransportOptions(midMainStopState),
+    request: async (url, reqOpts) => {
+      if (url.includes(`/commits/${mergeCommit}/check-runs`)) raiseStopDuringMain = true;
+      return baseMidApi(url, reqOpts);
+    },
+    readStop: () => raiseStopDuringMain
+  }));
+  assert.deepEqual(await midMainController.run(intent), {
+    shadow: true,
+    liveMerge: false,
+    dependentWorkAllowed: false,
+    reason: 'MAIN_VERIFICATION_REQUIRED',
+    mergeCommit
+  });
+
+  // Absent hostedReviewGate or absent noBypass receipt blocks ruleset zero-approval / bypass acceptance
+  const missingHostedReceiptOpts = {...baseTransportOptions({})};
+  delete missingHostedReceiptOpts.hostedReviewGate;
+  const missingHostedController = createShadowSquashController(createGitHubShadowTransport(missingHostedReceiptOpts));
+  assert.equal((await missingHostedController.run(intent)).reason, 'PROTECTIONS_UNVERIFIED');
+
+  const missingNoBypassOpts = {...baseTransportOptions({})};
+  delete missingNoBypassOpts.noBypass;
+  const missingNoBypassController = createShadowSquashController(createGitHubShadowTransport(missingNoBypassOpts));
+  assert.equal((await missingNoBypassController.run(intent)).reason, 'PROTECTIONS_UNVERIFIED');
 
   // 11. Renaming an unowned source file into an owned destination blocks ownership validation
   const renameController = createShadowSquashController(createGitHubShadowTransport(baseTransportOptions({

@@ -242,12 +242,21 @@ export async function readProtectedSquashCandidate(intent, options) {
   const staticStop = options.stop !== undefined && options.stop !== false;
   const preStop = options.readStop ? (await options.readStop()) !== false : false;
   const isFactory = isFactoryScope(activeScope);
-  const hostedReviewGate = isFactory && options.policy.reviewers.length > 0;
+  const hostedGateReceipt = isFactory && plain(options.hostedReviewGate) &&
+    inScope(options.hostedReviewGate, activeScope) &&
+    object(options.hostedReviewGate, ['verified']) && options.hostedReviewGate.verified === true
+    ? options.hostedReviewGate : null;
+  const noBypassReceipt = plain(options.noBypass) &&
+    inScope(options.noBypass, activeScope) &&
+    object(options.noBypass, ['verified', 'bypass']) &&
+    options.noBypass.verified === true && options.noBypass.bypass === false
+    ? options.noBypass : null;
   const meta = await readCandidatePullMetadata(intent, {
     request,
     scope: activeScope,
     policyChecks: options.policy.checks,
-    hostedReviewGate
+    hostedReviewGate: hostedGateReceipt,
+    noBypass: noBypassReceipt
   });
   if (!meta.evidenceComplete) return meta;
   const postStop = options.readStop ? (await options.readStop()) !== false : false;
@@ -346,11 +355,13 @@ export function createGitHubShadowTransport(options) {
     simulateSquash: target => options.simulateSquash(target),
     readMergeReceipt: target => options.readMergeReceipt(target),
     readMain: async () => {
-      const dynamicStop = options.readStop ? (await options.readStop()) !== false : false;
-      return readBranchHealth(activeScope, options.policy.checks, {
+      const preStop = options.readStop ? (await options.readStop()) !== false : false;
+      const mainHealth = await readBranchHealth(activeScope, options.policy.checks, {
         request,
-        stop: staticStop || dynamicStop
+        stop: staticStop || preStop
       });
+      const postStop = options.readStop ? (await options.readStop()) !== false : false;
+      return postStop && mainHealth.stop !== true ? {...mainHealth, stop: true} : mainHealth;
     }
   });
 }

@@ -139,6 +139,39 @@ test('builds candidate review evidence enforcing independence, pending blocks an
 
  assert.equal(buildCandidateReviewEvidence(head,[{...r(1,'APPROVED'),state:'PENDING'}],baseOpts).reason,'REVIEW_PENDING');
 
+ const withInfoBotComment=buildCandidateReviewEvidence(head,[
+  {sequence:1,reviewer:'github-code-quality[bot]',head:stale,state:'COMMENTED'},
+  {sequence:2,reviewer:bot,head,state:'COMMENTED',summaryDisposition:'clear',summaryFindings:[]},
+  {sequence:3,reviewer:'github-code-quality[bot]',head,state:'COMMENTED'}
+ ],baseOpts);
+ assert.equal(withInfoBotComment.ok,true);
+ assert.equal(withInfoBotComment.independentFavorable,true);
+
+ const onlyInfoBotComment=buildCandidateReviewEvidence(head,[
+  {sequence:1,reviewer:'github-code-quality[bot]',head,state:'COMMENTED'}
+ ],{...baseOpts,reviewers:[bot,'github-code-quality[bot]']});
+ assert.equal(onlyInfoBotComment.ok,true);
+ assert.equal(onlyInfoBotComment.independentFavorable,false);
+ assert.equal(onlyInfoBotComment.platformReview.independent,false);
+
+ for(const adverseState of ['CHANGES_REQUESTED','DISMISSED','APPROVED']){
+  assert.equal(buildCandidateReviewEvidence(head,[
+   {sequence:1,reviewer:'github-code-quality[bot]',head,state:adverseState}
+  ],baseOpts).ok,false);
+ }
+
+ const longRepo=`${'o'.repeat(39)}/${'r'.repeat(100)}`;
+ assert.equal(longRepo.length,140);
+ const maxRepoApproved=buildCandidateReviewEvidence(head,[r(1,'APPROVED',head,'reviewer')],
+  {...baseOpts,repository:longRepo});
+ assert.equal(maxRepoApproved.ok,true);
+ assert.equal(maxRepoApproved.independentFavorable,true);
+
+ const tamperedInline=[{id:'inline-tampered',state:'actionable',source:'inline'}];
+ Object.defineProperty(tamperedInline,'map',{value:()=>[]});
+ const symbolHistory=[r(1,'APPROVED',head,'reviewer')];
+ symbolHistory[Symbol.iterator]=function*(){};
+
  const inheritedRepo=Object.assign(Object.create({repository:'Jamula/Spellbook'}),baseOpts);
  const getterInline={...baseOpts};
  Object.defineProperty(getterInline,'inlineFindings',{get(){throw Error('getter');}});
@@ -146,9 +179,11 @@ test('builds candidate review evidence enforcing independence, pending blocks an
  for(const [h,hist,opts] of [
   ['bad',[],baseOpts],
   [head,null,baseOpts],
+  [head,symbolHistory,baseOpts],
   [head,[],null],
   [head,[],inheritedRepo],
   [head,[],getterInline],
+  [head,[],{...baseOpts,inlineFindings:tamperedInline}],
   [head,[badDispEntry],baseOpts],
   [head,[],{...baseOpts,reviewers:[]}],
   [head,[],{...baseOpts,repository:''}],

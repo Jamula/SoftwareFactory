@@ -250,10 +250,15 @@ test('reads complete exact-head candidate metadata, normalizes rulesets and mult
   throw Error('unexpected '+url);
  };
 
- const meta=await readCandidatePullMetadata(intent,{request:candidateFetch(),policyChecks,hostedReviewGate:true});
+ const hostedGateReceipt={repository:'Jamula/SoftwareFactory',repositoryId:1471342715,branch:'main',verified:true};
+ const noBypassReceipt={repository:'Jamula/SoftwareFactory',repositoryId:1471342715,branch:'main',verified:true,bypass:false};
+ const meta=await readCandidatePullMetadata(intent,{
+  request:candidateFetch(),policyChecks,hostedReviewGate:hostedGateReceipt,noBypass:noBypassReceipt
+ });
  assert.equal(meta.evidenceComplete,true);
  assert.equal(meta.liveMerge,false);
  assert.equal(meta.nativeQueue,false);
+ assert.equal(meta.protection.bypass,false);
  assert.equal(meta.protection.requiredApprovingReviewCount,0);
  assert.equal(meta.protection.review,false);
  assert.equal(meta.protection.hostedReviewGate,true);
@@ -262,9 +267,64 @@ test('reads complete exact-head candidate metadata, normalizes rulesets and mult
  assert.equal(meta.reviewRecords[2].summaryDisposition,'clear');
  assert.equal(JSON.stringify(meta).includes('Approval recommended'),false);
 
+ const missingBypassEvidence=await readCandidatePullMetadata(intent,{
+  request:candidateFetch(),policyChecks,hostedReviewGate:hostedGateReceipt
+ });
+ assert.equal(missingBypassEvidence.protection.bypass,true);
+
+ const missingHostedGateReceipt=await readCandidatePullMetadata(intent,{
+  request:candidateFetch(),policyChecks,hostedReviewGate:true,noBypass:noBypassReceipt
+ });
+ assert.equal(missingHostedGateReceipt.protection.hostedReviewGate,false);
+
+ const inlineZeroBypassActors=await readCandidatePullMetadata(intent,{
+  request:candidateFetch({'https://api.github.com/repos/Jamula/SoftwareFactory/rules/branches/main':()=>response(
+   rules.map(r=>({...r,bypass_actors:[]}))
+  )}),
+  policyChecks,hostedReviewGate:hostedGateReceipt
+ });
+ assert.equal(inlineZeroBypassActors.protection.bypass,false);
+
+ const observedBypassActor=await readCandidatePullMetadata(intent,{
+  request:candidateFetch({'https://api.github.com/repos/Jamula/SoftwareFactory/rules/branches/main':()=>response(
+   rules.map(r=>r.type==='pull_request'?{...r,bypass_actors:[{actor_id:1}]}:r)
+  )}),
+  policyChecks,hostedReviewGate:hostedGateReceipt,noBypass:noBypassReceipt
+ });
+ assert.equal(observedBypassActor.protection.bypass,true);
+
+ let reviewReads=0;
+ const changedReviewsMidRead=await readCandidatePullMetadata(intent,{
+  request:candidateFetch({'https://api.github.com/repos/Jamula/SoftwareFactory/pulls/42/reviews?per_page=100&page=1':()=>response(
+   ++reviewReads===1?reviews:[...reviews,{
+    id:103,user:{login:'copilot-pull-request-reviewer[bot]',id:175728472},state:'COMMENTED',
+    commit_id:head,submitted_at:'2026-11-26T19:06:00Z',
+    body:'<!-- ccr-overview-v2 -->\n\n### 🟡 Changes recommended\n\n<summary><strong>1 open issue</strong></summary>'
+   }]
+  )}),
+  policyChecks,hostedReviewGate:hostedGateReceipt,noBypass:noBypassReceipt
+ });
+ assert.equal(changedReviewsMidRead.reason,'PULL_STATE_CHANGED');
+
+ reviewReads=0;
+ assert.equal((await readCandidatePullMetadata(intent,{
+  request:candidateFetch({'https://api.github.com/repos/Jamula/SoftwareFactory/pulls/42/reviews?per_page=100&page=1':()=>
+   ++reviewReads===1?response(reviews):new Response(null,{status:503})
+  }),
+  policyChecks
+ })).reason,'READ_FAILED');
+
+ reviewReads=0;
+ assert.equal((await readCandidatePullMetadata(intent,{
+  request:candidateFetch({'https://api.github.com/repos/Jamula/SoftwareFactory/pulls/42/reviews?per_page=100&page=1':()=>
+   ++reviewReads===1?response(reviews):response([{...reviews[0],state:'PENDING',submitted_at:null}])
+  }),
+  policyChecks
+ })).reason,'REVIEW_PENDING');
+
  const withQueue=await readCandidatePullMetadata(intent,{
   request:candidateFetch({'https://api.github.com/repos/Jamula/SoftwareFactory/rules/branches/main':()=>response([...rules,{type:'merge_queue'}])}),
-  policyChecks,hostedReviewGate:true
+  policyChecks,hostedReviewGate:hostedGateReceipt,noBypass:noBypassReceipt
  });
  assert.equal(withQueue.nativeQueue,true);
 
@@ -362,6 +422,17 @@ test('reads complete exact-head candidate metadata, normalizes rulesets and mult
  assert.equal(reconciledLegacy.protection.requiredApprovingReviewCount,2);
  assert.equal(reconciledLegacy.protection.review,true);
  assert.equal(reconciledLegacy.protection.requiredChecks.some(c=>c.name==='legacy-audit'&&c.appId===15368),true);
+
+ const legacyBypassWithRulesets=await readCandidatePullMetadata(intent,{
+  request:candidateFetch({
+   'https://api.github.com/repos/Jamula/SoftwareFactory/branches/main/protection':()=>response({
+    enforce_admins:{enabled:false},
+    required_pull_request_reviews:{required_approving_review_count:2}
+   })
+  }),
+  policyChecks,hostedReviewGate:hostedGateReceipt,noBypass:noBypassReceipt
+ });
+ assert.equal(legacyBypassWithRulesets.protection.bypass,true);
 
  const legacyWithoutAdminEnforcement=await readCandidatePullMetadata(intent,{
   request:candidateFetch({

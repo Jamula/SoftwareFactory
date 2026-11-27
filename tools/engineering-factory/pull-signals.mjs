@@ -222,12 +222,32 @@ function normalizePullFiles(value, hasNext) {
 const securityThresholds = new Set(['critical','high_or_higher','medium_or_higher','all']);
 const alertThresholds = new Set(['errors','errors_and_warnings','all']);
 
-function normalizeBranchRules(value, hasNext, legacy, scope, branchProtected, expectedBase, policyChecks, hostedReviewGate) {
+const validHostedGateReceipt = (receipt, scope) =>
+  own(receipt, ['repository','repositoryId','branch','verified']) &&
+  receipt.repository === scope.repository && receipt.repositoryId === scope.repositoryId &&
+  receipt.branch === scope.branch && receipt.verified === true;
+
+const validNoBypassReceipt = (receipt, scope) =>
+  own(receipt, ['repository','repositoryId','branch','verified','bypass']) &&
+  receipt.repository === scope.repository && receipt.repositoryId === scope.repositoryId &&
+  receipt.branch === scope.branch && receipt.verified === true && receipt.bypass === false;
+
+function normalizeBranchRules(
+  value, hasNext, legacy, scope, branchProtected, expectedBase, policyChecks, hostedGateVerified, noBypassVerified
+) {
   if (hasNext || !Array.isArray(value) || value.length > 100 || (value.length === 0 && !legacy.present))
     return {ok:false,reason:'PROTECTIONS_UNVERIFIED'};
-  let nativeQueue = false, hasPullRule = false, maxApprovals = 0, threads = false, bypass = false;
+  let nativeQueue = false, hasPullRule = false, maxApprovals = 0, threads = false;
+  let observedBypass = false, missingInlineNoBypass = false;
   let squashOnly = false, squashDisallowed = false, upToDate = false, codeScanning = false;
   const checkMap = new Map();
+  const inspectRuleBypass = rule => {
+    if (Object.hasOwn(rule, 'bypass_actors')) {
+      if (!Array.isArray(rule.bypass_actors) || rule.bypass_actors.length > 0) observedBypass = true;
+    } else {
+      missingInlineNoBypass = true;
+    }
+  };
   for (const rule of value) {
     if (!rule || typeof rule !== 'object' || !text(rule.type, 80))
       return {ok:false,reason:'PROTECTIONS_UNVERIFIED'};
@@ -241,6 +261,7 @@ function normalizeBranchRules(value, hasNext, legacy, scope, branchProtected, ex
           !Number.isSafeInteger(params.required_approving_review_count) ||
           params.required_approving_review_count < 0)
         return {ok:false,reason:'PROTECTIONS_UNVERIFIED'};
+      inspectRuleBypass(rule);
       hasPullRule = true;
       if (params.required_approving_review_count > maxApprovals) maxApprovals = params.required_approving_review_count;
       if (params.required_review_thread_resolution === true) threads = true;
@@ -255,6 +276,7 @@ function normalizeBranchRules(value, hasNext, legacy, scope, branchProtected, ex
       const params = rule.parameters;
       if (!params || typeof params !== 'object' || !Array.isArray(params.required_status_checks))
         return {ok:false,reason:'PROTECTIONS_UNVERIFIED'};
+      inspectRuleBypass(rule);
       if (params.strict_required_status_checks_policy === true) upToDate = true;
       for (const sc of params.required_status_checks) {
         if (!sc || !text(sc.context, 100) || !positive(sc.integration_id))
@@ -269,6 +291,7 @@ function normalizeBranchRules(value, hasNext, legacy, scope, branchProtected, ex
     if (rule.type === 'code_scanning') {
       const tools = rule.parameters?.code_scanning_tools;
       if (!Array.isArray(tools)) return {ok:false,reason:'PROTECTIONS_UNVERIFIED'};
+      inspectRuleBypass(rule);
       if (tools.some(t => t?.tool === 'CodeQL' &&
           securityThresholds.has(t.security_alerts_threshold) && alertThresholds.has(t.alerts_threshold))) {
         codeScanning = true;
@@ -283,7 +306,6 @@ function normalizeBranchRules(value, hasNext, legacy, scope, branchProtected, ex
         lp.allow_force_pushes?.enabled === true || lp.allow_deletions?.enabled === true) {
       return {ok:false,reason:'PROTECTIONS_UNVERIFIED'};
     }
-    if (!hasPullRule && lp.enforce_admins.enabled !== true) bypass = true;
     const lsc = lp.required_status_checks;
     if (lsc !== null && lsc !== undefined) {
       if (typeof lsc !== 'object' || !Array.isArray(lsc.checks) ||
@@ -319,6 +341,9 @@ function normalizeBranchRules(value, hasNext, legacy, scope, branchProtected, ex
     const pinned = policyChecks.find(c => c.name === 'CodeQL');
     if (pinned) checkMap.set('CodeQL', pinned.appId);
   }
+  const rulesNoBypass = value.length === 0 || (!missingInlineNoBypass || noBypassVerified === true);
+  const legacyNoBypass = !legacy.present || legacy.value.enforce_admins.enabled === true;
+  const bypass = observedBypass || !(rulesNoBypass && legacyNoBypass);
   const security = codeScanning || checkMap.has('CodeQL');
   return {
     ok: true,
@@ -335,7 +360,7 @@ function normalizeBranchRules(value, hasNext, legacy, scope, branchProtected, ex
       upToDate,
       review: maxApprovals >= 1,
       requiredApprovingReviewCount: maxApprovals,
-      hostedReviewGate: hostedReviewGate === true,
+      hostedReviewGate: hostedGateVerified === true,
       threads,
       security,
       requiredChecks: [...checkMap.entries()].map(([name, appId]) => ({name, appId}))
@@ -384,7 +409,8 @@ export async function readCandidatePullMetadata(intent, {
   request = fetch,
   scope = defaultScope,
   policyChecks = [],
-  hostedReviewGate = false
+  hostedReviewGate = null,
+  noBypass = null
 } = {}) {
   if (!validScope(scope) || !own(intent, ['repository','repositoryId','branch','number','expectedHead','expectedBase']) ||
       intent.repository !== scope.repository || intent.repositoryId !== scope.repositoryId ||
@@ -394,8 +420,11 @@ export async function readCandidatePullMetadata(intent, {
       policyChecks.some(c => !own(c, ['name','appId']) || !text(c.name, 100) || !positive(c.appId))) {
     return failedCandidate('INTENT_UNKNOWN');
   }
+  const hostedGateVerified = validHostedGateReceipt(hostedReviewGate, scope);
+  const noBypassVerified = validNoBypassReceipt(noBypass, scope);
   const root = `https://api.github.com/repos/${scope.repository}`;
   const pullUrl = `${root}/pulls/${intent.number}`;
+  const reviewsUrl = `${root}/pulls/${intent.number}/reviews?per_page=100&page=1`;
   const encodedBranch = encodeBranch(scope.branch);
   const initialRes = await readJson(pullUrl, request);
   if (!initialRes.ok) return failedCandidate(initialRes.reason);
@@ -416,7 +445,7 @@ export async function readCandidatePullMetadata(intent, {
     readJson(`${root}/rules/branches/${encodedBranch}`, request),
     readLegacyProtection(`${root}/branches/${encodedBranch}/protection`, request),
     readJson(`${root}/pulls/${intent.number}/files?per_page=100&page=1`, request),
-    readJson(`${root}/pulls/${intent.number}/reviews?per_page=100&page=1`, request),
+    readJson(reviewsUrl, request),
     readJson(`${root}/commits/${intent.expectedHead}/check-runs?per_page=100&page=1`, request),
     readJson(`${root}/commits/${intent.expectedBase}/check-runs?per_page=100&page=1`, request)
   ]);
@@ -432,7 +461,7 @@ export async function readCandidatePullMetadata(intent, {
       {...binding, head: intent.expectedHead, base: branchData.commit.sha});
   }
   const rules = normalizeBranchRules(rulesRes.value, rulesRes.hasNext, legacyRes, scope, branchData.protected,
-    intent.expectedBase, policyChecks, hostedReviewGate);
+    intent.expectedBase, policyChecks, hostedGateVerified, noBypassVerified);
   if (!rules.ok) return failedCandidate(rules.reason, {...binding, head: intent.expectedHead, base: intent.expectedBase});
   const files = normalizePullFiles(filesRes.value, filesRes.hasNext);
   if (!files.ok) return failedCandidate(files.reason, {...binding, head: intent.expectedHead, base: intent.expectedBase});
@@ -442,6 +471,14 @@ export async function readCandidatePullMetadata(intent, {
   if (!headChecks.ok) return failedCandidate(headChecks.reason, {...binding, head: intent.expectedHead, base: intent.expectedBase});
   const baseChecks = normalizeChecks(baseChecksRes.value, baseChecksRes.hasNext, intent.expectedBase);
   if (!baseChecks.ok) return failedCandidate(baseChecks.reason, {...binding, head: intent.expectedHead, base: intent.expectedBase});
+
+  const finalReviewsRes = await readJson(reviewsUrl, request);
+  if (!finalReviewsRes.ok) return failedCandidate(finalReviewsRes.reason, {...binding, head: intent.expectedHead, base: intent.expectedBase});
+  const finalReviews = normalizeReviewHistoryRows(finalReviewsRes.value, finalReviewsRes.hasNext, intent.expectedHead);
+  if (!finalReviews.ok) return failedCandidate(finalReviews.reason, {...binding, head: intent.expectedHead, base: intent.expectedBase});
+  if (JSON.stringify(finalReviews.records) !== JSON.stringify(reviews.records)) {
+    return failedCandidate('PULL_STATE_CHANGED', {...binding, head: intent.expectedHead, base: intent.expectedBase});
+  }
 
   const finalRes = await readJson(pullUrl, request);
   if (!finalRes.ok) return failedCandidate(finalRes.reason, {...binding, head: intent.expectedHead, base: intent.expectedBase});

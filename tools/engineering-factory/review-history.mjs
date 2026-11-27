@@ -4,11 +4,14 @@ import {planReviewBatch} from './review-batch.mjs';
 // Pure normalization only. A trusted adapter must establish completeness,
 // chronological order, and reviewer identity before calling this function.
 const sha = s => typeof s === 'string' && /^[a-f0-9]{40}$/.test(s);
-const text = s => typeof s === 'string' && s.length > 0 && s.length <= 100;
+const text = (s, max = 100) => typeof s === 'string' && s.length > 0 && s.length <= max;
+const validRepo = s => text(s, 140) && /^[A-Za-z0-9_.-]{1,39}\/[A-Za-z0-9_.-]{1,100}$/.test(s) &&
+  !s.split('/').some(part => part === '.' || part === '..');
 const data = (v, keys) => v !== null && typeof v === 'object' && !types.isProxy(v) && !Array.isArray(v) &&
   keys.every(k => Object.hasOwn(Object.getOwnPropertyDescriptor(v, k) ?? {}, 'value'));
 const dense = a => !types.isProxy(a) && Array.isArray(a) && Object.getPrototypeOf(a) === Array.prototype &&
-  Object.keys(a).length === a.length &&
+  Reflect.ownKeys(a).length === a.length + 1 &&
+  Object.hasOwn(Object.getOwnPropertyDescriptor(a, 'length') ?? {}, 'value') &&
   Array.from({length:a.length}, (_,i) => Object.hasOwn(Object.getOwnPropertyDescriptor(a, i) ?? {}, 'value')).every(Boolean);
 const invalid = () => ({ok:false, reviews:[], reason:'AMBIGUOUS_REVIEW_HISTORY'});
 const copilot = r => ['copilot-pull-request-reviewer','copilot-pull-request-reviewer[bot]'].includes(r.toLowerCase());
@@ -69,12 +72,12 @@ export function buildCandidateReviewEvidence(head, history, options) {
   if (!sha(head) || !dense(history) || history.length > 250 || !data(options, ['reviewers', 'author', 'agent']) ||
       Object.getPrototypeOf(options) !== Object.prototype ||
       !text(options.author) || !text(options.agent) || !dense(options.reviewers) ||
-      options.reviewers.length === 0 || options.reviewers.length > 64 || !options.reviewers.every(text))
+      options.reviewers.length === 0 || options.reviewers.length > 64 || !options.reviewers.every(r => text(r)))
     return unverifiedCandidateReview();
   const repoProp = optionalOwnData(options, 'repository');
   if (!repoProp.valid) return unverifiedCandidateReview();
   const repository = repoProp.present ? repoProp.value : 'Jamula/SoftwareFactory';
-  if (!text(repository)) return unverifiedCandidateReview();
+  if (!validRepo(repository)) return unverifiedCandidateReview();
   const inlineProp = optionalOwnData(options, 'inlineFindings');
   if (!inlineProp.valid) return unverifiedCandidateReview();
   const inlineFindings = inlineProp.present ? inlineProp.value : [];
@@ -83,13 +86,17 @@ export function buildCandidateReviewEvidence(head, history, options) {
     return unverifiedCandidateReview();
 
   const isFactory = repository.toLowerCase() === 'jamula/softwarefactory';
-  const cleanHistory = [];
+  const botLogin = s => typeof s === 'string' && /^[a-z0-9]+(?:-[a-z0-9]+)*\[bot\]$/i.test(s);
   const approvalInput = [];
   const latestCopilotSummary = new Map();
+  let lastObservedSequence = 0;
   for (const entry of history) {
     if (!data(entry, ['sequence', 'reviewer', 'head', 'state']) ||
-        Object.getPrototypeOf(entry) !== Object.prototype) return unverifiedCandidateReview();
+        Object.getPrototypeOf(entry) !== Object.prototype ||
+        !Number.isSafeInteger(entry.sequence) || entry.sequence <= lastObservedSequence ||
+        !sha(entry.head)) return unverifiedCandidateReview();
     if (entry.state === 'PENDING') return unverifiedCandidateReview('REVIEW_PENDING');
+    lastObservedSequence = entry.sequence;
     const dispProp = optionalOwnData(entry, 'summaryDisposition');
     const summaryProp = optionalOwnData(entry, 'summaryFindings');
     if (!dispProp.valid || !summaryProp.valid) return unverifiedCandidateReview();
@@ -120,11 +127,9 @@ export function buildCandidateReviewEvidence(head, history, options) {
         latestCopilotSummary.delete(reviewerKey);
       }
     }
-    cleanHistory.push(item);
-    // Preserve Copilot COMMENTED reviews in cleanHistory only where factory policy accepts them,
-    // while still tracking their current-head summary findings for every repository above.
-    if (!isFactory && isCopilotEntry && entry.state === 'COMMENTED' && entry.reviewer.endsWith('[bot]')) {
-      if (!Number.isSafeInteger(entry.sequence) || !sha(entry.head)) return unverifiedCandidateReview();
+    // Informational [bot] COMMENTED entries (non-Copilot bots, or Copilot on non-factory repos)
+    // cannot satisfy approval gates, while Copilot summary findings and inline findings still apply.
+    if (entry.state === 'COMMENTED' && botLogin(entry.reviewer) && (!isFactory || !isCopilotEntry)) {
       continue;
     }
     approvalInput.push(item);
