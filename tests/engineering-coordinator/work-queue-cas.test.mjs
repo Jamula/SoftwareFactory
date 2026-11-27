@@ -9,7 +9,8 @@ import {
   planUnifiedWorkQueue,
   reconcileWorkQueueRunStates,
   renewWorkQueueLease,
-  settleWorkQueueLease
+  settleWorkQueueLease,
+  simulateDurableCasLifecycle
 } from '../../tools/engineering-coordinator/work-queue-cas.mjs';
 
 const REPO = 'Jamula/SoftwareFactory';
@@ -1829,3 +1830,913 @@ test('retries transient CAS conflicts and fails closed on proxies, store errors,
     nowMs: 5000
   })).reason, 'QUEUE_CAPACITY_EXCEEDED');
 });
+
+test('simulateDurableCasLifecycle proves multi-worker CAS contention, stale worker fencing, event replay idempotency, all 4 crash-recovery states, and emergency stop across runner restarts', async () => {
+  const HEAD_C = 'd'.repeat(40);
+  const config = makeConfig({
+    limits: {
+      maxConcurrentLanes: 4,
+      leaseMs: 60000,
+      maxAttempts: 2,
+      baseDelayMs: 100,
+      maxDelayMs: 1000
+    },
+    lanes: [
+      {id: 'factory', owners: ['tools/engineering-factory'], prompt: 'docs/prompts/factory.md', specialist: 'infra'},
+      {id: 'coordinator', owners: ['tools/engineering-coordinator'], prompt: 'docs/prompts/coord.md', specialist: 'coordinator'},
+      {id: 'docs', owners: ['docs'], prompt: 'docs/prompts/docs.md', specialist: 'docs'},
+      {id: 'apphost', owners: ['src/AppHost'], prompt: 'docs/prompts/apphost.md', specialist: 'infra'}
+    ]
+  });
+
+  const scenario = {
+    config,
+    steps: [
+      // 0: Restart on cold uninitialized ref preserves ZERO_GIT_OID before any commits
+      {kind: 'runner_restart', nowMs: 100},
+
+      // 1: Plan on empty queue with policy
+      {
+        kind: 'plan',
+        nowMs: 500,
+        shadowInput: {
+          enabled: true,
+          stop: false,
+          capacity: 4,
+          quotaVerified: true,
+          tasks: [
+            {id: 101, priority: 1, state: 'approved', dependencies: [], paths: ['tools/engineering-factory/core.mjs']},
+            {id: 102, priority: 2, state: 'approved', dependencies: [], paths: ['tools/engineering-coordinator/planner.mjs']},
+            {id: 103, priority: 0, state: 'approved', dependencies: [101], paths: ['docs/ROADMAP.md']}
+          ]
+        },
+        policy: {
+          now: 500,
+          agingMs: 1000,
+          riskCeiling: 'medium',
+          ready: [
+            {id: 101, readySince: 100, risk: 'low'},
+            {id: 102, readySince: 200, risk: 'low'},
+            {id: 103, readySince: 150, risk: 'low'}
+          ]
+        }
+      },
+
+      // 2: Reject non-protected ref attempts (non-force and force) without mutating refs/heads/work-queue
+      {
+        kind: 'concurrent_claims',
+        nowMs: 600,
+        targetRef: 'refs/heads/main',
+        claims: [{candidate: makeIssueCandidate({issueNumber: 101, workerId: 'worker-bad-ref'})}]
+      },
+      {
+        kind: 'concurrent_claims',
+        nowMs: 650,
+        targetRef: 'refs/heads/main',
+        force: true,
+        claims: [{candidate: makeIssueCandidate({issueNumber: 101, workerId: 'worker-bad-force-ref'})}]
+      },
+
+      // 3: Reject force: true on refs/heads/work-queue and block when mainHealthy === false
+      {
+        kind: 'concurrent_claims',
+        nowMs: 700,
+        force: true,
+        claims: [{candidate: makeIssueCandidate({issueNumber: 101, workerId: 'worker-force'})}]
+      },
+      {
+        kind: 'concurrent_claims',
+        nowMs: 750,
+        mainHealthy: false,
+        claims: [{candidate: makeIssueCandidate({issueNumber: 101, workerId: 'worker-unhealthy-main'})}]
+      },
+
+      // 4: Multi-worker concurrent CAS contention wave across 4 contending workers + 1 duplicate + 1 lane overlap + 1 invalid candidate!
+      // All valid workers read ZERO_GIT_OID simultaneously and serialize strictly via non-force CAS retries.
+      {
+        kind: 'concurrent_claims',
+        nowMs: 1000,
+        maxCasAttempts: 5,
+        claims: [
+          {
+            readyAtMs: 100,
+            candidate: makeIssueCandidate({
+              issueNumber: 101,
+              lane: 'factory',
+              ownedPaths: ['tools/engineering-factory/core.mjs'],
+              workerId: 'worker-w1',
+              runId: 7001,
+              leaseTtlMs: 5000,
+              maxExecutionMs: 20000
+            })
+          },
+          {
+            // Competes for exact same (repositoryId, issueNumber: 101) -> DUPLICATE_ACTIVE_CLAIM after CAS conflict retry
+            candidate: makeIssueCandidate({
+              issueNumber: 101,
+              lane: 'factory',
+              ownedPaths: ['tools/engineering-factory/core.mjs'],
+              workerId: 'worker-dup',
+              runId: 7009,
+              leaseTtlMs: 5000,
+              maxExecutionMs: 20000
+            })
+          },
+          {
+            // Competes for same 'factory' lane with disjoint path -> LANE_RESERVED after CAS conflict retry
+            candidate: makeIssueCandidate({
+              issueNumber: 109,
+              lane: 'factory',
+              ownedPaths: ['tools/engineering-factory/other.mjs'],
+              workerId: 'worker-lane-clash',
+              runId: 7010,
+              leaseTtlMs: 5000,
+              maxExecutionMs: 20000
+            })
+          },
+          {
+            readyAtMs: 200,
+            candidate: makeIssueCandidate({
+              issueNumber: 102,
+              lane: 'coordinator',
+              ownedPaths: ['tools/engineering-coordinator/planner.mjs'],
+              workerId: 'worker-w2',
+              runId: 7002,
+              leaseTtlMs: 5000,
+              maxExecutionMs: 20000
+            })
+          },
+          {
+            readyAtMs: 250,
+            candidate: makeIssueCandidate({
+              issueNumber: 103,
+              lane: 'docs',
+              ownedPaths: ['docs/ROADMAP.md'],
+              workerId: 'worker-w3',
+              runId: 7003,
+              leaseTtlMs: 5000,
+              maxExecutionMs: 20000
+            })
+          },
+          {
+            readyAtMs: 300,
+            candidate: makePrCandidate({
+              pullNumber: 201,
+              headSha: HEAD_A,
+              lane: 'apphost',
+              ownedPaths: ['src/AppHost/Program.cs'],
+              workerId: 'worker-w4',
+              runId: 7004,
+              leaseTtlMs: 5000,
+              maxExecutionMs: 20000
+            })
+          },
+          {
+            // Invalid cross-repo candidate rejected before reading refStore without hanging barrier
+            candidate: makeIssueCandidate({
+              repository: 'Other/Repo',
+              issueNumber: 999,
+              workerId: 'worker-cross-repo'
+            })
+          }
+        ]
+      },
+
+      // 5: Plan while lanes are occupied records blocked wait duration from policy.ready
+      {
+        kind: 'plan',
+        nowMs: 1500,
+        shadowInput: {
+          enabled: true,
+          stop: false,
+          capacity: 4,
+          quotaVerified: true,
+          tasks: [
+            {id: 105, priority: 0, state: 'approved', dependencies: [], paths: ['tools/engineering-factory/next.mjs']}
+          ]
+        },
+        policy: {
+          now: 1500,
+          agingMs: 1000,
+          riskCeiling: 'high',
+          ready: [{id: 105, readySince: 500, risk: 'low'}]
+        }
+      },
+
+      // 6: Worker w4 renews within bounded TTL, then ephemeral runner crashes & restarts (Epoch -> 3)
+      {
+        kind: 'worker_action',
+        action: 'renew',
+        workId: `${REPO_ID}:pr:201:${HEAD_A}`,
+        workerId: 'worker-w4',
+        generation: 4,
+        leaseTtlMs: 6000,
+        nowMs: 2000
+      },
+      {kind: 'runner_restart', nowMs: 2500},
+
+      // 7: Crash recovery on fresh runner across launch_failed, worker_terminated, run_terminal (success), and run_missing!
+      {
+        kind: 'reconcile_runs',
+        nowMs: 3000,
+        observedRuns: [
+          {workId: `${REPO_ID}:issue:101`, runId: 7001, runAttempt: 1, leaseGeneration: 1, runState: 'launch_failed'},
+          {workId: `${REPO_ID}:issue:102`, runId: 7002, runAttempt: 1, leaseGeneration: 2, runState: 'worker_terminated'},
+          {workId: `${REPO_ID}:issue:103`, runId: 7003, runAttempt: 1, leaseGeneration: 3, runState: 'run_missing'},
+          {workId: `${REPO_ID}:pr:201:${HEAD_A}`, runId: 7004, runAttempt: 1, leaseGeneration: 4, runState: 'run_terminal', conclusion: 'success'}
+        ]
+      },
+
+      // 8: Reassign issue #101 to worker-w1-retry with short TTL (expires at 5000), let it expire, reassign to worker-w2-takeover,
+      // and verify stale worker rejection (generation fencing + wrong workerId + stale run observation)!
+      {
+        kind: 'replay_events',
+        nowMs: 3500,
+        events: [
+          {
+            deliveryId: 'deliv-101-retry',
+            eventSequence: 10,
+            readyAtMs: 3100,
+            candidate: makeIssueCandidate({
+              issueNumber: 101,
+              lane: 'factory',
+              ownedPaths: ['tools/engineering-factory/core.mjs'],
+              workerId: 'worker-w1-retry',
+              runId: 7101,
+              runAttempt: 2,
+              leaseTtlMs: 1500,
+              maxExecutionMs: 10000
+            })
+          },
+          // Conflicting deliveryId with different target -> DELIVERY_CONFLICT
+          {
+            deliveryId: 'deliv-101-retry',
+            eventSequence: 11,
+            candidate: makeIssueCandidate({
+              issueNumber: 102,
+              lane: 'coordinator',
+              ownedPaths: ['tools/engineering-coordinator/planner.mjs'],
+              workerId: 'worker-conflict',
+              runId: 7102
+            })
+          },
+          // Replay completed PR (201, HEAD_A) -> WORK_ALREADY_COMPLETED
+          {
+            deliveryId: 'deliv-pr201-dup',
+            eventSequence: 20,
+            authoritativeHeadSha: HEAD_A,
+            candidate: makePrCandidate({
+              pullNumber: 201,
+              headSha: HEAD_A,
+              lane: 'apphost',
+              ownedPaths: ['src/AppHost/Program.cs'],
+              workerId: 'worker-pr-dup',
+              runId: 7104
+            })
+          },
+          // Stale head on PR 202 (HEAD_A when authoritativeHeadSha is HEAD_B) -> STALE_HEAD_SUPERSEDED
+          {
+            deliveryId: 'deliv-pr202-stale',
+            eventSequence: 5,
+            authoritativeHeadSha: HEAD_B,
+            candidate: makePrCandidate({
+              pullNumber: 202,
+              headSha: HEAD_A,
+              lane: 'apphost',
+              ownedPaths: ['src/AppHost/Program.cs'],
+              workerId: 'worker-pr-stale',
+              runId: 7105
+            })
+          },
+          // Fresh head on PR 202 (HEAD_B, eventSequence: 8) succeeds -> LEASE_CLAIMED
+          {
+            deliveryId: 'deliv-pr202-fresh',
+            eventSequence: 8,
+            readyAtMs: 3400,
+            authoritativeHeadSha: HEAD_B,
+            candidate: makePrCandidate({
+              pullNumber: 202,
+              headSha: HEAD_B,
+              lane: 'apphost',
+              ownedPaths: ['src/AppHost/Program.cs'],
+              workerId: 'worker-pr-fresh',
+              runId: 7106,
+              leaseTtlMs: 8000,
+              maxExecutionMs: 20000
+            })
+          },
+          // Out-of-order delayed event on PR 202 (eventSequence: 6 < 8) -> OUT_OF_ORDER_EVENT
+          {
+            deliveryId: 'deliv-pr202-late',
+            eventSequence: 6,
+            authoritativeHeadSha: HEAD_C,
+            candidate: makePrCandidate({
+              pullNumber: 202,
+              headSha: HEAD_C,
+              lane: 'apphost',
+              ownedPaths: ['src/AppHost/Program.cs'],
+              workerId: 'worker-pr-late',
+              runId: 7107
+            })
+          },
+          // Invalid candidate inside replay_events fails closed without mutating
+          {
+            deliveryId: 'deliv-bad-cand',
+            eventSequence: 1,
+            candidate: makeIssueCandidate({
+              issueNumber: 999,
+              lane: 'unknown-lane',
+              workerId: 'worker-bad'
+            })
+          }
+        ]
+      },
+
+      // 9: At t=5500, worker-w1-retry's lease on issue #101 has expired (3500 + 1500 = 5000).
+      // Another issue (#104) claims 'factory' lane -> atomically fences expired issue #101 (exhausted at 2/2 attempts)!
+      {
+        kind: 'concurrent_claims',
+        nowMs: 5500,
+        claims: [
+          {
+            readyAtMs: 5000,
+            candidate: makeIssueCandidate({
+              issueNumber: 104,
+              lane: 'factory',
+              ownedPaths: ['tools/engineering-factory/new-slice.mjs'],
+              workerId: 'worker-w2-takeover',
+              runId: 7201,
+              leaseTtlMs: 10000,
+              maxExecutionMs: 20000
+            })
+          }
+        ]
+      },
+
+      // 10: Stale workers from superseded generations attempt renew, settle, and stale run observation -> all fenced!
+      {
+        kind: 'worker_action',
+        action: 'renew',
+        workId: `${REPO_ID}:issue:101`,
+        workerId: 'worker-w1-retry',
+        generation: 9,
+        leaseTtlMs: 5000,
+        nowMs: 5600
+      },
+      {
+        kind: 'worker_action',
+        action: 'settle',
+        workId: `${REPO_ID}:issue:101`,
+        workerId: 'worker-w1',
+        generation: 1,
+        outcome: 'completed',
+        nowMs: 5650
+      },
+      {
+        kind: 'worker_action',
+        action: 'renew',
+        workId: `${REPO_ID}:issue:104`,
+        workerId: 'impostor-worker',
+        generation: 12,
+        leaseTtlMs: 5000,
+        nowMs: 5700
+      },
+      {
+        kind: 'reconcile_runs',
+        nowMs: 5750,
+        observedRuns: [
+          {workId: `${REPO_ID}:issue:101`, runId: 7001, runAttempt: 1, leaseGeneration: 1, runState: 'worker_terminated'}
+        ]
+      },
+
+      // 11: Another runner restart (Epoch -> 4), then replay exhausted issue #101 and active PR #202 (HEAD_B) -> durably deduplicated!
+      {kind: 'runner_restart', nowMs: 6000},
+      {
+        kind: 'replay_events',
+        nowMs: 6100,
+        events: [
+          {
+            deliveryId: 'post-restart-101',
+            eventSequence: 1,
+            candidate: makeIssueCandidate({
+              issueNumber: 101,
+              lane: 'factory',
+              ownedPaths: ['tools/engineering-factory/core.mjs'],
+              workerId: 'worker-after-restart',
+              runId: 7301
+            })
+          },
+          {
+            deliveryId: 'post-restart-pr202',
+            eventSequence: 1,
+            authoritativeHeadSha: HEAD_B,
+            candidate: makePrCandidate({
+              pullNumber: 202,
+              headSha: HEAD_B,
+              lane: 'apphost',
+              ownedPaths: ['src/AppHost/Program.cs'],
+              workerId: 'worker-after-restart',
+              runId: 7302
+            })
+          }
+        ]
+      },
+
+      // 12: Engage emergency STOP -> blocks plan, concurrent_claims, replay_events, worker_action, and reconcile_runs while preserving OID!
+      {kind: 'emergency_stop', nowMs: 6500, stop: true},
+      {
+        kind: 'plan',
+        nowMs: 6550,
+        shadowInput: {
+          enabled: true,
+          stop: false,
+          capacity: 4,
+          quotaVerified: true,
+          tasks: [{id: 102, priority: 0, state: 'approved', dependencies: [], paths: ['tools/engineering-coordinator/planner.mjs']}]
+        }
+      },
+      {
+        kind: 'concurrent_claims',
+        nowMs: 6600,
+        claims: [{candidate: makeIssueCandidate({issueNumber: 102, lane: 'coordinator', ownedPaths: ['tools/engineering-coordinator/planner.mjs'], workerId: 'worker-blocked'})}]
+      },
+      {
+        kind: 'replay_events',
+        nowMs: 6650,
+        events: [{
+          deliveryId: 'stopped-event',
+          eventSequence: 1,
+          candidate: makeIssueCandidate({issueNumber: 102, lane: 'coordinator', ownedPaths: ['tools/engineering-coordinator/planner.mjs'], workerId: 'worker-blocked'})
+        }]
+      },
+      {
+        kind: 'worker_action',
+        action: 'settle',
+        workId: `${REPO_ID}:issue:104`,
+        workerId: 'worker-w2-takeover',
+        generation: 12,
+        outcome: 'completed',
+        nowMs: 6700
+      },
+      {
+        kind: 'reconcile_runs',
+        nowMs: 6750,
+        observedRuns: [{workId: `${REPO_ID}:issue:104`, runId: 7201, runAttempt: 1, leaseGeneration: 12, runState: 'worker_terminated'}]
+      },
+
+      // 13: Clear emergency STOP and settle issue #104 cleanly (leaving PR #202 active to verify end-of-simulation occupiedDurationMs)
+      {kind: 'emergency_stop', nowMs: 7000, stop: false},
+      {
+        kind: 'worker_action',
+        action: 'settle',
+        workId: `${REPO_ID}:issue:104`,
+        workerId: 'worker-w2-takeover',
+        generation: 12,
+        outcome: 'completed',
+        nowMs: 7200
+      }
+    ]
+  };
+
+  const result = await simulateDurableCasLifecycle(scenario);
+  assert.equal(result.ok, true);
+  assert.equal(result.shadow, true);
+  assert.equal(result.liveDispatch, false);
+  assert.equal(result.liveMerge, false);
+  assert.equal(result.reason, 'LIFECYCLE_VERIFIED');
+  assert.equal(result.ref, PROTECTED_WORK_QUEUE_REF);
+  assert.equal(result.runnerEpochs, 4);
+
+  // Verify initial cold restart kept ZERO_GIT_OID and zero entries
+  assert.equal(result.steps[0].oid, ZERO_GIT_OID);
+  assert.equal(result.steps[0].preservedEntries, 0);
+
+  // Verify multi-worker contention wave serialized cleanly with genuine CAS_CONFLICT retries
+  const waveOutcomes = result.steps[6].outcomes;
+  const grantedInWave = waveOutcomes.filter(o => o.ok);
+  assert.equal(grantedInWave.length, 4);
+  assert.ok(grantedInWave.some(o => o.casAttempts > 1));
+  assert.ok(result.metrics.casConflicts >= 5);
+  assert.equal(waveOutcomes.find(o => o.workerId === 'worker-dup').reason, 'DUPLICATE_ACTIVE_CLAIM');
+  assert.equal(waveOutcomes.find(o => o.workerId === 'worker-lane-clash').reason, 'LANE_RESERVED');
+  assert.equal(waveOutcomes.find(o => o.workerId === 'worker-cross-repo').reason, 'CROSS_REPO_CANDIDATE_REJECTED');
+
+  // Verify blocked wait duration recorded during occupied lane plan
+  assert.equal(result.steps[7].blockedCount, 1);
+  assert.equal(result.steps[7].maxBlockedWaitMs, 1000);
+
+  // Verify OID continuity across runner restart (step 8 renew -> step 9 runner_restart)
+  assert.equal(result.steps[9].oid, result.steps[8].oid);
+  assert.equal(result.steps[9].preservedEntries, 4);
+
+  // Verify all 4 GitHub run-state crash recovery paths + atomic lease_expired reclamation
+  assert.deepEqual(result.metrics.reclaimedByRunState, {
+    launch_failed: 1,
+    worker_terminated: 1,
+    run_terminal: 1,
+    run_missing: 1,
+    lease_expired: 1
+  });
+
+  // Verify stale worker fencing & event replay deduplication metrics
+  assert.equal(result.metrics.unprotectedRefRejected, 1);
+  assert.equal(result.metrics.forceRejected, 2);
+  assert.equal(result.metrics.mainUnhealthyBlocks, 1);
+  assert.equal(result.metrics.deliveryConflictsRejected, 1);
+  assert.equal(result.metrics.staleHeadRejected, 1);
+  assert.equal(result.metrics.outOfOrderRejected, 1);
+  assert.equal(result.metrics.staleWorkerRejections, 3);
+  assert.equal(result.metrics.staleRunObservationsSkipped, 1);
+  assert.ok(result.metrics.duplicateClaimsRejected >= 4);
+
+  // Verify emergency stop blocked all 5 operations and preserved exact OID without mutation!
+  const oidAtStopEngage = result.steps[19].oid;
+  assert.equal(result.steps[19].reason, 'EMERGENCY_STOP_ENGAGED');
+  for (let idx = 20; idx <= 24; idx++) {
+    assert.equal(result.steps[idx].oid, oidAtStopEngage);
+  }
+  assert.equal(result.metrics.stopBlocks, 5);
+  assert.equal(result.steps[25].reason, 'EMERGENCY_STOP_CLEARED');
+  assert.equal(result.steps[25].oid, oidAtStopEngage);
+  assert.equal(result.steps[26].ok, true);
+  assert.notEqual(result.finalOid, oidAtStopEngage);
+
+  // Verify benchmark ready-to-claim latencies and positive occupied duration
+  assert.equal(result.metrics.readySampleCount, 7);
+  assert.ok(Number.isSafeInteger(result.metrics.p50ReadyLatencyMs) && result.metrics.p50ReadyLatencyMs >= 100);
+  assert.ok(Number.isSafeInteger(result.metrics.p95ReadyLatencyMs) && result.metrics.p95ReadyLatencyMs >= result.metrics.p50ReadyLatencyMs);
+  assert.ok(result.metrics.occupiedDurationMs > 0);
+
+  // Verify caller mutating scenario mid-flight after invocation cannot alter in-progress execution
+  const mutableScenario = {
+    config: makeConfig(),
+    steps: [
+      {
+        kind: 'concurrent_claims',
+        nowMs: 100,
+        claims: [
+          {candidate: makeIssueCandidate({issueNumber: 1, lane: 'factory', ownedPaths: ['tools/engineering-factory/a.mjs'], workerId: 'w-a', runId: 1})},
+          {candidate: makeIssueCandidate({issueNumber: 2, lane: 'docs', ownedPaths: ['docs/b.md'], workerId: 'w-b', runId: 2})}
+        ]
+      }
+    ]
+  };
+  const pendingSim = simulateDurableCasLifecycle(mutableScenario);
+  mutableScenario.config.execution.stop = true;
+  mutableScenario.steps[0].claims[0].candidate.ownedPaths[0] = '.github/workflows/evil.yml';
+  const isolatedRes = await pendingSim;
+  assert.equal(isolatedRes.ok, true);
+  assert.equal(isolatedRes.metrics.claimsGranted, 2);
+  assert.deepEqual(isolatedRes.finalState.entries[0].ownedPaths, ['tools/engineering-factory/a.mjs']);
+});
+
+test('simulateDurableCasLifecycle handles seeded initialState compaction, replay stop/unhealthy-main, and fails closed on proxies/invalid inputs', async () => {
+  const config = makeConfig();
+
+  // Seed 250 entries (249 completed + 1 active 1-attempt lease that expires before next claim -> compacted to undefined in entries!)
+  const seededEntries = Array.from({length: 250}, (_, idx) => ({
+    workId: `${REPO_ID}:issue:${idx + 1}`,
+    targetType: 'issue',
+    repository: REPO,
+    repositoryId: REPO_ID,
+    issueNumber: idx + 1,
+    pullNumber: null,
+    headSha: null,
+    lane: idx === 0 ? 'factory' : 'docs',
+    ownedPaths: idx === 0 ? ['tools/engineering-factory/expiring.mjs'] : ['docs/DONE.md'],
+    status: idx === 0 ? 'leased' : 'completed',
+    generation: idx + 1,
+    attempts: 1,
+    maxAttempts: 1,
+    workerId: 'worker-seed',
+    runId: 8000 + idx,
+    runAttempt: 1,
+    claimedAtMs: 100,
+    leaseTtlMs: 200,
+    leaseExpiresAtMs: idx === 0 ? 300 : 100,
+    maxExecutionMs: 500,
+    executionDeadlineMs: 600
+  }));
+
+  const seededResult = await simulateDurableCasLifecycle({
+    config,
+    initialState: {
+      schemaVersion: 1,
+      protocol: 'v3',
+      sequence: 250,
+      nextGeneration: 252,
+      entries: seededEntries,
+      recoveryReceipts: [{
+        workId: `${REPO_ID}:issue:2`,
+        repositoryId: REPO_ID,
+        targetType: 'issue',
+        runState: 'worker_terminated',
+        conclusion: null,
+        previousRunId: 8001,
+        previousRunAttempt: 1,
+        previousGeneration: 2,
+        reclaimedGeneration: 251,
+        attempts: 1,
+        maxAttempts: 2,
+        outcome: 'requeued',
+        reclaimedAtMs: 150
+      }]
+    },
+    steps: [
+      // Claiming issue #900 at t=500 fences expired issue #1 (marked exhausted at idx 0) and compacts idx 0 into archivedTerminal!
+      {
+        kind: 'concurrent_claims',
+        nowMs: 500,
+        stop: false,
+        force: false,
+        claims: [{
+          candidate: makeIssueCandidate({
+            issueNumber: 900,
+            lane: 'coordinator',
+            ownedPaths: ['tools/engineering-coordinator/a.mjs'],
+            workerId: 'worker-compact',
+            runId: 9000
+          })
+        }]
+      },
+      // Replay events with mainHealthy: false
+      {
+        kind: 'replay_events',
+        nowMs: 600,
+        mainHealthy: false,
+        maxCasAttempts: 2,
+        events: [{
+          deliveryId: 'ev-unhealthy',
+          eventSequence: 1,
+          candidate: makeIssueCandidate({issueNumber: 901})
+        }]
+      },
+      // Worker action with force: true, explicit stop, and maxCasAttempts options
+      {
+        kind: 'worker_action',
+        action: 'renew',
+        workId: `${REPO_ID}:issue:900`,
+        workerId: 'worker-compact',
+        generation: 253,
+        leaseTtlMs: 1000,
+        nowMs: 700,
+        stop: false,
+        force: true,
+        maxCasAttempts: 1
+      },
+      {
+        kind: 'worker_action',
+        action: 'settle',
+        workId: `${REPO_ID}:issue:900`,
+        workerId: 'worker-compact',
+        generation: 253,
+        outcome: 'completed',
+        nowMs: 750,
+        force: true,
+        maxCasAttempts: 1
+      },
+      // Reconcile runs with force: true and NO_ORPHANS_DETECTED
+      {
+        kind: 'reconcile_runs',
+        nowMs: 800,
+        stop: false,
+        force: true,
+        maxCasAttempts: 1,
+        observedRuns: []
+      },
+      {
+        kind: 'reconcile_runs',
+        nowMs: 850,
+        observedRuns: []
+      },
+      // Runner restart toggling stop: true then clearing via runner_restart stop: false
+      {kind: 'runner_restart', nowMs: 900, stop: true},
+      {kind: 'runner_restart', nowMs: 950, stop: false},
+      // Valid plan when persisted state.entries has 250 entries (>32) schedules eligible non-conflicting task!
+      {
+        kind: 'plan',
+        nowMs: 975,
+        shadowInput: {
+          enabled: true,
+          stop: false,
+          capacity: 2,
+          quotaVerified: true,
+          tasks: [{id: 950, priority: 1, state: 'approved', dependencies: [], paths: ['docs/NEXT.md']}]
+        }
+      },
+      // Plan on invalid shadowInput returns empty readyIds fallback cleanly
+      {
+        kind: 'plan',
+        nowMs: 1000,
+        shadowInput: {enabled: true, stop: false, capacity: 0, quotaVerified: false, tasks: []}
+      }
+    ]
+  });
+  assert.equal(seededResult.ok, true);
+  assert.deepEqual(seededResult.steps[8].readyIds, [950]);
+  assert.equal(seededResult.metrics.readySampleCount, 0);
+  assert.equal(seededResult.metrics.p50ReadyLatencyMs, null);
+  assert.equal(seededResult.metrics.p95ReadyLatencyMs, null);
+  assert.equal(seededResult.metrics.reclaimedByRunState.lease_expired, 1);
+  assert.equal(seededResult.metrics.forceRejected, 3);
+  assert.equal(seededResult.metrics.mainUnhealthyBlocks, 1);
+
+  // >32 simultaneously ACTIVE leases in planUnifiedWorkQueue still fails closed with INVALID_ACTIVE_LEASES
+  const thirtyThreeActive = Array.from({length: 33}, (_, idx) => ({
+    ...seededEntries[0],
+    workId: `${REPO_ID}:issue:${idx + 5000}`,
+    issueNumber: idx + 5000,
+    generation: idx + 1,
+    leaseExpiresAtMs: 5000,
+    executionDeadlineMs: 6000
+  }));
+  assert.equal(planUnifiedWorkQueue({
+    config,
+    shadowInput: {enabled: true, stop: false, capacity: 2, quotaVerified: true, tasks: []},
+    activeLeases: thirtyThreeActive,
+    nowMs: 200
+  }).reason, 'INVALID_ACTIVE_LEASES');
+
+  // Same-deliveryId replay after expiry rejects with DUPLICATE_DELIVERY (same runner),
+  // and same-(runId, runAttempt) replay after cold runner_restart rejects with DUPLICATE_RUN_ATTEMPT!
+  const dupDeliverySim = await simulateDurableCasLifecycle({
+    config,
+    steps: [
+      {
+        kind: 'replay_events',
+        nowMs: 1000,
+        events: [{
+          deliveryId: 'same-webhook-1',
+          eventSequence: 1,
+          readyAtMs: 900,
+          candidate: makeIssueCandidate({issueNumber: 601, runId: 9601, leaseTtlMs: 500, maxExecutionMs: 5000})
+        }]
+      },
+      // Lease expired at 1500; replaying exact same deliveryId at 2000 on same runner MUST reject with DUPLICATE_DELIVERY
+      {
+        kind: 'replay_events',
+        nowMs: 2000,
+        events: [{
+          deliveryId: 'same-webhook-1',
+          eventSequence: 1,
+          readyAtMs: 900,
+          candidate: makeIssueCandidate({issueNumber: 601, runId: 9601, leaseTtlMs: 500, maxExecutionMs: 5000})
+        }]
+      },
+      // Reconcile expired run -> status becomes 'requeued', then cold runner_restart wipes seenDeliveries
+      {
+        kind: 'reconcile_runs',
+        nowMs: 2100,
+        observedRuns: []
+      },
+      {kind: 'runner_restart', nowMs: 2200},
+      // Replaying with the ALREADY-USED (runId: 9601, runAttempt: 1) after cold restart MUST reject with DUPLICATE_RUN_ATTEMPT!
+      {
+        kind: 'replay_events',
+        nowMs: 2300,
+        events: [{
+          deliveryId: 'replayed-after-restart',
+          eventSequence: 1,
+          candidate: makeIssueCandidate({issueNumber: 601, runId: 9601, runAttempt: 1, leaseTtlMs: 500, maxExecutionMs: 5000})
+        }]
+      }
+    ]
+  });
+  assert.equal(dupDeliverySim.ok, true);
+  assert.equal(dupDeliverySim.metrics.claimsGranted, 1);
+  assert.equal(dupDeliverySim.steps[1].outcomes[0].reason, 'DUPLICATE_DELIVERY');
+  assert.equal(dupDeliverySim.steps[4].outcomes[0].reason, 'DUPLICATE_RUN_ATTEMPT');
+  assert.equal(dupDeliverySim.metrics.duplicateClaimsRejected, 2);
+
+  // claimWorkQueueLease rejects clock skew (nowMs < existing entry claimedAtMs)
+  const skewStore = createInMemoryWorkQueueRefStore();
+  assert.equal((await claimWorkQueueLease({
+    refStore: skewStore,
+    config,
+    candidate: makeIssueCandidate({issueNumber: 1, lane: 'factory', ownedPaths: ['tools/engineering-factory/a.mjs']}),
+    nowMs: 5000
+  })).ok, true);
+  assert.equal((await claimWorkQueueLease({
+    refStore: skewStore,
+    config,
+    candidate: makeIssueCandidate({issueNumber: 2, lane: 'docs', ownedPaths: ['docs/b.md']}),
+    nowMs: 4000
+  })).reason, 'CLOCK_SKEW_REJECTED');
+
+  // simulateDurableCasLifecycle seeds prevNowMs from initialState claimedAtMs / reclaimedAtMs
+  assert.equal((await simulateDurableCasLifecycle({
+    config,
+    initialState: skewStore.readRef().state,
+    steps: [{kind: 'emergency_stop', nowMs: 4999, stop: false}]
+  })).reason, 'NON_MONOTONIC_SCENARIO_CLOCK');
+
+  // Also verify initialState: null is accepted
+  const explicitNullInitial = await simulateDurableCasLifecycle({
+    config,
+    initialState: null,
+    steps: [{kind: 'emergency_stop', nowMs: 0, stop: false}]
+  });
+  assert.equal(explicitNullInitial.ok, true);
+  assert.equal(explicitNullInitial.finalOid, ZERO_GIT_OID);
+
+  // Proxy / getter / prototype / non-JSON / deep-nesting fail-closed guards with zero trap execution
+  let trapsTriggered = 0;
+  const trap = () => {
+    trapsTriggered++;
+    throw new Error('trap must never execute');
+  };
+  const handler = {get: trap, ownKeys: trap, getOwnPropertyDescriptor: trap, getPrototypeOf: trap};
+  const revoked = Proxy.revocable({config, steps: []}, handler);
+  revoked.revoke();
+
+  const getterScenario = {steps: [{kind: 'emergency_stop', nowMs: 0, stop: false}]};
+  Object.defineProperty(getterScenario, 'config', {enumerable: true, get: trap});
+
+  const protoBag = {};
+  Object.defineProperty(protoBag, '__proto__', {value: {}, enumerable: true});
+
+  const symBag = {[Symbol('secret')]: 1};
+  const sparseSteps = new Array(1);
+
+  let tooDeep = {leaf: 1};
+  for (let d = 0; d < 14; d++) tooDeep = {nested: tooDeep};
+
+  for (const badInput of [
+    null,
+    'not-an-object',
+    Symbol('bad'),
+    revoked.proxy,
+    new Proxy({config, steps: []}, handler),
+    getterScenario,
+    Object.create(null),
+    {config, steps: [{kind: 'emergency_stop', nowMs: 0, stop: false}], extra: protoBag},
+    {config, steps: [{kind: 'emergency_stop', nowMs: 0, stop: false, bad: symBag}]},
+    {config, steps: [{kind: 'emergency_stop', nowMs: NaN, stop: false}]},
+    {config, steps: [Symbol('step')]},
+    {config, steps: sparseSteps},
+    {config, steps: [tooDeep]},
+    {config, steps: []},
+    {config, steps: [null]},
+    {config, steps: [{kind: 'unknown_kind', nowMs: 0}]},
+    {config, steps: [{kind: 'plan', nowMs: 0}]},
+    {config, steps: [{kind: 'concurrent_claims', nowMs: 0, claims: []}]},
+    {config, steps: [{kind: 'concurrent_claims', nowMs: 0, targetRef: '', claims: [{candidate: makeIssueCandidate()}]}]},
+    {config, steps: [{kind: 'concurrent_claims', nowMs: 10, claims: [{candidate: makeIssueCandidate(), readyAtMs: 20}]}]},
+    {config, steps: [{kind: 'replay_events', nowMs: 0, events: []}]},
+    {config, steps: [{kind: 'replay_events', nowMs: 10, events: [{deliveryId: 'd1', eventSequence: 1, readyAtMs: 50, candidate: makeIssueCandidate()}]}]},
+    {config, steps: [{kind: 'replay_events', nowMs: 10, events: [{deliveryId: 'd1', eventSequence: 1, authoritativeHeadSha: HEAD_A, candidate: makeIssueCandidate()}]}]},
+    {config, steps: [{kind: 'worker_action', action: 'unknown', workId: 'w', workerId: 'worker-1', generation: 1, nowMs: 0}]},
+    {config, steps: [{kind: 'reconcile_runs', nowMs: 0, observedRuns: [], maxCasAttempts: 99}]},
+    {config, steps: [{kind: 'runner_restart', nowMs: 0, stop: 'yes'}]},
+    {config, steps: [{kind: 'emergency_stop', nowMs: 0, stop: 'yes'}]}
+  ]) {
+    const res = await simulateDurableCasLifecycle(badInput);
+    assert.equal(res.ok, false);
+    assert.equal(res.reason, 'INVALID_SIMULATION_SCENARIO');
+  }
+  assert.equal(trapsTriggered, 0);
+
+  assert.equal((await simulateDurableCasLifecycle({
+    config: {},
+    steps: [{kind: 'emergency_stop', nowMs: 0, stop: false}]
+  })).reason, 'INVALID_PROJECT_CONFIG');
+
+  assert.equal((await simulateDurableCasLifecycle({
+    config,
+    initialState: {invalid: true},
+    steps: [{kind: 'emergency_stop', nowMs: 0, stop: false}]
+  })).reason, 'INVALID_QUEUE_STATE');
+
+  assert.equal((await simulateDurableCasLifecycle({
+    config,
+    steps: [
+      {kind: 'emergency_stop', nowMs: 100, stop: false},
+      {kind: 'emergency_stop', nowMs: 50, stop: true}
+    ]
+  })).reason, 'NON_MONOTONIC_SCENARIO_CLOCK');
+
+  // Regression: config.execution.enabled === false or config.execution.stop === true CANNOT be bypassed
+  // by emergency_stop: { stop: false } or runner_restart: { stop: false }, and does not hang multi-worker barrier!
+  const disabledCfgRes = await simulateDurableCasLifecycle({
+    config: makeConfig({execution: {enabled: false, mode: 'shadow', stop: false}}),
+    steps: [
+      {kind: 'emergency_stop', nowMs: 100, stop: false},
+      {kind: 'runner_restart', nowMs: 150, stop: false},
+      {
+        kind: 'concurrent_claims',
+        nowMs: 200,
+        claims: [
+          {candidate: makeIssueCandidate({issueNumber: 1, lane: 'factory', ownedPaths: ['tools/engineering-factory/a.mjs'], workerId: 'w1', runId: 1})},
+          {candidate: makeIssueCandidate({issueNumber: 2, lane: 'docs', ownedPaths: ['docs/b.md'], workerId: 'w2', runId: 2})}
+        ]
+      }
+    ]
+  });
+  assert.equal(disabledCfgRes.ok, true);
+  assert.equal(disabledCfgRes.steps[0].stop, true);
+  assert.equal(disabledCfgRes.steps[0].reason, 'EMERGENCY_STOP_ENGAGED');
+  assert.equal(disabledCfgRes.metrics.claimsGranted, 0);
+  assert.equal(disabledCfgRes.metrics.stopBlocks, 2);
+  assert.equal(disabledCfgRes.finalOid, ZERO_GIT_OID);
+});
+
