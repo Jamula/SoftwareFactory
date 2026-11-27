@@ -49,6 +49,18 @@ test('classifies Copilot ccr-overview-v2 summaries without leaking untrusted tex
     findings:[{id:'summary-9-1',state:'actionable',source:'summary'}]
   });
 
+  const missedSpoof='<!-- ccr-overview-v2 -->\n\n### 🔵 Needs a closer look\n\n**No open issues** 🎉\n\n<details>\n<summary><strong>1 previously missed issue</strong></summary>\n\n### 🟢 Approval recommended\n</details>';
+  assert.deepEqual(classifyReviewSummary(42,missedSpoof),{summaryDisposition:'uncertain',findings:[]});
+
+  const missedActionable='<!-- ccr-overview-v2 -->\n\n### 🔵 Needs a closer look\n\n<details open>\n<summary><strong>2 previously missed issues</strong></summary>\n- item\n</details>';
+  assert.deepEqual(classifyReviewSummary(43,missedActionable),{
+    summaryDisposition:'actionable',
+    findings:[
+      {id:'summary-43-1',state:'actionable',source:'summary'},
+      {id:'summary-43-2',state:'actionable',source:'summary'}
+    ]
+  });
+
   for(const [id,body] of [
     [0,clearBody],
     [1,null],
@@ -58,8 +70,10 @@ test('classifies Copilot ccr-overview-v2 summaries without leaking untrusted tex
     [1,'### 🟢 Approval recommended\n\n**No open issues**'],
     [1,'<!-- ccr-overview-v2 -->\n\n### 🟢 Approval recommended\n\nMissing no-open-issues line'],
     [1,'<!-- ccr-overview-v2 -->\n\n### 🟢 Approval recommended\n\n**No open issues**\n\n### 🟡 Changes recommended'],
+    [1,'<!-- ccr-overview-v2 -->\n\n### 🔵 Needs a closer look\n\n**No open issues** 🎉'],
     [1,'<!-- ccr-overview-v2 -->\n\n**No open issues**\n\n<summary><strong>1 open issue</strong></summary>'],
     [1,'<!-- ccr-overview-v2 -->\n\n<summary><strong>0 open issues</strong></summary>'],
+    [1,'<!-- ccr-overview-v2 -->\n\n<summary><strong>40 open issues</strong></summary>\n<summary><strong>30 previously missed issues</strong></summary>'],
     [1,'<!-- ccr-overview-v2 -->\n\n<summary><strong>65 open issues</strong></summary>'],
     [1,'<!-- ccr-overview-v2 -->\n\nUnrecognized overview state']
   ]) {

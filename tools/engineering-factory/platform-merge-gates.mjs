@@ -9,7 +9,8 @@ const defaultScope=Object.freeze({repositoryId:1471342715,requiredChecks:default
 const validScope=scope=>data(scope,['repositoryId','requiredChecks'])&&pos(scope.repositoryId)&&
  dense(scope.requiredChecks,32)&&scope.requiredChecks.length>0&&
  scope.requiredChecks.every(name=>typeof name==='string'&&name.length>0)&&
- new Set(scope.requiredChecks).size===scope.requiredChecks.length;
+ new Set(scope.requiredChecks).size===scope.requiredChecks.length&&
+ (scope.repositoryId!==1471342715||defaultRequired.every(name=>scope.requiredChecks.includes(name)));
 const deny=reason=>({shadow:true,eligible:false,liveMerge:false,reason});
 // Input is normalized by a separately trusted adapter. This diagnostic cannot
 // establish protection enforcement or authorize any repository operation.

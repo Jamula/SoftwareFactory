@@ -46,7 +46,8 @@ test('parameterizes trusted repositoryId and required check lists while failing 
   {repositoryId:0,requiredChecks:['a']},
   {repositoryId:9001,requiredChecks:[]},
   {repositoryId:9001,requiredChecks:['']},
-  {repositoryId:9001,requiredChecks:['dup','dup']}
+  {repositoryId:9001,requiredChecks:['dup','dup']},
+  {repositoryId:1471342715,requiredChecks:['build-test']}
  ]) {
   assert.equal(platformMergeGates(head,consumerPolicy,consumerEvidence,badScope).reason,'POLICY_UNKNOWN');
  }

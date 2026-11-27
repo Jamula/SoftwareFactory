@@ -241,6 +241,7 @@ test('reads complete exact-head candidate metadata, normalizes rulesets and mult
   if(overrides?.[url])return overrides[url]();
   if(url.endsWith('/pulls/42'))return response(candidatePull);
   if(url.endsWith('/rules/branches/main'))return response(rules);
+  if(url.endsWith('/branches/main/protection'))return new Response(JSON.stringify({message:'Branch not protected'}),{status:404});
   if(url.endsWith('/branches/main'))return response({name:'main',protected:true,commit:{sha:base}});
   if(url.includes('/files?'))return response([{filename:'src/component.mjs'}]);
   if(url.includes('/reviews?'))return response(reviews);
@@ -322,11 +323,87 @@ test('reads complete exact-head candidate metadata, normalizes rulesets and mult
  });
  assert.equal(nonStringMethod.protection.method,'other');
 
- for(const badFiles of [[],[{filename:''}],[{filename:'a'},{filename:'a'}]]){
+ for(const badFiles of [
+  [],
+  [{filename:''}],
+  [{filename:'a'},{filename:'a'}],
+  [{filename:'src/new.mjs',status:'renamed'}],
+  [{filename:'src/same.mjs',status:'renamed',previous_filename:'src/same.mjs'}]
+ ]){
   assert.equal((await readCandidatePullMetadata(intent,{
    request:candidateFetch({'https://api.github.com/repos/Jamula/SoftwareFactory/pulls/42/files?per_page=100&page=1':()=>response(badFiles)}),
    policyChecks
   })).reason,'FILES_UNKNOWN');
+ }
+
+ const renamedMeta=await readCandidatePullMetadata(intent,{
+  request:candidateFetch({'https://api.github.com/repos/Jamula/SoftwareFactory/pulls/42/files?per_page=100&page=1':()=>response([
+   {filename:'src/component.mjs',status:'renamed',previous_filename:'unowned/legacy.mjs'}
+  ])}),
+  policyChecks,hostedReviewGate:true
+ });
+ assert.deepEqual(renamedMeta.paths,['unowned/legacy.mjs','src/component.mjs']);
+
+ const blockedPullMeta=await readCandidatePullMetadata(intent,{
+  request:candidateFetch({'https://api.github.com/repos/Jamula/SoftwareFactory/pulls/42':()=>response({...candidatePull,mergeable_state:'blocked'})}),
+  policyChecks,hostedReviewGate:true
+ });
+ assert.equal(blockedPullMeta.baseCompatible,false);
+
+ const reconciledLegacy=await readCandidatePullMetadata(intent,{
+  request:candidateFetch({'https://api.github.com/repos/Jamula/SoftwareFactory/branches/main/protection':()=>response({
+   enforce_admins:{enabled:true},
+   required_status_checks:{strict:true,checks:[{context:'legacy-audit',app_id:15368}]},
+   required_pull_request_reviews:{required_approving_review_count:2},
+   required_conversation_resolution:{enabled:true}
+  })}),
+  policyChecks,hostedReviewGate:true
+ });
+ assert.equal(reconciledLegacy.protection.requiredApprovingReviewCount,2);
+ assert.equal(reconciledLegacy.protection.review,true);
+ assert.equal(reconciledLegacy.protection.requiredChecks.some(c=>c.name==='legacy-audit'&&c.appId===15368),true);
+
+ const legacyWithoutAdminEnforcement=await readCandidatePullMetadata(intent,{
+  request:candidateFetch({
+   'https://api.github.com/repos/Jamula/SoftwareFactory/rules/branches/main':()=>response([]),
+   'https://api.github.com/repos/Jamula/SoftwareFactory/branches/main/protection':()=>response({
+    enforce_admins:{enabled:false},
+    required_status_checks:{strict:true,checks:[{context:'build-test',app_id:15368}]},
+    required_pull_request_reviews:{required_approving_review_count:1},
+    required_conversation_resolution:{enabled:true}
+   })
+  }),
+  policyChecks
+ });
+ assert.equal(legacyWithoutAdminEnforcement.protection.bypass,true);
+
+ for(const [legacyResponse,expectedReason] of [
+  [()=>new Response(null,{status:403}),'RATE_OR_PERMISSION_UNKNOWN'],
+  [()=>new Response(JSON.stringify({message:'Not Found'}),{status:404}),'READ_FAILED'],
+  [()=>new Response('x'.repeat(524289),{status:404}),'RESPONSE_LIMIT'],
+  [()=>new Response(null,{status:500}),'READ_FAILED'],
+  [()=>new Response('x'.repeat(524289),{status:200}),'RESPONSE_LIMIT'],
+  [()=>new Response('{}',{status:200,headers:{link:'<next>; rel="next"'}}),'PROTECTIONS_UNVERIFIED'],
+  [()=> { throw Error('offline'); },'READ_FAILED']
+ ]){
+  assert.equal((await readCandidatePullMetadata(intent,{
+   request:candidateFetch({'https://api.github.com/repos/Jamula/SoftwareFactory/branches/main/protection':legacyResponse}),
+   policyChecks
+  })).reason,expectedReason);
+ }
+
+ for(const badLegacy of [
+  {},
+  {enforce_admins:{enabled:true},allow_force_pushes:{enabled:true}},
+  {enforce_admins:{enabled:true},required_status_checks:{contexts:['build-test'],checks:[]}},
+  {enforce_admins:{enabled:true},required_status_checks:{checks:[{context:'build-test',app_id:null}]}},
+  {enforce_admins:{enabled:true},required_status_checks:{checks:[{context:'build-test',app_id:999}]}},
+  {enforce_admins:{enabled:true},required_pull_request_reviews:{required_approving_review_count:-1}}
+ ]){
+  assert.equal((await readCandidatePullMetadata(intent,{
+   request:candidateFetch({'https://api.github.com/repos/Jamula/SoftwareFactory/branches/main/protection':()=>response(badLegacy)}),
+   policyChecks
+  })).reason,'PROTECTIONS_UNVERIFIED');
  }
 
  assert.equal((await readCandidatePullMetadata(intent,{
@@ -400,4 +477,18 @@ test('reads complete exact-head candidate metadata, normalizes rulesets and mult
   })})
  });
  assert.equal(failedMain.healthy,false);
+ const orderEvents=[];
+ const orderedMain=await readBranchHealth(undefined,policyChecks,{
+  request:async(url,options)=>{
+   if(url.endsWith('/branches/main')){
+    orderEvents.push(`branch-${orderEvents.filter(e=>e.startsWith('branch-')).length+1}`);
+    return response({name:'main',protected:true,commit:{sha:base}});
+   }
+   await new Promise(resolve=>setTimeout(resolve,5));
+   orderEvents.push('checks');
+   return candidateFetch()(url,options);
+  }
+ });
+ assert.equal(orderedMain.healthy,true);
+ assert.deepEqual(orderEvents,['branch-1','checks','branch-2']);
 });

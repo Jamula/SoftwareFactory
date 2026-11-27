@@ -57,24 +57,32 @@ function plain(value, budget = {remaining: 10000}, depth = 0) {
   });
 }
 
+const plainContainer = value => value !== null && typeof value === 'object' &&
+  !types.isProxy(value) && !Array.isArray(value) &&
+  Object.getPrototypeOf(value) === Object.prototype &&
+  Reflect.ownKeys(value).every(key => typeof key === 'string' &&
+    Object.hasOwn(Object.getOwnPropertyDescriptor(value, key) ?? {}, 'value'));
+
 function normalizeScope(rawScope, policy) {
-  if (!object(rawScope, ['repository', 'repositoryId']) ||
+  if (!plain(rawScope) || !object(rawScope, ['repository', 'repositoryId']) ||
       !validRepo(rawScope.repository) || !positive(rawScope.repositoryId)) return null;
-  const hasBranch = Object.hasOwn(Object.getOwnPropertyDescriptor(rawScope, 'branch') ?? {}, 'value');
+  const nameIsFactory = rawScope.repository.toLowerCase() === 'jamula/softwarefactory';
+  const idIsFactory = rawScope.repositoryId === DEFAULT_FACTORY_SCOPE.repositoryId;
+  if (nameIsFactory !== idIsFactory) return null;
+  const hasBranch = Object.hasOwn(rawScope, 'branch');
   const branch = hasBranch ? rawScope.branch : 'main';
   if (!validBranch(branch)) return null;
-  const isFactory = rawScope.repository.toLowerCase() === 'jamula/softwarefactory';
-  const hasRequired = Object.hasOwn(Object.getOwnPropertyDescriptor(rawScope, 'requiredChecks') ?? {}, 'value');
+  const hasRequired = Object.hasOwn(rawScope, 'requiredChecks');
   let requiredChecks;
   if (hasRequired) {
     if (!denseList(rawScope.requiredChecks, 32) || rawScope.requiredChecks.length === 0 ||
         rawScope.requiredChecks.some(name => typeof name !== 'string' || name.length === 0) ||
-        new Set(rawScope.requiredChecks).size !== rawScope.requiredChecks.length) return null;
+        new Set(rawScope.requiredChecks).size !== rawScope.requiredChecks.length ||
+        (idIsFactory && defaultChecks.some(name => !rawScope.requiredChecks.includes(name)))) return null;
     requiredChecks = [...rawScope.requiredChecks];
-  } else if (isFactory) {
+  } else if (idIsFactory) {
     requiredChecks = [...defaultChecks];
-  } else if (Array.isArray(policy?.checks) && policy.checks.length > 0 &&
-      policy.checks.every(c => object(c, ['name']) && typeof c.name === 'string' && c.name.length > 0)) {
+  } else if (policy !== null && policy !== undefined && plain(policy) && validPolicy(policy)) {
     requiredChecks = policy.checks.map(c => c.name);
   } else {
     return null;
@@ -102,12 +110,15 @@ const binds = (data, intent, activeScope) => inScope(data, activeScope) &&
   data.number === intent.number && data.head === intent.expectedHead && data.base === intent.expectedBase;
 const sameHead = (evidence, head, field) =>
   object(evidence, ['head', field]) && evidence.head === head && evidence[field] === true;
+const isFactoryScope = activeScope =>
+  activeScope.repository.toLowerCase() === 'jamula/softwarefactory' &&
+  activeScope.repositoryId === DEFAULT_FACTORY_SCOPE.repositoryId;
 
 function passesProtection(protection, policy, base, activeScope) {
   if (!plain(protection) || !inScope(protection, activeScope) ||
       !object(protection, ['base', 'verified', 'protected', 'bypass', 'method', 'upToDate',
         'review', 'threads', 'security', 'requiredChecks'])) return false;
-  const isFactory = activeScope.repository.toLowerCase() === 'jamula/softwarefactory';
+  const isFactory = isFactoryScope(activeScope);
   const hasApprovalCount = Object.hasOwn(protection, 'requiredApprovingReviewCount');
   const reviewProtected = hasApprovalCount
     ? (Number.isSafeInteger(protection.requiredApprovingReviewCount) &&
@@ -157,7 +168,8 @@ function verifiedCoverage(head, expected, reports, policy, isFactory) {
 
 /** Normalize independently obtained receipts for a current, protected candidate. */
 export function guardedSquashEvidence(intent, evidence, scope = DEFAULT_FACTORY_SCOPE) {
-  const activeScope = normalizeScope(scope, evidence?.policy);
+  const safePolicy = object(evidence, ['policy']) && plain(evidence.policy) ? evidence.policy : null;
+  const activeScope = normalizeScope(scope, safePolicy);
   if (!activeScope) return blocked('PROTECTIONS_UNVERIFIED');
   if (!validIntent(intent, activeScope)) return blocked('INTENT_UNKNOWN');
   if (!binds(evidence, intent, activeScope)) return blocked('SCOPE_OR_HEAD_CHANGED');
@@ -181,7 +193,7 @@ export function guardedSquashEvidence(intent, evidence, scope = DEFAULT_FACTORY_
     return blocked('REVIEW_UNVERIFIED');
   const normalized = normalizeReviewHistory(intent.expectedHead, reviewHistory, activeScope.repository);
   if (!normalized.ok) return blocked('REVIEW_UNVERIFIED');
-  const isFactory = activeScope.repository.toLowerCase() === 'jamula/softwarefactory';
+  const isFactory = isFactoryScope(activeScope);
   const coverage = verifiedCoverage(intent.expectedHead, evidence.expectedComponents,
     evidence.coverageReports, policy, isFactory);
   if (!coverage) return blocked('COVERAGE_UNVERIFIED');
@@ -189,6 +201,17 @@ export function guardedSquashEvidence(intent, evidence, scope = DEFAULT_FACTORY_
     securityClear: true, coverage: {head: intent.expectedHead, complete: true,
       line: coverage.lines * 100 / coverage.lineTotal, branch: coverage.branches * 100 / coverage.branchTotal}});
   if (decision.state !== 'eligible') return blocked(decision.reason);
+  if (Object.hasOwn(evidence.protection, 'requiredApprovingReviewCount') &&
+      evidence.protection.requiredApprovingReviewCount >= 1) {
+    const allowlisted = new Set(policy.reviewers.map(r => r.toLowerCase()));
+    const excluded = new Set([snapshot.author.toLowerCase(), snapshot.agent.toLowerCase()]);
+    const distinctApprovals = new Set(normalized.reviews
+      .filter(r => r.head === intent.expectedHead && r.state === 'APPROVED' &&
+        allowlisted.has(r.reviewer) && !excluded.has(r.reviewer))
+      .map(r => r.reviewer)).size;
+    if (distinctApprovals < evidence.protection.requiredApprovingReviewCount)
+      return blocked('REVIEW_MISSING');
+  }
   const platform = platformMergeGates(intent.expectedHead,
     {repositoryId: activeScope.repositoryId, trusted: true, required: evidence.protection.requiredChecks},
     {head: intent.expectedHead, complete: true, checks: snapshot.checks, review: evidence.platformReview,
@@ -200,47 +223,59 @@ export function guardedSquashEvidence(intent, evidence, scope = DEFAULT_FACTORY_
 
 /** Read-only GitHub API candidate-evidence aggregator feeding guardedSquashEvidence in shadow mode. */
 export async function readProtectedSquashCandidate(intent, options) {
-  if (!object(options, ['policy', 'issue', 'agent', 'coverageReports', 'expectedComponents', 'threads']) ||
+  if (!plainContainer(options) ||
+      !object(options, ['policy', 'issue', 'agent', 'coverageReports', 'expectedComponents', 'threads', 'security']) ||
       !plain(options.policy) || !validPolicy(options.policy)) {
     return {shadow: true, liveMerge: false, evidenceComplete: false, reason: 'POLICY_UNKNOWN'};
   }
+  if (options.readStop !== undefined && typeof options.readStop !== 'function') {
+    return {shadow: true, liveMerge: false, evidenceComplete: false, reason: 'STOP_UNKNOWN'};
+  }
+  const request = options.request ?? fetch;
+  if (typeof request !== 'function') {
+    return {shadow: true, liveMerge: false, evidenceComplete: false, reason: 'READ_FAILED'};
+  }
   const activeScope = normalizeScope(options.scope ?? DEFAULT_FACTORY_SCOPE, options.policy);
-  if (!activeScope) {
+  if (!activeScope || activeScope.requiredChecks.some(name => !options.policy.checks.some(c => c.name === name))) {
     return {shadow: true, liveMerge: false, evidenceComplete: false, reason: 'PROTECTIONS_UNVERIFIED'};
   }
-  const isFactory = activeScope.repository.toLowerCase() === 'jamula/softwarefactory';
+  const staticStop = options.stop !== undefined && options.stop !== false;
+  const preStop = options.readStop ? (await options.readStop()) !== false : false;
+  const isFactory = isFactoryScope(activeScope);
   const hostedReviewGate = isFactory && options.policy.reviewers.length > 0;
   const meta = await readCandidatePullMetadata(intent, {
-    request: options.request ?? fetch,
+    request,
     scope: activeScope,
     policyChecks: options.policy.checks,
     hostedReviewGate
   });
   if (!meta.evidenceComplete) return meta;
+  const postStop = options.readStop ? (await options.readStop()) !== false : false;
 
-  const mainHealthy = activeScope.requiredChecks.every(name => {
-    const pinned = options.policy.checks.find(c => c.name === name);
-    const matches = meta.baseChecks.filter(c => c.name === name);
-    return Boolean(pinned) && matches.length === 1 && matches[0].appId === pinned.appId &&
+  const mainHealthy = options.policy.checks.every(pinned => {
+    const matches = meta.baseChecks.filter(c => c.name === pinned.name);
+    return matches.length === 1 && matches[0].appId === pinned.appId &&
       matches[0].status === 'completed' && matches[0].conclusion === 'success';
   });
   const codeqlPolicy = options.policy.checks.find(c => c.name === 'CodeQL');
   const codeqlPassed = !codeqlPolicy || meta.checks.some(c =>
     c.name === 'CodeQL' && c.appId === codeqlPolicy.appId &&
     c.status === 'completed' && c.conclusion === 'success');
-  const hasExplicitSecurity = Object.hasOwn(Object.getOwnPropertyDescriptor(options, 'security') ?? {}, 'value');
   const securityClear = meta.protection.security === true && codeqlPassed &&
-    (hasExplicitSecurity ? sameHead(options.security, intent.expectedHead, 'clear') : true);
+    sameHead(options.security, intent.expectedHead, 'clear');
 
-  const reviewEvidence = buildCandidateReviewEvidence(intent.expectedHead, meta.reviewRecords, {
+  const reviewOptions = {
     repository: activeScope.repository,
     reviewers: options.policy.reviewers,
     author: meta.author,
-    agent: options.agent,
-    inlineFindings: options.inlineFindings ?? []
-  });
+    agent: options.agent
+  };
+  if (options.inlineFindings !== undefined) reviewOptions.inlineFindings = options.inlineFindings;
+  const reviewEvidence = buildCandidateReviewEvidence(intent.expectedHead, meta.reviewRecords, reviewOptions);
 
   return {
+    shadow: true,
+    liveMerge: false,
     repository: activeScope.repository,
     repositoryId: activeScope.repositoryId,
     branch: activeScope.branch,
@@ -249,7 +284,7 @@ export async function readProtectedSquashCandidate(intent, options) {
     base: meta.base,
     open: meta.open,
     draft: meta.draft,
-    stop: (options.stop ?? false) !== false,
+    stop: staticStop || preStop || postStop,
     scopeVerified: meta.scopeVerified,
     nativeQueue: meta.nativeQueue,
     protection: meta.protection,
@@ -265,14 +300,14 @@ export async function readProtectedSquashCandidate(intent, options) {
       observedBase: meta.base,
       baseBranch: activeScope.branch,
       rateLimited: false,
-      remainingCredits: options.remainingCredits ?? 1,
-      activeCount: options.activeCount ?? 0,
-      providerReady: options.providerReady ?? true,
-      risk: options.risk ?? 'low',
-      priority: options.priority ?? 1,
+      remainingCredits: options.remainingCredits ?? null,
+      activeCount: options.activeCount ?? null,
+      providerReady: options.providerReady ?? null,
+      risk: options.risk ?? null,
+      priority: options.priority ?? null,
       paths: meta.paths,
-      dependencies: options.dependencies ?? [],
-      acceptanceComplete: options.acceptanceComplete ?? true,
+      dependencies: options.dependencies ?? null,
+      acceptanceComplete: options.acceptanceComplete ?? null,
       baseCompatible: meta.baseCompatible,
       mainHealthy,
       author: meta.author,
@@ -290,31 +325,33 @@ export async function readProtectedSquashCandidate(intent, options) {
 
 /** Build a read-only GitHub shadow transport for createShadowSquashController (liveMerge remains false). */
 export function createGitHubShadowTransport(options) {
-  if (!object(options, ['policy', 'simulateSquash', 'readMergeReceipt']) ||
+  if (!plainContainer(options) ||
+      !object(options, ['policy', 'simulateSquash', 'readMergeReceipt']) ||
       !plain(options.policy) || !validPolicy(options.policy) ||
-      typeof options.simulateSquash !== 'function' || typeof options.readMergeReceipt !== 'function') {
+      typeof options.simulateSquash !== 'function' || typeof options.readMergeReceipt !== 'function' ||
+      (options.readStop !== undefined && typeof options.readStop !== 'function')) {
     throw new TypeError('INVALID_SHADOW_SQUASH_TRANSPORT');
   }
   const request = options.request ?? fetch;
   if (typeof request !== 'function') throw new TypeError('INVALID_SHADOW_SQUASH_TRANSPORT');
   const activeScope = normalizeScope(options.scope ?? DEFAULT_FACTORY_SCOPE, options.policy);
-  if (!activeScope) throw new TypeError('INVALID_SHADOW_SQUASH_SCOPE');
-  const requiredMainChecks = activeScope.requiredChecks
-    .map(name => options.policy.checks.find(c => c.name === name))
-    .filter(Boolean);
-  if (requiredMainChecks.length !== activeScope.requiredChecks.length) {
+  if (!activeScope || activeScope.requiredChecks.some(name => !options.policy.checks.some(c => c.name === name))) {
     throw new TypeError('INVALID_SHADOW_SQUASH_SCOPE');
   }
+  const staticStop = options.stop !== undefined && options.stop !== false;
   return Object.freeze({
     mode: 'shadow',
     scope: activeScope,
     readCandidate: target => readProtectedSquashCandidate(target, {...options, scope: activeScope, request}),
     simulateSquash: target => options.simulateSquash(target),
     readMergeReceipt: target => options.readMergeReceipt(target),
-    readMain: () => readBranchHealth(activeScope, requiredMainChecks, {
-      request,
-      stop: typeof options.readStop === 'function' ? options.readStop() !== false : (options.stop ?? false) !== false
-    })
+    readMain: async () => {
+      const dynamicStop = options.readStop ? (await options.readStop()) !== false : false;
+      return readBranchHealth(activeScope, options.policy.checks, {
+        request,
+        stop: staticStop || dynamicStop
+      });
+    }
   });
 }
 

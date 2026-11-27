@@ -58,63 +58,110 @@ export function normalizeReviewHistory(head, history, repository) {
 const unverifiedCandidateReview = (reason = 'REVIEW_UNVERIFIED') =>
   ({ok: false, reason, reviewHistory: [], normalizedReviews: [], platformReview: null, batch: null, independentFavorable: false});
 
+function optionalOwnData(target, key) {
+  const descriptor = Object.getOwnPropertyDescriptor(target, key);
+  if (descriptor === undefined) return {present: false, valid: !(key in target), value: undefined};
+  if (!Object.hasOwn(descriptor, 'value')) return {present: true, valid: false, value: undefined};
+  return {present: true, valid: true, value: descriptor.value};
+}
+
 export function buildCandidateReviewEvidence(head, history, options) {
   if (!sha(head) || !dense(history) || history.length > 250 || !data(options, ['reviewers', 'author', 'agent']) ||
+      Object.getPrototypeOf(options) !== Object.prototype ||
       !text(options.author) || !text(options.agent) || !dense(options.reviewers) ||
       options.reviewers.length === 0 || options.reviewers.length > 64 || !options.reviewers.every(text))
     return unverifiedCandidateReview();
-  const hasRepo = Object.hasOwn(Object.getOwnPropertyDescriptor(options, 'repository') ?? {}, 'value');
-  const repository = hasRepo ? options.repository : 'Jamula/SoftwareFactory';
+  const repoProp = optionalOwnData(options, 'repository');
+  if (!repoProp.valid) return unverifiedCandidateReview();
+  const repository = repoProp.present ? repoProp.value : 'Jamula/SoftwareFactory';
   if (!text(repository)) return unverifiedCandidateReview();
-  const hasInline = Object.hasOwn(Object.getOwnPropertyDescriptor(options, 'inlineFindings') ?? {}, 'value');
-  const inlineFindings = hasInline ? options.inlineFindings : [];
+  const inlineProp = optionalOwnData(options, 'inlineFindings');
+  if (!inlineProp.valid) return unverifiedCandidateReview();
+  const inlineFindings = inlineProp.present ? inlineProp.value : [];
   if (!dense(inlineFindings) || inlineFindings.length > 256 ||
       inlineFindings.some(f => !data(f, ['id', 'state', 'source']) || f.source !== 'inline'))
     return unverifiedCandidateReview();
 
+  const isFactory = repository.toLowerCase() === 'jamula/softwarefactory';
   const cleanHistory = [];
-  const latestSummaryByReviewer = new Map();
+  const approvalInput = [];
+  const latestCopilotSummary = new Map();
   for (const entry of history) {
-    if (!data(entry, ['sequence', 'reviewer', 'head', 'state'])) return unverifiedCandidateReview();
+    if (!data(entry, ['sequence', 'reviewer', 'head', 'state']) ||
+        Object.getPrototypeOf(entry) !== Object.prototype) return unverifiedCandidateReview();
     if (entry.state === 'PENDING') return unverifiedCandidateReview('REVIEW_PENDING');
-    const hasDisposition = Object.hasOwn(Object.getOwnPropertyDescriptor(entry, 'summaryDisposition') ?? {}, 'value');
+    const dispProp = optionalOwnData(entry, 'summaryDisposition');
+    const summaryProp = optionalOwnData(entry, 'summaryFindings');
+    if (!dispProp.valid || !summaryProp.valid) return unverifiedCandidateReview();
     const item = {sequence: entry.sequence, reviewer: entry.reviewer, head: entry.head, state: entry.state};
-    if (hasDisposition && typeof entry.summaryDisposition === 'string') item.summaryDisposition = entry.summaryDisposition;
-    cleanHistory.push(item);
-    const hasSummaryFindings = Object.hasOwn(Object.getOwnPropertyDescriptor(entry, 'summaryFindings') ?? {}, 'value');
-    if (entry.head === head && entry.state === 'COMMENTED' && typeof entry.reviewer === 'string' && copilot(entry.reviewer)) {
-      const summaryFindings = hasSummaryFindings ? entry.summaryFindings : [];
-      if (!dense(summaryFindings) || summaryFindings.length > 64 ||
-          summaryFindings.some(f => !data(f, ['id', 'state', 'source']) || f.source !== 'summary'))
-        return unverifiedCandidateReview();
-      latestSummaryByReviewer.set(entry.reviewer.toLowerCase(),
-        summaryFindings.map(f => ({id: f.id, state: f.state, source: f.source})));
+    if (dispProp.present && dispProp.value !== undefined) {
+      if (!['clear', 'actionable', 'uncertain'].includes(dispProp.value)) return unverifiedCandidateReview();
+      item.summaryDisposition = dispProp.value;
     }
+    const isCopilotEntry = typeof entry.reviewer === 'string' && copilot(entry.reviewer);
+    if (isCopilotEntry) {
+      const reviewerKey = entry.reviewer.toLowerCase();
+      if (entry.state === 'COMMENTED') {
+        if (entry.head === head) {
+          const summaryFindings = summaryProp.present ? summaryProp.value : [];
+          if (!dense(summaryFindings) || summaryFindings.length > 64 ||
+              summaryFindings.some(f => !data(f, ['id', 'state', 'source']) || f.source !== 'summary'))
+            return unverifiedCandidateReview();
+          const disposition = ['clear', 'actionable', 'uncertain'].includes(item.summaryDisposition)
+            ? item.summaryDisposition : 'uncertain';
+          latestCopilotSummary.set(reviewerKey, {
+            disposition,
+            findings: summaryFindings.map(f => ({id: f.id, state: f.state, source: f.source}))
+          });
+        } else if (latestCopilotSummary.get(reviewerKey)?.disposition === 'clear') {
+          latestCopilotSummary.delete(reviewerKey);
+        }
+      } else if (entry.head === head && ['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED'].includes(entry.state)) {
+        latestCopilotSummary.delete(reviewerKey);
+      }
+    }
+    cleanHistory.push(item);
+    // Preserve Copilot COMMENTED reviews in cleanHistory only where factory policy accepts them,
+    // while still tracking their current-head summary findings for every repository above.
+    if (!isFactory && isCopilotEntry && entry.state === 'COMMENTED' && entry.reviewer.endsWith('[bot]')) {
+      if (!Number.isSafeInteger(entry.sequence) || !sha(entry.head)) return unverifiedCandidateReview();
+      continue;
+    }
+    approvalInput.push(item);
   }
 
-  const normalized = normalizeReviewHistory(head, cleanHistory, repository);
+  const normalized = normalizeReviewHistory(head, approvalInput, repository);
   if (!normalized.ok) return unverifiedCandidateReview();
 
   const findings = inlineFindings.map(f => ({id: f.id, state: f.state, source: f.source}));
-  for (const review of normalized.reviews) {
-    if (review.head === head && review.state === 'COMMENTED') {
-      findings.push(...(latestSummaryByReviewer.get(review.reviewer) ?? []));
+  let observedSummaryDisposition = null;
+  for (const summary of latestCopilotSummary.values()) {
+    findings.push(...summary.findings);
+    if (summary.disposition === 'actionable') observedSummaryDisposition = 'actionable';
+    else if (summary.disposition === 'uncertain' && observedSummaryDisposition !== 'actionable') {
+      observedSummaryDisposition = 'uncertain';
+    } else if (observedSummaryDisposition === null) {
+      observedSummaryDisposition = summary.disposition;
     }
   }
   if (findings.length > 256) return unverifiedCandidateReview();
 
-  const isFactory = repository.toLowerCase() === 'jamula/softwarefactory';
   const allowlisted = new Set(options.reviewers.map(r => r.toLowerCase()));
   const excluded = new Set([options.author.toLowerCase(), options.agent.toLowerCase()]);
   const hasObjection = normalized.reviews.some(r => r.state === 'CHANGES_REQUESTED' || r.state === 'DISMISSED');
-  const nonClearComment = normalized.reviews.some(r => r.state === 'COMMENTED' && r.summaryDisposition !== 'clear');
+  const nonClearComment = normalized.reviews.some(r => r.state === 'COMMENTED' && r.summaryDisposition !== 'clear') ||
+    (observedSummaryDisposition !== null && observedSummaryDisposition !== 'clear');
   const independentCleared = !hasObjection && !nonClearComment && normalized.reviews.some(r =>
     r.head === head && allowlisted.has(r.reviewer) && !excluded.has(r.reviewer) &&
     (r.state === 'APPROVED' || (isFactory && copilot(r.reviewer) && r.state === 'COMMENTED' && r.summaryDisposition === 'clear')));
   const commentReview = normalized.reviews.find(r => r.head === head && r.state === 'COMMENTED');
   let summaryDisposition = 'uncertain';
-  if (findings.some(f => f.state === 'actionable') || commentReview?.summaryDisposition === 'actionable') {
+  if (findings.some(f => f.state === 'actionable') ||
+      commentReview?.summaryDisposition === 'actionable' ||
+      observedSummaryDisposition === 'actionable') {
     summaryDisposition = 'actionable';
+  } else if (observedSummaryDisposition === 'uncertain' || commentReview?.summaryDisposition === 'uncertain') {
+    summaryDisposition = 'uncertain';
   } else if (commentReview) {
     summaryDisposition = commentReview.summaryDisposition;
   } else if (independentCleared) {
@@ -122,6 +169,8 @@ export function buildCandidateReviewEvidence(head, history, options) {
   }
 
   const independentPresent = !hasObjection && (independentCleared ||
+    normalized.reviews.some(r => r.head === head && r.state === 'APPROVED' &&
+      allowlisted.has(r.reviewer) && !excluded.has(r.reviewer)) ||
     (commentReview !== undefined && allowlisted.has(commentReview.reviewer) && !excluded.has(commentReview.reviewer)));
   const platformReview = {head, complete: true, independent: independentPresent, summaryDisposition, findings};
   const batch = planReviewBatch(head, platformReview);
@@ -129,7 +178,7 @@ export function buildCandidateReviewEvidence(head, history, options) {
   return {
     ok: true,
     reason: 'NORMALIZED_ONLY',
-    reviewHistory: cleanHistory,
+    reviewHistory: approvalInput,
     normalizedReviews: normalized.reviews,
     platformReview,
     batch,

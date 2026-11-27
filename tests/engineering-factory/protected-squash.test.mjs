@@ -109,7 +109,12 @@ test('rejects complex metadata without executing accessors, proxies or custom it
   const item = {...e.reviewHistory[0]};
   Object.defineProperty(item, 'summaryDisposition', {get: poison});
   const policy = new Proxy(e.policy, {get: poison});
+  const proxyEvidence = new Proxy(e, {get: poison});
+  const getterPolicyEvidence = {...e};
+  Object.defineProperty(getterPolicyEvidence, 'policy', {get: poison});
   assert.equal(evaluated({...e, policy}), 'PROTECTIONS_UNVERIFIED');
+  assert.equal(guardedSquashEvidence(intent, proxyEvidence).reason, 'SCOPE_OR_HEAD_CHANGED');
+  assert.equal(guardedSquashEvidence(intent, getterPolicyEvidence).reason, 'EVIDENCE_UNKNOWN');
   assert.equal(evaluated({...e, reviewHistory: [item]}), 'REVIEW_UNVERIFIED');
   const snapshots = [
     {...e.snapshot, extra: undefined}, {...e.snapshot, [Symbol('hidden')]: 1},
@@ -329,6 +334,9 @@ test('parameterizes consumer scopes while preserving consumer formal-approval an
   for (const badScope of [
     null,
     {repository: '../bad', repositoryId: 1},
+    {repository: 'Jamula/SoftwareFactory', repositoryId: 987654321},
+    {repository: 'Jamula/Spellbook', repositoryId: 1471342715, requiredChecks: ['spellbook-ci']},
+    {repository: 'Jamula/SoftwareFactory', repositoryId: 1471342715, requiredChecks: ['build-test']},
     {repository: 'Jamula/Spellbook', repositoryId: 987654321, branch: '/bad'},
     {repository: 'Jamula/Spellbook', repositoryId: 987654321, requiredChecks: []}
   ]) {
@@ -393,7 +401,7 @@ test('aggregates read-only GitHub API metadata for required_approving_review_cou
     mode: 'shadow',
     killSwitch: false,
     checks: policyChecks,
-    reviewers: [reviewer, 'human-reviewer', 'pr-author', 'coding-agent'],
+    reviewers: [reviewer, 'human-reviewer', 'second-reviewer', 'pr-author', 'coding-agent'],
     coverage: {line: 98, branch: 95},
     owners: [{prefix: 'src', owner: 'factory-owner'}],
     maxActive: 1,
@@ -478,10 +486,15 @@ test('aggregates read-only GitHub API metadata for required_approving_review_cou
         return response(currentPull());
       }
       if (url.endsWith('/rules/branches/main')) return response(rules);
+      if (url.endsWith('/branches/main/protection')) {
+        return state.legacyProtection
+          ? response(state.legacyProtection)
+          : new Response(JSON.stringify({message: 'Branch not protected'}), {status: 404});
+      }
       if (url.endsWith('/branches/main')) {
         return response({name: 'main', protected: true, commit: {sha: state.mainHead ?? base}});
       }
-      if (url.includes('/files?')) return response([{filename: 'src/component.mjs'}]);
+      if (url.includes('/files?')) return response(state.files ?? [{filename: 'src/component.mjs'}]);
       if (url.includes('/reviews?')) {
         return response(state.reviews ?? [{
           id: 500,
@@ -509,6 +522,14 @@ test('aggregates read-only GitHub API metadata for required_approving_review_cou
     coverageReports: [{component: 'component', head, lines: 99, lineTotal: 100, branches: 96, branchTotal: 100}],
     expectedComponents: ['component'],
     threads: {head, resolved: true},
+    security: {head, clear: true},
+    remainingCredits: 1,
+    activeCount: 0,
+    providerReady: true,
+    risk: 'low',
+    priority: 1,
+    dependencies: [],
+    acceptanceComplete: true,
     simulateSquash: async target => {
       apiState.mainHead = mergeCommit;
       return {...scope, number: target.number, head: target.expectedHead, base: target.expectedBase,
@@ -645,6 +666,143 @@ test('aggregates read-only GitHub API metadata for required_approving_review_cou
     reason: 'SHADOW_MAIN_VERIFIED',
     mergeCommit
   });
+
+  // 8. Enforces distinct formal approval count >= 2 when required by ruleset or legacy protection
+  const twoApprovalState = () => ({
+    legacyProtection: {
+      enforce_admins: {enabled: true},
+      required_pull_request_reviews: {required_approving_review_count: 2}
+    },
+    reviews: [
+      {id: 540, user: {login: 'human-reviewer', id: 77}, state: 'APPROVED',
+        commit_id: head, submitted_at: '2026-11-26T20:01:00Z'}
+    ]
+  });
+  const oneOfTwoController = createShadowSquashController(
+    createGitHubShadowTransport(baseTransportOptions(twoApprovalState())));
+  assert.equal((await oneOfTwoController.run(intent)).reason, 'REVIEW_MISSING');
+
+  const bothApprovedState = twoApprovalState();
+  bothApprovedState.reviews.push({
+    id: 541, user: {login: 'second-reviewer', id: 78}, state: 'APPROVED',
+    commit_id: head, submitted_at: '2026-11-26T20:02:00Z'
+  });
+  const twoOfTwoController = createShadowSquashController(
+    createGitHubShadowTransport(baseTransportOptions(bothApprovedState)));
+  assert.equal((await twoOfTwoController.run(intent)).reason, 'SHADOW_MAIN_VERIFIED');
+
+  // 9. Extra policy-required check beyond scope baseline must pass on both base and post-merge main
+  const extendedChecks = [...policyChecks, {name: 'extra-policy-gate', appId: 15368}];
+  const extendedPolicy = {...policy, checks: extendedChecks};
+  const extendedApi = (baseOverrides = {}, mergedOverrides = {}) => {
+    let mainAt = base;
+    return {
+      request: async url => {
+        if (url.endsWith('/pulls/12')) {
+          const repoObj = {id: scope.repositoryId, full_name: scope.repository};
+          return response({
+            number: 12, state: 'open', draft: false, user: {login: 'pr-author', id: 55},
+            base: {repo: repoObj, ref: 'main', sha: base}, head: {repo: repoObj, sha: head},
+            mergeable: true, mergeable_state: 'clean'
+          });
+        }
+        if (url.endsWith('/rules/branches/main')) {
+          return response([
+            {type: 'pull_request', parameters: {required_approving_review_count: 0,
+              required_review_thread_resolution: true, allowed_merge_methods: ['squash']}},
+            {type: 'required_status_checks', parameters: {strict_required_status_checks_policy: true,
+              required_status_checks: extendedChecks.filter(c => c.name !== 'CodeQL')
+                .map(c => ({context: c.name, integration_id: c.appId}))}},
+            {type: 'code_scanning', parameters: {code_scanning_tools: [{tool: 'CodeQL',
+              security_alerts_threshold: 'medium_or_higher', alerts_threshold: 'errors_and_warnings'}]}}
+          ]);
+        }
+        if (url.endsWith('/branches/main/protection')) {
+          return new Response(JSON.stringify({message: 'Branch not protected'}), {status: 404});
+        }
+        if (url.endsWith('/branches/main')) return response({name: 'main', protected: true, commit: {sha: mainAt}});
+        if (url.includes('/files?')) return response([{filename: 'src/component.mjs'}]);
+        if (url.includes('/reviews?')) {
+          return response([{id: 550, user: {login: reviewer, id: 175728472}, state: 'COMMENTED',
+            commit_id: head, submitted_at: '2026-11-26T20:01:00Z', body: clearOverview}]);
+        }
+        const shaForChecks = url.includes(head) ? head : url.includes(mergeCommit) ? mergeCommit : base;
+        const mapOverrides = shaForChecks === base ? baseOverrides : shaForChecks === mergeCommit ? mergedOverrides : {};
+        const rows = extendedChecks.map((c, idx) =>
+          checkRow(idx + 1, c.name, shaForChecks, mapOverrides[c.name] ?? 'success'));
+        return response({total_count: rows.length, check_runs: rows});
+      },
+      advanceMain() { mainAt = mergeCommit; }
+    };
+  };
+  const preSimExtra = extendedApi({'extra-policy-gate': 'failure'}, {});
+  const preSimController = createShadowSquashController(createGitHubShadowTransport({
+    ...baseTransportOptions({}),
+    policy: extendedPolicy,
+    request: preSimExtra.request
+  }));
+  assert.equal((await preSimController.run(intent)).reason, 'BASE_OR_MAIN_UNHEALTHY');
+
+  const postSimExtra = extendedApi({}, {'extra-policy-gate': 'failure'});
+  const postSimController = createShadowSquashController(createGitHubShadowTransport({
+    ...baseTransportOptions({}),
+    policy: extendedPolicy,
+    request: postSimExtra.request,
+    simulateSquash: async target => {
+      postSimExtra.advanceMain();
+      return {...scope, number: target.number, head: target.expectedHead, base: target.expectedBase,
+        method: 'squash', mergeCommit, merged: true};
+    }
+  }));
+  assert.equal((await postSimController.run(intent)).reason, 'MAIN_VERIFICATION_REQUIRED');
+
+  // 10. Dynamic readStop blocks before simulateSquash and never clears a static stop
+  let simulatedWhileStopped = 0;
+  const dynamicStoppedController = createShadowSquashController(createGitHubShadowTransport({
+    ...baseTransportOptions({}),
+    readStop: () => true,
+    simulateSquash: async () => { simulatedWhileStopped++; return receipt; }
+  }));
+  assert.equal((await dynamicStoppedController.run(intent)).reason, 'STOPPED_OR_UNAUTHORIZED');
+  assert.equal(simulatedWhileStopped, 0);
+
+  const staticStoppedController = createShadowSquashController(createGitHubShadowTransport({
+    ...baseTransportOptions({}),
+    stop: true,
+    readStop: () => false,
+    simulateSquash: async () => { simulatedWhileStopped++; return receipt; }
+  }));
+  assert.equal((await staticStoppedController.run(intent)).reason, 'STOPPED_OR_UNAUTHORIZED');
+  assert.equal(simulatedWhileStopped, 0);
+
+  // 11. Renaming an unowned source file into an owned destination blocks ownership validation
+  const renameController = createShadowSquashController(createGitHubShadowTransport(baseTransportOptions({
+    files: [{filename: 'src/component.mjs', status: 'renamed', previous_filename: 'unowned/secret.mjs'}]
+  })));
+  assert.equal((await renameController.run(intent)).reason, 'PATH_OWNERSHIP_UNKNOWN');
+
+  // 12. Missing explicit gate evidence fails closed instead of synthesizing favorable defaults
+  const baseOpts = baseTransportOptions({});
+  const fullCandidate = await readProtectedSquashCandidate(intent, baseOpts);
+  assert.equal(fullCandidate.shadow, true);
+  assert.equal(fullCandidate.liveMerge, false);
+  for (const [missingField, expectedReason] of [
+    ['remainingCredits', 'BUDGET_OR_CONCURRENCY'],
+    ['providerReady', 'PROVIDER_UNKNOWN'],
+    ['risk', 'RISK_OR_PRIORITY_UNKNOWN'],
+    ['dependencies', 'DEPENDENCIES_BLOCKED'],
+    ['acceptanceComplete', 'ACCEPTANCE_INCOMPLETE']
+  ]) {
+    const partialOpts = {...baseOpts};
+    delete partialOpts[missingField];
+    const candidate = await readProtectedSquashCandidate(intent, partialOpts);
+    assert.equal(guardedSquashEvidence(intent, candidate).reason, expectedReason);
+  }
+  const withoutSecurity = {...baseOpts};
+  delete withoutSecurity.security;
+  assert.equal((await readProtectedSquashCandidate(intent, withoutSecurity)).reason, 'POLICY_UNKNOWN');
+  assert.equal((await readProtectedSquashCandidate(intent, {...baseOpts, readStop: 'invalid'})).reason, 'STOP_UNKNOWN');
+  assert.equal((await readProtectedSquashCandidate(intent, {...baseOpts, request: 'invalid'})).reason, 'READ_FAILED');
 
   // Explicit security alert failure and transport/candidate option validation fail closed
   const explicitSecurityAlert = await readProtectedSquashCandidate(intent, {

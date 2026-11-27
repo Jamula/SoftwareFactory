@@ -13,15 +13,25 @@ export function classifyReviewSummary(reviewId,body){
   const detailsIndex=body.search(/<details>\s*<summary><strong>What changed in this PR<\/strong><\/summary>/);
   const overview=(detailsIndex>=0?body.slice(0,detailsIndex):body).trimStart();
   if(!overview.startsWith('<!-- ccr-overview-v2 -->'))return uncertainSummary();
-  const clearHeading=/^### (?:🟢 )?Approval recommended\s*$/m.test(overview);
+  const clearHeading=/^<!-- ccr-overview-v2 -->\r?\n+### (?:🟢 )?Approval recommended\r?\n/.test(overview);
+  const needsLookHeading=/^### (?:🔵 )?Needs a closer look\s*$/m.test(overview);
   const noOpenIssues=/^\*\*No open issues\*\*(?: 🎉)?\s*$/m.test(overview);
   const changesHeading=/^### (?:🟡 |🔴 )?Changes (?:recommended|requested)\s*$/m.test(overview);
-  const countMatch=/<summary><strong>(\d{1,3}) open issues?<\/strong><\/summary>/.exec(overview);
-  if((clearHeading||noOpenIssues)&&(changesHeading||countMatch!==null))return uncertainSummary();
-  if(clearHeading&&noOpenIssues)return {summaryDisposition:'clear',findings:[]};
-  if(!changesHeading&&countMatch===null)return uncertainSummary();
-  const count=countMatch===null?1:Number(countMatch[1]);
-  if(count<1||count>64)return uncertainSummary();
+  const openMatch=/<summary><strong>(\d{1,3}) open issues?<\/strong><\/summary>/.exec(overview);
+  const missedMatch=/<summary><strong>(\d{1,3}) previously missed issues?<\/strong><\/summary>/.exec(overview);
+  const hasIssueSummary=openMatch!==null||missedMatch!==null;
+  if((clearHeading||noOpenIssues)&&(changesHeading||needsLookHeading||hasIssueSummary))return uncertainSummary();
+  if(clearHeading&&noOpenIssues&&!overview.includes('<details'))return {summaryDisposition:'clear',findings:[]};
+  if(!changesHeading&&!hasIssueSummary)return uncertainSummary();
+  let count=0;
+  for(const match of [openMatch,missedMatch]){
+    if(match===null)continue;
+    const parsed=Number(match[1]);
+    if(parsed<1||parsed>64)return uncertainSummary();
+    count+=parsed;
+  }
+  if(count===0)count=1;
+  if(count>64)return uncertainSummary();
   return {
     summaryDisposition:'actionable',
     findings:Array.from({length:count},(_,index)=>({

@@ -31,28 +31,53 @@ const failed = reason => ({shadow:true,evidenceComplete:false,reason});
 const failedCandidate = (reason, extra = {}) => ({shadow:true,evidenceComplete:false,liveMerge:false,reason,...extra});
 const encodeBranch = branch => branch.split('/').map(encodeURIComponent).join('/');
 
+async function readBoundedBody(response) {
+  if (!response.body) return {ok:false,reason:'READ_FAILED'};
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder('utf-8',{fatal:true});
+  let raw = '', bytes = 0;
+  try {
+    for (;;) {
+      const {done,value} = await reader.read();
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > 524288) return {ok:false,reason:'RESPONSE_LIMIT'};
+      raw += decoder.decode(value,{stream:true});
+    }
+    raw += decoder.decode();
+  } finally {
+    try { await reader.cancel(); } catch {}
+  }
+  return {ok:true,value:JSON.parse(raw),hasNext:response.headers.get('link')?.includes('rel="next"')===true};
+}
+
 async function readJson(url, request) {
   try {
     const response = await request(url, {method:'GET',redirect:'error',signal:AbortSignal.timeout(5000),
       headers:{accept:'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28'}});
     if ([401,403,429].includes(response.status)) return {ok:false,reason:'RATE_OR_PERMISSION_UNKNOWN'};
-    if (!response.ok || !response.body) return {ok:false,reason:'READ_FAILED'};
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder('utf-8',{fatal:true});
-    let raw = '', bytes = 0;
-    try {
-      for (;;) {
-        const {done,value} = await reader.read();
-        if (done) break;
-        bytes += value.byteLength;
-        if (bytes > 524288) return {ok:false,reason:'RESPONSE_LIMIT'};
-        raw += decoder.decode(value,{stream:true});
-      }
-      raw += decoder.decode();
-    } finally {
-      try { await reader.cancel(); } catch {}
+    if (!response.ok) return {ok:false,reason:'READ_FAILED'};
+    return await readBoundedBody(response);
+  } catch {
+    return {ok:false,reason:'READ_FAILED'};
+  }
+}
+
+async function readLegacyProtection(url, request) {
+  try {
+    const response = await request(url, {method:'GET',redirect:'error',signal:AbortSignal.timeout(5000),
+      headers:{accept:'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28'}});
+    if ([401,403,429].includes(response.status)) return {ok:false,reason:'RATE_OR_PERMISSION_UNKNOWN'};
+    if (response.status === 404) {
+      const body = await readBoundedBody(response);
+      if (body.ok && body.value?.message === 'Branch not protected') return {ok:true,present:false,value:null};
+      return {ok:false,reason:body.reason === 'RESPONSE_LIMIT' ? 'RESPONSE_LIMIT' : 'READ_FAILED'};
     }
-    return {ok:true,value:JSON.parse(raw),hasNext:response.headers.get('link')?.includes('rel="next"')===true};
+    if (!response.ok) return {ok:false,reason:'READ_FAILED'};
+    const body = await readBoundedBody(response);
+    if (!body.ok) return body;
+    if (body.hasNext) return {ok:false,reason:'PROTECTIONS_UNVERIFIED'};
+    return {ok:true,present:true,value:body.value};
   } catch {
     return {ok:false,reason:'READ_FAILED'};
   }
@@ -159,7 +184,7 @@ function normalizeCandidatePull(value, number, scope) {
   }
   const sameRepo = value.head?.repo?.id === scope.repositoryId && value.head?.repo?.full_name === scope.repository;
   const baseCompatible = value.mergeable === true &&
-    ['clean','blocked','has_hooks','unstable'].includes(value.mergeable_state);
+    ['clean','has_hooks','unstable'].includes(value.mergeable_state);
   return {
     ok: true,
     pull: {
@@ -178,19 +203,29 @@ function normalizeCandidatePull(value, number, scope) {
 function normalizePullFiles(value, hasNext) {
   if (hasNext || !Array.isArray(value) || value.length === 0 || value.length > 100)
     return {ok:false,reason:'FILES_UNKNOWN'};
-  const seen = new Set(), paths = [];
+  const seenDestinations = new Set(), pathSet = new Set();
   for (const row of value) {
-    if (!row || !text(row.filename, 240) || seen.has(row.filename)) return {ok:false,reason:'FILES_UNKNOWN'};
-    seen.add(row.filename);
-    paths.push(row.filename);
+    if (!row || !text(row.filename, 240) || seenDestinations.has(row.filename))
+      return {ok:false,reason:'FILES_UNKNOWN'};
+    seenDestinations.add(row.filename);
+    const hasPrevious = row.previous_filename !== undefined && row.previous_filename !== null;
+    if (row.status === 'renamed' || hasPrevious) {
+      if (!text(row.previous_filename, 240) || row.previous_filename === row.filename)
+        return {ok:false,reason:'FILES_UNKNOWN'};
+      pathSet.add(row.previous_filename);
+    }
+    pathSet.add(row.filename);
   }
-  return {ok:true,paths};
+  return {ok:true,paths:[...pathSet]};
 }
 
-function normalizeBranchRules(value, hasNext, scope, branchProtected, expectedBase, policyChecks, hostedReviewGate) {
-  if (hasNext || !Array.isArray(value) || value.length === 0 || value.length > 100)
+const securityThresholds = new Set(['critical','high_or_higher','medium_or_higher','all']);
+const alertThresholds = new Set(['errors','errors_and_warnings','all']);
+
+function normalizeBranchRules(value, hasNext, legacy, scope, branchProtected, expectedBase, policyChecks, hostedReviewGate) {
+  if (hasNext || !Array.isArray(value) || value.length > 100 || (value.length === 0 && !legacy.present))
     return {ok:false,reason:'PROTECTIONS_UNVERIFIED'};
-  let nativeQueue = false, hasPullRule = false, maxApprovals = 0, threads = false;
+  let nativeQueue = false, hasPullRule = false, maxApprovals = 0, threads = false, bypass = false;
   let squashOnly = false, squashDisallowed = false, upToDate = false, codeScanning = false;
   const checkMap = new Map();
   for (const rule of value) {
@@ -235,11 +270,51 @@ function normalizeBranchRules(value, hasNext, scope, branchProtected, expectedBa
       const tools = rule.parameters?.code_scanning_tools;
       if (!Array.isArray(tools)) return {ok:false,reason:'PROTECTIONS_UNVERIFIED'};
       if (tools.some(t => t?.tool === 'CodeQL' &&
-          t.security_alerts_threshold !== 'none' && t.alerts_threshold !== 'none')) {
+          securityThresholds.has(t.security_alerts_threshold) && alertThresholds.has(t.alerts_threshold))) {
         codeScanning = true;
       }
     }
   }
+
+  let hasLegacyReview = false;
+  if (legacy.present) {
+    const lp = legacy.value;
+    if (!lp || typeof lp !== 'object' || typeof lp.enforce_admins?.enabled !== 'boolean' ||
+        lp.allow_force_pushes?.enabled === true || lp.allow_deletions?.enabled === true) {
+      return {ok:false,reason:'PROTECTIONS_UNVERIFIED'};
+    }
+    if (!hasPullRule && lp.enforce_admins.enabled !== true) bypass = true;
+    const lsc = lp.required_status_checks;
+    if (lsc !== null && lsc !== undefined) {
+      if (typeof lsc !== 'object' || !Array.isArray(lsc.checks) ||
+          (Array.isArray(lsc.contexts) && lsc.contexts.length > lsc.checks.length)) {
+        return {ok:false,reason:'PROTECTIONS_UNVERIFIED'};
+      }
+      if (lsc.strict === true) upToDate = true;
+      for (const sc of lsc.checks) {
+        if (!sc || !text(sc.context, 100) || !positive(sc.app_id))
+          return {ok:false,reason:'PROTECTIONS_UNVERIFIED'};
+        const prior = checkMap.get(sc.context);
+        if (prior !== undefined && prior !== sc.app_id)
+          return {ok:false,reason:'PROTECTIONS_UNVERIFIED'};
+        checkMap.set(sc.context, sc.app_id);
+      }
+    }
+    const lpr = lp.required_pull_request_reviews;
+    if (lpr !== null && lpr !== undefined) {
+      if (typeof lpr !== 'object' ||
+          !Number.isSafeInteger(lpr.required_approving_review_count) ||
+          lpr.required_approving_review_count < 0) {
+        return {ok:false,reason:'PROTECTIONS_UNVERIFIED'};
+      }
+      hasLegacyReview = true;
+      if (lpr.required_approving_review_count > maxApprovals) {
+        maxApprovals = lpr.required_approving_review_count;
+      }
+    }
+    if (lp.required_conversation_resolution?.enabled === true) threads = true;
+  }
+
   if (codeScanning && !checkMap.has('CodeQL')) {
     const pinned = policyChecks.find(c => c.name === 'CodeQL');
     if (pinned) checkMap.set('CodeQL', pinned.appId);
@@ -253,9 +328,9 @@ function normalizeBranchRules(value, hasNext, scope, branchProtected, expectedBa
       repositoryId: scope.repositoryId,
       branch: scope.branch,
       base: expectedBase,
-      verified: hasPullRule && checkMap.size > 0,
+      verified: (hasPullRule || hasLegacyReview) && checkMap.size > 0,
       protected: branchProtected === true,
-      bypass: false,
+      bypass,
       method: squashOnly && !squashDisallowed ? 'squash' : 'other',
       upToDate,
       review: maxApprovals >= 1,
@@ -336,15 +411,16 @@ export async function readCandidatePullMetadata(intent, {
     return failedCandidate('SCOPE_OR_HEAD_CHANGED', {...binding, head: initial.pull.head, base: initial.pull.base});
   }
 
-  const [branchRes, rulesRes, filesRes, reviewsRes, headChecksRes, baseChecksRes] = await Promise.all([
+  const [branchRes, rulesRes, legacyRes, filesRes, reviewsRes, headChecksRes, baseChecksRes] = await Promise.all([
     readJson(`${root}/branches/${encodedBranch}`, request),
     readJson(`${root}/rules/branches/${encodedBranch}`, request),
+    readLegacyProtection(`${root}/branches/${encodedBranch}/protection`, request),
     readJson(`${root}/pulls/${intent.number}/files?per_page=100&page=1`, request),
     readJson(`${root}/pulls/${intent.number}/reviews?per_page=100&page=1`, request),
     readJson(`${root}/commits/${intent.expectedHead}/check-runs?per_page=100&page=1`, request),
     readJson(`${root}/commits/${intent.expectedBase}/check-runs?per_page=100&page=1`, request)
   ]);
-  for (const res of [branchRes, rulesRes, filesRes, reviewsRes, headChecksRes, baseChecksRes]) {
+  for (const res of [branchRes, rulesRes, legacyRes, filesRes, reviewsRes, headChecksRes, baseChecksRes]) {
     if (!res.ok) return failedCandidate(res.reason, {...binding, head: intent.expectedHead, base: intent.expectedBase});
   }
   const branchData = branchRes.value;
@@ -355,7 +431,7 @@ export async function readCandidatePullMetadata(intent, {
     return failedCandidate('SCOPE_OR_HEAD_CHANGED',
       {...binding, head: intent.expectedHead, base: branchData.commit.sha});
   }
-  const rules = normalizeBranchRules(rulesRes.value, rulesRes.hasNext, scope, branchData.protected,
+  const rules = normalizeBranchRules(rulesRes.value, rulesRes.hasNext, legacyRes, scope, branchData.protected,
     intent.expectedBase, policyChecks, hostedReviewGate);
   if (!rules.ok) return failedCandidate(rules.reason, {...binding, head: intent.expectedHead, base: intent.expectedBase});
   const files = normalizePullFiles(filesRes.value, filesRes.hasNext);
@@ -420,18 +496,16 @@ export async function readBranchHealth(scope = defaultScope, requiredChecks = []
   if (firstBranch.value?.name !== scope.branch || typeof firstBranch.value?.protected !== 'boolean' || !sha(head)) {
     return {shadow:true,liveMerge:false,healthy:false,reason:'BRANCH_UNKNOWN'};
   }
-  const [checksRes, secondBranch] = await Promise.all([
-    readJson(`${root}/commits/${head}/check-runs?per_page=100&page=1`, request),
-    readJson(branchUrl, request)
-  ]);
+  const checksRes = await readJson(`${root}/commits/${head}/check-runs?per_page=100&page=1`, request);
   if (!checksRes.ok) return {shadow:true,liveMerge:false,healthy:false,reason:checksRes.reason};
+  const normalized = normalizeChecks(checksRes.value, checksRes.hasNext, head);
+  if (!normalized.ok) return {shadow:true,liveMerge:false,healthy:false,reason:normalized.reason};
+  const secondBranch = await readJson(branchUrl, request);
   if (!secondBranch.ok) return {shadow:true,liveMerge:false,healthy:false,reason:secondBranch.reason};
   if (secondBranch.value?.name !== scope.branch || secondBranch.value?.protected !== firstBranch.value.protected ||
       secondBranch.value?.commit?.sha !== head) {
     return {shadow:true,liveMerge:false,healthy:false,reason:'BRANCH_CHANGED'};
   }
-  const normalized = normalizeChecks(checksRes.value, checksRes.hasNext, head);
-  if (!normalized.ok) return {shadow:true,liveMerge:false,healthy:false,reason:normalized.reason};
   const allChecksGreen = requiredChecks.every(req => {
     const matches = normalized.checks.filter(c => c.name === req.name);
     return matches.length === 1 && matches[0].appId === req.appId &&

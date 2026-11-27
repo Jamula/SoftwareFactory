@@ -109,17 +109,53 @@ test('builds candidate review evidence enforcing independence, pending blocks an
  assert.equal(withActionableInline.independentFavorable,false);
  assert.equal(withActionableInline.platformReview.summaryDisposition,'actionable');
 
+ for(const copilotLogin of [bot,'copilot-pull-request-reviewer']){
+  const consumerWithSummary=buildCandidateReviewEvidence(head,[
+   {sequence:1,reviewer:copilotLogin,head,state:'COMMENTED',summaryDisposition:'actionable',
+    summaryFindings:[{id:'summary-99-1',state:'actionable',source:'summary'}]},
+   r(2,'APPROVED',head,'reviewer')
+  ],{...baseOpts,repository:'Jamula/Spellbook'});
+  assert.equal(consumerWithSummary.ok,true);
+  assert.equal(consumerWithSummary.independentFavorable,false);
+  assert.equal(consumerWithSummary.platformReview.summaryDisposition,'actionable');
+  assert.deepEqual(consumerWithSummary.batch.repairIds,['summary-99-1']);
+ }
+
+ const consumerUncertainCopilot=buildCandidateReviewEvidence(head,[
+  {sequence:1,reviewer:bot,head,state:'COMMENTED',summaryDisposition:'uncertain',summaryFindings:[]},
+  r(2,'APPROVED',head,'reviewer')
+ ],{...baseOpts,repository:'Jamula/Spellbook'});
+ assert.equal(consumerUncertainCopilot.independentFavorable,false);
+ assert.equal(consumerUncertainCopilot.platformReview.summaryDisposition,'uncertain');
+
+ const consumerClearCopilot=buildCandidateReviewEvidence(head,[
+  {sequence:1,reviewer:bot,head,state:'COMMENTED',summaryDisposition:'clear',summaryFindings:[]},
+  {sequence:2,reviewer:bot,head:stale,state:'COMMENTED',summaryDisposition:'clear'},
+  {sequence:3,reviewer:'copilot-pull-request-reviewer',head,state:'COMMENTED',summaryDisposition:'clear',summaryFindings:[]},
+  {sequence:4,reviewer:'copilot-pull-request-reviewer',head,state:'APPROVED'},
+  r(5,'APPROVED',head,'reviewer')
+ ],{...baseOpts,repository:'Jamula/Spellbook'});
+ assert.equal(consumerClearCopilot.independentFavorable,true);
+
  assert.equal(buildCandidateReviewEvidence(head,[{...r(1,'APPROVED'),state:'PENDING'}],baseOpts).reason,'REVIEW_PENDING');
 
+ const inheritedRepo=Object.assign(Object.create({repository:'Jamula/Spellbook'}),baseOpts);
+ const getterInline={...baseOpts};
+ Object.defineProperty(getterInline,'inlineFindings',{get(){throw Error('getter');}});
+ const badDispEntry={...r(1,'APPROVED'),summaryDisposition:'untrusted-payload'};
  for(const [h,hist,opts] of [
   ['bad',[],baseOpts],
   [head,null,baseOpts],
   [head,[],null],
+  [head,[],inheritedRepo],
+  [head,[],getterInline],
+  [head,[badDispEntry],baseOpts],
   [head,[],{...baseOpts,reviewers:[]}],
   [head,[],{...baseOpts,repository:''}],
   [head,[],{...baseOpts,inlineFindings:[{id:'x',state:'actionable',source:'summary'}]}],
   [head,[null],baseOpts],
   [head,[{sequence:1,reviewer:bot,head,state:'COMMENTED',summaryFindings:[{id:'x',state:'actionable',source:'inline'}]}],baseOpts],
+  [head,[{sequence:NaN,reviewer:bot,head,state:'COMMENTED'}],{...baseOpts,repository:'Jamula/Spellbook'}],
   [head,[r(2,'APPROVED'),r(1,'APPROVED')],baseOpts],
   [head,[{sequence:1,reviewer:bot,head,state:'COMMENTED',summaryDisposition:'actionable',
    summaryFindings:Array.from({length:10},(_,i)=>({id:`s-${i}`,state:'actionable',source:'summary'}))}
