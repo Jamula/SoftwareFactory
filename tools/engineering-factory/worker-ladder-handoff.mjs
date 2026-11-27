@@ -66,6 +66,7 @@ const TOP_LEVEL_KEYS = new Set([
   'blindRetryRequested',
   'nowMs',
   'primaryProvider',
+  'peerProviders',
   'ladder',
   'activePeerLeases',
   'lease',
@@ -567,9 +568,8 @@ const EMPTY_PROVIDER_PEER_BUCKET = Object.freeze({
   missingDailyCommitments: false
 });
 
-function computeProviderCapacity(providerEval, repoConcurrencyCap, peerStats) {
-  const {accounting, ghAwCaps, verifiedProviderWorkerCeiling, providerKey} = providerEval;
-  const provPeers = peerStats.byProviderKey.get(providerKey) ?? EMPTY_PROVIDER_PEER_BUCKET;
+function evaluateProviderBucket(providerEval, provPeers) {
+  const {accounting, ghAwCaps, verifiedProviderWorkerCeiling} = providerEval;
   const netDeducted = accounting.netOfReservationsVerified === true;
   const dailyIncludes = accounting.dailyUsageIncludesReservations === true;
   const hasProvPeers = provPeers.activeCount > 0;
@@ -580,15 +580,11 @@ function computeProviderCapacity(providerEval, repoConcurrencyCap, peerStats) {
       (ghAwCaps !== null && !dailyIncludes && provPeers.missingDailyCommitments)) {
     return {error: blockedResult('BUDGET_UNKNOWN', 'PEER_RESERVATION_COMMITMENTS_UNKNOWN')};
   }
-
-  if (provPeers.activeCount > verifiedProviderWorkerCeiling ||
-      peerStats.activeCount > repoConcurrencyCap) {
+  if (provPeers.activeCount > verifiedProviderWorkerCeiling) {
     return {error: blockedResult('BUDGET_OR_CONCURRENCY', 'ACTIVE_PEERS_EXCEED_VERIFIED_CEILING')};
   }
 
   const providerSlotsLeft = verifiedProviderWorkerCeiling - provPeers.activeCount;
-  const repoSlotsLeft = repoConcurrencyCap - peerStats.activeCount;
-  const structuralCeiling = Math.min(repoConcurrencyCap, peerStats.activeCount + providerSlotsLeft);
   const reservedUnits = netDeducted ? 0 : provPeers.committedUnits;
   const reservedRequests = netDeducted ? 0 : provPeers.committedRequests;
   const dailyUsed = ghAwCaps !== null
@@ -599,15 +595,7 @@ function computeProviderCapacity(providerEval, repoConcurrencyCap, peerStats) {
     (ghAwCaps !== null && dailyUsed > ghAwCaps.maxDailyUnits);
 
   if (overdrawn) {
-    return {
-      error: null,
-      structuralCeiling,
-      providerSlotsLeft: 0,
-      repoSlotsLeft,
-      fundedAdditionalSlots: 0,
-      verifiedCapacityCeiling: 0,
-      maxFundedRung: 0
-    };
+    return {error: null, overdrawn: true, providerSlotsLeft: 0, fundedAdditionalSlots: 0};
   }
 
   const effectiveUnits = accounting.remainingIncludedUnits - reservedUnits;
@@ -620,16 +608,65 @@ function computeProviderCapacity(providerEval, repoConcurrencyCap, peerStats) {
   const fundedAdditionalSlots = accounting.requestsPerWorkerRun === 0
     ? unitSlots
     : Math.min(unitSlots, Math.floor(effectiveRequests / accounting.requestsPerWorkerRun));
-  const additionalCapacity = Math.min(providerSlotsLeft, repoSlotsLeft, fundedAdditionalSlots);
-  const verifiedCapacityCeiling = peerStats.activeCount + additionalCapacity;
+
+  return {error: null, overdrawn: false, providerSlotsLeft, fundedAdditionalSlots};
+}
+
+function computeProviderCapacity(providerEval, repoConcurrencyCap, peerStats, verifiedProvidersMap) {
+  if (peerStats.activeCount > repoConcurrencyCap) {
+    return {error: blockedResult('BUDGET_OR_CONCURRENCY', 'ACTIVE_PEERS_EXCEED_VERIFIED_CEILING')};
+  }
+  const selfPeers = peerStats.byProviderKey.get(providerEval.providerKey) ?? EMPTY_PROVIDER_PEER_BUCKET;
+  const selfBucket = evaluateProviderBucket(providerEval, selfPeers);
+  if (selfBucket.error) return selfBucket;
+
+  let verifiedFundedPeers = selfBucket.overdrawn ? 0 : selfPeers.activeCount;
+  for (const [bucketKey, bucket] of peerStats.byProviderKey.entries()) {
+    if (bucketKey === providerEval.providerKey) continue;
+    const otherProv = verifiedProvidersMap.get(bucketKey);
+    if (!otherProv) {
+      return {error: blockedResult('CAPACITY_UNVERIFIED', 'UNVERIFIED_PEER_PROVIDER_BUCKET')};
+    }
+    const otherBucket = evaluateProviderBucket(otherProv, bucket);
+    if (otherBucket.error) return otherBucket;
+    if (otherBucket.overdrawn) {
+      return {error: blockedResult('CAPACITY_EXHAUSTED', 'PEER_PROVIDER_QUOTA_OVERDRAWN')};
+    }
+    verifiedFundedPeers += bucket.activeCount;
+  }
+
+  const repoSlotsLeft = repoConcurrencyCap - peerStats.activeCount;
+  const structuralCeiling = Math.min(
+    repoConcurrencyCap,
+    verifiedFundedPeers + selfBucket.providerSlotsLeft
+  );
+
+  if (selfBucket.overdrawn) {
+    return {
+      error: null,
+      structuralCeiling,
+      providerSlotsLeft: 0,
+      repoSlotsLeft,
+      fundedAdditionalSlots: 0,
+      verifiedCapacityCeiling: 0,
+      maxFundedRung: 0
+    };
+  }
+
+  const additionalCapacity = Math.min(
+    selfBucket.providerSlotsLeft,
+    repoSlotsLeft,
+    selfBucket.fundedAdditionalSlots
+  );
+  const verifiedCapacityCeiling = verifiedFundedPeers + additionalCapacity;
   const maxFundedRung = highestLadderRung(verifiedCapacityCeiling);
 
   return {
     error: null,
     structuralCeiling,
-    providerSlotsLeft,
+    providerSlotsLeft: selfBucket.providerSlotsLeft,
     repoSlotsLeft,
-    fundedAdditionalSlots,
+    fundedAdditionalSlots: selfBucket.fundedAdditionalSlots,
     verifiedCapacityCeiling,
     maxFundedRung
   };
@@ -1081,6 +1118,27 @@ export function evaluateWorkerLadderAndQuotaHandoff(input) {
   );
   if (primaryEval.error) return primaryEval.error;
 
+  const verifiedProvidersMap = new Map([[primaryEval.providerKey, primaryEval]]);
+  if (Object.hasOwn(input, 'peerProviders')) {
+    if (!denseArray(input.peerProviders, 16)) {
+      return blockedResult('EVIDENCE_UNKNOWN', 'PEER_PROVIDERS_INVALID');
+    }
+    for (let i = 0; i < input.peerProviders.length; i++) {
+      const peerProvEval = evaluateProviderContract(
+        input.peerProviders[i],
+        input.repositoryId,
+        input.repositoryVisibility,
+        input.nowMs,
+        'PEER'
+      );
+      if (peerProvEval.error) return peerProvEval.error;
+      if (verifiedProvidersMap.has(peerProvEval.providerKey)) {
+        return blockedResult('EVIDENCE_UNKNOWN', 'DUPLICATE_PROVIDER_BUCKET');
+      }
+      verifiedProvidersMap.set(peerProvEval.providerKey, peerProvEval);
+    }
+  }
+
   const ladderEval = evaluateLadderEvidence(input.ladder, hasLease);
   if (ladderEval.error) return ladderEval.error;
 
@@ -1110,8 +1168,22 @@ export function evaluateWorkerLadderAndQuotaHandoff(input) {
     if (checkpointEval.error) return checkpointEval.error;
   }
 
-  const primaryCap = computeProviderCapacity(primaryEval, ladderEval.repoConcurrencyCap, peerStats);
-  if (primaryCap.error) return primaryCap.error;
+  const primaryCap = computeProviderCapacity(
+    primaryEval,
+    ladderEval.repoConcurrencyCap,
+    peerStats,
+    verifiedProvidersMap
+  );
+  if (primaryCap.error) {
+    if (hasCheckpoint) {
+      return blockedResult(primaryCap.error.reason, primaryCap.error.decisionCode, 0, {
+        handoffState: 'QUOTA_EXHAUSTED_CHECKPOINT_PAUSED',
+        preservedLease: leaseEval.buildPreserved('checkpoint-paused', false),
+        checkpointReceipt: checkpointEval.receipt
+      });
+    }
+    return primaryCap.error;
+  }
 
   const observedForCap = cap =>
     Math.min(ladderEval.observedSimultaneousWorkers, cap.verifiedCapacityCeiling);
@@ -1276,7 +1348,14 @@ export function evaluateWorkerLadderAndQuotaHandoff(input) {
         checkpointReceipt: cpReceipt
       });
     }
-    const targetCap = computeProviderCapacity(targetEval, ladderEval.repoConcurrencyCap, peerStats);
+    const handoffProvidersMap = new Map(verifiedProvidersMap);
+    handoffProvidersMap.set(targetEval.providerKey, targetEval);
+    const targetCap = computeProviderCapacity(
+      targetEval,
+      ladderEval.repoConcurrencyCap,
+      peerStats,
+      handoffProvidersMap
+    );
     if (targetCap.error) {
       return blockedResult(targetCap.error.reason, targetCap.error.decisionCode, 0, {
         handoffState: 'QUOTA_EXHAUSTED_CHECKPOINT_PAUSED',

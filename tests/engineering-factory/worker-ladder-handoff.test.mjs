@@ -1298,7 +1298,30 @@ test('validates 4-part provider capabilities, peer leases, protected control-pla
   }));
   assert.equal(netOnlyMissingDailyRes.decisionCode, 'PEER_RESERVATION_COMMITMENTS_UNKNOWN');
 
-  // Target provider missing peer commitments during handoff stays paused cleanly
+  // Target provider missing peer commitments during handoff: when secondary-pool is supplied in peerProviders, fails closed with PEER_RESERVATION_COMMITMENTS_UNKNOWN; when omitted, fails closed with UNVERIFIED_PEER_PROVIDER_BUCKET
+  const unverifiedBucketPause = evaluateWorkerLadderAndQuotaHandoff(makeFixture({
+    primaryProvider: makeProvider({
+      billingEntitlement: {
+        ...validBilling,
+        accounting: {
+          ...validAcct,
+          netOfReservationsVerified: true,
+          dailyUsageIncludesReservations: true,
+          remainingIncludedUnits: 10
+        }
+      }
+    }),
+    activePeerLeases: [{...peerNoCommitments, entitlementId: 'secondary-pool'}],
+    lease: makeLease(),
+    checkpoint: makeCheckpoint(),
+    handoff: {
+      mode: 'provider-handoff',
+      attempt: 1,
+      targetProvider: makeProvider({entitlementId: 'secondary-pool'})
+    }
+  }));
+  assert.equal(unverifiedBucketPause.decisionCode, 'UNVERIFIED_PEER_PROVIDER_BUCKET');
+
   const targetMissingPeerCommit = evaluateWorkerLadderAndQuotaHandoff(makeFixture({
     primaryProvider: makeProvider({
       billingEntitlement: {
@@ -1311,6 +1334,7 @@ test('validates 4-part provider capabilities, peer leases, protected control-pla
         }
       }
     }),
+    peerProviders: [makeProvider({entitlementId: 'secondary-pool'})],
     activePeerLeases: [{...peerNoCommitments, entitlementId: 'secondary-pool'}],
     lease: makeLease(),
     checkpoint: makeCheckpoint(),
@@ -1616,9 +1640,11 @@ test('enforces active-peer rung bounds, overdrawn/under-reserved peer quotas, un
   assert.equal(concurrencyNotQuota.admitted, false);
   assert.equal(concurrencyNotQuota.decisionCode, 'PRIMARY_QUOTA_NOT_EXHAUSTED');
 
-  // Provider-handoff when primary IS quota-exhausted, but target rung is already full from activePeerLeases
+  // Provider-handoff when primary IS quota-exhausted (60 gross - 50 peer = 10 left < 50), but target rung is already full from activePeerLeases
+  const exhaustedAfterOnePeer = makeExhaustedPrimaryProvider();
+  exhaustedAfterOnePeer.billingEntitlement.accounting.remainingIncludedUnits = 60;
   const handoffRungFull = evaluateWorkerLadderAndQuotaHandoff(makeFixture({
-    primaryProvider: makeExhaustedPrimaryProvider(),
+    primaryProvider: exhaustedAfterOnePeer,
     ladder: makeLadder({currentRung: 2, verifiedPriorRung: 1, requestedRung: 1, observedSimultaneousWorkers: 2}),
     activePeerLeases: makePeers(1),
     lease,
@@ -1841,8 +1867,21 @@ test('enforces active-peer rung bounds, overdrawn/under-reserved peer quotas, un
       }
     }
   });
+  const primaryFundedOnePeerExhaustedForNext = (() => {
+    const p = makeProvider({entitlementId: 'copilot-org'});
+    p.billingEntitlement.accounting.remainingIncludedUnits = 70;
+    p.billingEntitlement.accounting.unitsPerWorkerRun = 50;
+    return p;
+  })();
+  const codexDefaultPeerProvider = makeProvider({
+    providerFamily: 'openai-codex',
+    verifiedProviderWorkerCeiling: 4,
+    model: {id: 'gpt-5.4-codex', allowlist: ['gpt-5.4-codex'], verifiedAvailable: true},
+    harness: {kind: 'openai-codex-action', verified: true, externalTracingDisabled: true}
+  });
   const crossProviderHandoff = evaluateWorkerLadderAndQuotaHandoff(makeFixture({
-    primaryProvider: {...makeExhaustedPrimaryProvider(), entitlementId: 'copilot-org'},
+    primaryProvider: primaryFundedOnePeerExhaustedForNext,
+    peerProviders: [codexDefaultPeerProvider],
     ladder: makeLadder({currentRung: 2, verifiedPriorRung: 1, requestedRung: 2, observedSimultaneousWorkers: 2}),
     activePeerLeases: [
       copilot60Peer,
@@ -1866,7 +1905,7 @@ test('enforces active-peer rung bounds, overdrawn/under-reserved peer quotas, un
   assert.equal(crossProviderHandoff.decisionCode, 'WORKER_RUNG_CONCURRENCY_FULL');
 
   const crossProviderHandoffOk = evaluateWorkerLadderAndQuotaHandoff(makeFixture({
-    primaryProvider: {...makeExhaustedPrimaryProvider(), entitlementId: 'copilot-org'},
+    primaryProvider: primaryFundedOnePeerExhaustedForNext,
     ladder: makeLadder({currentRung: 2, verifiedPriorRung: 1, requestedRung: 2, observedSimultaneousWorkers: 2}),
     activePeerLeases: [copilot60Peer],
     lease,
@@ -1920,9 +1959,50 @@ test('enforces active-peer rung bounds, overdrawn/under-reserved peer quotas, un
   }));
   assert.equal(zeroReqPausedCheck.decisionCode, 'PRIMARY_QUOTA_NOT_EXHAUSTED');
 
-  // Mixed-provider steady-state scaling: 2 active Codex peers + Copilot ceiling 2 + repo cap 12 supports targetRung 4
+  // Mixed-provider steady-state scaling: without verified peerProviders for Codex, fails closed (UNVERIFIED_PEER_PROVIDER_BUCKET);
+  // with verified peerProviders, 2 active Codex peers + Copilot ceiling 2 + repo cap 12 supports targetRung 4
+  const codexPeers = [
+    {
+      leaseId: 'codex-p1',
+      providerFamily: 'openai-codex',
+      issue: 801,
+      lane: 'codex-l1',
+      ownedPaths: ['src/c1.mjs'],
+      leaseGeneration: 1,
+      expiresAtMs: NOW_MS + 60_000,
+      reservedUnits: 50,
+      reservedRequests: 2
+    },
+    {
+      leaseId: 'codex-p2',
+      providerFamily: 'openai-codex',
+      issue: 802,
+      lane: 'codex-l2',
+      ownedPaths: ['src/c2.mjs'],
+      leaseGeneration: 1,
+      expiresAtMs: NOW_MS + 60_000,
+      reservedUnits: 50,
+      reservedRequests: 2
+    }
+  ];
+  const unverifiedMixedPeers = evaluateWorkerLadderAndQuotaHandoff(makeFixture({
+    primaryProvider: makeProvider({verifiedProviderWorkerCeiling: 1}),
+    ladder: makeLadder({
+      currentRung: 1,
+      verifiedPriorRung: 0,
+      requestedRung: 2,
+      repoConcurrencyCap: 12,
+      observedSimultaneousWorkers: 1
+    }),
+    activePeerLeases: [codexPeers[0]]
+  }));
+  assert.equal(unverifiedMixedPeers.admitted, false);
+  assert.equal(unverifiedMixedPeers.reason, 'CAPACITY_UNVERIFIED');
+  assert.equal(unverifiedMixedPeers.decisionCode, 'UNVERIFIED_PEER_PROVIDER_BUCKET');
+
   const mixedPeersScale = evaluateWorkerLadderAndQuotaHandoff(makeFixture({
     primaryProvider: makeProvider({verifiedProviderWorkerCeiling: 2}),
+    peerProviders: [codexDefaultPeerProvider],
     ladder: makeLadder({
       currentRung: 2,
       verifiedPriorRung: 1,
@@ -1930,36 +2010,49 @@ test('enforces active-peer rung bounds, overdrawn/under-reserved peer quotas, un
       repoConcurrencyCap: 12,
       observedSimultaneousWorkers: 2
     }),
-    activePeerLeases: [
-      {
-        leaseId: 'codex-p1',
-        providerFamily: 'openai-codex',
-        issue: 801,
-        lane: 'codex-l1',
-        ownedPaths: ['src/c1.mjs'],
-        leaseGeneration: 1,
-        expiresAtMs: NOW_MS + 60_000,
-        reservedUnits: 10,
-        reservedRequests: 1
-      },
-      {
-        leaseId: 'codex-p2',
-        providerFamily: 'openai-codex',
-        issue: 802,
-        lane: 'codex-l2',
-        ownedPaths: ['src/c2.mjs'],
-        leaseGeneration: 1,
-        expiresAtMs: NOW_MS + 60_000,
-        reservedUnits: 10,
-        reservedRequests: 1
-      }
-    ]
+    activePeerLeases: codexPeers
   }));
   assert.equal(mixedPeersScale.admitted, true);
   assert.equal(mixedPeersScale.decisionCode, 'WORKER_LADDER_SCALE_RECOMMENDED');
   assert.equal(mixedPeersScale.verifiedCapacityCeiling, 4);
   assert.equal(mixedPeersScale.maxFundedRung, 4);
   assert.equal(mixedPeersScale.actualMaxWorkers, 2);
+
+  // Invalid, unauthorized, duplicate, or overdrawn peerProviders fail closed
+  assert.equal(
+    evaluateWorkerLadderAndQuotaHandoff(makeFixture({peerProviders: 'bad'})).decisionCode,
+    'PEER_PROVIDERS_INVALID'
+  );
+  assert.equal(
+    evaluateWorkerLadderAndQuotaHandoff(makeFixture({
+      peerProviders: [makeProvider({ownerAuthorized: false})]
+    })).decisionCode,
+    'PEER_PROVIDER_UNAUTHORIZED'
+  );
+  assert.equal(
+    evaluateWorkerLadderAndQuotaHandoff(makeFixture({
+      peerProviders: [makeProvider()]
+    })).decisionCode,
+    'DUPLICATE_PROVIDER_BUCKET'
+  );
+  const overdrawnCodexProvider = {...codexDefaultPeerProvider, billingEntitlement: {
+    ...codexDefaultPeerProvider.billingEntitlement,
+    accounting: {...codexDefaultPeerProvider.billingEntitlement.accounting, remainingIncludedUnits: 10}
+  }};
+  assert.equal(
+    evaluateWorkerLadderAndQuotaHandoff(makeFixture({
+      peerProviders: [overdrawnCodexProvider],
+      activePeerLeases: [codexPeers[0]]
+    })).decisionCode,
+    'PEER_PROVIDER_QUOTA_OVERDRAWN'
+  );
+  assert.equal(
+    evaluateWorkerLadderAndQuotaHandoff(makeFixture({
+      ladder: makeLadder({repoConcurrencyCap: 1}),
+      activePeerLeases: makePeers(2)
+    })).decisionCode,
+    'ACTIVE_PEERS_EXCEED_VERIFIED_CEILING'
+  );
 
   // Same-entitlement targetProvider on provider-handoff is rejected (must use quota-refresh)
   const sameEntitlementHandoff = evaluateWorkerLadderAndQuotaHandoff(makeFixture({
