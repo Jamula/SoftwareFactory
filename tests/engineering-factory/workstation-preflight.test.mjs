@@ -764,7 +764,11 @@ test('rejects and strips private workstation identifiers, tokens, MACs, and non-
     { diagnosticNotes: ['addr:2001:db8::1'] },
     { diagnosticNotes: ['2001:db8::1: connection refused'] },
     { diagnosticNotes: ['Profile: C:\\Users\\Jane Doe 192.168.1.50'] },
-    { diagnosticNotes: ['Dashboard https://synthetic-workstation.local:18888 observed'] }
+    { diagnosticNotes: ['Dashboard https://synthetic-workstation.local:18888 observed'] },
+    {
+      privacyMode: 'strip',
+      diagnosticNotes: ['https://synthetic-user@synthetic-workstation.local:18888']
+    }
   ]) {
     const res = evaluateWorkstationCompatibilityPreflight(buildValidObservation(badIpScenario));
     assert.equal(res.compatible, false);
@@ -822,9 +826,9 @@ test('rejects and strips private workstation identifiers, tokens, MACs, and non-
     '<redacted-home>'
   );
   const apostropheAndEscaped = stripPrivateWorkstationIdentifiers(
-    'escaped=C:\\\\Users\\\\Jane Doe\\\\certs\\\\a.pem apos=C:\\Users\\O\'Connor\\certs\\a.pem mac=/Users/O\'Connor/certs/a.pem json={"x-api-key":"SyntheticCanary\\\\suffix"} q=https://localhost:18888/login?t="QuotedTok" url=https://synthetic-workstation.local:18888'
+    'escaped=C:\\\\Users\\\\Jane Doe\\\\certs\\\\a.pem apos=C:\\Users\\O\'Connor\\certs\\a.pem mac=/Users/O\'Connor/certs/a.pem json={"x-api-key":"SyntheticCanary\\\\suffix"} q=https://localhost:18888/login?t="QuotedTok" url=https://synthetic-user@synthetic-workstation.local:18888'
   );
-  for (const leaked of ['Jane', 'Doe', 'Connor', 'SyntheticCanary', 'suffix', 'QuotedTok', 'synthetic-workstation']) {
+  for (const leaked of ['Jane', 'Doe', 'Connor', 'SyntheticCanary', 'suffix', 'QuotedTok', 'synthetic-user', 'synthetic-workstation']) {
     assert.equal(apostropheAndEscaped.sanitizedText.includes(leaked), false);
   }
   assert.equal(stripPrivateWorkstationIdentifiers(null), null);

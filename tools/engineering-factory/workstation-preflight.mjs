@@ -219,7 +219,8 @@ const DARWIN_USER_TMP_RE =
   /(?<![A-Za-z0-9_.-])(?:\/private)?\/var\/folders\/[^/\s"':]{1,64}\/[^/\s"':]{1,128}/g;
 
 const URL_USERINFO_RE = /(https?:\/\/)([^\s/?#@]{1,128}@)/gi;
-const URL_HOST_AUTHORITY_RE = /\b(https?:\/\/)(\[[^\]]{1,64}\]|[^[\s/?#:@"']{1,255})/gi;
+const URL_HOST_AUTHORITY_RE =
+  /\b(https?:\/\/(?:[^\s/?#@]{1,128}@)?)(\[[^\]]{1,64}\]|[^[\s/?#:@"']{1,255})/gi;
 const EMAIL_CANDIDATE_RE = /\b[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+\b/g;
 const IDENTITY_ASSIGNMENT_RE =
   /(?<![A-Za-z0-9_.-])(user(?:name)?|logname|login|hostname|computer[-_]?name|userdomain|machine[-_]?name|machine[-_]?id|serial[-_]?number|userprofile|home(?:dir|directory|path)?)(?:\\?["'])?\s*[:=]\s*(?:\\?"(?:\\.|[^"\\\r\n]){1,128}\\?"|\\?'(?:\\.|[^'\\\r\n]){1,128}\\?'|[^\s"',;}\]]{1,128})/gi;
@@ -510,19 +511,18 @@ export function stripPrivateWorkstationIdentifiers(rawText) {
     return '[REDACTED_IP]';
   });
 
-  text = text.replace(URL_HOST_AUTHORITY_RE, (full, scheme, host) => {
+  text = text.replace(URL_HOST_AUTHORITY_RE, (full, prefix, host) => {
     const lowerHost = host.toLowerCase();
     if (
       lowerHost === 'localhost' ||
       lowerHost === '127.0.0.1' ||
       lowerHost === '[::1]' ||
-      lowerHost === '[redacted_ip]' ||
-      lowerHost === '[redacted_user]'
+      lowerHost === '[redacted_ip]'
     ) {
       return full;
     }
     stripped.add('non-loopback-ip');
-    return `${scheme}[REDACTED_HOST]`;
+    return `${prefix}[REDACTED_HOST]`;
   });
 
   replaceTracking(WSL_HOME_SUBDIR_RE, '<redacted-home>', 'home-directory');
