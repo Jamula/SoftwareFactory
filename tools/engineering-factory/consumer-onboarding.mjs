@@ -35,13 +35,18 @@ export const CONSUMER_COMPONENT_CATALOG = Object.freeze([
   })
 ]);
 
+const ownData = (obj, key) => {
+  const desc = Object.getOwnPropertyDescriptor(obj, key);
+  return Boolean(desc && desc.enumerable && 'value' in desc);
+};
+
 const exact = (value, keys) =>
   value !== null &&
   typeof value === 'object' &&
   !types.isProxy(value) &&
   Object.getPrototypeOf(value) === Object.prototype &&
   Reflect.ownKeys(value).length === keys.length &&
-  keys.every(key => Object.hasOwn(value, key) && 'value' in Object.getOwnPropertyDescriptor(value, key));
+  keys.every(key => ownData(value, key));
 
 const dense = (value, max = 64) =>
   !types.isProxy(value) &&
@@ -49,9 +54,7 @@ const dense = (value, max = 64) =>
   Object.getPrototypeOf(value) === Array.prototype &&
   value.length <= max &&
   Reflect.ownKeys(value).length === value.length + 1 &&
-  Array.from({ length: value.length }, (_, i) =>
-    Object.hasOwn(value, i) && 'value' in Object.getOwnPropertyDescriptor(value, i)
-  ).every(Boolean);
+  Array.from({ length: value.length }, (_, i) => ownData(value, i)).every(Boolean);
 
 const text = (value, max = 200) =>
   typeof value === 'string' && value.length > 0 && value.length <= max && value.trim() === value;
@@ -104,18 +107,18 @@ function sameData(candidateVal, expectedVal, depth = 0) {
   if (!expectedVal || typeof expectedVal !== 'object') {
     return Object.is(candidateVal, expectedVal);
   }
+  if (types.isProxy(expectedVal)) return false;
   if (Array.isArray(expectedVal)) {
     return dense(expectedVal) &&
       dense(candidateVal) &&
       candidateVal.length === expectedVal.length &&
       expectedVal.every((item, i) => sameData(candidateVal[i], item, depth + 1));
   }
-  const keys = !types.isProxy(expectedVal) &&
-    Object.getPrototypeOf(expectedVal) === Object.prototype
-    ? Reflect.ownKeys(expectedVal)
-    : null;
-  if (!keys ||
-      !keys.every(key => typeof key === 'string' && 'value' in Object.getOwnPropertyDescriptor(expectedVal, key))) {
+  if (Object.getPrototypeOf(expectedVal) !== Object.prototype) {
+    return false;
+  }
+  const keys = Reflect.ownKeys(expectedVal);
+  if (!keys.every(key => typeof key === 'string' && ownData(expectedVal, key))) {
     return false;
   }
   return exact(candidateVal, keys) &&
@@ -314,6 +317,7 @@ export function verifyConsumerOnboardingPackage(pkg, registry = []) {
 
   const shadowPolicy = { ...pkg.policy, mode: 'shadow', killSwitch: false };
   if (!strictSnapshotShape(suite.eligibleCandidate) ||
+      !strictPolicyShape(suite.killSwitchPolicy) ||
       !sameData(suite.killSwitchPolicy, { ...shadowPolicy, killSwitch: true }) ||
       !isStaleReviewScenario(suite.eligibleCandidate, suite.staleReview) ||
       !isDismissedReviewScenario(suite.eligibleCandidate, suite.dismissedReview) ||
@@ -395,7 +399,8 @@ export function verifyIndependentRollback(targetRepository, rollbackReceipt, pac
   }
 
   const expectedPostPolicy = { ...targetPkg.policy, mode: 'disabled', killSwitch: true };
-  if (!sameData(rollbackReceipt.postPolicy, expectedPostPolicy) ||
+  if (!strictPolicyShape(rollbackReceipt.postPolicy) ||
+      !sameData(rollbackReceipt.postPolicy, expectedPostPolicy) ||
       rollbackReceipt.revokedCredentialId !== targetPkg.credentials.credentialId ||
       rollbackReceipt.pinRevertedViaReviewedPr !== true ||
       !Object.is(rollbackReceipt.queuedLiveMutations, 0)) {

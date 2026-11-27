@@ -572,6 +572,10 @@ test('requires complete exact-mutation shadow denial replay suite and rollback c
     }
   );
   const symbolExpectedPriority = { [Symbol('meta')]: 1 };
+  const revokedObjProxy = Proxy.revocable({ bad: 1 }, {});
+  revokedObjProxy.revoke();
+  const revokedArrProxy = Proxy.revocable([1], {});
+  revokedArrProxy.revoke();
   const cyclicPriority = {};
   cyclicPriority.self = cyclicPriority;
 
@@ -594,6 +598,10 @@ test('requires complete exact-mutation shadow denial replay suite and rollback c
     makeExpectedPrioritySuite(throwingExpectedPriority, { bad: 1 }),
     makeExpectedPrioritySuite(throwingExpectedArray, [1]),
     makeExpectedPrioritySuite(proxyExpectedPriority, { bad: 1 }),
+    makeExpectedPrioritySuite(revokedObjProxy.proxy, { bad: 1 }),
+    makeExpectedPrioritySuite(revokedArrProxy.proxy, [1]),
+    makeExpectedPrioritySuite({ bad: 1 }, revokedObjProxy.proxy),
+    makeExpectedPrioritySuite([1], revokedArrProxy.proxy),
     makeExpectedPrioritySuite(Object.create(null), {}),
     makeExpectedPrioritySuite(symbolExpectedPriority, {}),
     makeExpectedPrioritySuite(cyclicPriority, cyclicPriority),
@@ -717,8 +725,17 @@ test('verifyIndependentRollback proves single-repo rollback stops target without
   const unknownReceipt = { ...receipt, repository: 'example/unknown-repo' };
   assert.equal(verifyIndependentRollback('example/unknown-repo', unknownReceipt, cohort).reason, 'ROLLBACK_TARGET_UNKNOWN');
 
+  const nonEnumerableVersionPolicy = structuredClone(spellbookPkg.policy);
+  Object.defineProperty(nonEnumerableVersionPolicy, 'version', {
+    value: 1,
+    enumerable: false,
+    writable: true,
+    configurable: true
+  });
+
   for (const incomplete of [
     { ...receipt, postPolicy: null },
+    { ...receipt, postPolicy: nonEnumerableVersionPolicy },
     { ...receipt, postPolicy: { ...familyTreePkg.policy } },
     { ...receipt, postPolicy: { ...spellbookPkg.policy, mode: 'shadow' } },
     { ...receipt, postPolicy: { ...spellbookPkg.policy, killSwitch: false } },
