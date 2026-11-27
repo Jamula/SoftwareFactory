@@ -1465,6 +1465,9 @@ test('buildAutomaticRevertCandidateSpec emits bounded revert PR specs on rollbac
       'CODEOWNERS',
       '.github/CODEOWNERS',
       'docs/CODEOWNERS',
+      'package.json',
+      'package-lock.json',
+      'tests/engineering-factory/coverage-reporter.mjs',
       'tools/engineering-factory/review-history.mjs',
       'tools/engineering-factory/review-batch.mjs',
       'tools/engineering-coordinator'

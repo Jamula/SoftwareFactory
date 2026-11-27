@@ -108,11 +108,14 @@ while strictly isolating `sourceKind: "historical-proxy"` from
   (`directMainMutation: false`, `autoPolicyMutation: false`), require the full gate
   pipeline (`["ci-98-95", "codeql", "independent-review", "squash-merge-queue"]`), and set
   `requiresHumanApproval: true` whenever any target touches or encloses governance,
-  ownership (`CODEOWNERS`, `.github/CODEOWNERS`, `docs/CODEOWNERS`), independent-review
-  (`review-history.mjs`, `review-batch.mjs`, `review-intent-store.mjs`,
+  ownership (`CODEOWNERS`, `.github/CODEOWNERS`, `docs/CODEOWNERS`), executable coverage
+  and runner gates (`package.json`, `package-lock.json`,
+  `tests/engineering-factory/coverage-reporter.mjs`, `no-python-guard.mjs`),
+  independent-review (`review-history.mjs`, `review-batch.mjs`, `review-intent-store.mjs`,
   `review-provider.mjs`), workflow, policy, security, or budget contracts (including
   `optimistic-improver.mjs`, `ai-credit-scorecard.mjs`, and ancestor directories such as
-  `tools/engineering-factory`, `tools/engineering-coordinator`, or `.github`).
+  `tools/engineering-factory`, `tools/engineering-coordinator`, `config`, `agents`, or
+  `.github`).
 - **Matched Cohort Verification & Automatic Rollback (`verifyCohortImprovementOrRollback`):**
   Requires matching `repositoryId`, `cohortId`, `sourceKind: "verified-autonomous"`,
   `complete: true`, non-overlapping equal-duration windows (`beforeCohort.windowEndMs <=
