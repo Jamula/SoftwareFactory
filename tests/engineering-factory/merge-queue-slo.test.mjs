@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   ALLOWED_HUMAN_EXCEPTION_CATEGORIES,
+  ALLOWED_PR_STATES,
   ALLOWED_PUBLICATION_SOURCES,
   ALLOWED_SAMPLE_PROVENANCES,
   DEFAULT_FACTORY_REPOSITORY_ID,
@@ -15,6 +16,21 @@ import {
 const HEAD_1 = '1'.repeat(40);
 const HEAD_2 = '2'.repeat(40);
 const HEAD_3 = '3'.repeat(40);
+
+function completeCohortOptions(overrides = {}) {
+  return {
+    repositoryId: DEFAULT_FACTORY_REPOSITORY_ID,
+    provenance: 'github-timeline',
+    cohort: 'small-pr-slice',
+    fromMs: 900_000,
+    toMs: 1_250_000,
+    observedAt: 1_300_000,
+    nowMs: 1_320_000,
+    maxAgeMs: 60_000,
+    sourceComplete: true,
+    ...overrides
+  };
+}
 
 function baseDraftSample(overrides = {}) {
   return {
@@ -65,6 +81,7 @@ test('exports frozen #8 SLO targets, stage attribution keys, and provenance allo
   assert.equal(Object.isFrozen(STAGE_ATTRIBUTION_KEYS), true);
   assert.equal(Object.isFrozen(PARALLEL_STAGE_KEYS), true);
   assert.equal(Object.isFrozen(ALLOWED_SAMPLE_PROVENANCES), true);
+  assert.equal(Object.isFrozen(ALLOWED_PR_STATES), true);
   assert.equal(Object.isFrozen(ALLOWED_PUBLICATION_SOURCES), true);
   assert.equal(Object.isFrozen(ALLOWED_HUMAN_EXCEPTION_CATEGORIES), true);
 
@@ -303,11 +320,20 @@ test('keeps parallel stage attribution non-additive and preserves null for unmea
     repositoryId: DEFAULT_FACTORY_REPOSITORY_ID,
     provenance: 'github-timeline',
     cohort: 'small-pr-slice',
+    fromMs: 0,
+    toMs: 250_000,
     observedAt: 300_000,
     nowMs: 320_000,
-    maxAgeMs: 60_000
+    maxAgeMs: 60_000,
+    sourceComplete: true
   });
   assert.equal(report.valid, true);
+  assert.equal(report.known, true);
+  assert.equal(report.status, 'complete');
+  assert.equal(report.sourceComplete, true);
+  assert.equal(report.fromMs, 0);
+  assert.equal(report.toMs, 250_000);
+  assert.equal(report.observedMs, 300_000);
   assert.equal(report.sloMet, true);
   assert.equal(report.stretchMet, true);
   assert.equal(report.reason, 'SLO_MET');
@@ -344,13 +370,15 @@ test('keeps parallel stage attribution non-additive and preserves null for unmea
   assert.equal(report.stageAttribution.stages.mainVerificationMs.parallel, false);
 });
 
-test('records right-censored open PR ages, pending main verification, and overdue open breaches', () => {
+test('records right-censored open PR ages, closed-unmerged PRs, pending main verification, and overdue open breaches', () => {
   const openDraft = baseDraftSample({
     prNumber: 401,
-    createdAt: 100_000,
-    observedAt: 140_000,
+    state: 'open',
+    closedAt: null,
+    createdAt: 220_000,
+    observedAt: 260_000,
     publicationEvents: [],
-    headCommits: [{sha: HEAD_1, at: 100_000}],
+    headCommits: [{sha: HEAD_1, at: 220_000}],
     eligibilityTimestamps: [],
     enqueuedAt: null,
     mergedAt: null,
@@ -369,12 +397,12 @@ test('records right-censored open PR ages, pending main verification, and overdu
   });
   const openEligible = baseDraftSample({
     prNumber: 402,
-    createdAt: 100_000,
-    observedAt: 210_000,
-    publicationEvents: [{type: 'published', at: 120_000}],
-    headCommits: [{sha: HEAD_1, at: 100_000}],
-    eligibilityTimestamps: [165_000],
-    enqueuedAt: 170_000,
+    createdAt: 150_000,
+    observedAt: 260_000,
+    publicationEvents: [{type: 'published', at: 170_000}],
+    headCommits: [{sha: HEAD_1, at: 150_000}],
+    eligibilityTimestamps: [215_000],
+    enqueuedAt: 220_000,
     mergedAt: null,
     mainVerifiedAt: null,
     stages: {
@@ -391,6 +419,8 @@ test('records right-censored open PR ages, pending main verification, and overdu
   });
   const pendingVerify = baseDraftSample({
     prNumber: 403,
+    state: 'merged',
+    closedAt: 220_000,
     createdAt: 100_000,
     observedAt: 260_000,
     publicationEvents: [{type: 'published', at: 130_000}],
@@ -411,15 +441,57 @@ test('records right-censored open PR ages, pending main verification, and overdu
       mainVerificationMs: null
     }
   });
+  const abandonedDraft = baseDraftSample({
+    prNumber: 406,
+    state: 'closed-unmerged',
+    closedAt: 120_000,
+    createdAt: 100_000,
+    observedAt: 260_000,
+    publicationEvents: [],
+    headCommits: [{sha: HEAD_1, at: 100_000}],
+    eligibilityTimestamps: [],
+    enqueuedAt: null,
+    mergedAt: null,
+    mainVerifiedAt: null,
+    stages: {
+      ciQueueWaitMs: 2_000,
+      linuxRuntimeMs: null,
+      windowsRuntimeMs: null,
+      securityScanMs: null,
+      reviewReworkMs: null,
+      publicationIdleMs: null,
+      eligibilityToEnqueueMs: null,
+      mergeQueueRevalidationMs: null,
+      mainVerificationMs: null
+    }
+  });
 
-  const incomplete = evaluatePullMergeLatencySlo([openDraft, openEligible, pendingVerify]);
+  const openWindowOpts = completeCohortOptions({
+    fromMs: 90_000,
+    toMs: 250_000,
+    observedAt: 260_000,
+    nowMs: 270_000,
+    maxAgeMs: 60_000
+  });
+  const incomplete = evaluatePullMergeLatencySlo(
+    [openDraft, openEligible, pendingVerify, abandonedDraft],
+    openWindowOpts
+  );
   assert.equal(incomplete.valid, true);
   assert.equal(incomplete.sloMet, null);
   assert.equal(incomplete.stretchMet, false);
   assert.equal(incomplete.reason, 'SLO_INCOMPLETE');
   assert.equal(incomplete.counts.openCensoredCount, 2);
+  assert.equal(incomplete.counts.closedUnmergedCount, 1);
   assert.equal(incomplete.counts.verificationPendingCount, 1);
   assert.equal(incomplete.openPullRequests.length, 3);
+  assert.deepEqual(incomplete.closedUnmergedPullRequests, [{
+    prNumber: 406,
+    createdAsDraft: true,
+    currentlyDraft: true,
+    closedAt: 120_000,
+    timeToCloseUnmergedMs: 20_000
+  }]);
   assert.deepEqual(incomplete.openPullRequests[0], {
     prNumber: 401,
     currentlyDraft: true,
@@ -448,16 +520,33 @@ test('records right-censored open PR ages, pending main verification, and overdu
     verificationPendingAgeMs: 40_000
   });
 
-  const freshOpenOnly = evaluatePullMergeLatencySlo([openDraft]);
+  const freshOpenOnly = evaluatePullMergeLatencySlo([openDraft], openWindowOpts);
   assert.equal(freshOpenOnly.sloMet, null);
   assert.equal(freshOpenOnly.stretchMet, null);
   assert.equal(freshOpenOnly.metrics.publishToMergeMs.unreachedCount, 1);
   assert.equal(freshOpenOnly.metrics.publishToMergeMs.missRate, null);
 
+  const closedUnmergedLongAgo = evaluatePullMergeLatencySlo([
+    baseDraftSample({prNumber: 407}),
+    {...abandonedDraft, prNumber: 408, createdAt: 910_000, closedAt: 930_000, observedAt: 1_300_000,
+      headCommits: [{sha: HEAD_1, at: 910_000}]}
+  ], completeCohortOptions());
+  assert.equal(closedUnmergedLongAgo.sloMet, true);
+  assert.equal(closedUnmergedLongAgo.counts.closedUnmergedCount, 1);
+  assert.equal(closedUnmergedLongAgo.counts.openCensoredCount, 0);
+  assert.equal(closedUnmergedLongAgo.metrics.creationToMergeMs.closedUnmergedCount, 1);
+  assert.equal(closedUnmergedLongAgo.metrics.creationToMergeMs.overdueOpenCount, 0);
+
   const stalledOpen = evaluatePullMergeLatencySlo([
     baseDraftSample({prNumber: 404}),
-    {...openDraft, prNumber: 405, observedAt: 900_000}
-  ]);
+    {
+      ...openDraft,
+      prNumber: 405,
+      createdAt: 600_000,
+      observedAt: 1_300_000,
+      headCommits: [{sha: HEAD_1, at: 600_000}]
+    }
+  ], completeCohortOptions({fromMs: 500_000}));
   assert.equal(stalledOpen.sloMet, false);
   assert.equal(stalledOpen.reason, 'SLO_MISSED');
   assert.equal(stalledOpen.metrics.draftToPublishMs.overdueOpenCount, 1);
@@ -477,7 +566,25 @@ test('distinguishes routine human interventions from documented governance excep
     }]
   });
 
-  const exceptionCohort = evaluatePullMergeLatencySlo([withApprovedException]);
+  const partialWithoutWindow = evaluatePullMergeLatencySlo([withApprovedException]);
+  assert.equal(partialWithoutWindow.valid, true);
+  assert.equal(partialWithoutWindow.known, false);
+  assert.equal(partialWithoutWindow.status, 'partial');
+  assert.equal(partialWithoutWindow.sloMet, null);
+  assert.equal(partialWithoutWindow.stretchMet, null);
+  assert.equal(partialWithoutWindow.reason, 'PARTIAL_COHORT_EVIDENCE');
+
+  const partialExplicitFlag = evaluatePullMergeLatencySlo(
+    [withApprovedException],
+    completeCohortOptions({sourceComplete: false})
+  );
+  assert.equal(partialExplicitFlag.valid, true);
+  assert.equal(partialExplicitFlag.known, false);
+  assert.equal(partialExplicitFlag.status, 'partial');
+  assert.equal(partialExplicitFlag.sloMet, null);
+  assert.equal(partialExplicitFlag.reason, 'PARTIAL_COHORT_EVIDENCE');
+
+  const exceptionCohort = evaluatePullMergeLatencySlo([withApprovedException], completeCohortOptions());
   assert.equal(exceptionCohort.valid, true);
   assert.equal(exceptionCohort.sloMet, true);
   assert.equal(exceptionCohort.humanTouchesCount, 1);
@@ -501,7 +608,10 @@ test('distinguishes routine human interventions from documented governance excep
       summary: 'Owner manually squash-merged pull request'
     }]
   });
-  const manualCohort = evaluatePullMergeLatencySlo([withApprovedException, manualMerge]);
+  const manualCohort = evaluatePullMergeLatencySlo(
+    [withApprovedException, manualMerge],
+    completeCohortOptions()
+  );
   assert.equal(manualCohort.valid, true);
   assert.equal(manualCohort.sloMet, false);
   assert.equal(manualCohort.reason, 'SLO_MISSED');
@@ -533,7 +643,7 @@ test('distinguishes routine human interventions from documented governance excep
       }
     }));
   }
-  const p95Cohort = evaluatePullMergeLatencySlo(p95BreachSamples);
+  const p95Cohort = evaluatePullMergeLatencySlo(p95BreachSamples, completeCohortOptions());
   assert.equal(p95Cohort.metrics.eligibleToMergeMs.p50Ms, 25_000);
   assert.equal(p95Cohort.metrics.eligibleToMergeMs.p95Ms, 155_000);
   assert.equal(p95Cohort.metrics.eligibleToMergeMs.p50MeetsTarget, true);
@@ -555,7 +665,10 @@ test('distinguishes routine human interventions from documented governance excep
       mainVerificationMs: 70_000
     }
   });
-  const targetMetStretchMissed = evaluatePullMergeLatencySlo([targetOnlySample]);
+  const targetMetStretchMissed = evaluatePullMergeLatencySlo(
+    [targetOnlySample],
+    completeCohortOptions()
+  );
   assert.equal(targetMetStretchMissed.sloMet, true);
   assert.equal(targetMetStretchMissed.stretchMet, false);
 });
@@ -602,6 +715,39 @@ test('rejects proxies, getters, custom prototypes, sparse arrays, symbol keys, a
   });
   assert.equal(evaluatePullMergeLatencySlo(trappedSamples).reason, 'INVALID_SAMPLES');
   assert.equal(getterReads, 0);
+
+  let coercionReads = 0;
+  const coercionTrap = () => ({
+    valueOf() {
+      coercionReads++;
+      throw new Error('valueOf coercion should never run');
+    },
+    [Symbol.toPrimitive]() {
+      coercionReads++;
+      throw new Error('Symbol.toPrimitive coercion should never run');
+    }
+  });
+  assert.equal(
+    evaluatePullMergeLatencySample(baseDraftSample({createdAt: coercionTrap()})).reason,
+    'HISTORY_UNKNOWN'
+  );
+  assert.equal(
+    evaluatePullMergeLatencySample(baseDraftSample({observedAt: coercionTrap()})).reason,
+    'HISTORY_UNKNOWN'
+  );
+  assert.equal(
+    evaluatePullMergeLatencySample(baseDraftSample({mergedAt: coercionTrap()})).reason,
+    'MERGE_UNKNOWN'
+  );
+  assert.equal(
+    evaluatePullMergeLatencySample(baseDraftSample({mainVerifiedAt: coercionTrap()})).reason,
+    'VERIFICATION_UNKNOWN'
+  );
+  assert.equal(
+    evaluatePullMergeLatencySample(baseDraftSample({closedAt: coercionTrap()})).reason,
+    'CLOSURE_EVIDENCE_UNKNOWN'
+  );
+  assert.equal(coercionReads, 0);
 
   const symbolObj = baseDraftSample();
   symbolObj[Symbol('secret')] = 1;
@@ -671,6 +817,66 @@ test('enforces fail-closed timeline, provenance, scope, freshness, human-touch, 
   assert.equal(
     evaluatePullMergeLatencySample(baseReadySample({historyComplete: false})).reason,
     'HISTORY_UNKNOWN'
+  );
+  assert.equal(
+    evaluatePullMergeLatencySample(baseReadySample({observedAt: 999_999})).reason,
+    'HISTORY_UNKNOWN'
+  );
+  assert.equal(
+    evaluatePullMergeLatencySample(baseDraftSample({mainVerifiedAt: 1_200_000})).reason,
+    'VERIFICATION_UNKNOWN'
+  );
+  assert.equal(
+    evaluatePullMergeLatencySample(baseDraftSample({mergedAt: 1_300_001})).reason,
+    'MERGE_UNKNOWN'
+  );
+  assert.equal(
+    evaluatePullMergeLatencySample(baseDraftSample({state: 'merged', mergedAt: null, mainVerifiedAt: null})).reason,
+    'MERGE_UNKNOWN'
+  );
+  assert.equal(
+    evaluatePullMergeLatencySample(baseDraftSample({state: 'merged', closedAt: 1_200_000})).reason,
+    'MERGE_UNKNOWN'
+  );
+  assert.equal(
+    evaluatePullMergeLatencySample(baseDraftSample({state: 'unknown-state'})).reason,
+    'CLOSURE_EVIDENCE_UNKNOWN'
+  );
+  assert.equal(
+    evaluatePullMergeLatencySample(baseDraftSample({
+      state: 'open',
+      closedAt: 1_100_000,
+      mergedAt: null,
+      mainVerifiedAt: null
+    })).reason,
+    'CLOSURE_EVIDENCE_UNKNOWN'
+  );
+  assert.equal(
+    evaluatePullMergeLatencySample(baseDraftSample({
+      state: 'closed-unmerged',
+      closedAt: null,
+      mergedAt: null,
+      mainVerifiedAt: null
+    })).reason,
+    'CLOSURE_EVIDENCE_UNKNOWN'
+  );
+  assert.equal(
+    evaluatePullMergeLatencySample(baseDraftSample({
+      state: 'closed-unmerged',
+      closedAt: 999_999,
+      mergedAt: null,
+      mainVerifiedAt: null
+    })).reason,
+    'CLOSURE_EVIDENCE_UNKNOWN'
+  );
+  assert.equal(
+    evaluatePullMergeLatencySample(baseDraftSample({
+      state: 'closed-unmerged',
+      closedAt: 1_300_001,
+      mergedAt: null,
+      mainVerifiedAt: null
+    })).reason,
+    'CLOSURE_EVIDENCE_UNKNOWN'
   );
   assert.equal(
     evaluatePullMergeLatencySample(baseDraftSample({
@@ -1015,6 +1221,76 @@ test('enforces fail-closed timeline, provenance, scope, freshness, human-touch, 
       maxAgeMs: 60_000
     }).reason,
     'SAMPLE_AFTER_OBSERVATION'
+  );
+  const staleOpenSample = baseDraftSample({
+    prNumber: 801,
+    createdAt: 50,
+    observedAt: 100,
+    publicationEvents: [],
+    headCommits: [{sha: HEAD_1, at: 50}],
+    eligibilityTimestamps: [],
+    enqueuedAt: null,
+    mergedAt: null,
+    mainVerifiedAt: null,
+    stages: {
+      ciQueueWaitMs: null,
+      linuxRuntimeMs: null,
+      windowsRuntimeMs: null,
+      securityScanMs: null,
+      reviewReworkMs: null,
+      publicationIdleMs: null,
+      eligibilityToEnqueueMs: null,
+      mergeQueueRevalidationMs: null,
+      mainVerificationMs: null
+    }
+  });
+  assert.equal(
+    evaluatePullMergeLatencySlo([baseDraftSample({prNumber: 800}), staleOpenSample], {
+      cohort: 'stale-check',
+      fromMs: 0,
+      toMs: 2_000_000,
+      observedAt: 10_000_000,
+      nowMs: 10_000_000,
+      maxAgeMs: 1_000,
+      sourceComplete: true
+    }).reason,
+    'STALE_EVIDENCE'
+  );
+  assert.equal(
+    evaluatePullMergeLatencySlo([baseDraftSample({prNumber: 802, observedAt: 10_000_000}), staleOpenSample]).reason,
+    'STALE_EVIDENCE'
+  );
+  assert.equal(
+    evaluatePullMergeLatencySlo([baseDraftSample()], {fromMs: 0, toMs: 2_000_000}).reason,
+    'COHORT_WINDOW_UNKNOWN'
+  );
+  assert.equal(
+    evaluatePullMergeLatencySlo([baseDraftSample()], completeCohortOptions({fromMs: 1_250_000})).reason,
+    'COHORT_WINDOW_UNKNOWN'
+  );
+  assert.equal(
+    evaluatePullMergeLatencySlo([baseDraftSample()], completeCohortOptions({sourceComplete: 'yes'})).reason,
+    'COHORT_WINDOW_UNKNOWN'
+  );
+  assert.equal(
+    evaluatePullMergeLatencySlo([baseDraftSample()], completeCohortOptions({
+      toMs: 1_310_000,
+      observedAt: 1_300_000,
+      nowMs: 1_320_000
+    })).reason,
+    'FRESHNESS_UNKNOWN'
+  );
+  assert.equal(
+    evaluatePullMergeLatencySlo([baseDraftSample()], completeCohortOptions({
+      fromMs: 1_000_001
+    })).reason,
+    'SAMPLE_OUTSIDE_WINDOW'
+  );
+  assert.equal(
+    evaluatePullMergeLatencySlo([baseDraftSample()], completeCohortOptions({
+      toMs: 1_000_000
+    })).reason,
+    'SAMPLE_OUTSIDE_WINDOW'
   );
   assert.equal(
     evaluatePullMergeLatencySlo([

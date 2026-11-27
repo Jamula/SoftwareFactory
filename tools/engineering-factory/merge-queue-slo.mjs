@@ -19,6 +19,12 @@ export const ALLOWED_PUBLICATION_SOURCES = Object.freeze([
   'creation-state'
 ]);
 
+export const ALLOWED_PR_STATES = Object.freeze([
+  'open',
+  'merged',
+  'closed-unmerged'
+]);
+
 export const ALLOWED_HUMAN_EXCEPTION_CATEGORIES = Object.freeze([
   'authorization',
   'permission',
@@ -83,6 +89,7 @@ export const PR_MERGE_LATENCY_SLO_TARGETS = Object.freeze({
 const METRIC_KEYS = Object.freeze(Object.keys(PR_MERGE_LATENCY_SLO_TARGETS));
 const provenanceSet = new Set(ALLOWED_SAMPLE_PROVENANCES);
 const publicationSourceSet = new Set(ALLOWED_PUBLICATION_SOURCES);
+const prStateSet = new Set(ALLOWED_PR_STATES);
 const exceptionCategorySet = new Set(ALLOWED_HUMAN_EXCEPTION_CATEGORIES);
 const parallelStageSet = new Set(PARALLEL_STAGE_KEYS);
 const humanTouchKinds = new Set(['routine', 'exception']);
@@ -106,15 +113,18 @@ const SAMPLE_REQUIRED_KEYS = Object.freeze([
   'humanTouches',
   'stages'
 ]);
-const SAMPLE_OPTIONAL_KEYS = Object.freeze(['enqueuedAt']);
+const SAMPLE_OPTIONAL_KEYS = Object.freeze(['enqueuedAt', 'state', 'closedAt']);
 
 const OPTION_OPTIONAL_KEYS = Object.freeze([
   'repositoryId',
   'provenance',
   'cohort',
+  'fromMs',
+  'toMs',
   'observedAt',
   'nowMs',
-  'maxAgeMs'
+  'maxAgeMs',
+  'sourceComplete'
 ]);
 
 const ROUTINE_TOUCH_KEYS = Object.freeze(['kind', 'at', 'summary']);
@@ -205,7 +215,7 @@ function invalidCohort(reason) {
   });
 }
 
-function parsePublicationEvents(events, createdAsDraft, createdAt, observedAt, mergedAt) {
+function parsePublicationEvents(events, createdAsDraft, createdAt, ceilingAt, mergedAt) {
   if (!isDenseDataArray(events, 128)) return {ok: false, reason: 'PUBLICATION_EVIDENCE_UNKNOWN'};
   let expectedNext = createdAsDraft ? 'published' : 'redrafted';
   let prevAt = createdAt;
@@ -218,7 +228,7 @@ function parsePublicationEvents(events, createdAsDraft, createdAt, observedAt, m
       return {ok: false, reason: 'PUBLICATION_EVIDENCE_UNKNOWN'};
     }
     const minAtValid = i === 0 && createdAsDraft ? ev.at > createdAt : ev.at >= prevAt;
-    if (!minAtValid || ev.at > observedAt || (mergedAt !== null && ev.at > mergedAt)) {
+    if (!minAtValid || ev.at > ceilingAt) {
       return {ok: false, reason: 'INVALID_TIMELINE_ORDER'};
     }
     if (ev.type === 'published') {
@@ -392,12 +402,51 @@ export function evaluatePullMergeLatencySample(sample) {
       (sample.createdAsDraft && sample.publicationSource !== 'timeline')) {
     return invalidSample('PUBLICATION_EVIDENCE_UNKNOWN');
   }
+  if (typeof sample.historyComplete !== 'boolean' || !sample.historyComplete ||
+      !isNonNegSafeInt(sample.createdAt) || !isNonNegSafeInt(sample.observedAt) ||
+      sample.observedAt < sample.createdAt) {
+    return invalidSample('HISTORY_UNKNOWN');
+  }
+  if (sample.mergedAt !== null && !isNonNegSafeInt(sample.mergedAt)) {
+    return invalidSample('MERGE_UNKNOWN');
+  }
+  if (sample.mainVerifiedAt !== null &&
+      (!isNonNegSafeInt(sample.mainVerifiedAt) || sample.mergedAt === null)) {
+    return invalidSample('VERIFICATION_UNKNOWN');
+  }
+
+  const hasState = Object.hasOwn(sample, 'state');
+  const rawClosedAt = Object.hasOwn(sample, 'closedAt') ? sample.closedAt : null;
+  if (rawClosedAt !== null && !isNonNegSafeInt(rawClosedAt)) {
+    return invalidSample('CLOSURE_EVIDENCE_UNKNOWN');
+  }
+  const state = hasState ? sample.state : (sample.mergedAt !== null ? 'merged' : 'open');
+  if (!prStateSet.has(state)) {
+    return invalidSample('CLOSURE_EVIDENCE_UNKNOWN');
+  }
+  if (state === 'merged') {
+    if (sample.mergedAt === null || sample.mergedAt > sample.observedAt ||
+        (rawClosedAt !== null && rawClosedAt !== sample.mergedAt)) {
+      return invalidSample('MERGE_UNKNOWN');
+    }
+  } else if (state === 'open') {
+    if (sample.mergedAt !== null || rawClosedAt !== null) {
+      return invalidSample('CLOSURE_EVIDENCE_UNKNOWN');
+    }
+  } else if (sample.mergedAt !== null || rawClosedAt === null ||
+      rawClosedAt < sample.createdAt || rawClosedAt > sample.observedAt) {
+    return invalidSample('CLOSURE_EVIDENCE_UNKNOWN');
+  }
+
+  const closedUnmerged = state === 'closed-unmerged';
+  const closedAt = state === 'merged' ? sample.mergedAt : rawClosedAt;
+  const ceilingAt = closedAt ?? sample.observedAt;
 
   const pub = parsePublicationEvents(
     sample.publicationEvents,
     sample.createdAsDraft,
     sample.createdAt,
-    sample.observedAt,
+    ceilingAt,
     sample.mergedAt
   );
   if (!pub.ok) return invalidSample(pub.reason);
@@ -413,7 +462,6 @@ export function evaluatePullMergeLatencySample(sample) {
   });
   if (!lifecycle.known) return invalidSample(lifecycle.reason);
 
-  const ceilingAt = sample.mergedAt ?? sample.observedAt;
   const heads = parseHeadCommits(sample.headCommits, sample.createdAt, ceilingAt);
   if (!heads.ok) return invalidSample(heads.reason);
 
@@ -474,7 +522,8 @@ export function evaluatePullMergeLatencySample(sample) {
   const eligibleToMergeMs = firstEligibleAt !== null && sample.mergedAt !== null
     ? sample.mergedAt - firstEligibleAt
     : null;
-  const openEligibleAgeMs = firstEligibleAt !== null && sample.mergedAt === null
+  const censored = state === 'open';
+  const openEligibleAgeMs = firstEligibleAt !== null && censored
     ? sample.observedAt - firstEligibleAt
     : null;
 
@@ -488,9 +537,13 @@ export function evaluatePullMergeLatencySample(sample) {
     prNumber: sample.prNumber,
     repositoryId: sample.repositoryId,
     provenance: sample.provenance,
+    state,
+    closedAt,
+    closedUnmerged,
+    timeToCloseUnmergedMs: closedUnmerged ? closedAt - sample.createdAt : null,
     createdAsDraft: sample.createdAsDraft,
     currentlyDraft: pub.currentlyDraft,
-    censored: lifecycle.censored,
+    censored,
     mainVerificationCensored: sample.mergedAt !== null && sample.mainVerifiedAt === null,
     unattendedMerge: sample.mergedAt !== null && touches.routineHumanTouchesCount === 0,
     initialHead: heads.initialHead,
@@ -500,9 +553,9 @@ export function evaluatePullMergeLatencySample(sample) {
     creationToMergeMs: lifecycle.createdToMergeMs,
     eligibleToMergeMs,
     mergeToVerifiedMainMs: lifecycle.mergeToVerifiedMs,
-    openAgeMs: lifecycle.openAgeMs,
-    openDraftAgeMs: lifecycle.openDraftAgeMs,
-    openPublishedAgeMs: lifecycle.openPublishedAgeMs,
+    openAgeMs: censored ? lifecycle.openAgeMs : null,
+    openDraftAgeMs: censored ? lifecycle.openDraftAgeMs : null,
+    openPublishedAgeMs: censored ? lifecycle.openPublishedAgeMs : null,
     openEligibleAgeMs,
     verificationPendingAgeMs: lifecycle.verificationPendingAgeMs,
     headChangesCount: heads.headChangesCount,
@@ -527,7 +580,11 @@ function resolveOptions(options) {
       repositoryId: null,
       provenance: null,
       cohort: null,
-      observedAt: null
+      fromMs: null,
+      toMs: null,
+      observedAt: null,
+      sourceComplete: false,
+      cohortComplete: false
     };
   }
   if (!isExactDataObject(options, [], OPTION_OPTIONAL_KEYS)) {
@@ -539,16 +596,30 @@ function resolveOptions(options) {
   if (Object.hasOwn(options, 'provenance') && !provenanceSet.has(options.provenance)) {
     return {ok: false, reason: 'UNTRUSTED_PROVENANCE'};
   }
-  if (Object.hasOwn(options, 'cohort') && !isCohortSlug(options.cohort)) {
+  const hasCohort = Object.hasOwn(options, 'cohort');
+  if (hasCohort && !isCohortSlug(options.cohort)) {
     return {ok: false, reason: 'INVALID_OPTIONS'};
   }
+  const hasFrom = Object.hasOwn(options, 'fromMs');
+  const hasTo = Object.hasOwn(options, 'toMs');
+  const hasSourceComplete = Object.hasOwn(options, 'sourceComplete');
   const hasObserved = Object.hasOwn(options, 'observedAt');
   const hasNow = Object.hasOwn(options, 'nowMs');
   const hasMaxAge = Object.hasOwn(options, 'maxAgeMs');
+  const hasAnyWindowField = hasFrom || hasTo || hasSourceComplete;
+  if (hasAnyWindowField) {
+    if (!hasFrom || !hasTo || !hasSourceComplete || !hasCohort ||
+        !hasObserved || !hasNow || !hasMaxAge ||
+        !isNonNegSafeInt(options.fromMs) || !isNonNegSafeInt(options.toMs) ||
+        options.fromMs >= options.toMs || typeof options.sourceComplete !== 'boolean') {
+      return {ok: false, reason: 'COHORT_WINDOW_UNKNOWN'};
+    }
+  }
   if (hasObserved || hasNow || hasMaxAge) {
     if (!hasObserved || !hasNow || !hasMaxAge ||
         !isNonNegSafeInt(options.observedAt) || !isNonNegSafeInt(options.nowMs) ||
-        !isPositiveSafeInt(options.maxAgeMs) || options.observedAt > options.nowMs) {
+        !isPositiveSafeInt(options.maxAgeMs) || options.observedAt > options.nowMs ||
+        (hasTo && options.observedAt < options.toMs)) {
       return {ok: false, reason: 'FRESHNESS_UNKNOWN'};
     }
     if (options.nowMs - options.observedAt > options.maxAgeMs) {
@@ -560,14 +631,19 @@ function resolveOptions(options) {
     repositoryId: options.repositoryId ?? null,
     provenance: options.provenance ?? null,
     cohort: options.cohort ?? null,
-    observedAt: hasObserved ? options.observedAt : null
+    fromMs: hasFrom ? options.fromMs : null,
+    toMs: hasTo ? options.toMs : null,
+    observedAt: hasObserved ? options.observedAt : null,
+    sourceComplete: hasSourceComplete ? options.sourceComplete : false,
+    cohortComplete: hasAnyWindowField && options.sourceComplete === true
   };
 }
 
-function summarizeLifecycleMetric(metricKey, evaluatedSamples) {
+function summarizeLifecycleMetric(metricKey, evaluatedSamples, cohortComplete) {
   const spec = PR_MERGE_LATENCY_SLO_TARGETS[metricKey];
   const durations = [];
   let censoredCount = 0;
+  let closedUnmergedCount = 0;
   let unreachedCount = 0;
   let targetMissCount = 0;
   let stretchMissCount = 0;
@@ -575,6 +651,10 @@ function summarizeLifecycleMetric(metricKey, evaluatedSamples) {
   let stretchOverdueOpenCount = 0;
 
   for (const row of evaluatedSamples) {
+    if (row.closedUnmerged) {
+      closedUnmergedCount++;
+      continue;
+    }
     const duration = row[metricKey];
     const openAge = row[spec.openAgeKey];
     if (duration !== null) {
@@ -592,10 +672,11 @@ function summarizeLifecycleMetric(metricKey, evaluatedSamples) {
 
   const sampleCount = durations.length;
   const {p50Ms, p95Ms} = nearestRankPercentiles(durations);
-  const p50MeetsTarget = p50Ms === null ? null : p50Ms <= spec.targetMs;
-  const p95MeetsTarget = p95Ms === null ? null : p95Ms <= spec.targetMs;
-  const p50MeetsStretch = p50Ms === null ? null : p50Ms <= spec.stretchMs;
-  const p95MeetsStretch = p95Ms === null ? null : p95Ms <= spec.stretchMs;
+  const evaluable = cohortComplete && p50Ms !== null;
+  const p50MeetsTarget = evaluable ? p50Ms <= spec.targetMs : null;
+  const p95MeetsTarget = evaluable ? p95Ms <= spec.targetMs : null;
+  const p50MeetsStretch = evaluable ? p50Ms <= spec.stretchMs : null;
+  const p95MeetsStretch = evaluable ? p95Ms <= spec.stretchMs : null;
   const meetsTarget = spec.primaryQuantile === 'p95' ? p95MeetsTarget : p50MeetsTarget;
   const meetsStretch = spec.primaryQuantile === 'p95' ? p95MeetsStretch : p50MeetsStretch;
 
@@ -606,6 +687,7 @@ function summarizeLifecycleMetric(metricKey, evaluatedSamples) {
     primaryQuantile: spec.primaryQuantile,
     sampleCount,
     censoredCount,
+    closedUnmergedCount,
     unreachedCount,
     p50Ms,
     p95Ms,
@@ -674,9 +756,11 @@ export function evaluatePullMergeLatencySlo(samples, options) {
   let createdDraftCount = 0;
   let mergedCount = 0;
   let openCensoredCount = 0;
+  let closedUnmergedCount = 0;
   let mainVerifiedCount = 0;
   let verificationPendingCount = 0;
   let unattendedMergedCount = 0;
+  let maxSampleObservedAt = 0;
 
   let headChangesCount = 0;
   let redraftCount = 0;
@@ -691,6 +775,7 @@ export function evaluatePullMergeLatencySlo(samples, options) {
   let exceptionHumanTouchesCount = 0;
   const allExceptions = [];
   const openPullRequests = [];
+  const closedUnmergedPullRequests = [];
 
   for (let i = 0; i < samples.length; i++) {
     const raw = samples[i];
@@ -708,17 +793,36 @@ export function evaluatePullMergeLatencySlo(samples, options) {
     if (seenPrs.has(measured.prNumber)) return invalidCohort('DUPLICATE_PR_SAMPLE');
     seenPrs.add(measured.prNumber);
 
-    if (opts.observedAt !== null && raw.observedAt > opts.observedAt) {
-      return invalidCohort('SAMPLE_AFTER_OBSERVATION');
+    if (opts.fromMs !== null && (raw.createdAt < opts.fromMs || raw.createdAt >= opts.toMs)) {
+      return invalidCohort('SAMPLE_OUTSIDE_WINDOW');
     }
+    if (opts.observedAt !== null) {
+      if (raw.observedAt > opts.observedAt) return invalidCohort('SAMPLE_AFTER_OBSERVATION');
+      if ((measured.censored || measured.mainVerificationCensored) && raw.observedAt < opts.observedAt) {
+        return invalidCohort('STALE_EVIDENCE');
+      }
+    }
+    if (raw.observedAt > maxSampleObservedAt) maxSampleObservedAt = raw.observedAt;
 
     evaluated.push(measured);
 
     if (measured.createdAsDraft) createdDraftCount++;
     else createdReadyCount++;
 
-    if (measured.censored) openCensoredCount++;
-    else mergedCount++;
+    if (measured.closedUnmerged) {
+      closedUnmergedCount++;
+      closedUnmergedPullRequests.push(Object.freeze({
+        prNumber: measured.prNumber,
+        createdAsDraft: measured.createdAsDraft,
+        currentlyDraft: measured.currentlyDraft,
+        closedAt: measured.closedAt,
+        timeToCloseUnmergedMs: measured.timeToCloseUnmergedMs
+      }));
+    } else if (measured.censored) {
+      openCensoredCount++;
+    } else {
+      mergedCount++;
+    }
 
     if (measured.mergeToVerifiedMainMs !== null) mainVerifiedCount++;
     else if (measured.mainVerificationCensored) verificationPendingCount++;
@@ -751,6 +855,12 @@ export function evaluatePullMergeLatencySlo(samples, options) {
     }
   }
 
+  if (opts.observedAt === null &&
+      evaluated.some((m, idx) =>
+        (m.censored || m.mainVerificationCensored) && samples[idx].observedAt < maxSampleObservedAt)) {
+    return invalidCohort('STALE_EVIDENCE');
+  }
+
   const metrics = {};
   let anyTargetMissed = routineHumanTouchesCount > 0;
   let anyTargetUnmeasured = false;
@@ -758,7 +868,7 @@ export function evaluatePullMergeLatencySlo(samples, options) {
   let anyStretchUnmeasured = false;
 
   for (const key of METRIC_KEYS) {
-    const summary = summarizeLifecycleMetric(key, evaluated);
+    const summary = summarizeLifecycleMetric(key, evaluated, opts.cohortComplete);
     metrics[key] = summary;
     if (summary.meetsTarget === false || summary.overdueOpenCount > 0) anyTargetMissed = true;
     else if (summary.meetsTarget === null) anyTargetUnmeasured = true;
@@ -767,14 +877,19 @@ export function evaluatePullMergeLatencySlo(samples, options) {
     else if (summary.meetsStretch === null) anyStretchUnmeasured = true;
   }
 
-  const sloMet = anyTargetMissed ? false : (anyTargetUnmeasured ? null : true);
-  const stretchMet = anyStretchMissed ? false : (anyStretchUnmeasured ? null : true);
-  const reason = sloMet === true ? 'SLO_MET' : (sloMet === false ? 'SLO_MISSED' : 'SLO_INCOMPLETE');
+  const known = opts.cohortComplete;
+  const status = known ? 'complete' : 'partial';
+  const sloMet = known ? (anyTargetMissed ? false : (anyTargetUnmeasured ? null : true)) : null;
+  const stretchMet = known ? (anyStretchMissed ? false : (anyStretchUnmeasured ? null : true)) : null;
+  const reason = !known
+    ? 'PARTIAL_COHORT_EVIDENCE'
+    : (sloMet === true ? 'SLO_MET' : (sloMet === false ? 'SLO_MISSED' : 'SLO_INCOMPLETE'));
   const zeroRoutineHumanTouchesMet = routineHumanTouchesCount === 0;
 
   return Object.freeze({
     valid: true,
-    known: true,
+    known,
+    status,
     shadow: true,
     readOnly: true,
     liveMerge: false,
@@ -782,6 +897,10 @@ export function evaluatePullMergeLatencySlo(samples, options) {
     repositoryId: cohortRepoId,
     provenance: cohortProvenance,
     cohort: opts.cohort,
+    fromMs: opts.fromMs,
+    toMs: opts.toMs,
+    observedMs: opts.observedAt,
+    sourceComplete: opts.sourceComplete,
     sampleCount: evaluated.length,
     sloMet,
     stretchMet,
@@ -797,6 +916,7 @@ export function evaluatePullMergeLatencySlo(samples, options) {
       createdDraftCount,
       mergedCount,
       openCensoredCount,
+      closedUnmergedCount,
       mainVerifiedCount,
       verificationPendingCount,
       unattendedMergedCount
@@ -819,6 +939,7 @@ export function evaluatePullMergeLatencySlo(samples, options) {
       exceptions: Object.freeze(allExceptions)
     }),
     openPullRequests: Object.freeze(openPullRequests),
+    closedUnmergedPullRequests: Object.freeze(closedUnmergedPullRequests),
     metrics: Object.freeze(metrics),
     stageAttribution: summarizeStageAttribution(evaluated),
     samples: Object.freeze(evaluated)
