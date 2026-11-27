@@ -1,0 +1,213 @@
+{
+  "schemaVersion": 1,
+  "milestone": "M01.02",
+  "issueNumber": 17,
+  "repository": "Jamula/SoftwareFactory",
+  "repositoryId": 1471342715,
+  "branch": "main",
+  "headSha": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
+  "laptopDependency": false,
+  "incrementalUnapprovedSpendUsdCents": 0,
+  "platforms": {
+    "linux": {
+      "os": "linux",
+      "runnerLabel": "ubuntu-latest",
+      "runnerEnvironment": "github-hosted",
+      "runnerGroupName": "GitHub Actions",
+      "workflowName": "Factory validation",
+      "workflowPath": ".github/workflows/validate.yml",
+      "jobName": "linux-aspire-runtime",
+      "runId": 45975774012,
+      "jobId": 140426990428,
+      "runUrl": "https://github.com/Jamula/SoftwareFactory/actions/runs/45975774012",
+      "jobUrl": "https://github.com/Jamula/SoftwareFactory/actions/runs/45975774012/job/140426990428",
+      "event": "push",
+      "headBranch": "main",
+      "headSha": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
+      "status": "completed",
+      "conclusion": "success",
+      "startedAt": "2026-11-27T09:41:18Z",
+      "completedAt": "2026-11-27T09:42:11Z",
+      "durationMs": 53000,
+      "nodeVersion": "v26.13.1",
+      "dotnetVersion": "10.0.404",
+      "aspireVersion": "17.0.0",
+      "pythonInvocations": 0,
+      "sdkShutdownVerified": true,
+      "appHostCleanStop": true,
+      "loopbackAuth": {
+        "otlpEndpoint": "https://127.0.0.1:18890",
+        "otlpProtocol": "http/protobuf",
+        "dashboardHttpsLoopbackVerified": true,
+        "loginChallengeVerified": true,
+        "api401VerifierTestPassed": true,
+        "liveApi401ChallengeVerified": false,
+        "anonymousAllowed": false,
+        "unsecuredTransportAllowed": false,
+        "tlsVerificationBypassed": false,
+        "rootStoreMutated": false
+      },
+      "telemetry": {
+        "serviceName": "softwarefactory-shadow",
+        "scopeName": "softwarefactory",
+        "syntheticScenario": "local-synthetic-stop",
+        "syntheticResultState": "blocked",
+        "syntheticResultReason": "STOPPED",
+        "traceReadbackMethod": "cli-export-zip",
+        "traceReadbackTool": "tools/engineering-factory/verify-dashboard-export.mjs",
+        "spanName": "factory.evaluate",
+        "traceVerified": true,
+        "correlatedLogBody": "factory.stage.completed",
+        "correlatedLogVerified": true,
+        "traceSpanCorrelationVerified": true,
+        "sqlitePersistenceMode": "Run",
+        "sqliteReadOnlyVerified": true,
+        "metricReceiptTool": "tools/engineering-factory/verify-dashboard-metric-receipt.mjs",
+        "counterInstrument": "factory.stage.count",
+        "counterMonotonic": true,
+        "counterTemporality": "cumulative",
+        "counterValue": 1,
+        "counterVerified": true,
+        "histogramInstrument": "factory.stage.duration",
+        "histogramUnit": "ms",
+        "histogramTemporality": "cumulative",
+        "histogramCount": 1,
+        "histogramVerified": true,
+        "recordedLabels": {
+          "stage": "evaluate",
+          "outcome": "blocked",
+          "reason": "POLICY"
+        },
+        "rawTelemetryPublished": false,
+        "tempArtifactsCleaned": true
+      }
+    },
+    "windows": {
+      "os": "windows",
+      "runnerLabel": "windows-latest",
+      "runnerEnvironment": "github-hosted",
+      "runnerGroupName": "GitHub Actions",
+      "workflowName": "Windows Aspire runtime",
+      "workflowPath": ".github/workflows/windows-aspire.yml",
+      "jobName": "windows-aspire-runtime",
+      "runId": 45975774125,
+      "jobId": 140426992317,
+      "runUrl": "https://github.com/Jamula/SoftwareFactory/actions/runs/45975774125",
+      "jobUrl": "https://github.com/Jamula/SoftwareFactory/actions/runs/45975774125/job/140426992317",
+      "event": "push",
+      "headBranch": "main",
+      "headSha": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
+      "status": "completed",
+      "conclusion": "success",
+      "startedAt": "2026-11-27T09:41:20Z",
+      "completedAt": "2026-11-27T09:43:29Z",
+      "durationMs": 129000,
+      "nodeVersion": "v26.13.1",
+      "dotnetVersion": "10.0.404",
+      "aspireVersion": "17.0.0",
+      "pythonInvocations": 0,
+      "sdkShutdownVerified": true,
+      "appHostCleanStop": true,
+      "loopbackAuth": {
+        "otlpEndpoint": "https://127.0.0.1:18890",
+        "otlpProtocol": "http/protobuf",
+        "dashboardHttpsLoopbackVerified": true,
+        "loginChallengeVerified": true,
+        "api401VerifierTestPassed": true,
+        "liveApi401ChallengeVerified": true,
+        "anonymousAllowed": false,
+        "unsecuredTransportAllowed": false,
+        "tlsVerificationBypassed": false,
+        "rootStoreMutated": false
+      },
+      "telemetry": {
+        "serviceName": "softwarefactory-shadow",
+        "scopeName": "softwarefactory",
+        "syntheticScenario": "local-synthetic-stop",
+        "syntheticResultState": "blocked",
+        "syntheticResultReason": "STOPPED",
+        "traceReadbackMethod": "authenticated-https-api",
+        "traceReadbackTool": "tools/engineering-factory/verify-dashboard-api.mjs",
+        "spanName": "factory.evaluate",
+        "traceVerified": true,
+        "correlatedLogBody": "factory.stage.completed",
+        "correlatedLogVerified": true,
+        "traceSpanCorrelationVerified": true,
+        "sqlitePersistenceMode": "Run",
+        "sqliteReadOnlyVerified": true,
+        "metricReceiptTool": "tools/engineering-factory/verify-dashboard-metric-receipt.mjs",
+        "counterInstrument": "factory.stage.count",
+        "counterMonotonic": true,
+        "counterTemporality": "cumulative",
+        "counterValue": 1,
+        "counterVerified": true,
+        "histogramInstrument": "factory.stage.duration",
+        "histogramUnit": "ms",
+        "histogramTemporality": "cumulative",
+        "histogramCount": 1,
+        "histogramVerified": true,
+        "recordedLabels": {
+          "stage": "evaluate",
+          "outcome": "blocked",
+          "reason": "POLICY"
+        },
+        "rawTelemetryPublished": false,
+        "tempArtifactsCleaned": true
+      }
+    }
+  },
+  "mafReadiness": {
+    "headSha": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
+    "workflowRunId": 45975773949,
+    "workflowRunUrl": "https://github.com/Jamula/SoftwareFactory/actions/runs/45975773949",
+    "linuxAgentJobId": 140426990405,
+    "windowsAgentJobId": 140426989874,
+    "appHostResourceName": "maf-specialist-shadow",
+    "appHostProjectPath": "src/SoftwareFactory.Agents/SoftwareFactory.Agents.csproj",
+    "explicitStartOnly": true,
+    "copilotSkipCliDownload": true,
+    "loopbackOtlpOnly": true,
+    "authenticatedHeadersRequired": true,
+    "retiredGitHubModelsReferenced": false,
+    "activitySources": [
+      "Microsoft.Agents.AI.Workflows",
+      "SoftwareFactory.Agents"
+    ],
+    "appHostPackages": [
+      {
+        "name": "Aspire.Hosting.AppHost",
+        "version": "17.0.0"
+      },
+      {
+        "name": "Aspire.Hosting.Dotnet",
+        "version": "17.0.0"
+      },
+      {
+        "name": "Aspire.Hosting.JavaScript",
+        "version": "17.0.0"
+      }
+    ],
+    "agentPackages": [
+      {
+        "name": "Microsoft.Agents.AI",
+        "version": "1.28.0"
+      },
+      {
+        "name": "Microsoft.Agents.AI.GitHub.Copilot",
+        "version": "1.28.0"
+      },
+      {
+        "name": "Microsoft.Agents.AI.Workflows",
+        "version": "1.28.0"
+      },
+      {
+        "name": "OpenTelemetry",
+        "version": "1.21.0"
+      },
+      {
+        "name": "OpenTelemetry.Exporter.OpenTelemetryProtocol",
+        "version": "1.21.0"
+      }
+    ]
+  }
+}
