@@ -340,6 +340,11 @@ export function openShadowDispatchLedger(filename, fixturePlan) {
           validThrough: row.validThrough,
           reservedAt: row.reservedAt
         };
+        const maxDeadline = (clean.phase === 'reserved' || clean.phase === 'cancelled') ?
+          clean.reservedAt + 60000 :
+          Math.min(snapshot.exportedAt, clean.reservedAt + 60000) + plan.maxExecutionMs;
+        if (clean.reservedAt > snapshot.exportedAt || clean.validThrough > maxDeadline)
+          return state('INVALID_SNAPSHOT');
         if (normalized.length && compareRows(normalized[normalized.length - 1], clean) >= 0)
           return state('INVALID_SNAPSHOT');
         if (clean.phase !== 'cancelled') {

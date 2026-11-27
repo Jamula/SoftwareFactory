@@ -413,15 +413,34 @@ test('exports and restores integrity/signature-fenced snapshots across stateless
         const rows = Array.from({length: 6}, (_, idx) => ({...baseRow, issue: 50 + idx, phase: 'settled'}));
         return {...exported1.snapshot, reservations: rows, ...sign(pSig, 1, 1200, rows)};
       })(),
-      // Bad row field (validThrough < reservedAt)
+      // Bad row field (validThrough < reservedAt), future reservedAt, and oversized reserved/in-flight deadlines
       (() => {
         const rows = [{...baseRow, validThrough: 500, reservedAt: 1000}];
+        return {...exported1.snapshot, reservations: rows, ...sign(pSig, 1, 1200, rows)};
+      })(),
+      (() => {
+        const rows = [{...baseRow, reservedAt: 1201, validThrough: 1300}];
+        return {...exported1.snapshot, reservations: rows, ...sign(pSig, 1, 1200, rows)};
+      })(),
+      (() => {
+        const rows = [{...baseRow, phase: 'reserved', reservedAt: 1000, validThrough: 61001}];
+        return {...exported1.snapshot, reservations: rows, ...sign(pSig, 1, 1200, rows)};
+      })(),
+      (() => {
+        const rows = [{...baseRow, phase: 'in-flight', reservedAt: 1000, validThrough: 1200 + 900001}];
         return {...exported1.snapshot, reservations: rows, ...sign(pSig, 1, 1200, rows)};
       })()
     ];
     for (const badSnap of forgedCases) {
       assert.equal(runnerB.importSnapshot(badSnap, {signingKey, now: 1200}).reason, 'INVALID_SNAPSHOT');
     }
+    const lateExportRows = [{...baseRow, phase: 'in-flight', reservedAt: 1000, validThrough: 61000 + 900001}];
+    assert.equal(runnerB.importSnapshot({
+      ...exported1.snapshot,
+      exportedAt: 100000,
+      reservations: lateExportRows,
+      ...sign(pSig, 1, 100000, lateExportRows)
+    }, {signingKey, now: 100000}).reason, 'INVALID_SNAPSHOT');
 
     // Restore onto stateless Runner B and verify active slots, units, and duplicate fencing carry over.
     const imported1 = runnerB.importSnapshot(exported1.snapshot, {signingKey, now: 1200});
