@@ -87,6 +87,28 @@ const TRACE_READBACK_TOOLS = new Map([
 ]);
 const ALLOWED_EVENTS = new Set(['push', 'pull_request', 'merge_group']);
 const ALLOWED_ACTIVITY_SOURCE_SET = new Set(ALLOWED_MAF_ACTIVITY_SOURCES);
+const ALLOWED_LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
+const REQUIRED_FORBIDDEN_ENV_PREFIXES = [
+  'OTEL_EXPORTER_OTLP_TRACES_',
+  'OTEL_EXPORTER_OTLP_METRICS_',
+  'OTEL_EXPORTER_OTLP_LOGS_'
+];
+const REQUIRED_FORBIDDEN_EXACT_ENV_KEYS = [
+  'HTTP_PROXY',
+  'HTTPS_PROXY',
+  'ALL_PROXY',
+  'OTEL_EXPORTER_OTLP_CERTIFICATE',
+  'OTEL_EXPORTER_OTLP_INSECURE'
+];
+const CSHARP_ESCAPES = new Map([
+  ['\\', '\\'],
+  ['"', '"'],
+  ["'", "'"],
+  ['n', '\n'],
+  ['r', '\r'],
+  ['t', '\t'],
+  ['0', '\0']
+]);
 const MAX_DURATION_MS = 3_600_000;
 const MAX_SOURCE_CHARS = 262_144;
 const SHA40_NONZERO_RE = /^(?!0{40})[0-9a-f]{40}$/;
@@ -224,9 +246,14 @@ const positiveId = value => Number.isSafeInteger(value) && value > 0 && value <=
 const isSha40 = value => typeof value === 'string' && SHA40_NONZERO_RE.test(value);
 const isSafeText = value =>
   typeof value === 'string' && value.trim().length > 0 && value.length <= 160 && !CONTROL_CHAR_RE.test(value);
-const isSafeBranchName = value =>
-  typeof value === 'string' && SAFE_BRANCH_CHARS_RE.test(value) &&
-  !value.startsWith('/') && !value.endsWith('/') && !value.includes('//') && !value.includes('..');
+function isSafeBranchName(value) {
+  if (typeof value !== 'string' || !SAFE_BRANCH_CHARS_RE.test(value)) return false;
+  if (value.startsWith('/') || value.endsWith('/') || value.endsWith('.') ||
+      value.includes('//') || value.includes('..') || value.includes('@{') || value === '@') {
+    return false;
+  }
+  return value.split('/').every(part => !part.startsWith('.') && !part.endsWith('.lock'));
+}
 
 function hasOwnEnumerableData(target, key) {
   const descriptor = Object.getOwnPropertyDescriptor(target, key);
@@ -557,12 +584,20 @@ export function verifyCrossOsAspireRuntimeEvidence(evidence) {
   });
 }
 
+function normalizeCanonicalCode(rawCode) {
+  return rawCode
+    .trim()
+    .replaceAll(' .', '.')
+    .replaceAll('. ', '.');
+}
+
 function scanCSharpSource(rawSource, allowPackageDirectives) {
   const source = rawSource.replaceAll('\r\n', '\n');
   if (source.includes('\r')) return null;
   const directives = [];
   const statements = [];
   let current = '';
+  let literals = [];
   let atLineStart = true;
   let seenCodeToken = false;
   let braceDepth = 0;
@@ -570,9 +605,12 @@ function scanCSharpSource(rawSource, allowPackageDirectives) {
     if (current.length > 0 && !current.endsWith(' ')) current += ' ';
   };
   const flushStatement = () => {
-    const trimmed = current.trim();
-    if (trimmed.length > 0) statements.push({text: trimmed, braceDepth});
+    const code = normalizeCanonicalCode(current);
+    if (code.length > 0) {
+      statements.push({code, literals, braceDepth});
+    }
     current = '';
+    literals = [];
   };
 
   for (let i = 0; i < source.length;) {
@@ -619,46 +657,51 @@ function scanCSharpSource(rawSource, allowPackageDirectives) {
     atLineStart = false;
     seenCodeToken = true;
     if (ch === '@' && source[i + 1] === '"') {
-      current += '@"';
       i += 2;
+      let value = '';
       let closed = false;
       while (i < source.length) {
         if (source[i] === '"' && source[i + 1] === '"') {
-          current += '""';
+          value += '"';
           i += 2;
         } else if (source[i] === '"') {
-          current += '"';
           i++;
           closed = true;
           break;
         } else {
-          current += source[i++];
+          value += source[i++];
         }
       }
       if (!closed) return null;
+      const idx = literals.length;
+      literals.push(value);
+      current += `$STR_${idx}$`;
       continue;
     }
     if (ch === '"' || ch === "'") {
       if (ch === '"' && source[i + 1] === '"' && source[i + 2] === '"') return null;
       const quote = ch;
-      current += quote;
       i++;
+      let value = '';
       let closed = false;
       while (i < source.length && source[i] !== '\n') {
         if (source[i] === '\\') {
-          if (i + 1 >= source.length || source[i + 1] === '\n') return null;
-          current += source.slice(i, i + 2);
+          const decoded = CSHARP_ESCAPES.get(source[i + 1]);
+          if (decoded === undefined) return null;
+          value += decoded;
           i += 2;
         } else if (source[i] === quote) {
-          current += quote;
           i++;
           closed = true;
           break;
         } else {
-          current += source[i++];
+          value += source[i++];
         }
       }
       if (!closed) return null;
+      const idx = literals.length;
+      literals.push(value);
+      current += quote === '"' ? `$STR_${idx}$` : `$CHR_${idx}$`;
       continue;
     }
     if (ch === ';') {
@@ -757,17 +800,18 @@ function parseAgentsCsprojManifest(rawXml) {
       continue;
     }
     if (parent === 'PropertyGroup') {
-      if (!XML_PROP_NAME_RE.test(rawTag) || rawTag === 'TargetFrameworks' || properties.has(rawTag)) {
+      const propKeyLower = rawTag.toLowerCase();
+      if (!XML_PROP_NAME_RE.test(rawTag) || propKeyLower === 'targetframeworks' || properties.has(propKeyLower)) {
         return null;
       }
       const closeStart = xml.indexOf('<', pos);
       if (closeStart === -1) return null;
       const valueText = xml.slice(pos, closeStart).trim();
       const closeEnd = xml.indexOf('>', closeStart + 1);
-      if (closeEnd === -1 || xml.slice(closeStart + 1, closeEnd).trim() !== `/${rawTag}`) {
+      if (closeEnd === -1 || xml.slice(closeStart + 1, closeEnd).trim() !== `/${rawTag}` || valueText.includes('&')) {
         return null;
       }
-      properties.set(rawTag, valueText);
+      properties.set(propKeyLower, valueText);
       pos = closeEnd + 1;
       continue;
     }
@@ -783,6 +827,22 @@ function parseAgentsCsprojManifest(rawXml) {
   return {properties, packages};
 }
 
+function hasForbiddenFrameworkInActiveCode(scanResult) {
+  for (const directive of scanResult.directives) {
+    if (RETIRED_GITHUB_MODELS_RE.test(directive)) return 'RETIRED_GITHUB_MODELS_PACKAGE_FORBIDDEN';
+    if (EXCLUDED_AGENT_FRAMEWORK_RE.test(directive)) return 'EXCLUDED_AGENT_FRAMEWORK_FORBIDDEN';
+  }
+  for (const stmt of scanResult.statements) {
+    if (RETIRED_GITHUB_MODELS_RE.test(stmt.code) || stmt.literals.some(lit => RETIRED_GITHUB_MODELS_RE.test(lit))) {
+      return 'RETIRED_GITHUB_MODELS_PACKAGE_FORBIDDEN';
+    }
+    if (EXCLUDED_AGENT_FRAMEWORK_RE.test(stmt.code) || stmt.literals.some(lit => EXCLUDED_AGENT_FRAMEWORK_RE.test(lit))) {
+      return 'EXCLUDED_AGENT_FRAMEWORK_FORBIDDEN';
+    }
+  }
+  return null;
+}
+
 // Pure manifest parser confirming apphost.cs, SoftwareFactory.Agents.csproj, and OTLP
 // bootstrap sources match the Aspire 17 + MAF ActivitySource readiness contract.
 export function verifyMafSourceManifests(manifests) {
@@ -792,12 +852,6 @@ export function verifyMafSourceManifests(manifests) {
     if (typeof text !== 'string' || text.length === 0 || text.length > MAX_SOURCE_CHARS || CONTROL_CHAR_RE.test(text)) {
       return deny('MANIFEST_INPUT_INVALID');
     }
-    if (RETIRED_GITHUB_MODELS_RE.test(text)) {
-      return deny('RETIRED_GITHUB_MODELS_PACKAGE_FORBIDDEN');
-    }
-    if (EXCLUDED_AGENT_FRAMEWORK_RE.test(text)) {
-      return deny('EXCLUDED_AGENT_FRAMEWORK_FORBIDDEN');
-    }
   }
   const appHostScan = scanCSharpSource(manifests.appHostSource, true);
   const bootstrapScan = scanCSharpSource(manifests.localOtlpBootstrapSource, false);
@@ -805,6 +859,10 @@ export function verifyMafSourceManifests(manifests) {
   const csprojParsed = parseAgentsCsprojManifest(manifests.agentsCsprojSource);
   if (appHostScan === null || bootstrapScan === null || telemetryScan === null || csprojParsed === null) {
     return deny('MAF_ACTIVITY_SOURCE_UNREADY');
+  }
+  for (const scan of [appHostScan, bootstrapScan, telemetryScan]) {
+    const forbiddenReason = hasForbiddenFrameworkInActiveCode(scan);
+    if (forbiddenReason !== null) return deny(forbiddenReason);
   }
   const appHostPackages = [];
   for (const directive of appHostScan.directives) {
@@ -821,27 +879,195 @@ export function verifyMafSourceManifests(manifests) {
     const entry = appHostInv.map.get(pkgName);
     if (!entry || entry.version !== pinnedVersion) return deny('MAF_ACTIVITY_SOURCE_UNREADY');
   }
-  if (appHostScan.statements.some(({text, braceDepth}) =>
-    braceDepth !== 0 || text === 'return' || text.startsWith('return ') || text.startsWith('throw ')
-  )) {
+function validateAppHostStatements(statements) {
+  if (statements.length !== 4 || statements.some(({braceDepth}) => braceDepth !== 0)) {
+    return false;
+  }
+  const builderOk = statements[0].code === 'var builder = DistributedApplication.CreateBuilder(args)' &&
+    statements[0].literals.length === 0;
+  const runOk = statements[3].code === 'builder.Build().Run()' &&
+    statements[3].literals.length === 0;
+  const middle = [statements[1], statements[2]];
+  const hasNode = middle.some(({code, literals}) =>
+    code === 'builder.AddNodeApp($STR_0$, $STR_1$, $STR_2$).WithExplicitStart()' &&
+    literals.length === 3 &&
+    literals[0] === 'synthetic-shadow' &&
+    literals[1] === './tools/engineering-factory' &&
+    literals[2] === 'aspire-telemetry-smoke.mjs'
+  );
+  const hasMaf = middle.some(({code, literals}) =>
+    code === 'builder.AddDotnetProject($STR_0$, $STR_1$).WithArgs($STR_2$).WithExplicitStart()' &&
+    literals.length === 3 &&
+    literals[0] === 'maf-specialist-shadow' &&
+    literals[1] === './src/SoftwareFactory.Agents/SoftwareFactory.Agents.csproj' &&
+    literals[2] === '--smoke'
+  );
+  return builderOk && runOk && hasNode && hasMaf;
+}
+
+function extractClassMethodBody(statements, headerPrefix) {
+  const headerIdx = statements.findIndex(s => s.braceDepth === 1 && s.code.startsWith(headerPrefix));
+  if (headerIdx === -1) return null;
+  const body = [];
+  for (let i = headerIdx + 1; i < statements.length && statements[i].braceDepth >= 2; i++) {
+    body.push(statements[i]);
+  }
+  return body.length > 0 ? body : null;
+}
+
+function validateOtlpBootstrapStatements(statements) {
+  const startBody = extractClassMethodBody(statements, 'public static LocalOtlpRuntime StartFromEnvironment(');
+  const validateBody = extractClassMethodBody(statements, 'public static ValidatedLocalOtlpConfig? ValidateEnvironment(');
+  const exporterBody = extractClassMethodBody(statements, 'private static void ConfigureExporterOptions(');
+  const loopbackBody = extractClassMethodBody(statements, 'private static Uri ParseLoopbackEndpoint(');
+  const headersBody = extractClassMethodBody(statements, 'private static void ValidateHeaders(');
+  if (!startBody || !validateBody || !exporterBody || !loopbackBody || !headersBody) {
+    return false;
+  }
+
+  const loopbackHeaderIdx = statements.findIndex(s =>
+    s.braceDepth === 1 && s.code.includes('LoopbackHosts = new(')
+  );
+  const loopbackHostsStmt = loopbackHeaderIdx !== -1 ? statements[loopbackHeaderIdx + 1] : undefined;
+  if (loopbackHostsStmt === undefined ||
+      loopbackHostsStmt.braceDepth !== 2 ||
+      loopbackHostsStmt.literals.length === 0 ||
+      loopbackHostsStmt.code !== loopbackHostsStmt.literals.map((_, idx) => `$STR_${idx}$`).join(', ') ||
+      !loopbackHostsStmt.literals.every(host => ALLOWED_LOOPBACK_HOSTS.has(host))) {
+    return false;
+  }
+
+  const forbiddenPrefixesStmt = statements.find(s =>
+    s.braceDepth === 1 && s.code.startsWith('private static readonly string[] ForbiddenEnvPrefixes =')
+  );
+  const forbiddenExactIdx = statements.findIndex(s =>
+    s.braceDepth === 1 && s.code.includes('ForbiddenExactEnvKeys = new(')
+  );
+  const forbiddenExactStmt = forbiddenExactIdx !== -1 ? statements[forbiddenExactIdx + 1] : undefined;
+  const forbiddenMethodStmt = statements.find(s =>
+    s.braceDepth === 1 && s.code.startsWith('private static bool ContainsForbiddenOverrides(')
+  );
+  if (!forbiddenPrefixesStmt ||
+      !REQUIRED_FORBIDDEN_ENV_PREFIXES.every(p => forbiddenPrefixesStmt.literals.includes(p)) ||
+      !forbiddenExactStmt || forbiddenExactStmt.braceDepth !== 2 ||
+      !REQUIRED_FORBIDDEN_EXACT_ENV_KEYS.every(k => forbiddenExactStmt.literals.includes(k)) ||
+      !forbiddenMethodStmt ||
+      !forbiddenMethodStmt.code.includes('ForbiddenExactEnvKeys.Contains(key) || ForbiddenEnvPrefixes.Any(')) {
+    return false;
+  }
+
+  const startOk = startBody.length === 18 &&
+    !startBody.some(({code}) => code.includes('.Dispose(')) &&
+    startBody[0].code === 'IReadOnlyDictionary<string, string?> env = environment ?? SnapshotProcessEnvironment()' &&
+    startBody[1].code === 'ValidatedLocalOtlpConfig? validated = ValidateEnvironment(env)' &&
+    startBody[2].code === 'if (validated is null)' &&
+    startBody[3].braceDepth === 3 &&
+    startBody[3].code === 'return LocalOtlpRuntime.Disabled()' &&
+    startBody[4].code === 'ResourceBuilder resource = ResourceBuilder.CreateDefault().AddService(validated.ServiceName)' &&
+    startBody[5].braceDepth === 2 &&
+    startBody[5].code === 'TracerProvider tracerProvider = Sdk.CreateTracerProviderBuilder().SetResourceBuilder(resource).AddSource(SoftwareFactoryTelemetry.WorkflowsSourceName, SoftwareFactoryTelemetry.AgentsSourceName).AddOtlpExporter(options => ConfigureExporterOptions(options, validated, $STR_0$)).Build()' &&
+    startBody[5].literals[0] === '/v1/traces' &&
+    startBody[6].braceDepth === 2 &&
+    startBody[6].code === 'MeterProvider meterProvider = Sdk.CreateMeterProviderBuilder().SetResourceBuilder(resource).AddMeter(SoftwareFactoryTelemetry.AgentsSourceName).AddOtlpExporter(options => ConfigureExporterOptions(options, validated, $STR_0$)).Build()' &&
+    startBody[6].literals[0] === '/v1/metrics' &&
+    startBody[13].code === 'otel.AddOtlpExporter(options => ConfigureExporterOptions(options, validated, $STR_0$))' &&
+    startBody[13].literals[0] === '/v1/logs' &&
+    startBody[16].code === 'ILogger stageLogger = loggerFactory.CreateLogger(SoftwareFactoryTelemetry.AgentsSourceName)' &&
+    startBody[17].braceDepth === 2 &&
+    startBody[17].code === 'return new LocalOtlpRuntime( isEnabled: true, tracerProvider: tracerProvider, meterProvider: meterProvider, loggerFactory: loggerFactory, stageLogger: stageLogger)';
+  if (!startOk) return false;
+
+  const endpointLookupIdx = validateBody.findIndex(({code, literals, braceDepth}) =>
+    braceDepth === 2 &&
+    code === 'bool hasEndpoint = env.TryGetValue($STR_0$, out string? rawEndpoint) && !string.IsNullOrWhiteSpace(rawEndpoint)' &&
+    literals[0] === 'OTEL_EXPORTER_OTLP_ENDPOINT'
+  );
+  const forbiddenCheckIdx = validateBody.findIndex(({code, braceDepth}) =>
+    braceDepth === 2 && code === 'bool hasAnyForbiddenOverride = ContainsForbiddenOverrides(env)'
+  );
+  const noEndpointForbiddenOk = validateBody.some(({code, braceDepth}, idx) =>
+    braceDepth === 2 && code === 'if (!hasEndpoint)' &&
+    validateBody[idx + 1]?.braceDepth === 3 && validateBody[idx + 1]?.code === 'if (hasAnyForbiddenOverride)' &&
+    validateBody[idx + 2]?.braceDepth === 4 &&
+    validateBody[idx + 2]?.code.startsWith('throw new LocalOtlpConfigurationException(') === true
+  );
+  const activeForbiddenOk = validateBody.some(({code, braceDepth}, idx) =>
+    braceDepth === 2 && code === 'if (hasAnyForbiddenOverride)' &&
+    validateBody[idx + 1]?.braceDepth === 3 &&
+    validateBody[idx + 1]?.code.startsWith('throw new LocalOtlpConfigurationException(') === true
+  );
+  const parseLoopbackCallIdx = validateBody.findIndex(({code, braceDepth}, idx) =>
+    braceDepth === 2 &&
+    code === 'Uri baseUri = ParseLoopbackEndpoint(rawEndpoint!)' &&
+    !validateBody[idx - 1]?.code.startsWith('if ')
+  );
+  const headersLookupIdx = validateBody.findIndex(({code, literals, braceDepth}) =>
+    braceDepth === 2 &&
+    code === 'string? rawHeaders = env.TryGetValue($STR_0$, out string? headerVal) ? headerVal : null' &&
+    literals[0] === 'OTEL_EXPORTER_OTLP_HEADERS'
+  );
+  const validateHeadersCallIdx = validateBody.findIndex(({code, braceDepth}, idx) =>
+    braceDepth === 2 &&
+    code === 'ValidateHeaders(rawHeaders)' &&
+    !validateBody[idx - 1]?.code.startsWith('if ')
+  );
+  const returnConfigIdx = validateBody.findIndex(({code, braceDepth}, idx) =>
+    braceDepth === 2 &&
+    code === 'return new ValidatedLocalOtlpConfig' &&
+    validateBody[idx + 1]?.braceDepth === 3 &&
+    validateBody[idx + 1]?.code === 'BaseEndpoint = baseUri, Protocol = protocol, Headers = rawHeaders!, ServiceName = serviceName'
+  );
+  const prematureValidateReturn = validateBody.some(({code}, idx) =>
+    idx < returnConfigIdx && code.startsWith('return ') && code !== 'return null'
+  );
+  if (endpointLookupIdx === -1 || forbiddenCheckIdx === -1 || !noEndpointForbiddenOk || !activeForbiddenOk ||
+      parseLoopbackCallIdx <= endpointLookupIdx || headersLookupIdx === -1 ||
+      validateHeadersCallIdx <= headersLookupIdx || returnConfigIdx <= parseLoopbackCallIdx ||
+      returnConfigIdx <= validateHeadersCallIdx || prematureValidateReturn) {
+    return false;
+  }
+
+  const hasExporterBinding = exporterBody.length === 8 &&
+    exporterBody[0].code === 'options.Protocol = config.Protocol' &&
+    exporterBody[1].code === 'options.Headers = config.Headers' &&
+    exporterBody[2].code === 'options.TimeoutMilliseconds = 3000' &&
+    exporterBody[3].code === 'options.Endpoint = config.Protocol == OtlpExportProtocol.HttpProtobuf ? new Uri(config.BaseEndpoint, httpSignalPath) : config.BaseEndpoint' &&
+    exporterBody[4].code === 'if (config.Protocol == OtlpExportProtocol.HttpProtobuf)' &&
+    exporterBody[6].code === 'AllowAutoRedirect = false, UseProxy = false';
+
+  const hasLoopbackEnforcement = loopbackBody.length === 3 &&
+    loopbackBody[0].braceDepth === 2 &&
+    loopbackBody[0].code === 'if (!Uri.TryCreate(rawEndpoint.Trim(), UriKind.Absolute, out Uri? uri) || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps) || !LoopbackHosts.Contains(uri.Host) || uri.IsDefaultPort || !string.IsNullOrEmpty(uri.UserInfo) || !string.IsNullOrEmpty(uri.Query) || !string.IsNullOrEmpty(uri.Fragment) || uri.AbsolutePath != $STR_0$)' &&
+    loopbackBody[0].literals.length === 1 &&
+    loopbackBody[0].literals[0] === '/' &&
+    loopbackBody[1].braceDepth === 3 &&
+    loopbackBody[1].code.startsWith('throw new LocalOtlpConfigurationException(') &&
+    loopbackBody[2].braceDepth === 2 &&
+    loopbackBody[2].code.startsWith('return new Uri(');
+
+  const hasHeadersEnforcement = headersBody.length === 10 &&
+    headersBody[0].braceDepth === 2 &&
+    headersBody[0].code === 'if (string.IsNullOrWhiteSpace(rawHeaders) || rawHeaders.Length > 2048)' &&
+    headersBody[1].braceDepth === 3 &&
+    headersBody[1].code.startsWith('throw new LocalOtlpConfigurationException(') &&
+    headersBody[2].code === 'foreach (char c in rawHeaders)' &&
+    headersBody[3].code === 'if (char.IsControl(c))' &&
+    headersBody[4].code.startsWith('throw new LocalOtlpConfigurationException(') &&
+    headersBody[5].code === 'string[] pairs = rawHeaders.Split($CHR_0$)' &&
+    headersBody[5].literals[0] === ',' &&
+    headersBody[6].code === 'foreach (string pair in pairs)' &&
+    headersBody[7].code === 'int eq = pair.IndexOf($CHR_0$)' &&
+    headersBody[7].literals[0] === '=' &&
+    headersBody[8].code === 'if (eq <= 0 || eq == pair.Length - 1)' &&
+    headersBody[9].code.startsWith('throw new LocalOtlpConfigurationException(');
+
+  return hasExporterBinding && hasLoopbackEnforcement && hasHeadersEnforcement;
+}
+  if (!validateAppHostStatements(appHostScan.statements)) {
     return deny('MAF_ACTIVITY_SOURCE_UNREADY');
   }
-  const hasExplicitNodeShadow = appHostScan.statements.some(({text}) =>
-    text.startsWith('builder.AddNodeApp("synthetic-shadow", "./tools/engineering-factory", "aspire-telemetry-smoke.mjs")') &&
-    text.endsWith('.WithExplicitStart()') &&
-    !text.includes('?')
-  );
-  const hasExplicitMafShadow = appHostScan.statements.some(({text}) =>
-    text.startsWith('builder.AddDotnetProject("maf-specialist-shadow", "./src/SoftwareFactory.Agents/SoftwareFactory.Agents.csproj")') &&
-    text.endsWith('.WithExplicitStart()') &&
-    !text.includes('?')
-  );
-  if (!hasExplicitNodeShadow || !hasExplicitMafShadow ||
-      !appHostScan.statements.some(({text}) => text === 'builder.Build().Run()')) {
-    return deny('MAF_ACTIVITY_SOURCE_UNREADY');
-  }
-  if (csprojParsed.properties.get('TargetFramework') !== 'net10.0' ||
-      csprojParsed.properties.get('CopilotSkipCliDownload') !== 'true') {
+  if (csprojParsed.properties.get('targetframework') !== 'net10.0' ||
+      csprojParsed.properties.get('copilotskipclidownload') !== 'true') {
     return deny('MAF_ACTIVITY_SOURCE_UNREADY');
   }
   const agentPackages = csprojParsed.packages;
@@ -856,27 +1082,17 @@ export function verifyMafSourceManifests(manifests) {
   for (const pkgName of REQUIRED_OTEL_AGENT_PACKAGES) {
     if (!agentInv.map.has(pkgName)) return deny('MAF_ACTIVITY_SOURCE_UNREADY');
   }
-  const bootstrapStatements = bootstrapScan.statements.map(s => s.text);
-  const telemetryStatements = telemetryScan.statements.map(s => s.text);
-  const hasDualActivitySources = bootstrapStatements.some(stmt =>
-    stmt.startsWith('TracerProvider tracerProvider = Sdk.CreateTracerProviderBuilder()') &&
-    stmt.includes('.AddSource(SoftwareFactoryTelemetry.WorkflowsSourceName, SoftwareFactoryTelemetry.AgentsSourceName)') &&
-    stmt.includes('.AddOtlpExporter(') &&
-    stmt.endsWith('.Build()')
+  const hasWorkflowsConst = telemetryScan.statements.some(({code, literals}) =>
+    code === 'public const string WorkflowsSourceName = $STR_0$' &&
+    literals.length === 1 &&
+    literals[0] === REQUIRED_MAF_ACTIVITY_SOURCE
   );
-  const hasEndpointLookup = bootstrapStatements.some(stmt =>
-    stmt.includes('env.TryGetValue("OTEL_EXPORTER_OTLP_ENDPOINT"')
+  const hasAgentsConst = telemetryScan.statements.some(({code, literals}) =>
+    code === 'public const string AgentsSourceName = $STR_0$' &&
+    literals.length === 1 &&
+    literals[0] === REQUIRED_AGENTS_ACTIVITY_SOURCE
   );
-  const hasHeadersLookup = bootstrapStatements.some(stmt =>
-    stmt.includes('env.TryGetValue("OTEL_EXPORTER_OTLP_HEADERS"')
-  );
-  const hasWorkflowsConst = telemetryStatements.includes(
-    `public const string WorkflowsSourceName = "${REQUIRED_MAF_ACTIVITY_SOURCE}"`
-  );
-  const hasAgentsConst = telemetryStatements.includes(
-    `public const string AgentsSourceName = "${REQUIRED_AGENTS_ACTIVITY_SOURCE}"`
-  );
-  if (!hasWorkflowsConst || !hasAgentsConst || !hasDualActivitySources || !hasEndpointLookup || !hasHeadersLookup) {
+  if (!hasWorkflowsConst || !hasAgentsConst || !validateOtlpBootstrapStatements(bootstrapScan.statements)) {
     return deny('MAF_ACTIVITY_SOURCE_UNREADY');
   }
   return Object.freeze({

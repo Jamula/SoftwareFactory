@@ -252,6 +252,11 @@ test('enforces envelope identity, zero laptop dependency, zero unapproved spend,
     r => { r.branch = 'trailing/'; },
     r => { r.branch = 'double//slash'; },
     r => { r.branch = 'parent..ref'; },
+    r => { r.branch = 'trailing.'; },
+    r => { r.branch = 'ref@{0}'; },
+    r => { r.branch = '@'; },
+    r => { r.branch = 'u/.hidden/branch'; },
+    r => { r.branch = 'u/branch.lock'; },
     r => { r.branch = 'bad space'; },
     r => { r.headSha = '0'.repeat(40); },
     r => { r.headSha = 'CEC2745B7B8A21E77AD9F2839D4255D42305D419'; },
@@ -496,7 +501,7 @@ test('verifyMafSourceManifests fails closed on malformed inputs, retired GitHub 
   assert.equal(
     verifyMafSourceManifests({
       ...loadRepoManifests(),
-      appHostSource: `${loadRepoManifests().appHostSource}\n#:package Aspire.Hosting.GitHub.Models@9.2.0\n`
+      appHostSource: `#:package Aspire.Hosting.GitHub.Models@9.2.0\n${loadRepoManifests().appHostSource}`
     }).reason,
     'RETIRED_GITHUB_MODELS_PACKAGE_FORBIDDEN'
   );
@@ -504,17 +509,46 @@ test('verifyMafSourceManifests fails closed on malformed inputs, retired GitHub 
   assert.equal(
     verifyMafSourceManifests({
       ...loadRepoManifests(),
-      agentsCsprojSource: `${loadRepoManifests().agentsCsprojSource}\n<!-- Microsoft.SemanticKernel -->\n`
+      telemetrySource: `${loadRepoManifests().telemetrySource}\n// Active code check\ninternal static class Bad { internal const string X = "GitHub.Models"; }\n`
+    }).reason,
+    'RETIRED_GITHUB_MODELS_PACKAGE_FORBIDDEN'
+  );
+
+  assert.equal(
+    verifyMafSourceManifests({
+      ...loadRepoManifests(),
+      appHostSource: `#:package Microsoft.SemanticKernel@1.40.0\n${loadRepoManifests().appHostSource}`
     }).reason,
     'EXCLUDED_AGENT_FRAMEWORK_FORBIDDEN'
   );
 
-  // Valid XML prolog, benign comments, verbatim C# strings, and escaped quotes/chars remain accepted.
+  assert.equal(
+    verifyMafSourceManifests({
+      ...loadRepoManifests(),
+      telemetrySource: `${loadRepoManifests().telemetrySource}\ninternal static class BadSk { internal const string X = "AutoGen"; }\n`
+    }).reason,
+    'EXCLUDED_AGENT_FRAMEWORK_FORBIDDEN'
+  );
+
+  assert.equal(
+    verifyMafSourceManifests({
+      ...loadRepoManifests(),
+      agentsCsprojSource: loadRepoManifests().agentsCsprojSource.replace(
+        '</ItemGroup>',
+        '  <PackageReference Include="Microsoft.SemanticKernel" Version="1.40.0" />\n  </ItemGroup>'
+      )
+    }).reason,
+    'EXCLUDED_AGENT_FRAMEWORK_FORBIDDEN'
+  );
+
+  // Valid XML prolog, benign comments (including documenting retired packages), verbatim C# strings, and escaped quotes/chars remain accepted.
   const benignDecorated = loadRepoManifests();
   benignDecorated.appHostSource =
-    `// Leading comment\n/* block comment */\n${benignDecorated.appHostSource}\nvar literal = @"verbatim ""quote"" /* not comment */";\nvar escaped = "escaped \\" // not comment";\nvar ch = '\\''; // trailing comment without newline`;
+    `// Aspire.Hosting.GitHub.Models is retired and unused\n/* Microsoft.SemanticKernel is excluded */\n${benignDecorated.appHostSource} // trailing comment without newline`;
+  benignDecorated.telemetrySource =
+    `${benignDecorated.telemetrySource}\ninternal static class BenignLiterals { internal static readonly string Verbatim = @"verbatim ""quote"" /* not comment */"; internal static readonly string Escaped = "escaped \\" // not comment"; internal const char Quote = '\\''; }`;
   benignDecorated.agentsCsprojSource =
-    `<?xml version="1.0" encoding="utf-8"?>\n<!-- benign header comment -->\n${benignDecorated.agentsCsprojSource}\n<!-- trailing comment -->\n`;
+    `<?xml version="1.0" encoding="utf-8"?>\n<!-- Aspire.Hosting.GitHub.Models is retired -->\n${benignDecorated.agentsCsprojSource}\n<!-- trailing comment -->\n`;
   assert.equal(verifyMafSourceManifests(benignDecorated).valid, true);
 
   const eofDirectiveOnly = loadRepoManifests();
@@ -546,6 +580,31 @@ test('verifyMafSourceManifests fails closed on malformed inputs, retired GitHub 
         'builder.AddNodeApp("synthetic-shadow", "./tools/engineering-factory", "aspire-telemetry-smoke.mjs")\n    .WithExplicitStart();',
         'builder.AddNodeApp("synthetic-shadow", "./tools/engineering-factory", "aspire-telemetry-smoke.mjs");'
       );
+    },
+    m => {
+      // Premature builder.Build().Run(); before resource registrations must fail closed.
+      m.appHostSource = m.appHostSource
+        .replace('builder.Build().Run();', '')
+        .replace(
+          'var builder = DistributedApplication.CreateBuilder(args);',
+          'var builder = DistributedApplication.CreateBuilder(args);\nbuilder.Build().Run();'
+        );
+    },
+    m => {
+      // Duplicate builder.Build().Run(); must fail closed.
+      m.appHostSource = `${m.appHostSource}\nbuilder.Build().Run();`;
+    },
+    m => {
+      // Removing .WithArgs("--smoke") from MAF registration must fail closed.
+      m.appHostSource = m.appHostSource.replace('    .WithArgs("--smoke")\n', '');
+    },
+    m => {
+      // Unsupported CLI argument on MAF registration must fail closed.
+      m.appHostSource = m.appHostSource.replace('"--smoke"', '"--unknown"');
+    },
+    m => {
+      // Overriding .WithArgs("--smoke") with a second .WithArgs(...) call must fail closed.
+      m.appHostSource = m.appHostSource.replace('.WithArgs("--smoke")', '.WithArgs("--smoke").WithArgs("--other")');
     },
     m => {
       // C# block-commented .WithExplicitStart() must fail closed.
@@ -584,6 +643,19 @@ test('verifyMafSourceManifests fails closed on malformed inputs, retired GitHub 
     m => { m.agentsCsprojSource = '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework'; },
     m => { m.agentsCsprojSource = m.agentsCsprojSource.replace('</TargetFramework>', '</Mismatch>'); },
     m => {
+      // Lowercase MSBuild property override must fail closed (MSBuild is case-insensitive).
+      m.agentsCsprojSource = m.agentsCsprojSource.replace(
+        '</Project>',
+        '  <PropertyGroup><copilotskipclidownload>false</copilotskipclidownload></PropertyGroup>\n</Project>'
+      );
+    },
+    m => {
+      m.agentsCsprojSource = m.agentsCsprojSource.replace(
+        '<CopilotSkipCliDownload>true</CopilotSkipCliDownload>',
+        '<CopilotSkipCliDownload>&#x66;alse</CopilotSkipCliDownload>'
+      );
+    },
+    m => {
       // Later PropertyGroup overriding CopilotSkipCliDownload to false must fail closed.
       m.agentsCsprojSource = m.agentsCsprojSource.replace(
         '</Project>',
@@ -617,13 +689,172 @@ test('verifyMafSourceManifests fails closed on malformed inputs, retired GitHub 
         ''
       );
     },
+    m => {
+      // C# \t escape inside WorkflowsSourceName must decode to a tab and fail exact comparison.
+      m.telemetrySource = m.telemetrySource.replace(
+        '"Microsoft.Agents.AI.Workflows"',
+        '"Microsoft.Agen\\ts.AI.Workflows"'
+      );
+    },
+    m => {
+      m.telemetrySource = m.telemetrySource.replace(
+        '"Microsoft.Agents.AI.Workflows"',
+        '"Microsoft.Agen\\xs.AI.Workflows"'
+      );
+    },
     m => { m.telemetrySource = m.telemetrySource.replaceAll('"Microsoft.Agents.AI.Workflows"', '"Other.Workflows"'); },
     m => { m.telemetrySource = m.telemetrySource.replaceAll('"SoftwareFactory.Agents"', '"Other.Agents"'); },
+    m => {
+      // Disposing tracerProvider immediately inside StartFromEnvironment must fail closed.
+      m.localOtlpBootstrapSource = m.localOtlpBootstrapSource.replace(
+        'ILogger stageLogger = loggerFactory.CreateLogger(SoftwareFactoryTelemetry.AgentsSourceName);',
+        'tracerProvider.Dispose();\n        ILogger stageLogger = loggerFactory.CreateLogger(SoftwareFactoryTelemetry.AgentsSourceName);'
+      );
+    },
+    m => {
+      // Weakening ContainsForbiddenOverrides helper body must fail closed.
+      m.localOtlpBootstrapSource = m.localOtlpBootstrapSource.replace(
+        'ForbiddenExactEnvKeys.Contains(key)',
+        'false'
+      );
+    },
+    m => {
+      // Making ValidateHeaders conditional in ValidateEnvironment must fail closed.
+      m.localOtlpBootstrapSource = m.localOtlpBootstrapSource.replace(
+        'ValidateHeaders(rawHeaders);',
+        'if (false) ValidateHeaders(rawHeaders);'
+      );
+    },
+    m => {
+      // Clearing options.Headers after assignment in ConfigureExporterOptions must fail closed.
+      m.localOtlpBootstrapSource = m.localOtlpBootstrapSource.replace(
+        'options.Headers = config.Headers;',
+        'options.Headers = config.Headers;\n        options.Headers = "";'
+      );
+    },
+    m => {
+      // Appending extra unreachable condition to ParseLoopbackEndpoint guard must fail closed.
+      m.localOtlpBootstrapSource = m.localOtlpBootstrapSource.replace(
+        '!LoopbackHosts.Contains(uri.Host)',
+        '!LoopbackHosts.Contains(uri.Host) && uri.Host.Length < 0'
+      );
+    },
     m => {
       // Block-commented .AddSource(...) in LocalOtlpBootstrap.cs must fail closed.
       m.localOtlpBootstrapSource = m.localOtlpBootstrapSource.replace(
         '.AddSource(SoftwareFactoryTelemetry.WorkflowsSourceName, SoftwareFactoryTelemetry.AgentsSourceName)',
         '/* .AddSource(SoftwareFactoryTelemetry.WorkflowsSourceName, SoftwareFactoryTelemetry.AgentsSourceName) */'
+      );
+    },
+    m => {
+      // String-literal spoofing of .AddSource(...) must fail closed.
+      m.localOtlpBootstrapSource = m.localOtlpBootstrapSource.replace(
+        '.AddSource(SoftwareFactoryTelemetry.WorkflowsSourceName, SoftwareFactoryTelemetry.AgentsSourceName)',
+        '.AddSource(".AddSource(SoftwareFactoryTelemetry.WorkflowsSourceName, SoftwareFactoryTelemetry.AgentsSourceName)")'
+      );
+    },
+    m => {
+      // Bypassing ValidateEnvironment in StartFromEnvironment must fail closed.
+      m.localOtlpBootstrapSource = m.localOtlpBootstrapSource.replace(
+        'ValidatedLocalOtlpConfig? validated = ValidateEnvironment(env);',
+        'ValidatedLocalOtlpConfig? validated = null;'
+      );
+    },
+    m => {
+      // Missing MeterProvider OTLP exporter wiring must fail closed.
+      m.localOtlpBootstrapSource = m.localOtlpBootstrapSource.replace('"/v1/metrics"', '"/v1/wrong"');
+    },
+    m => {
+      // Missing log OTLP exporter wiring must fail closed.
+      m.localOtlpBootstrapSource = m.localOtlpBootstrapSource.replace('"/v1/logs"', '"/v1/wrong"');
+    },
+    m => {
+      // Adding a non-loopback host to LoopbackHosts allowlist must fail closed.
+      m.localOtlpBootstrapSource = m.localOtlpBootstrapSource.replace('"[::1]"', '"[::1]", "0.0.0.0"');
+    },
+    m => {
+      // Removing LoopbackHosts declaration must fail closed.
+      m.localOtlpBootstrapSource = m.localOtlpBootstrapSource.replace('LoopbackHosts = new(', 'OtherHosts = new(');
+    },
+    m => {
+      // Removing forbidden environment override guard must fail closed.
+      m.localOtlpBootstrapSource = m.localOtlpBootstrapSource.replaceAll('if (hasAnyForbiddenOverride)', 'if (false)');
+    },
+    m => {
+      // Replacing ParseLoopbackEndpoint(rawEndpoint!) with new Uri(rawEndpoint!) must fail closed.
+      m.localOtlpBootstrapSource = m.localOtlpBootstrapSource.replace(
+        'ParseLoopbackEndpoint(rawEndpoint!)',
+        'new Uri(rawEndpoint!)'
+      );
+    },
+    m => {
+      // Removing ValidateHeaders(rawHeaders); call must fail closed.
+      m.localOtlpBootstrapSource = m.localOtlpBootstrapSource.replace('ValidateHeaders(rawHeaders);', '');
+    },
+    m => {
+      // Removing ValidatedLocalOtlpConfig BaseEndpoint/Headers binding must fail closed.
+      m.localOtlpBootstrapSource = m.localOtlpBootstrapSource.replace('Headers = rawHeaders!,', 'Headers = "",');
+    },
+    m => {
+      // Removing exporter header binding or proxy/redirect disablement must fail closed.
+      m.localOtlpBootstrapSource = m.localOtlpBootstrapSource.replace('options.Headers = config.Headers;', '');
+    },
+    m => {
+      m.localOtlpBootstrapSource = m.localOtlpBootstrapSource.replace('config.BaseEndpoint', 'new Uri("https://example.com")');
+    },
+    m => {
+      m.localOtlpBootstrapSource = m.localOtlpBootstrapSource.replace('UseProxy = false', 'UseProxy = true');
+    },
+    m => {
+      // Weakening ParseLoopbackEndpoint host/port check must fail closed.
+      m.localOtlpBootstrapSource = m.localOtlpBootstrapSource.replace('!LoopbackHosts.Contains(uri.Host)', 'false');
+    },
+    m => {
+      // Weakening ValidateHeaders whitespace or key=value check must fail closed.
+      m.localOtlpBootstrapSource = m.localOtlpBootstrapSource.replace('string.IsNullOrWhiteSpace(rawHeaders)', 'false');
+    },
+    m => {
+      m.localOtlpBootstrapSource = m.localOtlpBootstrapSource.replace('pair.IndexOf(\'=\')', '1');
+    },
+    m => {
+      m.localOtlpBootstrapSource = m.localOtlpBootstrapSource.replace('eq <= 0 || eq == pair.Length - 1', 'false');
+    },
+    m => {
+      // Missing method header or empty method body in LocalOtlpBootstrap.cs must fail closed.
+      m.localOtlpBootstrapSource = m.localOtlpBootstrapSource.replace(
+        'private static void ValidateHeaders(string? rawHeaders)',
+        'private static void OtherValidate(string? rawHeaders)'
+      );
+    },
+    m => {
+      const start = m.localOtlpBootstrapSource.indexOf('private static void ValidateHeaders(string? rawHeaders)');
+      const end = m.localOtlpBootstrapSource.indexOf('private static bool ContainsForbiddenOverrides', start);
+      m.localOtlpBootstrapSource =
+        `${m.localOtlpBootstrapSource.slice(0, start)}private static void ValidateHeaders(string? rawHeaders) {}\n\n    ${m.localOtlpBootstrapSource.slice(end)}`;
+    },
+    m => {
+      // Early return bypassing ParseLoopbackEndpoint or ValidateHeaders must fail closed.
+      m.localOtlpBootstrapSource = m.localOtlpBootstrapSource.replace(
+        'ArgumentNullException.ThrowIfNull(env);',
+        'return new ValidatedLocalOtlpConfig { BaseEndpoint = new Uri("https://example.com"), Protocol = OtlpExportProtocol.HttpProtobuf, Headers = "a=b", ServiceName = "s" };'
+      );
+    },
+    m => {
+      m.localOtlpBootstrapSource = m.localOtlpBootstrapSource.replace(
+        'if (!Uri.TryCreate(',
+        'return new Uri(rawEndpoint); if (!Uri.TryCreate('
+      );
+    },
+    m => {
+      m.localOtlpBootstrapSource = m.localOtlpBootstrapSource.replace(
+        'if (string.IsNullOrWhiteSpace(rawHeaders)',
+        'return; if (string.IsNullOrWhiteSpace(rawHeaders)'
+      );
+    },
+    m => {
+      m.localOtlpBootstrapSource = m.localOtlpBootstrapSource.replace(
+        'options.Protocol = config.Protocol;',
+        'return; options.Protocol = config.Protocol;'
       );
     },
     m => { m.localOtlpBootstrapSource = m.localOtlpBootstrapSource.replaceAll('AgentsSourceName', 'OtherSource'); },
