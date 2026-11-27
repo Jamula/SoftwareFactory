@@ -3,7 +3,7 @@
 // Windows 11, macOS, and Linux/WSL2. Never authorizes live orchestration or spend.
 import { execFileSync } from 'node:child_process';
 import { X509Certificate } from 'node:crypto';
-import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from 'node:fs';
+import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, realpathSync } from 'node:fs';
 import { isIP } from 'node:net';
 import { release as osRelease } from 'node:os';
 import { pathToFileURL } from 'node:url';
@@ -194,32 +194,31 @@ const AUTH_SCHEME_SECRET_RE =
 const CREDENTIAL_TOKEN_RE =
   /(?<![A-Za-z0-9])(?:gh[pousr]_[A-Za-z0-9_]{4,255}|github_pat_[A-Za-z0-9_]{4,255}|npm_[A-Za-z0-9]{8,255}|sk-ant-[A-Za-z0-9_-]{4,255}|sk-[A-Za-z0-9_-]{8,255})/gi;
 
-const FULL_BARE_HOME_PATH_RE =
-  /^(?:(?:\\\\|\/\/)(?:wsl\$|wsl\.localhost)[\\/][^\\/\s"':]{1,128}[\\/]home|[A-Za-z]:[\\/]Users|\/mnt\/[a-zA-Z]\/Users|(?:\/System\/Volumes\/Data)?\/Users|(?:\/var)?\/home)[\\/][^\\/\r\n"':]{1,128}$/i;
-
 const WSL_HOME_SUBDIR_RE =
   /(?:\\\\|\/\/)(?:wsl\$|wsl\.localhost)[\\/][^\\/\s"':]{1,128}[\\/]home[\\/][^\\/\r\n"':]{1,128}(?=[\\/])/gi;
-const WSL_HOME_PATH_RE =
-  /(?:\\\\|\/\/)(?:wsl\$|wsl\.localhost)[\\/][^\\/\s"':]{1,128}[\\/]home[\\/][^\\/\s"':]{1,128}/gi;
+const WSL_HOME_BARE_RE =
+  /(?:\\\\|\/\/)(?:wsl\$|wsl\.localhost)[\\/][^\\/\s"':]{1,128}[\\/]home[\\/][^\\/\r\n"':,;|()[\]{}]{1,128}/gi;
 const WSL_MOUNT_WIN_HOME_SUBDIR_RE =
   /(?<![A-Za-z0-9_.-])\/mnt\/[a-zA-Z]\/Users\/[^\\/\r\n"':]{1,128}(?=\/)/gi;
-const WSL_MOUNT_WIN_HOME_RE = /(?<![A-Za-z0-9_.-])\/mnt\/[a-zA-Z]\/Users\/[^/\s"':]{1,128}/gi;
+const WSL_MOUNT_WIN_HOME_BARE_RE =
+  /(?<![A-Za-z0-9_.-])\/mnt\/[a-zA-Z]\/Users\/[^/\r\n"':,;|()[\]{}]{1,128}/gi;
 const WINDOWS_HOME_SUBDIR_RE = /\b[A-Za-z]:[\\/]Users[\\/][^\\/\r\n"':]{1,128}(?=[\\/])/gi;
-const WINDOWS_HOME_QUOTED_RE = /(?<=["'])[A-Za-z]:[\\/]Users[\\/][^\\/\r\n"':]{1,128}(?=["'])/gi;
-const WINDOWS_HOME_PATH_RE = /\b[A-Za-z]:[\\/]Users[\\/][^\\/\s"':]{1,128}/gi;
+const WINDOWS_HOME_BARE_RE = /\b[A-Za-z]:[\\/]Users[\\/][^\\/\r\n"':,;|()[\]{}]{1,128}/gi;
 const MACOS_HOME_SUBDIR_RE =
   /(?<![A-Za-z0-9_.-])(?:\/System\/Volumes\/Data)?\/Users\/[^/\r\n"':]{1,128}(?=\/)/gi;
-const MACOS_HOME_PATH_RE = /(?<![A-Za-z0-9_.-])(?:\/System\/Volumes\/Data)?\/Users\/[^/\s"':]{1,128}/gi;
+const MACOS_HOME_BARE_RE =
+  /(?<![A-Za-z0-9_.-])(?:\/System\/Volumes\/Data)?\/Users\/[^/\r\n"':,;|()[\]{}]{1,128}/gi;
 const LINUX_HOME_SUBDIR_RE = /(?<![A-Za-z0-9_.-])(?:\/var)?\/home\/[^/\r\n"':]{1,128}(?=\/)/g;
-const LINUX_HOME_PATH_RE = /(?<![A-Za-z0-9_.-])(?:\/var)?\/home\/[^/\s"':]{1,128}/g;
+const LINUX_HOME_BARE_RE =
+  /(?<![A-Za-z0-9_.-])(?:\/var)?\/home\/[^/\r\n"':,;|()[\]{}]{1,128}/g;
 const XDG_RUNTIME_UID_RE = /(?<![A-Za-z0-9_.-])\/run\/user\/[0-9]{1,12}/g;
 const DARWIN_USER_TMP_RE =
   /(?<![A-Za-z0-9_.-])(?:\/private)?\/var\/folders\/[^/\s"':]{1,64}\/[^/\s"':]{1,128}/g;
 
 const URL_USERINFO_RE = /(https?:\/\/)([^\s/?#@]{1,128}@)/gi;
 const EMAIL_CANDIDATE_RE = /\b[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+\b/g;
-const USER_ASSIGNMENT_RE =
-  /\b(user(?:name)?|login)(?:\\?["'])?\s*[:=]\s*(?:\\?"[^"\\\r\n]{1,128}\\?"|\\?'[^'\\\r\n]{1,128}\\?'|[^\s"',;}\]]{1,128})/gi;
+const IDENTITY_ASSIGNMENT_RE =
+  /(?<![A-Za-z0-9_.-])(user(?:name)?|logname|login|hostname|computer[-_]?name|userdomain|machine[-_]?name|machine[-_]?id|serial[-_]?number|userprofile|home(?:dir|directory|path)?)(?:\\?["'])?\s*[:=]\s*(?:\\?"[^"\\\r\n]{1,128}\\?"|\\?'[^'\\\r\n]{1,128}\\?'|[^\s"',;}\]]{1,128})/gi;
 
 const MAC_COLON_RE =
   /(?<![0-9A-Fa-f]{2}:)(?<![0-9A-Fa-f])(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}(?![0-9A-Fa-f])(?![:][0-9A-Fa-f]{2})/g;
@@ -431,21 +430,6 @@ export function stripPrivateWorkstationIdentifiers(rawText) {
   replaceTracking(AUTH_SCHEME_SECRET_RE, '[REDACTED_TOKEN]', 'token');
   replaceTracking(CREDENTIAL_TOKEN_RE, '[REDACTED_TOKEN]', 'token');
 
-  replaceTracking(FULL_BARE_HOME_PATH_RE, '<redacted-home>', 'home-directory');
-  replaceTracking(WSL_HOME_SUBDIR_RE, '<redacted-home>', 'home-directory');
-  replaceTracking(WSL_HOME_PATH_RE, '<redacted-home>', 'home-directory');
-  replaceTracking(WSL_MOUNT_WIN_HOME_SUBDIR_RE, '<redacted-home>', 'home-directory');
-  replaceTracking(WSL_MOUNT_WIN_HOME_RE, '<redacted-home>', 'home-directory');
-  replaceTracking(WINDOWS_HOME_SUBDIR_RE, '<redacted-home>', 'home-directory');
-  replaceTracking(WINDOWS_HOME_QUOTED_RE, '<redacted-home>', 'home-directory');
-  replaceTracking(WINDOWS_HOME_PATH_RE, '<redacted-home>', 'home-directory');
-  replaceTracking(MACOS_HOME_SUBDIR_RE, '<redacted-home>', 'home-directory');
-  replaceTracking(MACOS_HOME_PATH_RE, '<redacted-home>', 'home-directory');
-  replaceTracking(LINUX_HOME_SUBDIR_RE, '<redacted-home>', 'home-directory');
-  replaceTracking(LINUX_HOME_PATH_RE, '<redacted-home>', 'home-directory');
-  replaceTracking(XDG_RUNTIME_UID_RE, '<redacted-runtime-dir>', 'home-directory');
-  replaceTracking(DARWIN_USER_TMP_RE, '<redacted-temp>', 'home-directory');
-
   text = text.replace(URL_USERINFO_RE, (_full, scheme) => {
     stripped.add('username');
     return `${scheme}[REDACTED_USER]@`;
@@ -458,7 +442,7 @@ export function stripPrivateWorkstationIdentifiers(rawText) {
     stripped.add('username');
     return '[REDACTED_USER]';
   });
-  text = text.replace(USER_ASSIGNMENT_RE, (_full, key) => {
+  text = text.replace(IDENTITY_ASSIGNMENT_RE, (_full, key) => {
     stripped.add('username');
     return `${key}=[REDACTED_USER]`;
   });
@@ -522,6 +506,19 @@ export function stripPrivateWorkstationIdentifiers(rawText) {
     return '[REDACTED_IP]';
   });
 
+  replaceTracking(WSL_HOME_SUBDIR_RE, '<redacted-home>', 'home-directory');
+  replaceTracking(WSL_HOME_BARE_RE, '<redacted-home>', 'home-directory');
+  replaceTracking(WSL_MOUNT_WIN_HOME_SUBDIR_RE, '<redacted-home>', 'home-directory');
+  replaceTracking(WSL_MOUNT_WIN_HOME_BARE_RE, '<redacted-home>', 'home-directory');
+  replaceTracking(WINDOWS_HOME_SUBDIR_RE, '<redacted-home>', 'home-directory');
+  replaceTracking(WINDOWS_HOME_BARE_RE, '<redacted-home>', 'home-directory');
+  replaceTracking(MACOS_HOME_SUBDIR_RE, '<redacted-home>', 'home-directory');
+  replaceTracking(MACOS_HOME_BARE_RE, '<redacted-home>', 'home-directory');
+  replaceTracking(LINUX_HOME_SUBDIR_RE, '<redacted-home>', 'home-directory');
+  replaceTracking(LINUX_HOME_BARE_RE, '<redacted-home>', 'home-directory');
+  replaceTracking(XDG_RUNTIME_UID_RE, '<redacted-runtime-dir>', 'home-directory');
+  replaceTracking(DARWIN_USER_TMP_RE, '<redacted-temp>', 'home-directory');
+
   const strippedCategories = Object.freeze([...stripped].sort());
   return Object.freeze({
     sanitizedText: text,
@@ -559,6 +556,29 @@ function classifyLoopbackHttpsEndpoint(rawUrl) {
   return 'OK';
 }
 
+function isOsRootTrustStorePath(rawPath) {
+  const normalizedSlashes = rawPath.replaceAll('\\', '/');
+  const lowerNormalized = normalizedSlashes.toLowerCase();
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(rawPath) || /^cert:[\\/]/i.test(rawPath)) {
+    return true;
+  }
+  if (
+    WINDOWS_OS_TRUST_PREFIXES.some(
+      prefix => lowerNormalized === prefix || lowerNormalized.startsWith(`${prefix}/`)
+    )
+  ) {
+    return true;
+  }
+  return (
+    POSIX_OS_TRUST_PREFIXES.some(
+      prefix => lowerNormalized === prefix || lowerNormalized.startsWith(`${prefix}/`)
+    ) ||
+    /^(?:\/system\/volumes\/data)?\/users\/[^/]+\/library\/keychains(?:\/|$)/i.test(normalizedSlashes) ||
+    /^(?:\/var)?\/home\/[^/]+\/\.pki\/nssdb(?:\/|$)/i.test(normalizedSlashes) ||
+    /^\/mnt\/[a-z]\/(?:windows|programdata\/microsoft\/crypto)(?:\/|$)/i.test(normalizedSlashes)
+  );
+}
+
 function validateScopedWorkstationPath(rawPath, osFamily, requirePemExtension) {
   if (
     rawPath.trim().length === 0 ||
@@ -570,8 +590,7 @@ function validateScopedWorkstationPath(rawPath, osFamily, requirePemExtension) {
   }
   const redaction = stripPrivateWorkstationIdentifiers(rawPath);
   const normalizedSlashes = rawPath.replaceAll('\\', '/');
-  const lowerNormalized = normalizedSlashes.toLowerCase();
-  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(rawPath) || /^cert:[\\/]/i.test(rawPath)) {
+  if (isOsRootTrustStorePath(rawPath)) {
     return { ok: false, reason: 'OS_ROOT_TRUST_MODIFIED', homeStripped: false };
   }
 
@@ -583,13 +602,6 @@ function validateScopedWorkstationPath(rawPath, osFamily, requirePemExtension) {
     if (segments.some(seg => seg.length === 0 || seg === '.' || seg === '..')) {
       return { ok: false, reason: 'INVALID_PATH', homeStripped: false };
     }
-    if (
-      WINDOWS_OS_TRUST_PREFIXES.some(
-        prefix => lowerNormalized === prefix || lowerNormalized.startsWith(`${prefix}/`)
-      )
-    ) {
-      return { ok: false, reason: 'OS_ROOT_TRUST_MODIFIED', homeStripped: false };
-    }
   } else {
     if (!rawPath.startsWith('/') || rawPath.startsWith('//') || rawPath.includes('\\')) {
       return { ok: false, reason: 'INVALID_PATH', homeStripped: false };
@@ -597,16 +609,6 @@ function validateScopedWorkstationPath(rawPath, osFamily, requirePemExtension) {
     const segments = rawPath.slice(1).split('/');
     if (segments.some(seg => seg.length === 0 || seg === '.' || seg === '..')) {
       return { ok: false, reason: 'INVALID_PATH', homeStripped: false };
-    }
-    if (
-      POSIX_OS_TRUST_PREFIXES.some(
-        prefix => lowerNormalized === prefix || lowerNormalized.startsWith(`${prefix}/`)
-      ) ||
-      /^(?:\/system\/volumes\/data)?\/users\/[^/]+\/library\/keychains(?:\/|$)/i.test(rawPath) ||
-      /^(?:\/var)?\/home\/[^/]+\/\.pki\/nssdb(?:\/|$)/i.test(rawPath) ||
-      /^\/mnt\/[a-z]\/(?:windows|programdata\/microsoft\/crypto)(?:\/|$)/i.test(rawPath)
-    ) {
-      return { ok: false, reason: 'OS_ROOT_TRUST_MODIFIED', homeStripped: false };
     }
   }
 
@@ -1129,10 +1131,29 @@ const DEFAULT_FS_DEPS = Object.freeze({
   open: openSync,
   fstat: fstatSync,
   lstat: lstatSync,
+  realpath: realpathSync,
   read: readSync,
   close: closeSync,
   openFlags: SAFE_READ_FLAGS
 });
+
+function hasSymlinkedAncestor(rawPath, resolvedPath) {
+  const rawNorm = rawPath.replaceAll('\\', '/').replace(/\/+$/, '');
+  const realNorm = resolvedPath.replaceAll('\\', '/').replace(/\/+$/, '');
+  if (/^[A-Za-z]:\//.test(rawNorm)) {
+    return rawNorm.toLowerCase() !== realNorm.toLowerCase();
+  }
+  if (rawNorm === realNorm) {
+    return false;
+  }
+  if (
+    (rawNorm.startsWith('/tmp/') || rawNorm.startsWith('/var/')) &&
+    realNorm === `/private${rawNorm}`
+  ) {
+    return false;
+  }
+  return true;
+}
 
 export function inspectPemCaFile(caPath, fsDeps = DEFAULT_FS_DEPS) {
   if (
@@ -1178,6 +1199,24 @@ export function inspectPemCaFile(caPath, fsDeps = DEFAULT_FS_DEPS) {
         isSymbolicLink: true,
         pemContent: ''
       });
+    }
+    if (typeof fsDeps.realpath === 'function') {
+      const resolvedPath = fsDeps.realpath(caPath);
+      const resolvedStat = fsDeps.lstat(resolvedPath);
+      if (
+        resolvedStat.isSymbolicLink() ||
+        resolvedStat.dev !== info.dev ||
+        resolvedStat.ino !== info.ino ||
+        hasSymlinkedAncestor(caPath, resolvedPath) ||
+        isOsRootTrustStorePath(resolvedPath)
+      ) {
+        return Object.freeze({
+          readable: false,
+          isRegularFile: false,
+          isSymbolicLink: true,
+          pemContent: ''
+        });
+      }
     }
     if (
       !info.isFile() ||
@@ -1281,7 +1320,8 @@ const COLLECT_OPTIONS_KEYS = new Set([
   'operationalOrchestratorMode',
   'osRootTrustStoreModified',
   'execVersion',
-  'inspectCa'
+  'inspectCa',
+  'resolvePath'
 ]);
 
 const CLI_OPTIONS_KEYS = new Set(['collect', 'evaluate', 'fsDeps', 'write']);
@@ -1300,11 +1340,12 @@ export function collectWorkstationPreflightObservation(options = {}) {
   const operationalOrchestratorMode = Object.hasOwn(options, 'operationalOrchestratorMode')
     ? options.operationalOrchestratorMode
     : false;
-  const osRootTrustStoreModified = Object.hasOwn(options, 'osRootTrustStoreModified')
+  let effectiveOsRootTrustStoreModified = Object.hasOwn(options, 'osRootTrustStoreModified')
     ? options.osRootTrustStoreModified
     : false;
   const execVersion = Object.hasOwn(options, 'execVersion') ? options.execVersion : defaultExecVersion;
   const inspectCa = Object.hasOwn(options, 'inspectCa') ? options.inspectCa : inspectPemCaFile;
+  const resolvePath = Object.hasOwn(options, 'resolvePath') ? options.resolvePath : realpathSync;
 
   const resolvedOsFamily = resolveWorkstationOsFamily(platform, kernelRelease, true);
   const resolvedPlatform = resolvedOsFamily === null ? 'unsupported' : resolvedOsFamily;
@@ -1343,6 +1384,28 @@ export function collectWorkstationPreflightObservation(options = {}) {
     }
   }
 
+  for (const pathKey of [
+    'NODE_EXTRA_CA_CERTS',
+    'ASPIRE_HOME',
+    'ASPIRE_DASHBOARD_DATA_DIRECTORY'
+  ]) {
+    if (typeof filteredEnv[pathKey] === 'string' && filteredEnv[pathKey].length > 0) {
+      try {
+        const resolvedTarget = resolvePath(filteredEnv[pathKey]);
+        if (isOsRootTrustStorePath(resolvedTarget)) {
+          effectiveOsRootTrustStoreModified = true;
+        } else if (
+          pathKey !== 'NODE_EXTRA_CA_CERTS' &&
+          hasSymlinkedAncestor(filteredEnv[pathKey], resolvedTarget)
+        ) {
+          filteredEnv[pathKey] = '';
+        }
+      } catch {
+        // Missing paths remain unchanged so read-only evaluators classify them deterministically.
+      }
+    }
+  }
+
   const resolvedNodeVersion = Object.hasOwn(options, 'nodeVersion')
     ? options.nodeVersion
     : execVersion(process.execPath, ['--version'], env);
@@ -1360,7 +1423,7 @@ export function collectWorkstationPreflightObservation(options = {}) {
     dotnetSdkVersion,
     aspireCliVersion,
     operationalOrchestratorMode,
-    osRootTrustStoreModified,
+    osRootTrustStoreModified: effectiveOsRootTrustStoreModified,
     env: Object.freeze(filteredEnv),
     pemCa
   });

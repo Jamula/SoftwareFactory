@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
-import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -761,7 +761,8 @@ test('rejects and strips private workstation identifiers, tokens, MACs, and non-
     { diagnosticNotes: ['Connected to 172.16.0.10.'] },
     { diagnosticNotes: ['Connected to 2001:db8::1.'] },
     { diagnosticNotes: ['addr:2001:db8::1'] },
-    { diagnosticNotes: ['2001:db8::1: connection refused'] }
+    { diagnosticNotes: ['2001:db8::1: connection refused'] },
+    { diagnosticNotes: ['Profile: C:\\Users\\Jane Doe 192.168.1.50'] }
   ]) {
     const res = evaluateWorkstationCompatibilityPreflight(buildValidObservation(badIpScenario));
     assert.equal(res.compatible, false);
@@ -772,13 +773,28 @@ test('rejects and strips private workstation identifiers, tokens, MACs, and non-
     { loopbackEndpoints: ['https://alice@127.0.0.1:18890'] },
     { env: { ...baseEnv, NODE_OPTIONS: '--title=00:1A:2B:3C:4D:5E' } },
     { diagnosticNotes: ['nic:00:1a:2b:3c:4d:5e: up'] },
-    { diagnosticNotes: ['Active session for alice@example.com'] }
+    { diagnosticNotes: ['Active session for alice@example.com'] },
+    { diagnosticNotes: ['HOSTNAME=synthetic-workstation'] },
+    { diagnosticNotes: ['COMPUTERNAME=synthetic-laptop'] },
+    { diagnosticNotes: ['{"hostname":"synthetic-workstation.local"}'] }
   ]) {
     assert.equal(
       evaluateWorkstationCompatibilityPreflight(buildValidObservation(piiNoteScenario)).reason,
       'PRIVATE_IDENTIFIER_FORBIDDEN'
     );
   }
+
+  const embeddedBareHomeStrict = evaluateWorkstationCompatibilityPreflight(
+    buildValidObservation({
+      diagnosticNotes: [
+        'Profile: C:\\Users\\Jane Doe',
+        'macOS: /Users/Jane Doe, Linux: /home/Jane Doe; WSL: //wsl.localhost/Ubuntu/home/Jane Doe'
+      ]
+    })
+  );
+  assert.equal(embeddedBareHomeStrict.compatible, true);
+  assert.equal(JSON.stringify(embeddedBareHomeStrict).includes('Jane'), false);
+  assert.equal(JSON.stringify(embeddedBareHomeStrict).includes('Doe'), false);
 
   const strippedMode = evaluateWorkstationCompatibilityPreflight(
     buildValidObservation({
@@ -876,6 +892,71 @@ test('inspectPemCaFile, collectWorkstationPreflightObservation, and CLI remain r
     const symlinkInspected = inspectPemCaFile(symlinkPath);
     assert.equal(symlinkInspected.readable, false);
     assert.equal(symlinkInspected.isSymbolicLink, true);
+
+    const realSubdir = join(dir, 'real-certs');
+    mkdirSync(realSubdir);
+    const realNestedPem = join(realSubdir, 'nested.pem');
+    writeFileSync(realNestedPem, VALID_PEM_CERT, { mode: 0o600 });
+    const aliasDir = join(dir, 'ca-alias');
+    symlinkSync(realSubdir, aliasDir);
+    const viaAliasPem = join(aliasDir, 'nested.pem');
+    const aliasInspected = inspectPemCaFile(viaAliasPem);
+    assert.equal(aliasInspected.readable, false);
+    assert.equal(aliasInspected.isSymbolicLink, true);
+
+    // macOS /tmp -> /private/tmp firmlink allowance and Windows drive-path ancestor check
+    assert.equal(
+      inspectPemCaFile('/tmp/sf-mac/aspire-dev.pem', {
+        open: () => 9,
+        fstat: () => ({ isFile: () => true, dev: 1, ino: 1, size: VALID_PEM_CERT.length, mode: 0o600 }),
+        lstat: () => ({ isSymbolicLink: () => false, isFile: () => true, dev: 1, ino: 1 }),
+        realpath: () => '/private/tmp/sf-mac/aspire-dev.pem',
+        read: (_fd, buf, offset) => {
+          if (offset > 0) return 0;
+          return buf.write(VALID_PEM_CERT, 0, 'utf8');
+        },
+        close() {},
+        openFlags: 0
+      }).readable,
+      true
+    );
+    assert.equal(
+      inspectPemCaFile('C:\\Temp\\alias\\aspire-dev.pem', {
+        open: () => 9,
+        fstat: () => ({ isFile: () => true, dev: 1, ino: 1, size: VALID_PEM_CERT.length, mode: 0o600 }),
+        lstat: () => ({ isSymbolicLink: () => false, isFile: () => true, dev: 1, ino: 1 }),
+        realpath: () => 'C:\\Windows\\System32\\aspire-dev.pem',
+        read: () => 0,
+        close() {},
+        openFlags: 0
+      }).isSymbolicLink,
+      true
+    );
+
+    const trustAliasCollected = collectWorkstationPreflightObservation({
+      env: {
+        DOTNET_CLI_TELEMETRY_OPTOUT: '1',
+        ASPIRE_CLI_TELEMETRY_OPTOUT: 'true',
+        ASPIRE_DASHBOARD_TELEMETRY_OPTOUT: 'true',
+        ASPIRE_ALLOW_UNSECURED_TRANSPORT: 'false',
+        ASPIRE_DASHBOARD_UNSECURED_ALLOW_ANONYMOUS: 'false',
+        NODE_EXTRA_CA_CERTS: '/tmp/ca-alias/ca-certificates.crt',
+        ASPIRE_HOME: viaAliasPem
+      },
+      platform: 'linux',
+      arch: 'x64',
+      nodeVersion: 'v26.13.1',
+      kernelRelease: '6.8.0-generic',
+      execVersion: bin => (bin === 'dotnet' ? '10.0.404' : '17.0.0'),
+      resolvePath: p =>
+        p === '/tmp/ca-alias/ca-certificates.crt' ? '/etc/ssl/certs/ca-certificates.crt' : realNestedPem
+    });
+    assert.equal(trustAliasCollected.osRootTrustStoreModified, true);
+    assert.equal(trustAliasCollected.env.ASPIRE_HOME, '');
+    assert.equal(
+      evaluateWorkstationCompatibilityPreflight(trustAliasCollected).reason,
+      'OS_ROOT_TRUST_MODIFIED'
+    );
 
     assert.equal(
       inspectPemCaFile('/synthetic/eloop.pem', {
