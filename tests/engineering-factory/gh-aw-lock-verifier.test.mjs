@@ -4,15 +4,36 @@ import {dirname, resolve} from 'node:path';
 import test from 'node:test';
 import {fileURLToPath} from 'node:url';
 import {
+  PINNED_FACTORY_POLICY_SCAN_RUN_SHA256,
+  PINNED_GHAW_DETECTION_CONCLUSION_SCRIPT_SHA256,
   PINNED_GHAW_RELEASE,
   computeBodySha256,
   computeFrontmatterSha256,
+  computeNormalizedScriptSha256,
+  verifyEventTriggerMatrix,
   verifyGhAwWorkflowLock
 } from '../../tools/engineering-factory/gh-aw-lock-verifier.mjs';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const checkoutSha = '3d3c42e5aac5ba805825da76410c181273ba90b1';
 const setupNodeSha = '949feb2413d6458794dcd2491c4babbbce0c15c1';
+const canonicalPolicyScanSteps = [
+  '      - name: Scan',
+  '        id: policy_scan',
+  '        run: |',
+  '          set -euo pipefail',
+  "          node --input-type=module -e '",
+  '            import {readFileSync} from "node:fs";',
+  '            import {verifyGhAwWorkflowLock} from "./tools/engineering-factory/gh-aw-lock-verifier.mjs";',
+  '            const markdownSource = readFileSync(".github/workflows/factory-orchestrator.md", "utf8");',
+  '            const lockYamlSource = readFileSync(".github/workflows/factory-orchestrator.lock.yml", "utf8");',
+  '            const verdict = verifyGhAwWorkflowLock({markdownSource, lockYamlSource});',
+  '            if (!verdict.valid || verdict.liveDispatch !== false || verdict.liveMerge !== false) {',
+  '              process.exit(1);',
+  '            }',
+  "          '",
+  '          echo "scan_verified=true" >> "$GITHUB_OUTPUT"'
+].join('\n');
 
 function makeMetadataLine({frontmatterHash, bodyHash, version = PINNED_GHAW_RELEASE.version, schemaVersion = 'v4'}) {
   const payload = {
@@ -42,6 +63,7 @@ function buildFixture({
   threatNeeds = '[evaluate]',
   threatIf = "${{ vars.FACTORY_GHAW_ENABLED == 'true' && needs.evaluate.result == 'success' && !endsWith(github.actor, '[bot]') }}",
   threatOutputs = '    outputs:\n      scan_verified: ${{ steps.policy_scan.outputs.scan_verified }}',
+  threatSteps = canonicalPolicyScanSteps,
   safeNeeds = '[evaluate, threat-and-policy-scan]',
   safeIf = '${{ false }}',
   safePerms = '      issues: write',
@@ -102,9 +124,7 @@ function buildFixture({
     '      contents: read',
     threatOutputs,
     '    steps:',
-    '      - name: Scan',
-    '        id: policy_scan',
-    '        run: echo "scan_verified=true" >> "$GITHUB_OUTPUT"',
+    threatSteps,
     '  safe-outputs-comment:',
     `    needs: ${safeNeeds}`,
     `    if: ${safeIf}`,
@@ -686,13 +706,12 @@ test('enforces SHA-pinned uses, persist-credentials:false, no ${{}} in run, perm
   }).reason, 'MISSING_BOT_LOOP_GUARD');
 
   // Threat scan job without any run: step MUST fail closed!
-  const noRunStepScan = buildFixture();
+  const noRunStepScan = buildFixture({
+    threatSteps: `      - uses: actions/setup-node@${setupNodeSha}`
+  });
   assert.equal(verifyGhAwWorkflowLock({
     markdownSource: noRunStepScan.markdownSource,
-    lockYamlSource: noRunStepScan.lockYamlSource.replace(
-      '      - name: Scan\n        id: policy_scan\n        run: echo "scan_verified=true" >> "$GITHUB_OUTPUT"',
-      `      - uses: actions/setup-node@${setupNodeSha}`
-    )
+    lockYamlSource: noRunStepScan.lockYamlSource
   }).reason, 'MISSING_THREAT_SCAN_GATE');
 
   // Write-capable safe-outputs with omitted if: MUST fail closed!
@@ -1120,14 +1139,26 @@ test('verifies compiler-shaped multi-job lock (activation -> agent -> detection 
     '        with:',
     '          script: |',
     '            try {',
-    "              const { setupGlobals } = require('/tmp/gh-aw/actions/setup_globals.cjs');",
+    "              const path = require('path');",
+    "              const actionsDir = path.join(process.env.RUNNER_TEMP, 'gh-aw', 'actions');",
+    "              const { setupGlobals } = require(path.join(actionsDir, 'setup_globals.cjs'));",
     '              setupGlobals(core, github, context, exec, io, getOctokit);',
-    "              const { main } = require('/tmp/gh-aw/actions/parse_threat_detection_results.cjs');",
+    "              const { main } = require(path.join(actionsDir, 'parse_threat_detection_results.cjs'));",
     '              await main();',
     '            } catch (loadErr) {',
-    "              core.setOutput('conclusion', 'failure');",
-    "              core.setOutput('success', 'false');",
-    '              core.setFailed(String(loadErr));',
+    "              const continueOnError = process.env.GH_AW_DETECTION_CONTINUE_ON_ERROR !== 'false';",
+    "              const msg = 'ERR_SYSTEM: \\u274C Unexpected error loading threat detection module: ' + (loadErr && loadErr.message ? loadErr.message : String(loadErr));",
+    '              core.error(msg);',
+    "              core.setOutput('reason', 'parse_error');",
+    '              if (continueOnError) {',
+    "                core.warning('\\u26A0\\uFE0F ' + msg);",
+    "                core.setOutput('conclusion', 'warning');",
+    "                core.setOutput('success', 'false');",
+    '              } else {',
+    "                core.setOutput('conclusion', 'failure');",
+    "                core.setOutput('success', 'false');",
+    '                core.setFailed(msg);',
+    '              }',
     '            }'
   ].join('\n');
 
@@ -1323,7 +1354,56 @@ test('verifies compiler-shaped multi-job lock (activation -> agent -> detection 
     defaultDetectionSteps.replace('RUN_DETECTION: ${{ steps.detection_guard.outputs.run_detection }}', 'RUN_DETECTION: "false"'),
     // Script omits parse_threat_detection_results.cjs or hardcodes success
     defaultDetectionSteps.replace('parse_threat_detection_results.cjs', 'noop.cjs'),
-    defaultDetectionSteps.replace("core.setOutput('success', 'false');", "core.setOutput('success', 'true');"),
+    defaultDetectionSteps.replace("                core.setOutput('success', 'false');", "                core.setOutput('success', 'true');"),
+    // High-severity spoof vector (discussion_r4717788242): comment naming parse_threat_detection_results.cjs + boolean setOutput('success', true)
+    defaultDetectionSteps.replace(
+      / {10}script: \|[\s\S]*$/,
+      [
+        '          script: |',
+        '            // parse_threat_detection_results.cjs',
+        "            core.setOutput('success', true);"
+      ].join('\n')
+    ),
+    // Extra with: parameter or whitespace-only script on detection_conclusion
+    defaultDetectionSteps.replace(
+      '          GH_AW_DETECTION_CONTINUE_ON_ERROR: "false"\n        with:\n',
+      '          GH_AW_DETECTION_CONTINUE_ON_ERROR: "false"\n        with:\n          result-encoding: string\n'
+    ),
+    defaultDetectionSteps.replace(/ {10}script: \|[\s\S]*$/, "          script: '   '"),
+    // Omitted if: or bare if: always() on detection_conclusion, extra env var, comment-spoofed detection_guard, or spoofed redaction steps
+    defaultDetectionSteps.replace(
+      "        id: detection_conclusion\n        if: always() && steps.detection_guard.outputs.run_detection == 'false' || (always() && steps.detection_guard.outputs.run_detection == 'true' && steps.redact_detection_logs.outcome == 'success' && steps.redact_detection_artifacts.outcome == 'success')\n",
+      '        id: detection_conclusion\n'
+    ),
+    defaultDetectionSteps.replace(
+      "        id: detection_conclusion\n        if: always() && steps.detection_guard.outputs.run_detection == 'false' || (always() && steps.detection_guard.outputs.run_detection == 'true' && steps.redact_detection_logs.outcome == 'success' && steps.redact_detection_artifacts.outcome == 'success')\n",
+      '        id: detection_conclusion\n        if: always()\n'
+    ),
+    defaultDetectionSteps.replace(
+      '          GH_AW_DETECTION_CONTINUE_ON_ERROR: "false"',
+      '          GH_AW_DETECTION_CONTINUE_ON_ERROR: "false"\n          RUNNER_TEMP: /tmp/attacker'
+    ),
+    defaultDetectionSteps.replace('run_detection=true', 'run_detection=false'),
+    defaultDetectionSteps.replace(
+      '        run: echo "run_detection=true" >> "$GITHUB_OUTPUT"',
+      '        run: |\n          # run_detection=true\n          echo "run_detection=false" >> "$GITHUB_OUTPUT"'
+    ),
+    defaultDetectionSteps.replace(
+      "          script: const { main } = require('/tmp/gh-aw/actions/redact_secrets.cjs'); await main();",
+      "          script: core.info('spoofed redaction');"
+    ),
+    defaultDetectionSteps.replace(
+      "        id: redact_detection_logs\n        if: always() && steps.detection_guard.outputs.run_detection == 'true'\n",
+      '        id: redact_detection_logs\n'
+    ),
+    defaultDetectionSteps.replace(
+      / {6}- name: Redact secrets in detection logs[\s\S]*?- name: Redact secrets in detection artifacts/,
+      '      - name: Redact secrets in detection artifacts'
+    ),
+    defaultDetectionSteps.replace(
+      / {6}- name: Redact secrets in detection artifacts[\s\S]*?- name: Parse and conclude threat detection/,
+      '      - name: Parse and conclude threat detection'
+    ),
     // Tampered step conditions on redact_detection_logs or detection_conclusion
     defaultDetectionSteps.replace(
       "        id: redact_detection_logs\n        if: always() && steps.detection_guard.outputs.run_detection == 'true'",
@@ -1357,5 +1437,611 @@ test('verifies compiler-shaped multi-job lock (activation -> agent -> detection 
       lockYamlSource: buildCompilerLock(),
       trustedControlPlaneShas: badShas
     }).reason, 'INVALID_LOCK_INPUT');
+    assert.equal(verifyGhAwWorkflowLock({
+      markdownSource: md,
+      lockYamlSource: buildCompilerLock(),
+      trustedDetectionScriptSha256s: badShas
+    }).reason, 'INVALID_LOCK_INPUT');
+    assert.equal(verifyGhAwWorkflowLock({
+      markdownSource: md,
+      lockYamlSource: buildCompilerLock(),
+      trustedPolicyScanRunSha256s: badShas
+    }).reason, 'INVALID_LOCK_INPUT');
+  }
+
+  // Also accept upstream buildDetectionGuardStep script when OUTPUT_TYPES and HAS_PATCH env bindings are verified
+  const upstreamGuardScriptSteps = defaultDetectionSteps.replace(
+    '        id: detection_guard\n        if: always()\n        run: echo "run_detection=true" >> "$GITHUB_OUTPUT"',
+    [
+      '        id: detection_guard',
+      '        if: always()',
+      '        env:',
+      '          OUTPUT_TYPES: ${{ needs.agent.outputs.output_types }}',
+      '          HAS_PATCH: ${{ needs.agent.outputs.has_patch }}',
+      '        run: |',
+      '          if [[ -n "$OUTPUT_TYPES" || "$HAS_PATCH" == "true" ]]; then',
+      '            echo "run_detection=true" >> "$GITHUB_OUTPUT"',
+      '            echo "Detection will run: output_types=$OUTPUT_TYPES, has_patch=$HAS_PATCH"',
+      '          else',
+      '            echo "run_detection=false" >> "$GITHUB_OUTPUT"',
+      '            echo "Detection skipped: no agent outputs or patches to analyze"',
+      '          fi'
+    ].join('\n')
+  );
+  assert.equal(verifyGhAwWorkflowLock({
+    markdownSource: md,
+    lockYamlSource: buildCompilerLock({
+      detectionHousekeeping: '',
+      detectionSteps: upstreamGuardScriptSteps
+    })
+  }).valid, true);
+  // Upstream guard script WITHOUT OUTPUT_TYPES/HAS_PATCH bindings MUST fail closed!
+  assert.equal(verifyGhAwWorkflowLock({
+    markdownSource: md,
+    lockYamlSource: buildCompilerLock({
+      detectionHousekeeping: '',
+      detectionSteps: upstreamGuardScriptSteps.replace('          OUTPUT_TYPES: ${{ needs.agent.outputs.output_types }}\n', '')
+    })
+  }).reason, 'MISSING_THREAT_SCAN_GATE');
+
+  // Case-folded checkout keys (Repository / Ref) and INPUT_* env overrides inside write-capable safe_outputs MUST fail closed!
+  assert.equal(verifyGhAwWorkflowLock({
+    markdownSource: md,
+    lockYamlSource: buildCompilerLock({
+      safeCheckoutWith: '          persist-credentials: false\n          Repository: attacker/evil-fork\n          ref: refs/heads/main'
+    })
+  }).reason, 'UNTRUSTED_SAFE_OUTPUT_CHECKOUT');
+  assert.equal(verifyGhAwWorkflowLock({
+    markdownSource: md,
+    lockYamlSource: buildCompilerLock({
+      safeCheckoutWith: '          persist-credentials: false\n          ref: refs/heads/main\n          Ref: refs/pull/1/head'
+    })
+  }).reason, 'CHECKOUT_CREDENTIALS_PERSISTED');
+  assert.equal(verifyGhAwWorkflowLock({
+    markdownSource: md,
+    lockYamlSource: buildCompilerLock().replace('      - name: Checkout control plane\n', '      - name: Checkout control plane\n        env:\n          INPUT_REF: refs/pull/1/head\n')
+  }).reason, 'UNTRUSTED_SAFE_OUTPUT_CHECKOUT');
+  assert.equal(verifyGhAwWorkflowLock({
+    markdownSource: md,
+    lockYamlSource: buildCompilerLock({
+      detectionOutputs: '    outputs:\n      detection_success: ${{ steps.detection_agentic_execution.outputs.success }}'
+    })
+  }).reason, 'MISSING_THREAT_SCAN_GATE');
+
+  // Explicit caller-provided 64-hex SHA-256 allowlist for custom reviewed detection_conclusion script
+  const customReviewedDetectionScript = [
+    "const { main } = require('/opt/gh-aw-reviewed/parse_threat_detection_results.cjs');",
+    'await main();'
+  ].join('\n');
+  const customDetectionDigest = computeNormalizedScriptSha256(customReviewedDetectionScript);
+  assert.match(customDetectionDigest, /^[a-f0-9]{64}$/);
+  assert.notEqual(customDetectionDigest, PINNED_GHAW_DETECTION_CONCLUSION_SCRIPT_SHA256);
+  const customDetectionLock = buildCompilerLock({
+    detectionSteps: defaultDetectionSteps.replace(
+      / {10}script: \|[\s\S]*$/,
+      [
+        '          script: |',
+        ...customReviewedDetectionScript.split('\n').map(line => `            ${line}`)
+      ].join('\n')
+    )
+  });
+  assert.equal(verifyGhAwWorkflowLock({
+    markdownSource: md,
+    lockYamlSource: customDetectionLock
+  }).reason, 'MISSING_THREAT_SCAN_GATE');
+  assert.equal(verifyGhAwWorkflowLock({
+    markdownSource: md,
+    lockYamlSource: customDetectionLock,
+    trustedDetectionScriptSha256s: [customDetectionDigest]
+  }).valid, true);
+});
+
+test('enforces exact SHA-256 normalized script digest on run: scan-output producers and rejects comment/setter spoofs', () => {
+  assert.match(PINNED_GHAW_DETECTION_CONCLUSION_SCRIPT_SHA256, /^[a-f0-9]{64}$/);
+  assert.match(PINNED_FACTORY_POLICY_SCAN_RUN_SHA256, /^[a-f0-9]{64}$/);
+
+  const sampleScript = 'set -euo pipefail\necho "ok"';
+  assert.equal(
+    computeNormalizedScriptSha256(`\n  ${sampleScript}  \r\n`),
+    computeNormalizedScriptSha256(sampleScript)
+  );
+  for (const invalidScript of [null, 42, '', '   \n  ', 'echo\ttab', 'echo \u0000', 'a\rb']) {
+    assert.equal(computeNormalizedScriptSha256(invalidScript), null);
+  }
+
+  // Spoofed run: producers (raw echo, comment-prefixed echo, working-directory hijack, NODE_OPTIONS hijack) MUST fail closed!
+  const canonicalRunOnly = canonicalPolicyScanSteps.replace('      - name: Scan\n        id: policy_scan\n', '');
+  for (const spoofedThreatSteps of [
+    '      - name: Spoofed echo scan\n        id: policy_scan\n        run: echo "scan_verified=true" >> "$GITHUB_OUTPUT"',
+    [
+      '      - name: Comment-spoofed scan',
+      '        id: policy_scan',
+      '        run: |',
+      '          # verifyGhAwWorkflowLock({markdownSource, lockYamlSource})',
+      '          echo "scan_verified=true" >> "$GITHUB_OUTPUT"'
+    ].join('\n'),
+    `      - name: Working-dir hijacked scan\n        id: policy_scan\n        working-directory: /tmp/untrusted\n${canonicalRunOnly}`,
+    `      - name: Custom-shell hijacked scan\n        id: policy_scan\n        shell: "bash -c 'echo scan_verified=true >> \\"$GITHUB_OUTPUT\\"' {0}"\n${canonicalRunOnly}`,
+    `      - name: NODE_OPTIONS hijacked scan\n        id: policy_scan\n        env:\n          NODE_OPTIONS: --require=/tmp/evil.cjs\n${canonicalRunOnly}`,
+    `      - name: BASH_ENV hijacked scan\n        id: policy_scan\n        env:\n          BASH_ENV: /tmp/evil.sh\n${canonicalRunOnly}`,
+    `      - name: Scalar env scan\n        id: policy_scan\n        env: invalid_scalar\n${canonicalRunOnly}`
+  ]) {
+    const spoofed = buildFixture({
+      threatSteps: spoofedThreatSteps,
+      safeIf: "${{ needs.evaluate.result == 'success' && needs.threat-and-policy-scan.result == 'success' && needs.threat-and-policy-scan.outputs.scan_verified == 'true' }}"
+    });
+    assert.equal(verifyGhAwWorkflowLock({
+      markdownSource: spoofed.markdownSource,
+      lockYamlSource: spoofed.lockYamlSource
+    }).reason, 'MISSING_THREAT_SCAN_GATE');
+  }
+
+  // Workflow-level and scan-job-level defaults/container/env hijacks MUST fail closed!
+  const validSafeBase = buildFixture({
+    safeIf: "${{ needs.evaluate.result == 'success' && needs.threat-and-policy-scan.result == 'success' && needs.threat-and-policy-scan.outputs.scan_verified == 'true' }}"
+  });
+  for (const hijackedLock of [
+    validSafeBase.lockYamlSource.replace('jobs:\n', 'defaults:\n  run:\n    working-directory: /tmp/untrusted\njobs:\n'),
+    validSafeBase.lockYamlSource.replace('jobs:\n', 'env:\n  PATH: /tmp/fake-bin:/usr/bin\njobs:\n'),
+    validSafeBase.lockYamlSource.replace('  threat-and-policy-scan:\n', '  threat-and-policy-scan:\n    defaults:\n      run:\n        working-directory: /tmp/untrusted\n'),
+    validSafeBase.lockYamlSource.replace('  threat-and-policy-scan:\n', '  threat-and-policy-scan:\n    container: alpine:3.20\n'),
+    validSafeBase.lockYamlSource.replace('  threat-and-policy-scan:\n', '  threat-and-policy-scan:\n    env:\n      NODE_OPTIONS: --require=/tmp/evil.cjs\n'),
+    // Untrusted checkout or workspace-mutating run step before policy_scan in threat-and-policy-scan MUST fail closed!
+    validSafeBase.lockYamlSource.replace(
+      '      - name: Scan\n',
+      `      - uses: actions/checkout@${checkoutSha}\n        with:\n          persist-credentials: false\n          repository: attacker/evil-fork\n          ref: refs/heads/main\n      - name: Scan\n`
+    ),
+    validSafeBase.lockYamlSource.replace(
+      '      - name: Scan\n',
+      `      - uses: actions/checkout@${checkoutSha}\n        with:\n          persist-credentials: false\n          path: sub\n      - name: Scan\n`
+    ),
+    validSafeBase.lockYamlSource.replace(
+      '      - name: Scan\n',
+      '      - name: Tamper workspace\n        run: echo "evil"\n      - name: Scan\n'
+    )
+  ]) {
+    assert.equal(verifyGhAwWorkflowLock({
+      markdownSource: validSafeBase.markdownSource,
+      lockYamlSource: hijackedLock
+    }).reason, 'MISSING_THREAT_SCAN_GATE');
+  }
+
+  // Explicit caller-provided 64-hex SHA-256 allowlist for custom reviewed policy_scan run script
+  const customPolicyRun = 'set -euo pipefail\nnode ./tools/custom-reviewed-policy-scan.mjs\necho "scan_verified=true" >> "$GITHUB_OUTPUT"';
+  const customPolicyDigest = computeNormalizedScriptSha256(customPolicyRun);
+  assert.notEqual(customPolicyDigest, PINNED_FACTORY_POLICY_SCAN_RUN_SHA256);
+  const customPolicyFixture = buildFixture({
+    threatSteps: [
+      '      - name: Custom reviewed policy scan',
+      '        id: policy_scan',
+      '        run: |',
+      ...customPolicyRun.split('\n').map(line => `          ${line}`)
+    ].join('\n'),
+    safeIf: "${{ needs.evaluate.result == 'success' && needs.threat-and-policy-scan.result == 'success' && needs.threat-and-policy-scan.outputs.scan_verified == 'true' }}"
+  });
+  assert.equal(verifyGhAwWorkflowLock({
+    markdownSource: customPolicyFixture.markdownSource,
+    lockYamlSource: customPolicyFixture.lockYamlSource
+  }).reason, 'MISSING_THREAT_SCAN_GATE');
+  assert.equal(verifyGhAwWorkflowLock({
+    markdownSource: customPolicyFixture.markdownSource,
+    lockYamlSource: customPolicyFixture.lockYamlSource,
+    trustedPolicyScanRunSha256s: [customPolicyDigest]
+  }).valid, true);
+});
+
+test('verifies Issue #5 event trigger matrix, 10-minute default-off recovery schedule, and zero untrusted PR-text interpolation', () => {
+  const shadowReconcileYaml = readFileSync(resolve(repoRoot, '.github/workflows/shadow-reconcile.yml'), 'utf8');
+  const shadowVerdict = verifyEventTriggerMatrix(shadowReconcileYaml);
+  assert.equal(shadowVerdict.valid, true);
+  assert.equal(shadowVerdict.shadow, true);
+  assert.equal(shadowVerdict.liveDispatch, false);
+  assert.equal(shadowVerdict.liveMerge, false);
+  assert.equal(shadowVerdict.reason, 'EVENT_TRIGGER_MATRIX_VERIFIED');
+  assert.deepEqual(shadowVerdict.triggers, [
+    'issues',
+    'pull_request_target',
+    'push',
+    'schedule',
+    'workflow_dispatch',
+    'workflow_run'
+  ]);
+  assert.deepEqual(shadowVerdict.recoverySchedule, {
+    cron: '3,13,23,33,43,53 * * * *',
+    intervalMinutes: 10,
+    offMinute: true,
+    minuteOffsets: [3, 13, 23, 33, 43, 53]
+  });
+  assert.deepEqual(shadowVerdict.defaultOffVars, ['FACTORY_SHADOW_ENABLED']);
+  assert.equal(shadowVerdict.targetBranch, 'main');
+  assert.equal(Object.isFrozen(shadowVerdict), true);
+  assert.equal(Object.isFrozen(shadowVerdict.recoverySchedule), true);
+
+  // Tracked factory-orchestrator.lock.yml remains workflow_dispatch-only default-off until #5 schedule/events are enabled
+  const orchestratorLock = readFileSync(resolve(repoRoot, '.github/workflows/factory-orchestrator.lock.yml'), 'utf8');
+  assert.equal(verifyEventTriggerMatrix(orchestratorLock).reason, 'MISSING_RECOVERY_SCHEDULE');
+  const partialOrchestrator = verifyEventTriggerMatrix(orchestratorLock, {
+    requireRecoverySchedule: false,
+    allowPartialTriggers: true
+  });
+  assert.equal(partialOrchestrator.valid, true);
+  assert.equal(partialOrchestrator.recoverySchedule, null);
+  assert.deepEqual(partialOrchestrator.defaultOffVars, ['FACTORY_GHAW_ENABLED']);
+
+  const buildMatrixYaml = ({
+    cron = "'3,13,23,33,43,53 * * * *'",
+    includeReview = true,
+    extraTrigger = '',
+    topPerms = '  contents: read',
+    topConcurrency = 'concurrency:\n  group: factory-event-matrix-${{ github.ref }}\n  cancel-in-progress: false',
+    evalIf = "${{ vars.FACTORY_GHAW_ENABLED == 'true' && !endsWith(github.actor, '[bot]') }}",
+    evalPerms = '      contents: read',
+    evalConcurrency = '',
+    checkoutUses = `actions/checkout@${checkoutSha}`,
+    checkoutWith = '          persist-credentials: false\n          repository: ${{ github.repository }}\n          ref: refs/heads/main',
+    stepEnv = '          FACTORY_PULL_NUMBER: ${{ github.event.pull_request.number }}\n          FACTORY_PULL_HEAD: ${{ github.event.pull_request.head.sha }}',
+    stepIf = '',
+    stepRun = '          echo "reconcile metadata only"',
+    extraJobs = [
+      '  threat-and-policy-scan:',
+      '    needs: [evaluate]',
+      "    if: always() && needs.evaluate.result != 'skipped'",
+      '    runs-on: ubuntu-latest',
+      '    permissions:',
+      '      contents: read',
+      '    steps:',
+      '      - run: echo "scan"',
+      '  safe-outputs-noop:',
+      '    needs: [evaluate, threat-and-policy-scan]',
+      '    if: ${{ false }}',
+      '    runs-on: ubuntu-latest',
+      '    permissions:',
+      '      issues: write',
+      '    steps:',
+      '      - run: echo "disabled"'
+    ].join('\n')
+  } = {}) => [
+    'name: Event Matrix Orchestrator',
+    'on:',
+    '  workflow_dispatch:',
+    '    inputs:',
+    '      issue_number:',
+    '        type: string',
+    cron === null ? '' : `  schedule:\n    - cron: ${cron}`,
+    '  issues:',
+    '    types: [opened, edited, labeled, unlabeled, closed, reopened]',
+    '  pull_request_target:',
+    '    branches: [main]',
+    '    types: [opened, reopened, synchronize, ready_for_review, closed]',
+    includeReview ? '  pull_request_review:\n    types: [submitted, edited, dismissed]' : '',
+    '  push:',
+    '    branches: [main]',
+    '  workflow_run:',
+    '    workflows: ["Factory validation"]',
+    '    types: [completed]',
+    '    branches: [main]',
+    extraTrigger,
+    'permissions:',
+    topPerms,
+    topConcurrency,
+    'jobs:',
+    '  evaluate:',
+    evalIf === null ? '' : `    if: ${evalIf}`,
+    evalConcurrency,
+    '    runs-on: ubuntu-latest',
+    evalPerms === null ? '' : `    permissions:\n${evalPerms}`,
+    '    steps:',
+    `      - uses: ${checkoutUses}`,
+    '        with:',
+    checkoutWith,
+    '      - name: Metadata reconcile',
+    stepIf ? `        if: ${stepIf}` : '',
+    '        env:',
+    stepEnv,
+    '        run: |',
+    stepRun,
+    extraJobs
+  ].filter(Boolean).join('\n');
+
+  const fullMatrix = verifyEventTriggerMatrix(buildMatrixYaml());
+  assert.equal(fullMatrix.valid, true);
+  assert.equal(fullMatrix.triggers.includes('pull_request_review'), true);
+
+  // Alternate valid 10-minute cron forms (*/10 and off-minute range/step 7-59/10)
+  const stepTen = verifyEventTriggerMatrix(buildMatrixYaml({cron: "'*/10 * * * *'"}));
+  assert.equal(stepTen.valid, true);
+  assert.equal(stepTen.recoverySchedule.offMinute, false);
+  assert.deepEqual(stepTen.recoverySchedule.minuteOffsets, [0, 10, 20, 30, 40, 50]);
+
+  const rangeTen = verifyEventTriggerMatrix(buildMatrixYaml({cron: "'7-59/10 * * * *'"}));
+  assert.equal(rangeTen.valid, true);
+  assert.equal(rangeTen.recoverySchedule.offMinute, true);
+  assert.deepEqual(rangeTen.recoverySchedule.minuteOffsets, [7, 17, 27, 37, 47, 57]);
+
+  // Custom targetBranch option
+  const customBranchYaml = buildMatrixYaml({includeReview: false})
+    .replaceAll('branches: [main]', 'branches: [release/v1]')
+    .replace('ref: refs/heads/main', 'ref: refs/heads/release/v1');
+  assert.equal(verifyEventTriggerMatrix(customBranchYaml, {targetBranch: 'release/v1'}).valid, true);
+
+  // Invalid inputs & options (including proxies) fail closed
+  const revokedOpt = Proxy.revocable({}, {});
+  revokedOpt.revoke();
+  for (const [badSrc, badOpt] of [
+    [null, undefined],
+    ['', undefined],
+    ['name:\tbad', undefined],
+    [shadowReconcileYaml, revokedOpt.proxy],
+    [shadowReconcileYaml, null],
+    [shadowReconcileYaml, {unknownOpt: true}],
+    [shadowReconcileYaml, {requireRecoverySchedule: 'yes'}],
+    [shadowReconcileYaml, {allowPartialTriggers: 1}],
+    [shadowReconcileYaml, {targetBranch: '../bad'}],
+    [shadowReconcileYaml, {targetBranch: 'bad//ref'}],
+    [shadowReconcileYaml, {targetBranch: 'bad/'}],
+    [shadowReconcileYaml, {targetBranch: 'bad.lock'}],
+    [shadowReconcileYaml, {trustedControlPlaneShas: ['bad-sha']}]
+  ]) {
+    assert.equal(verifyEventTriggerMatrix(badSrc, badOpt).reason, 'INVALID_LOCK_INPUT');
+  }
+
+  for (const badYaml of [
+    'name: missing_sections',
+    'on:\n  workflow_dispatch:\npermissions: {}\njobs:\n  evaluate: scalar',
+    'on:\n  workflow_dispatch:\npermissions: {}\njobs:\n  evaluate:\n    steps: []',
+    'on:\n  workflow_dispatch:\npermissions: {}\njobs:\n  evaluate:\n    steps:\n      - scalar_step'
+  ]) {
+    assert.equal(verifyEventTriggerMatrix(badYaml, {
+      requireRecoverySchedule: false,
+      allowPartialTriggers: true
+    }).reason, 'INVALID_LOCK_YAML');
+  }
+
+  // Unsupported triggers MUST fail closed
+  for (const unsupported of [
+    '  pull_request:\n    branches: [main]',
+    '  issue_comment:\n    types: [created]',
+    '  pull_request_review_comment:\n    types: [created]',
+    '  repository_dispatch:',
+    '  merge_group:'
+  ]) {
+    assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({extraTrigger: unsupported})).reason, 'UNSUPPORTED_EVENT_TRIGGER');
+  }
+
+  // Invalid recovery schedules MUST fail closed
+  for (const badCron of [
+    "'*/5 * * * *'",
+    "'* * * * *'",
+    "'0 * * * *'",
+    "'3,13,23,33,43,54 * * * *'",
+    "'9-53/10 * * * *'",
+    "'10,20,30,40,50,59 * * * *'",
+    "'3,13,23 * * * *'",
+    "'3,13,23,33,43,53 0 * * *'",
+    '12345'
+  ]) {
+    assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({cron: badCron})).reason, 'INVALID_RECOVERY_SCHEDULE');
+  }
+  const duplicateScheduleYaml = buildMatrixYaml().replace(
+    "  schedule:\n    - cron: '3,13,23,33,43,53 * * * *'",
+    "  schedule:\n    - cron: '3,13,23,33,43,53 * * * *'\n    - cron: '7,17,27,37,47,57 * * * *'"
+  );
+  assert.equal(verifyEventTriggerMatrix(duplicateScheduleYaml).reason, 'INVALID_RECOVERY_SCHEDULE');
+
+  // Schedule-only workflow or missing core #5 triggers MUST fail closed
+  assert.equal(
+    verifyEventTriggerMatrix("name: PollOnly\non:\n  schedule:\n    - cron: '3,13,23,33,43,53 * * * *'\npermissions: {}\njobs:\n  evaluate:\n    steps:\n      - run: echo x", {allowPartialTriggers: true}).reason,
+    'MISSING_REQUIRED_EVENT_TRIGGER'
+  );
+  assert.equal(
+    verifyEventTriggerMatrix(buildMatrixYaml().replace('  push:\n    branches: [main]\n', '')).reason,
+    'MISSING_REQUIRED_EVENT_TRIGGER'
+  );
+
+  // Per-trigger configuration violations MUST fail closed
+  for (const mutatedConfig of [
+    buildMatrixYaml().replace('  workflow_dispatch:\n    inputs:\n      issue_number:\n        type: string', '  workflow_dispatch: invalid_scalar'),
+    buildMatrixYaml().replace('    inputs:\n      issue_number:\n        type: string', '    inputs: invalid_scalar'),
+    buildMatrixYaml().replace('    types: [opened, edited, labeled, unlabeled, closed, reopened]', '    types: [unknown_type]'),
+    buildMatrixYaml().replace('    types: [opened, edited, labeled, unlabeled, closed, reopened]', '    types: [opened, opened]'),
+    buildMatrixYaml().replace('  pull_request_target:\n    branches: [main]', '  pull_request_target:\n    branches: ["*"]'),
+    buildMatrixYaml().replace('  pull_request_review:\n    types: [submitted, edited, dismissed]', '  pull_request_review:\n    types: [pending]'),
+    buildMatrixYaml().replace('    workflows: ["Factory validation"]', '    workflows: []'),
+    buildMatrixYaml().replace('    types: [completed]', '    types: [requested]'),
+    buildMatrixYaml().replace('  push:\n    branches: [main]', '  push:\n    branches: [develop]')
+  ]) {
+    assert.equal(verifyEventTriggerMatrix(mutatedConfig).reason, 'INVALID_EVENT_TRIGGER_CONFIG');
+  }
+
+  // Untrusted PR-text / event-payload interpolations MUST fail closed across env, with, if, name, and case/bracket variants!
+  for (const untrustedEnv of [
+    '          PR_TITLE: ${{ github.event.pull_request.title }}',
+    '          PR_BODY: ${{ github.event.pull_request.body }}',
+    '          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}',
+    '          ISSUE_BODY: ${{ github.event.issue.body }}',
+    '          REVIEW_BODY: ${{ github.event.review.body }}',
+    '          COMMENT_BODY: ${{ github.event.comment.body }}',
+    '          COMMIT_MSG: ${{ github.event.head_commit.message }}',
+    '          RUN_TITLE: ${{ github.event.workflow_run.display_title }}',
+    '          HEAD_REF: ${{ github.head_ref }}',
+    '          UPPER_CASE: ${{ GITHUB.EVENT.PULL_REQUEST.TITLE }}',
+    "          BRACKET: ${{ github.event['pull_request']['body'] }}",
+    '          RAW_EVENT: ${{ toJSON(github.event) }}',
+    '          UNCLOSED_EXPR: "${{ github.event.number"',
+    '          STRAY_CLOSE: "value }} ${{ github.event.number }}"',
+    "          UNCLOSED_QUOTE: \"${{ 'unclosed }}\""
+  ]) {
+    assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({stepEnv: untrustedEnv})).reason, 'UNTRUSTED_PR_TEXT_INTERPOLATION');
+  }
+  for (const untrustedStepIf of [
+    "contains(github.event.pull_request.body, '/ship')",
+    "${{ github.event.issue.title == 'urgent' }}",
+    "${{ true }} && github.event.pull_request.title != ''",
+    "github.event.pull_request.title != '' && ${{ true }}"
+  ]) {
+    assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({stepIf: untrustedStepIf})).reason, 'UNTRUSTED_PR_TEXT_INTERPOLATION');
+  }
+  assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({
+    stepIf: "${{ github.event_name != 'it''s_github.event.pull_request.body' }}"
+  })).valid, true);
+
+  // Run interpolation, unpinned uses, credentials, untrusted PR checkout, permissions, merge ban, default-off, and concurrency
+  assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({
+    stepRun: '          echo "${{ github.event.number }}"'
+  })).reason, 'UNSAFE_RUN_INTERPOLATION');
+
+  assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({
+    checkoutUses: 'actions/checkout@v4'
+  })).reason, 'UNPINNED_ACTION_REFERENCE');
+
+  const unpinnedJobUses = buildMatrixYaml({
+    extraJobs: '  reusable:\n    needs: [evaluate]\n    uses: org/repo/.github/workflows/a.yml@main'
+  });
+  assert.equal(verifyEventTriggerMatrix(unpinnedJobUses).reason, 'UNPINNED_ACTION_REFERENCE');
+
+  assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({
+    checkoutWith: '          persist-credentials: true'
+  })).reason, 'CHECKOUT_CREDENTIALS_PERSISTED');
+
+  for (const untrustedCheckout of [
+    '          persist-credentials: false',
+    '          persist-credentials: false\n          ref: ${{ github.event.pull_request.head.sha }}',
+    '          persist-credentials: false\n          ref: ${{ env.PR_HEAD }}',
+    '          persist-credentials: false\n          ref: ${{ steps.prep.outputs.sha }}',
+    '          persist-credentials: false\n          ref: ${{ github.sha }}',
+    '          persist-credentials: false\n          ref: ${{ always() }}',
+    '          persist-credentials: false\n          ref: refs/pull/42/head',
+    '          persist-credentials: false\n          ref: refs/remotes/pull/42/head',
+    '          persist-credentials: false\n          repository: github/gh-aw\n          ref: main',
+    '          persist-credentials: false\n          repository: attacker/fork\n          ref: refs/heads/main',
+    '          persist-credentials: false\n          repository: 12345',
+    '          persist-credentials: false\n          ref: 12345'
+  ]) {
+    assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({
+      checkoutWith: untrustedCheckout
+    })).reason, 'UNTRUSTED_PR_CHECKOUT');
+  }
+  // Omitted ref without pull_request_review still fails closed unless ALL active upstream needs enforce github.ref == 'refs/heads/<targetBranch>'!
+  assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({
+    includeReview: false,
+    checkoutWith: '          persist-credentials: false'
+  })).reason, 'UNTRUSTED_PR_CHECKOUT');
+  assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({
+    includeReview: false,
+    evalIf: "${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.ref == 'refs/heads/main' && !endsWith(github.actor, '[bot]') }}",
+    extraJobs: [
+      '  noref_peer:',
+      "    if: vars.FACTORY_GHAW_ENABLED == 'true'",
+      '    runs-on: ubuntu-latest',
+      '    steps:',
+      '      - run: echo "peer"',
+      '  mixed_needs_checkout:',
+      '    needs: [evaluate, noref_peer]',
+      '    runs-on: ubuntu-latest',
+      '    steps:',
+      `      - uses: actions/checkout@${checkoutSha}`,
+      '        with:',
+      '          persist-credentials: false'
+    ].join('\n')
+  })).reason, 'UNTRUSTED_PR_CHECKOUT');
+  // Case-folded checkout keys (Repository / Ref) and INPUT_* env overrides in verifyEventTriggerMatrix MUST fail closed!
+  assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({
+    checkoutWith: '          persist-credentials: false\n          Repository: attacker/evil-fork\n          ref: refs/heads/main'
+  })).reason, 'UNTRUSTED_PR_CHECKOUT');
+  assert.equal(verifyEventTriggerMatrix(buildMatrixYaml().replace(
+    `      - uses: actions/checkout@${checkoutSha}\n`,
+    `      - uses: actions/checkout@${checkoutSha}\n        env:\n          INPUT_REF: refs/pull/42/head\n`
+  )).reason, 'UNTRUSTED_PR_CHECKOUT');
+  // Pinned github/gh-aw and allowlisted trustedControlPlaneShas checkouts pass!
+  const allowlistedMatrixSha = 'e'.repeat(40);
+  assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({
+    checkoutWith: `          persist-credentials: false\n          repository: github/gh-aw\n          ref: ${PINNED_GHAW_RELEASE.commit}`
+  })).valid, true);
+  assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({
+    checkoutWith: `          persist-credentials: false\n          ref: ${allowlistedMatrixSha}`
+  }), {trustedControlPlaneShas: [allowlistedMatrixSha]}).valid, true);
+  assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({
+    checkoutWith: '          persist-credentials: false\n          ref: ${{ github.workflow_sha }}'
+  })).valid, true);
+
+  // Linear-time O(N) guard against long .github identifier chains (no polynomial ReDoS)
+  const redosStart = performance.now();
+  assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({
+    stepEnv: `          SAFE_VAR: \${{ vars${'.github'.repeat(6000)} == 'x' }}`
+  })).valid, true);
+  assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({
+    stepEnv: `          UNTRUSTED_VAR: \${{ github${'.github'.repeat(6000)} == 'x' }}`
+  })).reason, 'UNTRUSTED_PR_TEXT_INTERPOLATION');
+  assert.ok(performance.now() - redosStart < 250);
+
+  assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({topPerms: '  contents: write'})).reason, 'TOP_LEVEL_WRITE_PERMISSION');
+  assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({topPerms: '  issues: read'})).reason, 'INVALID_TOP_LEVEL_PERMISSIONS');
+  assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({evalPerms: '      issues: write'})).reason, 'AGENT_JOB_WRITE_PERMISSION');
+  assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({
+    extraJobs: '  activation:\n    needs: [evaluate]\n    runs-on: ubuntu-slim\n    permissions:\n      issues: write\n    steps:\n      - run: echo x'
+  })).reason, 'AGENT_JOB_WRITE_PERMISSION');
+  assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({
+    extraJobs: '  safe-outputs-bad:\n    needs: [evaluate]\n    if: ${{ false }}\n    runs-on: ubuntu-latest\n    permissions:\n      contents: write\n    steps:\n      - run: echo x'
+  })).reason, 'EXCESSIVE_SAFE_OUTPUT_PERMISSION');
+  assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({
+    extraJobs: '  safe-outputs-missing-perms:\n    needs: [evaluate]\n    if: ${{ false }}\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo x'
+  })).reason, 'EXCESSIVE_SAFE_OUTPUT_PERMISSION');
+
+  assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({
+    stepRun: '          gh pr merge 1 --squash'
+  })).reason, 'MAIN_MERGE_FORBIDDEN_IN_GHAW');
+  assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({
+    extraJobs: '  merge-pull-request:\n    needs: [evaluate]\n    if: ${{ false }}\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo x'
+  })).reason, 'MAIN_MERGE_FORBIDDEN_IN_GHAW');
+
+  // Concurrency non-overlap enforcement (including downstream jobs when top-level concurrency is omitted)
+  assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({topConcurrency: ''})).reason, 'MISSING_CONCURRENCY_GUARD');
+  assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({
+    topConcurrency: '',
+    evalConcurrency: '    concurrency:\n      group: g\n      cancel-in-progress: false'
+  })).reason, 'MISSING_CONCURRENCY_GUARD');
+  assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({
+    topConcurrency: 'concurrency:\n  group: g\n  cancel-in-progress: true'
+  })).reason, 'MISSING_CONCURRENCY_GUARD');
+  assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({
+    evalConcurrency: '    concurrency:\n      group: g\n      cancel-in-progress: true'
+  })).reason, 'MISSING_CONCURRENCY_GUARD');
+
+  // Default-off & github.ref guard downstream inheritance enforcement (including implicit needs success & reverse topological order)
+  const implicitAndReverseDownstream = buildMatrixYaml({
+    includeReview: false,
+    evalIf: "${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.ref == 'refs/heads/main' && !endsWith(github.actor, '[bot]') }}",
+    extraJobs: [
+      '  downstream_implicit:',
+      '    needs: [mid_step]',
+      '    runs-on: ubuntu-latest',
+      '    steps:',
+      `      - uses: actions/checkout@${checkoutSha}`,
+      '        with:',
+      '          persist-credentials: false',
+      '  mid_step:',
+      '    needs: [evaluate]',
+      "    if: (!cancelled()) && needs.evaluate.result == 'success'",
+      '    runs-on: ubuntu-latest',
+      '    steps:',
+      '      - run: echo "mid"'
+    ].join('\n')
+  });
+  assert.equal(verifyEventTriggerMatrix(implicitAndReverseDownstream).valid, true);
+
+  for (const unguardedMatrix of [
+    buildMatrixYaml({evalIf: null}),
+    buildMatrixYaml({evalIf: '${{ false }}', extraJobs: ''}),
+    buildMatrixYaml({
+      extraJobs: '  unguarded_child:\n    needs: [evaluate]\n    if: always()\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo x'
+    }),
+    buildMatrixYaml({
+      extraJobs: '  failure_child:\n    needs: [evaluate]\n    if: failure()\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo x'
+    }),
+    buildMatrixYaml({
+      extraJobs: '  empty_needs_child:\n    needs: []\n    if: ${{ true }}\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo x'
+    })
+  ]) {
+    assert.equal(verifyEventTriggerMatrix(unguardedMatrix).reason, 'MISSING_DEFAULT_OFF_GUARD');
   }
 });
