@@ -40,9 +40,12 @@ function compareRows(a, b) {
   return a.head === b.head ? 0 : a.head < b.head ? -1 : 1;
 }
 
-function canAdvancePhase(fromPhase, toPhase, fromValid, toValid) {
+function canAdvancePhase(fromPhase, toPhase, fromValid, toValid, maxExecutionMs) {
   if (fromPhase === toPhase) return toValid === fromValid;
-  if (fromPhase === 'reserved') return ['in-flight', 'cancelled', 'settled', 'expired'].includes(toPhase);
+  if (fromPhase === 'reserved') {
+    if (toPhase === 'cancelled') return toValid === fromValid;
+    return ['in-flight', 'settled', 'expired'].includes(toPhase) && toValid - fromValid <= maxExecutionMs;
+  }
   if (fromPhase === 'in-flight') return ['settled', 'expired'].includes(toPhase) && toValid === fromValid;
   return false;
 }
@@ -390,7 +393,8 @@ export function openShadowDispatchLedger(filename, fixturePlan) {
           const incoming = byKey.get(`${local.repository}:${local.issue}:${local.head}`);
           if (!incoming || incoming.generation !== local.generation ||
               incoming.units !== local.units || incoming.reservedAt !== local.reserved_at ||
-              !canAdvancePhase(local.phase, incoming.phase, local.valid_through, incoming.validThrough)) {
+              !canAdvancePhase(local.phase, incoming.phase, local.valid_through,
+                incoming.validThrough, plan.maxExecutionMs)) {
             db.exec('ROLLBACK');
             return state('SNAPSHOT_STATE_REGRESSION');
           }

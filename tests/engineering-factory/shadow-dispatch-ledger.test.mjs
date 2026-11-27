@@ -507,6 +507,44 @@ test('exports and restores integrity/signature-fenced snapshots across stateless
       shortExecLedger.close();
     }
 
+    // Regression: local reserved row (valid_through=1999) under maxExecutionMs=500 rejects execution deadline > 2499
+    // and rejects cancelled transition with mutated validThrough.
+    const localBoundLedger = openShadowDispatchLedger(':memory:', shortExecPlan);
+    try {
+      assert.equal(localBoundLedger.reserve(candidate(1, 10), q(1), now).reason, 'SHADOW_RESERVED');
+      const localSnap = localBoundLedger.exportSnapshot({signingKey, now}).snapshot;
+      const localSig = localSnap.planSignature;
+      const localRow = localSnap.reservations[0];
+      for (const badRow of [
+        {...localRow, phase: 'in-flight', validThrough: 61500},
+        {...localRow, phase: 'in-flight', validThrough: 2500},
+        {...localRow, phase: 'cancelled', validThrough: 1998}
+      ]) {
+        const rows = [badRow];
+        assert.equal(localBoundLedger.importSnapshot({
+          version: 1,
+          window: shortExecPlan.window,
+          planSignature: localSig,
+          sequence: 2,
+          exportedAt: 61000,
+          reservations: rows,
+          ...sign(localSig, 2, 61000, rows)
+        }, {signingKey, now: 61000}).reason, 'SNAPSHOT_STATE_REGRESSION');
+      }
+      const okRows = [{...localRow, phase: 'in-flight', validThrough: 2499}];
+      assert.equal(localBoundLedger.importSnapshot({
+        version: 1,
+        window: shortExecPlan.window,
+        planSignature: localSig,
+        sequence: 2,
+        exportedAt: 61000,
+        reservations: okRows,
+        ...sign(localSig, 2, 61000, okRows)
+      }, {signingKey, now: 61000}).reason, 'SHADOW_SNAPSHOT_IMPORTED');
+    } finally {
+      localBoundLedger.close();
+    }
+
     // Restore onto stateless Runner B and verify active slots, units, and duplicate fencing carry over.
     const imported1 = runnerB.importSnapshot(exported1.snapshot, {signingKey, now: 1200});
     assert.deepEqual(imported1, {
