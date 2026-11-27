@@ -1,5 +1,6 @@
 // Deterministic, metadata-only, fail-closed cross-OS GitHub-hosted Aspire 17 and
 // OpenTelemetry runtime receipt verifier. Zero network, filesystem, or live side effects.
+import {createHash} from 'node:crypto';
 import {types} from 'node:util';
 
 export const SOFTWARE_FACTORY_REPOSITORY = 'Jamula/SoftwareFactory';
@@ -19,6 +20,7 @@ export const REQUIRED_HOSTED_PLATFORMS = Object.freeze({
   linux: Object.freeze({
     os: 'linux',
     runnerLabel: 'ubuntu-latest',
+    workflowName: 'Factory validation',
     jobName: 'linux-aspire-runtime',
     workflowPath: '.github/workflows/validate.yml',
     allowedTraceReadbackMethods: Object.freeze(['cli-export-zip', 'authenticated-https-api'])
@@ -26,6 +28,7 @@ export const REQUIRED_HOSTED_PLATFORMS = Object.freeze({
   windows: Object.freeze({
     os: 'windows',
     runnerLabel: 'windows-latest',
+    workflowName: 'Windows Aspire runtime',
     jobName: 'windows-aspire-runtime',
     workflowPath: '.github/workflows/windows-aspire.yml',
     allowedTraceReadbackMethods: Object.freeze(['authenticated-https-api'])
@@ -71,6 +74,7 @@ export const REQUIRED_APPHOST_PACKAGES = Object.freeze({
 });
 
 export const MINIMUM_MAF_PACKAGE_VERSION = Object.freeze([1, 28, 0]);
+export const MINIMUM_OTEL_PACKAGE_VERSION = Object.freeze([1, 21, 0]);
 export const REQUIRED_MAF_AGENT_PACKAGES = Object.freeze([
   'Microsoft.Agents.AI',
   'Microsoft.Agents.AI.GitHub.Copilot',
@@ -81,25 +85,27 @@ export const REQUIRED_OTEL_AGENT_PACKAGES = Object.freeze([
   'OpenTelemetry.Exporter.OpenTelemetryProtocol'
 ]);
 
+export const PINNED_LOCAL_OTLP_BOOTSTRAP_AST_SHA256 =
+  'e809b709b7fc40fc1ea4c95ba95ff561197be6f8ca03490b9954015c44df75ec';
+export const PINNED_TELEMETRY_AST_SHA256 =
+  '994bc75fa9c78e56942caf6278e7640ecedf8e4eeac9dc9916c2b0063957a250';
+
 const TRACE_READBACK_TOOLS = new Map([
   ['cli-export-zip', 'tools/engineering-factory/verify-dashboard-export.mjs'],
   ['authenticated-https-api', 'tools/engineering-factory/verify-dashboard-api.mjs']
 ]);
 const ALLOWED_EVENTS = new Set(['push', 'pull_request', 'merge_group']);
 const ALLOWED_ACTIVITY_SOURCE_SET = new Set(ALLOWED_MAF_ACTIVITY_SOURCES);
-const ALLOWED_LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
-const REQUIRED_FORBIDDEN_ENV_PREFIXES = [
-  'OTEL_EXPORTER_OTLP_TRACES_',
-  'OTEL_EXPORTER_OTLP_METRICS_',
-  'OTEL_EXPORTER_OTLP_LOGS_'
-];
-const REQUIRED_FORBIDDEN_EXACT_ENV_KEYS = [
-  'HTTP_PROXY',
-  'HTTPS_PROXY',
-  'ALL_PROXY',
-  'OTEL_EXPORTER_OTLP_CERTIFICATE',
-  'OTEL_EXPORTER_OTLP_INSECURE'
-];
+const ALLOWED_CSPROJ_PROPERTIES = new Map([
+  ['outputtype', 'Exe'],
+  ['targetframework', 'net10.0'],
+  ['nullable', 'enable'],
+  ['implicitusings', 'enable'],
+  ['treatwarningsaserrors', 'true'],
+  ['copilotskipclidownload', 'true'],
+  ['rootnamespace', 'SoftwareFactory.Agents']
+]);
+const REQUIRED_CSPROJ_PROPERTIES = [...ALLOWED_CSPROJ_PROPERTIES.keys()];
 const CSHARP_ESCAPES = new Map([
   ['\\', '\\'],
   ['"', '"'],
@@ -109,16 +115,42 @@ const CSHARP_ESCAPES = new Map([
   ['t', '\t'],
   ['0', '\0']
 ]);
+const APPHOST_BUILDER_TOKENS_JSON = JSON.stringify([
+  {k: 'id', v: 'var'}, {k: 'id', v: 'builder'}, {k: 'p', v: '='},
+  {k: 'id', v: 'DistributedApplication'}, {k: 'p', v: '.'}, {k: 'id', v: 'CreateBuilder'},
+  {k: 'p', v: '('}, {k: 'id', v: 'args'}, {k: 'p', v: ')'}
+]);
+const APPHOST_NODE_TOKENS_JSON = JSON.stringify([
+  {k: 'id', v: 'builder'}, {k: 'p', v: '.'}, {k: 'id', v: 'AddNodeApp'},
+  {k: 'p', v: '('}, {k: 'str', v: 'synthetic-shadow'}, {k: 'p', v: ','},
+  {k: 'str', v: './tools/engineering-factory'}, {k: 'p', v: ','},
+  {k: 'str', v: 'aspire-telemetry-smoke.mjs'}, {k: 'p', v: ')'},
+  {k: 'p', v: '.'}, {k: 'id', v: 'WithExplicitStart'}, {k: 'p', v: '('}, {k: 'p', v: ')'}
+]);
+const APPHOST_MAF_TOKENS_JSON = JSON.stringify([
+  {k: 'id', v: 'builder'}, {k: 'p', v: '.'}, {k: 'id', v: 'AddDotnetProject'},
+  {k: 'p', v: '('}, {k: 'str', v: 'maf-specialist-shadow'}, {k: 'p', v: ','},
+  {k: 'str', v: './src/SoftwareFactory.Agents/SoftwareFactory.Agents.csproj'}, {k: 'p', v: ')'},
+  {k: 'p', v: '.'}, {k: 'id', v: 'WithArgs'}, {k: 'p', v: '('}, {k: 'str', v: '--smoke'}, {k: 'p', v: ')'},
+  {k: 'p', v: '.'}, {k: 'id', v: 'WithExplicitStart'}, {k: 'p', v: '('}, {k: 'p', v: ')'}
+]);
+const APPHOST_RUN_TOKENS_JSON = JSON.stringify([
+  {k: 'id', v: 'builder'}, {k: 'p', v: '.'}, {k: 'id', v: 'Build'}, {k: 'p', v: '('}, {k: 'p', v: ')'},
+  {k: 'p', v: '.'}, {k: 'id', v: 'Run'}, {k: 'p', v: '('}, {k: 'p', v: ')'}
+]);
 const MAX_DURATION_MS = 3_600_000;
 const MAX_SOURCE_CHARS = 262_144;
 const SHA40_NONZERO_RE = /^(?!0{40})[0-9a-f]{40}$/;
 const SAFE_BRANCH_CHARS_RE = /^[^\u0000-\u0020\u007f~^:?*[\\]{1,200}$/;
 const ISO_UTC_SECONDS_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
 const LOOPBACK_HTTPS_ORIGIN_RE = /^https:\/\/(?:localhost|127\.0\.0\.1|\[::1\]):([1-9][0-9]{0,4})$/;
-const PACKAGE_NAME_RE = /^[A-Za-z0-9]+(?:\.[A-Za-z0-9]+)*$/;
+const PACKAGE_NAME_RE = /^[A-Za-z0-9]+(?:[._-][A-Za-z0-9]+)*$/;
 const SEMVER_RE = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const XML_PROP_NAME_RE = /^[A-Za-z][A-Za-z0-9]*$/;
-const CSPROJ_PKG_ATTRS_RE = /^PackageReference\s+Include="([^"]+)"\s+Version="([^"]+)"$/;
+const XML_DECLARATION_RE =
+  /^<\?xml[ \t]+version="1\.0"(?:[ \t]+encoding="[A-Za-z][A-Za-z0-9._-]*")?(?:[ \t]+standalone="(?:yes|no)")?[ \t]*\?>/;
+const CSHARP_ID_CHAR_RE = /[A-Za-z0-9_]/;
+const XML_ATTR_PAIR_RE = /^([A-Za-z]+)="([^"]+)"$/;
 const RETIRED_GITHUB_MODELS_RE = /github\.?models/i;
 const EXCLUDED_AGENT_FRAMEWORK_RE = /(?:^|[^A-Za-z0-9])(?:semantickernel|semantic[_-]kernel|autogen)(?:$|[^A-Za-z0-9])/i;
 const CONTROL_CHAR_RE = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/;
@@ -244,12 +276,12 @@ const deny = reason => Object.freeze({
 
 const positiveId = value => Number.isSafeInteger(value) && value > 0 && value <= 1_000_000_000_000_000;
 const isSha40 = value => typeof value === 'string' && SHA40_NONZERO_RE.test(value);
-const isSafeText = value =>
-  typeof value === 'string' && value.trim().length > 0 && value.length <= 160 && !CONTROL_CHAR_RE.test(value);
+
 function isSafeBranchName(value) {
   if (typeof value !== 'string' || !SAFE_BRANCH_CHARS_RE.test(value)) return false;
-  if (value.startsWith('/') || value.endsWith('/') || value.endsWith('.') ||
-      value.includes('//') || value.includes('..') || value.includes('@{') || value === '@') {
+  if (value.startsWith('/') || value.startsWith('-') || value.endsWith('/') || value.endsWith('.') ||
+      value.includes('//') || value.includes('..') || value.includes('@{') ||
+      value === '@' || value === 'HEAD') {
     return false;
   }
   return value.split('/').every(part => !part.startsWith('.') && !part.endsWith('.lock'));
@@ -309,9 +341,11 @@ function parseIsoUtcSeconds(rawTimestamp) {
 }
 
 function parseSemverTuple(rawVersion) {
-  if (typeof rawVersion !== 'string') return null;
+  if (typeof rawVersion !== 'string' || rawVersion.length > 64) return null;
   const match = SEMVER_RE.exec(rawVersion);
-  return match === null ? null : [Number(match[1]), Number(match[2]), Number(match[3])];
+  if (match === null) return null;
+  const tuple = [Number(match[1]), Number(match[2]), Number(match[3])];
+  return tuple.every(part => Number.isSafeInteger(part) && part <= 2_147_483_647) ? tuple : null;
 }
 
 function semverAtLeast(tuple, minimum) {
@@ -327,7 +361,7 @@ function validatePackageInventory(items) {
   for (let i = 0; i < items.length; i++) {
     const item = items[i];
     if (!isPlainDataRecord(item, PACKAGE_ITEM_KEYS) ||
-        typeof item.name !== 'string' || item.name.length > 128 || !PACKAGE_NAME_RE.test(item.name)) {
+        typeof item.name !== 'string' || item.name.length === 0 || item.name.length > 128) {
       return {ok: false, reason: 'MAF_ACTIVITY_SOURCE_UNREADY'};
     }
     if (isRetiredGitHubModelsPackage(item.name)) {
@@ -336,6 +370,9 @@ function validatePackageInventory(items) {
     if (EXCLUDED_AGENT_FRAMEWORK_RE.test(item.name)) {
       return {ok: false, reason: 'EXCLUDED_AGENT_FRAMEWORK_FORBIDDEN'};
     }
+    if (!PACKAGE_NAME_RE.test(item.name)) {
+      return {ok: false, reason: 'MAF_ACTIVITY_SOURCE_UNREADY'};
+    }
     const tuple = parseSemverTuple(item.version);
     if (tuple === null || map.has(item.name)) {
       return {ok: false, reason: 'MAF_ACTIVITY_SOURCE_UNREADY'};
@@ -343,6 +380,27 @@ function validatePackageInventory(items) {
     map.set(item.name, {version: item.version, tuple});
   }
   return {ok: true, map};
+}
+
+function validateAllowlistedPackages(appHostMap, agentMap) {
+  const requiredAppHostEntries = Object.entries(REQUIRED_APPHOST_PACKAGES);
+  if (appHostMap.size !== requiredAppHostEntries.length) return false;
+  for (const [pkgName, pinnedVersion] of requiredAppHostEntries) {
+    const entry = appHostMap.get(pkgName);
+    if (!entry || entry.version !== pinnedVersion) return false;
+  }
+  if (agentMap.size !== REQUIRED_MAF_AGENT_PACKAGES.length + REQUIRED_OTEL_AGENT_PACKAGES.length) {
+    return false;
+  }
+  for (const pkgName of REQUIRED_MAF_AGENT_PACKAGES) {
+    const entry = agentMap.get(pkgName);
+    if (!entry || !semverAtLeast(entry.tuple, MINIMUM_MAF_PACKAGE_VERSION)) return false;
+  }
+  for (const pkgName of REQUIRED_OTEL_AGENT_PACKAGES) {
+    const entry = agentMap.get(pkgName);
+    if (!entry || !semverAtLeast(entry.tuple, MINIMUM_OTEL_PACKAGE_VERSION)) return false;
+  }
+  return true;
 }
 
 function validateLoopbackAuth(auth, traceReadbackMethod) {
@@ -412,8 +470,9 @@ function validatePlatformReceipt(receipt, platformSpec, envelope) {
       receipt.runnerGroupName !== PINNED_HOSTED_RUNTIME_TOOLCHAIN.runnerGroupName) {
     return {ok: false, reason: 'NON_GITHUB_HOSTED_RUNNER'};
   }
-  if (receipt.jobName !== platformSpec.jobName || receipt.workflowPath !== platformSpec.workflowPath ||
-      !isSafeText(receipt.workflowName)) {
+  if (receipt.jobName !== platformSpec.jobName ||
+      receipt.workflowPath !== platformSpec.workflowPath ||
+      receipt.workflowName !== platformSpec.workflowName) {
     return {ok: false, reason: 'JOB_IDENTITY_MISMATCH'};
   }
   if (!positiveId(receipt.runId) || !positiveId(receipt.jobId)) {
@@ -507,24 +566,10 @@ function validateMafReadiness(maf, envelope, seenRunIds, seenJobIds) {
   }
   const appHostPkg = validatePackageInventory(maf.appHostPackages);
   if (!appHostPkg.ok) return appHostPkg;
-  for (const [pkgName, pinnedVersion] of Object.entries(REQUIRED_APPHOST_PACKAGES)) {
-    const entry = appHostPkg.map.get(pkgName);
-    if (!entry || entry.version !== pinnedVersion) {
-      return {ok: false, reason: 'MAF_ACTIVITY_SOURCE_UNREADY'};
-    }
-  }
   const agentPkg = validatePackageInventory(maf.agentPackages);
   if (!agentPkg.ok) return agentPkg;
-  for (const pkgName of REQUIRED_MAF_AGENT_PACKAGES) {
-    const entry = agentPkg.map.get(pkgName);
-    if (!entry || !semverAtLeast(entry.tuple, MINIMUM_MAF_PACKAGE_VERSION)) {
-      return {ok: false, reason: 'MAF_ACTIVITY_SOURCE_UNREADY'};
-    }
-  }
-  for (const pkgName of REQUIRED_OTEL_AGENT_PACKAGES) {
-    if (!agentPkg.map.has(pkgName)) {
-      return {ok: false, reason: 'MAF_ACTIVITY_SOURCE_UNREADY'};
-    }
+  if (!validateAllowlistedPackages(appHostPkg.map, agentPkg.map)) {
+    return {ok: false, reason: 'MAF_ACTIVITY_SOURCE_UNREADY'};
   }
   return {ok: true};
 }
@@ -584,78 +629,55 @@ export function verifyCrossOsAspireRuntimeEvidence(evidence) {
   });
 }
 
-function normalizeCanonicalCode(rawCode) {
-  return rawCode
-    .trim()
-    .replaceAll(' .', '.')
-    .replaceAll('. ', '.');
+function readEscapedLiteral(source, startIdx, quote) {
+  let i = startIdx;
+  let value = '';
+  while (i < source.length && source[i] !== '\n') {
+    if (source[i] === '\\') {
+      const decoded = CSHARP_ESCAPES.get(source[i + 1]);
+      if (decoded === undefined) return null;
+      value += decoded;
+      i += 2;
+    } else if (source[i] === quote) {
+      return {value, nextIdx: i + 1};
+    } else {
+      value += source[i++];
+    }
+  }
+  return null;
 }
 
-function scanCSharpSource(rawSource, allowPackageDirectives) {
-  const source = rawSource.replaceAll('\r\n', '\n');
-  if (source.includes('\r')) return null;
-  const directives = [];
-  const statements = [];
-  let current = '';
-  let literals = [];
-  let atLineStart = true;
-  let seenCodeToken = false;
-  let braceDepth = 0;
-  const appendSpace = () => {
-    if (current.length > 0 && !current.endsWith(' ')) current += ' ';
-  };
-  const flushStatement = () => {
-    const code = normalizeCanonicalCode(current);
-    if (code.length > 0) {
-      statements.push({code, literals, braceDepth});
-    }
-    current = '';
-    literals = [];
-  };
+function canonicalTokensSha256(tokens) {
+  return createHash('sha256').update(JSON.stringify(tokens)).digest('hex');
+}
 
-  for (let i = 0; i < source.length;) {
+function lexCodeSegment(source, startIdx, stopAtClosingBrace) {
+  const tokens = [];
+  let braceDepth = 0;
+  let i = startIdx;
+
+  while (i < source.length) {
     const ch = source[i];
-    if (ch === ' ' || ch === '\t') {
-      appendSpace();
-      i++;
-      continue;
-    }
-    if (ch === '\n') {
-      appendSpace();
-      atLineStart = true;
+    if (ch === ' ' || ch === '\t' || ch === '\n') {
       i++;
       continue;
     }
     if (ch === '/' && source[i + 1] === '/') {
       const nl = source.indexOf('\n', i + 2);
-      appendSpace();
-      if (nl === -1) break;
-      atLineStart = true;
+      if (nl === -1) {
+        i = source.length;
+        break;
+      }
       i = nl + 1;
       continue;
     }
     if (ch === '/' && source[i + 1] === '*') {
       const end = source.indexOf('*/', i + 2);
       if (end === -1) return null;
-      appendSpace();
-      atLineStart = false;
       i = end + 2;
       continue;
     }
-    if (atLineStart && ch === '#') {
-      const nl = source.indexOf('\n', i);
-      const line = nl === -1 ? source.slice(i) : source.slice(i, nl);
-      if (!allowPackageDirectives || seenCodeToken || !line.startsWith('#:package')) {
-        return null;
-      }
-      directives.push(line.trim());
-      if (nl === -1) break;
-      atLineStart = true;
-      i = nl + 1;
-      continue;
-    }
-    atLineStart = false;
-    seenCodeToken = true;
+    if (ch === '#' || (ch === '@' && source[i + 1] === '$')) return null;
     if (ch === '@' && source[i + 1] === '"') {
       i += 2;
       let value = '';
@@ -673,94 +695,154 @@ function scanCSharpSource(rawSource, allowPackageDirectives) {
         }
       }
       if (!closed) return null;
-      const idx = literals.length;
-      literals.push(value);
-      current += `$STR_${idx}$`;
+      tokens.push({k: 'str', v: value});
       continue;
     }
-    if (ch === '"' || ch === "'") {
-      if (ch === '"' && source[i + 1] === '"' && source[i + 2] === '"') return null;
-      const quote = ch;
-      i++;
-      let value = '';
+    if (ch === '$' && source[i + 1] === '"') {
+      i += 2;
+      tokens.push({k: 'istr-start', v: ''});
+      let seg = '';
       let closed = false;
       while (i < source.length && source[i] !== '\n') {
         if (source[i] === '\\') {
           const decoded = CSHARP_ESCAPES.get(source[i + 1]);
           if (decoded === undefined) return null;
-          value += decoded;
+          seg += decoded;
           i += 2;
-        } else if (source[i] === quote) {
+        } else if (source[i] === '{' && source[i + 1] === '{') {
+          seg += '{';
+          i += 2;
+        } else if (source[i] === '}' && source[i + 1] === '}') {
+          seg += '}';
+          i += 2;
+        } else if (source[i] === '}') {
+          return null;
+        } else if (source[i] === '{') {
+          tokens.push({k: 'str', v: seg});
+          seg = '';
+          tokens.push({k: 'hole-start', v: ''});
+          const hole = lexCodeSegment(source, i + 1, true);
+          if (hole === null || hole.tokens.length === 0) return null;
+          tokens.push(...hole.tokens);
+          tokens.push({k: 'hole-end', v: ''});
+          i = hole.nextIdx;
+        } else if (source[i] === '"') {
+          tokens.push({k: 'str', v: seg});
+          tokens.push({k: 'istr-end', v: ''});
           i++;
           closed = true;
           break;
         } else {
-          value += source[i++];
+          seg += source[i++];
         }
       }
       if (!closed) return null;
-      const idx = literals.length;
-      literals.push(value);
-      current += quote === '"' ? `$STR_${idx}$` : `$CHR_${idx}$`;
       continue;
     }
-    if (ch === ';') {
-      flushStatement();
-      i++;
+    if (ch === '$') return null;
+    if (ch === '"' || ch === "'") {
+      if (ch === '"' && source[i + 1] === '"' && source[i + 2] === '"') return null;
+      const parsed = readEscapedLiteral(source, i + 1, ch);
+      if (parsed === null || (ch === "'" && parsed.value.length !== 1)) return null;
+      tokens.push({k: ch === '"' ? 'str' : 'chr', v: parsed.value});
+      i = parsed.nextIdx;
+      continue;
+    }
+    if (CSHARP_ID_CHAR_RE.test(ch)) {
+      let end = i + 1;
+      while (end < source.length && CSHARP_ID_CHAR_RE.test(source[end])) end++;
+      tokens.push({k: 'id', v: source.slice(i, end)});
+      i = end;
       continue;
     }
     if (ch === '{') {
-      flushStatement();
       braceDepth++;
+      tokens.push({k: 'p', v: ch});
       i++;
       continue;
     }
     if (ch === '}') {
-      flushStatement();
+      if (stopAtClosingBrace && braceDepth === 0) {
+        return {tokens, nextIdx: i + 1};
+      }
       braceDepth--;
       if (braceDepth < 0) return null;
+      tokens.push({k: 'p', v: ch});
       i++;
       continue;
     }
-    current += ch;
+    tokens.push({k: 'p', v: ch});
     i++;
   }
-  if (braceDepth !== 0) return null;
-  flushStatement();
-  return {directives, statements};
+
+  if (stopAtClosingBrace || braceDepth !== 0) return null;
+  return {tokens, nextIdx: i};
 }
 
-function stripXmlComments(rawXml) {
-  const xml = rawXml.replaceAll('\r\n', '\n');
-  if (xml.includes('\r')) return null;
-  let out = '';
-  let pos = 0;
-  while (pos < xml.length) {
-    const start = xml.indexOf('<!--', pos);
-    if (start === -1) {
-      out += xml.slice(pos);
+function scanCSharpSource(rawSource, allowPackageDirectives) {
+  const source = rawSource.replaceAll('\r\n', '\n');
+  if (source.includes('\r')) return null;
+  const directives = [];
+  let i = 0;
+
+  if (allowPackageDirectives) {
+    let atLineStart = true;
+    while (i < source.length) {
+      const ch = source[i];
+      if (ch === ' ' || ch === '\t') {
+        i++;
+        continue;
+      }
+      if (ch === '\n') {
+        atLineStart = true;
+        i++;
+        continue;
+      }
+      if (ch === '/' && source[i + 1] === '/') {
+        const nl = source.indexOf('\n', i + 2);
+        if (nl === -1) return {directives, tokens: []};
+        atLineStart = true;
+        i = nl + 1;
+        continue;
+      }
+      if (ch === '/' && source[i + 1] === '*') {
+        const end = source.indexOf('*/', i + 2);
+        if (end === -1) return null;
+        atLineStart = false;
+        i = end + 2;
+        continue;
+      }
+      if (atLineStart && ch === '#') {
+        const nl = source.indexOf('\n', i);
+        const rawLine = nl === -1 ? source.slice(i) : source.slice(i, nl);
+        if (!rawLine.startsWith('#:package') ||
+            (rawLine[9] !== ' ' && rawLine[9] !== '\t')) {
+          return null;
+        }
+        const cleaned = rawLine.slice(9).trim();
+        if (cleaned.length === 0) return null;
+        directives.push(cleaned);
+        if (nl === -1) return {directives, tokens: []};
+        atLineStart = true;
+        i = nl + 1;
+        continue;
+      }
       break;
     }
-    out += xml.slice(pos, start);
-    const bodyStart = start + 4;
-    const end = xml.indexOf('-->', bodyStart);
-    if (end === -1 || xml.slice(bodyStart, end).includes('--')) return null;
-    pos = end + 3;
   }
-  return out;
+
+  const lexed = lexCodeSegment(source, i, false);
+  return lexed === null ? null : {directives, tokens: lexed.tokens};
 }
 
 function parseAgentsCsprojManifest(rawXml) {
-  const xml = stripXmlComments(rawXml);
-  if (xml === null) return null;
+  const xml = rawXml.replaceAll('\r\n', '\n');
+  if (xml.includes('\r')) return null;
   let pos = 0;
-  const trimmedStart = xml.trimStart();
-  if (trimmedStart.startsWith('<?xml ')) {
-    const prologStart = xml.indexOf('<?xml ');
-    const prologEnd = xml.indexOf('?>', prologStart + 6);
-    const firstClose = xml.indexOf('>', prologStart + 6);
-    if (prologEnd === -1 || prologEnd + 1 !== firstClose) return null;
-    pos = prologEnd + 2;
+  if (xml.startsWith('<?xml')) {
+    const declMatch = XML_DECLARATION_RE.exec(xml);
+    if (declMatch === null) return null;
+    pos = declMatch[0].length;
   }
 
   const stack = [];
@@ -775,10 +857,19 @@ function parseAgentsCsprojManifest(rawXml) {
       break;
     }
     if (xml.slice(pos, lt).trim().length > 0) return null;
+    if (xml.startsWith('<!--', lt)) {
+      const bodyStart = lt + 4;
+      const commentEnd = xml.indexOf('-->', bodyStart);
+      if (commentEnd === -1 || xml[commentEnd - 1] === '-' || xml.slice(bodyStart, commentEnd).includes('--')) {
+        return null;
+      }
+      pos = commentEnd + 3;
+      continue;
+    }
     if (xml.startsWith('<!', lt) || xml.startsWith('<?', lt)) return null;
     const gt = xml.indexOf('>', lt + 1);
     if (gt === -1) return null;
-    const rawTag = xml.slice(lt + 1, gt).trim();
+    const rawTag = xml.slice(lt + 1, gt).trimEnd();
     pos = gt + 1;
 
     if (stack.length === 0) {
@@ -789,7 +880,7 @@ function parseAgentsCsprojManifest(rawXml) {
     }
     const parent = stack[stack.length - 1];
     if (rawTag.startsWith('/')) {
-      const closingName = rawTag.slice(1).trim();
+      const closingName = rawTag.slice(1);
       if (closingName !== parent) return null;
       stack.pop();
       continue;
@@ -801,14 +892,15 @@ function parseAgentsCsprojManifest(rawXml) {
     }
     if (parent === 'PropertyGroup') {
       const propKeyLower = rawTag.toLowerCase();
-      if (!XML_PROP_NAME_RE.test(rawTag) || propKeyLower === 'targetframeworks' || properties.has(propKeyLower)) {
+      if (!XML_PROP_NAME_RE.test(rawTag) || !ALLOWED_CSPROJ_PROPERTIES.has(propKeyLower) || properties.has(propKeyLower)) {
         return null;
       }
       const closeStart = xml.indexOf('<', pos);
       if (closeStart === -1) return null;
-      const valueText = xml.slice(pos, closeStart).trim();
+      const valueText = xml.slice(pos, closeStart);
       const closeEnd = xml.indexOf('>', closeStart + 1);
-      if (closeEnd === -1 || xml.slice(closeStart + 1, closeEnd).trim() !== `/${rawTag}` || valueText.includes('&')) {
+      if (closeEnd === -1 || xml.slice(closeStart + 1, closeEnd).trimEnd() !== `/${rawTag}` ||
+          valueText !== ALLOWED_CSPROJ_PROPERTIES.get(propKeyLower)) {
         return null;
       }
       properties.set(propKeyLower, valueText);
@@ -818,13 +910,43 @@ function parseAgentsCsprojManifest(rawXml) {
     // parent === 'ItemGroup'
     if (!rawTag.endsWith('/')) return null;
     const itemSpec = rawTag.slice(0, -1).trim();
-    const match = CSPROJ_PKG_ATTRS_RE.exec(itemSpec);
-    if (match === null) return null;
-    packages.push(Object.freeze({name: match[1], version: match[2]}));
+    if (!itemSpec.startsWith('PackageReference ')) return null;
+    const attrMap = new Map();
+    for (const part of itemSpec.slice('PackageReference '.length).trim().split(/\s+/)) {
+      const attrMatch = XML_ATTR_PAIR_RE.exec(part);
+      if (attrMatch === null || attrMap.has(attrMatch[1])) return null;
+      attrMap.set(attrMatch[1], attrMatch[2]);
+    }
+    if (attrMap.size !== 2 || !attrMap.has('Include') || !attrMap.has('Version')) return null;
+    packages.push(Object.freeze({name: attrMap.get('Include'), version: attrMap.get('Version')}));
   }
 
   if (!seenRoot || stack.length !== 0) return null;
   return {properties, packages};
+}
+
+function validateAppHostTokens(tokens) {
+  if (tokens.length === 0 || tokens[tokens.length - 1].k !== 'p' || tokens[tokens.length - 1].v !== ';') {
+    return false;
+  }
+  const statements = [];
+  let current = [];
+  for (const tok of tokens) {
+    if (tok.k === 'p' && tok.v === ';') {
+      if (current.length === 0) return false;
+      statements.push(JSON.stringify(current));
+      current = [];
+    } else {
+      current.push(tok);
+    }
+  }
+  if (statements.length !== 4 ||
+      statements[0] !== APPHOST_BUILDER_TOKENS_JSON ||
+      statements[3] !== APPHOST_RUN_TOKENS_JSON) {
+    return false;
+  }
+  const middle = [statements[1], statements[2]];
+  return middle.includes(APPHOST_NODE_TOKENS_JSON) && middle.includes(APPHOST_MAF_TOKENS_JSON);
 }
 
 function hasForbiddenFrameworkInActiveCode(scanResult) {
@@ -832,15 +954,35 @@ function hasForbiddenFrameworkInActiveCode(scanResult) {
     if (RETIRED_GITHUB_MODELS_RE.test(directive)) return 'RETIRED_GITHUB_MODELS_PACKAGE_FORBIDDEN';
     if (EXCLUDED_AGENT_FRAMEWORK_RE.test(directive)) return 'EXCLUDED_AGENT_FRAMEWORK_FORBIDDEN';
   }
-  for (const stmt of scanResult.statements) {
-    if (RETIRED_GITHUB_MODELS_RE.test(stmt.code) || stmt.literals.some(lit => RETIRED_GITHUB_MODELS_RE.test(lit))) {
-      return 'RETIRED_GITHUB_MODELS_PACKAGE_FORBIDDEN';
+  const tokens = scanResult.tokens;
+  let dottedChain = '';
+  for (let i = 0; i < tokens.length; i++) {
+    const tok = tokens[i];
+    if (tok.k === 'id') {
+      dottedChain = dottedChain.length === 0 ? tok.v : `${dottedChain}.${tok.v}`;
+    } else if (!(tok.k === 'p' && tok.v === '.' && dottedChain.length > 0 && tokens[i + 1]?.k === 'id')) {
+      dottedChain = '';
     }
-    if (EXCLUDED_AGENT_FRAMEWORK_RE.test(stmt.code) || stmt.literals.some(lit => EXCLUDED_AGENT_FRAMEWORK_RE.test(lit))) {
-      return 'EXCLUDED_AGENT_FRAMEWORK_FORBIDDEN';
+    for (const candidate of [tok.v, dottedChain]) {
+      if (candidate.length === 0) continue;
+      if (RETIRED_GITHUB_MODELS_RE.test(candidate)) return 'RETIRED_GITHUB_MODELS_PACKAGE_FORBIDDEN';
+      if (EXCLUDED_AGENT_FRAMEWORK_RE.test(candidate)) return 'EXCLUDED_AGENT_FRAMEWORK_FORBIDDEN';
     }
   }
   return null;
+}
+
+function normalizeTelemetryVersionToken(tokens, expectedMafVersion) {
+  const versionIdx = tokens.findIndex((tok, idx) =>
+    tok.k === 'id' && tok.v === 'TelemetryVersion' &&
+    tokens[idx + 1]?.k === 'p' && tokens[idx + 1]?.v === '=' &&
+    tokens[idx + 2]?.k === 'str' &&
+    tokens[idx + 3]?.k === 'p' && tokens[idx + 3]?.v === ';'
+  );
+  if (versionIdx === -1 || tokens[versionIdx + 2].v !== expectedMafVersion) return null;
+  return tokens.map((tok, idx) =>
+    idx === versionIdx + 2 ? {k: 'str', v: '$VERIFIED_MAF_VERSION$'} : tok
+  );
 }
 
 // Pure manifest parser confirming apphost.cs, SoftwareFactory.Agents.csproj, and OTLP
@@ -865,8 +1007,7 @@ export function verifyMafSourceManifests(manifests) {
     if (forbiddenReason !== null) return deny(forbiddenReason);
   }
   const appHostPackages = [];
-  for (const directive of appHostScan.directives) {
-    const spec = directive.slice('#:package'.length).trim();
+  for (const spec of appHostScan.directives) {
     const atIndex = spec.indexOf('@');
     if (atIndex <= 0 || atIndex !== spec.lastIndexOf('@') || spec.includes(' ')) {
       return deny('MAF_ACTIVITY_SOURCE_UNREADY');
@@ -875,224 +1016,19 @@ export function verifyMafSourceManifests(manifests) {
   }
   const appHostInv = validatePackageInventory(appHostPackages);
   if (!appHostInv.ok) return deny(appHostInv.reason);
-  for (const [pkgName, pinnedVersion] of Object.entries(REQUIRED_APPHOST_PACKAGES)) {
-    const entry = appHostInv.map.get(pkgName);
-    if (!entry || entry.version !== pinnedVersion) return deny('MAF_ACTIVITY_SOURCE_UNREADY');
-  }
-function validateAppHostStatements(statements) {
-  if (statements.length !== 4 || statements.some(({braceDepth}) => braceDepth !== 0)) {
-    return false;
-  }
-  const builderOk = statements[0].code === 'var builder = DistributedApplication.CreateBuilder(args)' &&
-    statements[0].literals.length === 0;
-  const runOk = statements[3].code === 'builder.Build().Run()' &&
-    statements[3].literals.length === 0;
-  const middle = [statements[1], statements[2]];
-  const hasNode = middle.some(({code, literals}) =>
-    code === 'builder.AddNodeApp($STR_0$, $STR_1$, $STR_2$).WithExplicitStart()' &&
-    literals.length === 3 &&
-    literals[0] === 'synthetic-shadow' &&
-    literals[1] === './tools/engineering-factory' &&
-    literals[2] === 'aspire-telemetry-smoke.mjs'
-  );
-  const hasMaf = middle.some(({code, literals}) =>
-    code === 'builder.AddDotnetProject($STR_0$, $STR_1$).WithArgs($STR_2$).WithExplicitStart()' &&
-    literals.length === 3 &&
-    literals[0] === 'maf-specialist-shadow' &&
-    literals[1] === './src/SoftwareFactory.Agents/SoftwareFactory.Agents.csproj' &&
-    literals[2] === '--smoke'
-  );
-  return builderOk && runOk && hasNode && hasMaf;
-}
-
-function extractClassMethodBody(statements, headerPrefix) {
-  const headerIdx = statements.findIndex(s => s.braceDepth === 1 && s.code.startsWith(headerPrefix));
-  if (headerIdx === -1) return null;
-  const body = [];
-  for (let i = headerIdx + 1; i < statements.length && statements[i].braceDepth >= 2; i++) {
-    body.push(statements[i]);
-  }
-  return body.length > 0 ? body : null;
-}
-
-function validateOtlpBootstrapStatements(statements) {
-  const startBody = extractClassMethodBody(statements, 'public static LocalOtlpRuntime StartFromEnvironment(');
-  const validateBody = extractClassMethodBody(statements, 'public static ValidatedLocalOtlpConfig? ValidateEnvironment(');
-  const exporterBody = extractClassMethodBody(statements, 'private static void ConfigureExporterOptions(');
-  const loopbackBody = extractClassMethodBody(statements, 'private static Uri ParseLoopbackEndpoint(');
-  const headersBody = extractClassMethodBody(statements, 'private static void ValidateHeaders(');
-  if (!startBody || !validateBody || !exporterBody || !loopbackBody || !headersBody) {
-    return false;
-  }
-
-  const loopbackHeaderIdx = statements.findIndex(s =>
-    s.braceDepth === 1 && s.code.includes('LoopbackHosts = new(')
-  );
-  const loopbackHostsStmt = loopbackHeaderIdx !== -1 ? statements[loopbackHeaderIdx + 1] : undefined;
-  if (loopbackHostsStmt === undefined ||
-      loopbackHostsStmt.braceDepth !== 2 ||
-      loopbackHostsStmt.literals.length === 0 ||
-      loopbackHostsStmt.code !== loopbackHostsStmt.literals.map((_, idx) => `$STR_${idx}$`).join(', ') ||
-      !loopbackHostsStmt.literals.every(host => ALLOWED_LOOPBACK_HOSTS.has(host))) {
-    return false;
-  }
-
-  const forbiddenPrefixesStmt = statements.find(s =>
-    s.braceDepth === 1 && s.code.startsWith('private static readonly string[] ForbiddenEnvPrefixes =')
-  );
-  const forbiddenExactIdx = statements.findIndex(s =>
-    s.braceDepth === 1 && s.code.includes('ForbiddenExactEnvKeys = new(')
-  );
-  const forbiddenExactStmt = forbiddenExactIdx !== -1 ? statements[forbiddenExactIdx + 1] : undefined;
-  const forbiddenMethodStmt = statements.find(s =>
-    s.braceDepth === 1 && s.code.startsWith('private static bool ContainsForbiddenOverrides(')
-  );
-  if (!forbiddenPrefixesStmt ||
-      !REQUIRED_FORBIDDEN_ENV_PREFIXES.every(p => forbiddenPrefixesStmt.literals.includes(p)) ||
-      !forbiddenExactStmt || forbiddenExactStmt.braceDepth !== 2 ||
-      !REQUIRED_FORBIDDEN_EXACT_ENV_KEYS.every(k => forbiddenExactStmt.literals.includes(k)) ||
-      !forbiddenMethodStmt ||
-      !forbiddenMethodStmt.code.includes('ForbiddenExactEnvKeys.Contains(key) || ForbiddenEnvPrefixes.Any(')) {
-    return false;
-  }
-
-  const startOk = startBody.length === 18 &&
-    !startBody.some(({code}) => code.includes('.Dispose(')) &&
-    startBody[0].code === 'IReadOnlyDictionary<string, string?> env = environment ?? SnapshotProcessEnvironment()' &&
-    startBody[1].code === 'ValidatedLocalOtlpConfig? validated = ValidateEnvironment(env)' &&
-    startBody[2].code === 'if (validated is null)' &&
-    startBody[3].braceDepth === 3 &&
-    startBody[3].code === 'return LocalOtlpRuntime.Disabled()' &&
-    startBody[4].code === 'ResourceBuilder resource = ResourceBuilder.CreateDefault().AddService(validated.ServiceName)' &&
-    startBody[5].braceDepth === 2 &&
-    startBody[5].code === 'TracerProvider tracerProvider = Sdk.CreateTracerProviderBuilder().SetResourceBuilder(resource).AddSource(SoftwareFactoryTelemetry.WorkflowsSourceName, SoftwareFactoryTelemetry.AgentsSourceName).AddOtlpExporter(options => ConfigureExporterOptions(options, validated, $STR_0$)).Build()' &&
-    startBody[5].literals[0] === '/v1/traces' &&
-    startBody[6].braceDepth === 2 &&
-    startBody[6].code === 'MeterProvider meterProvider = Sdk.CreateMeterProviderBuilder().SetResourceBuilder(resource).AddMeter(SoftwareFactoryTelemetry.AgentsSourceName).AddOtlpExporter(options => ConfigureExporterOptions(options, validated, $STR_0$)).Build()' &&
-    startBody[6].literals[0] === '/v1/metrics' &&
-    startBody[13].code === 'otel.AddOtlpExporter(options => ConfigureExporterOptions(options, validated, $STR_0$))' &&
-    startBody[13].literals[0] === '/v1/logs' &&
-    startBody[16].code === 'ILogger stageLogger = loggerFactory.CreateLogger(SoftwareFactoryTelemetry.AgentsSourceName)' &&
-    startBody[17].braceDepth === 2 &&
-    startBody[17].code === 'return new LocalOtlpRuntime( isEnabled: true, tracerProvider: tracerProvider, meterProvider: meterProvider, loggerFactory: loggerFactory, stageLogger: stageLogger)';
-  if (!startOk) return false;
-
-  const endpointLookupIdx = validateBody.findIndex(({code, literals, braceDepth}) =>
-    braceDepth === 2 &&
-    code === 'bool hasEndpoint = env.TryGetValue($STR_0$, out string? rawEndpoint) && !string.IsNullOrWhiteSpace(rawEndpoint)' &&
-    literals[0] === 'OTEL_EXPORTER_OTLP_ENDPOINT'
-  );
-  const forbiddenCheckIdx = validateBody.findIndex(({code, braceDepth}) =>
-    braceDepth === 2 && code === 'bool hasAnyForbiddenOverride = ContainsForbiddenOverrides(env)'
-  );
-  const noEndpointForbiddenOk = validateBody.some(({code, braceDepth}, idx) =>
-    braceDepth === 2 && code === 'if (!hasEndpoint)' &&
-    validateBody[idx + 1]?.braceDepth === 3 && validateBody[idx + 1]?.code === 'if (hasAnyForbiddenOverride)' &&
-    validateBody[idx + 2]?.braceDepth === 4 &&
-    validateBody[idx + 2]?.code.startsWith('throw new LocalOtlpConfigurationException(') === true
-  );
-  const activeForbiddenOk = validateBody.some(({code, braceDepth}, idx) =>
-    braceDepth === 2 && code === 'if (hasAnyForbiddenOverride)' &&
-    validateBody[idx + 1]?.braceDepth === 3 &&
-    validateBody[idx + 1]?.code.startsWith('throw new LocalOtlpConfigurationException(') === true
-  );
-  const parseLoopbackCallIdx = validateBody.findIndex(({code, braceDepth}, idx) =>
-    braceDepth === 2 &&
-    code === 'Uri baseUri = ParseLoopbackEndpoint(rawEndpoint!)' &&
-    !validateBody[idx - 1]?.code.startsWith('if ')
-  );
-  const headersLookupIdx = validateBody.findIndex(({code, literals, braceDepth}) =>
-    braceDepth === 2 &&
-    code === 'string? rawHeaders = env.TryGetValue($STR_0$, out string? headerVal) ? headerVal : null' &&
-    literals[0] === 'OTEL_EXPORTER_OTLP_HEADERS'
-  );
-  const validateHeadersCallIdx = validateBody.findIndex(({code, braceDepth}, idx) =>
-    braceDepth === 2 &&
-    code === 'ValidateHeaders(rawHeaders)' &&
-    !validateBody[idx - 1]?.code.startsWith('if ')
-  );
-  const returnConfigIdx = validateBody.findIndex(({code, braceDepth}, idx) =>
-    braceDepth === 2 &&
-    code === 'return new ValidatedLocalOtlpConfig' &&
-    validateBody[idx + 1]?.braceDepth === 3 &&
-    validateBody[idx + 1]?.code === 'BaseEndpoint = baseUri, Protocol = protocol, Headers = rawHeaders!, ServiceName = serviceName'
-  );
-  const prematureValidateReturn = validateBody.some(({code}, idx) =>
-    idx < returnConfigIdx && code.startsWith('return ') && code !== 'return null'
-  );
-  if (endpointLookupIdx === -1 || forbiddenCheckIdx === -1 || !noEndpointForbiddenOk || !activeForbiddenOk ||
-      parseLoopbackCallIdx <= endpointLookupIdx || headersLookupIdx === -1 ||
-      validateHeadersCallIdx <= headersLookupIdx || returnConfigIdx <= parseLoopbackCallIdx ||
-      returnConfigIdx <= validateHeadersCallIdx || prematureValidateReturn) {
-    return false;
-  }
-
-  const hasExporterBinding = exporterBody.length === 8 &&
-    exporterBody[0].code === 'options.Protocol = config.Protocol' &&
-    exporterBody[1].code === 'options.Headers = config.Headers' &&
-    exporterBody[2].code === 'options.TimeoutMilliseconds = 3000' &&
-    exporterBody[3].code === 'options.Endpoint = config.Protocol == OtlpExportProtocol.HttpProtobuf ? new Uri(config.BaseEndpoint, httpSignalPath) : config.BaseEndpoint' &&
-    exporterBody[4].code === 'if (config.Protocol == OtlpExportProtocol.HttpProtobuf)' &&
-    exporterBody[6].code === 'AllowAutoRedirect = false, UseProxy = false';
-
-  const hasLoopbackEnforcement = loopbackBody.length === 3 &&
-    loopbackBody[0].braceDepth === 2 &&
-    loopbackBody[0].code === 'if (!Uri.TryCreate(rawEndpoint.Trim(), UriKind.Absolute, out Uri? uri) || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps) || !LoopbackHosts.Contains(uri.Host) || uri.IsDefaultPort || !string.IsNullOrEmpty(uri.UserInfo) || !string.IsNullOrEmpty(uri.Query) || !string.IsNullOrEmpty(uri.Fragment) || uri.AbsolutePath != $STR_0$)' &&
-    loopbackBody[0].literals.length === 1 &&
-    loopbackBody[0].literals[0] === '/' &&
-    loopbackBody[1].braceDepth === 3 &&
-    loopbackBody[1].code.startsWith('throw new LocalOtlpConfigurationException(') &&
-    loopbackBody[2].braceDepth === 2 &&
-    loopbackBody[2].code.startsWith('return new Uri(');
-
-  const hasHeadersEnforcement = headersBody.length === 10 &&
-    headersBody[0].braceDepth === 2 &&
-    headersBody[0].code === 'if (string.IsNullOrWhiteSpace(rawHeaders) || rawHeaders.Length > 2048)' &&
-    headersBody[1].braceDepth === 3 &&
-    headersBody[1].code.startsWith('throw new LocalOtlpConfigurationException(') &&
-    headersBody[2].code === 'foreach (char c in rawHeaders)' &&
-    headersBody[3].code === 'if (char.IsControl(c))' &&
-    headersBody[4].code.startsWith('throw new LocalOtlpConfigurationException(') &&
-    headersBody[5].code === 'string[] pairs = rawHeaders.Split($CHR_0$)' &&
-    headersBody[5].literals[0] === ',' &&
-    headersBody[6].code === 'foreach (string pair in pairs)' &&
-    headersBody[7].code === 'int eq = pair.IndexOf($CHR_0$)' &&
-    headersBody[7].literals[0] === '=' &&
-    headersBody[8].code === 'if (eq <= 0 || eq == pair.Length - 1)' &&
-    headersBody[9].code.startsWith('throw new LocalOtlpConfigurationException(');
-
-  return hasExporterBinding && hasLoopbackEnforcement && hasHeadersEnforcement;
-}
-  if (!validateAppHostStatements(appHostScan.statements)) {
-    return deny('MAF_ACTIVITY_SOURCE_UNREADY');
-  }
-  if (csprojParsed.properties.get('targetframework') !== 'net10.0' ||
-      csprojParsed.properties.get('copilotskipclidownload') !== 'true') {
-    return deny('MAF_ACTIVITY_SOURCE_UNREADY');
-  }
   const agentPackages = csprojParsed.packages;
   const agentInv = validatePackageInventory(agentPackages);
   if (!agentInv.ok) return deny(agentInv.reason);
-  for (const pkgName of REQUIRED_MAF_AGENT_PACKAGES) {
-    const entry = agentInv.map.get(pkgName);
-    if (!entry || !semverAtLeast(entry.tuple, MINIMUM_MAF_PACKAGE_VERSION)) {
-      return deny('MAF_ACTIVITY_SOURCE_UNREADY');
-    }
+  if (!validateAppHostTokens(appHostScan.tokens) ||
+      !REQUIRED_CSPROJ_PROPERTIES.every(key => csprojParsed.properties.has(key)) ||
+      !validateAllowlistedPackages(appHostInv.map, agentInv.map)) {
+    return deny('MAF_ACTIVITY_SOURCE_UNREADY');
   }
-  for (const pkgName of REQUIRED_OTEL_AGENT_PACKAGES) {
-    if (!agentInv.map.has(pkgName)) return deny('MAF_ACTIVITY_SOURCE_UNREADY');
-  }
-  const hasWorkflowsConst = telemetryScan.statements.some(({code, literals}) =>
-    code === 'public const string WorkflowsSourceName = $STR_0$' &&
-    literals.length === 1 &&
-    literals[0] === REQUIRED_MAF_ACTIVITY_SOURCE
-  );
-  const hasAgentsConst = telemetryScan.statements.some(({code, literals}) =>
-    code === 'public const string AgentsSourceName = $STR_0$' &&
-    literals.length === 1 &&
-    literals[0] === REQUIRED_AGENTS_ACTIVITY_SOURCE
-  );
-  if (!hasWorkflowsConst || !hasAgentsConst || !validateOtlpBootstrapStatements(bootstrapScan.statements)) {
+  const expectedMafVersion = agentInv.map.get(REQUIRED_MAF_ACTIVITY_SOURCE).version;
+  const normalizedTelemetryTokens = normalizeTelemetryVersionToken(telemetryScan.tokens, expectedMafVersion);
+  if (normalizedTelemetryTokens === null ||
+      canonicalTokensSha256(bootstrapScan.tokens) !== PINNED_LOCAL_OTLP_BOOTSTRAP_AST_SHA256 ||
+      canonicalTokensSha256(normalizedTelemetryTokens) !== PINNED_TELEMETRY_AST_SHA256) {
     return deny('MAF_ACTIVITY_SOURCE_UNREADY');
   }
   return Object.freeze({

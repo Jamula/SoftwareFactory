@@ -257,6 +257,8 @@ test('enforces envelope identity, zero laptop dependency, zero unapproved spend,
     r => { r.branch = '@'; },
     r => { r.branch = 'u/.hidden/branch'; },
     r => { r.branch = 'u/branch.lock'; },
+    r => { r.branch = '-leading-dash'; },
+    r => { r.branch = 'HEAD'; },
     r => { r.branch = 'bad space'; },
     r => { r.headSha = '0'.repeat(40); },
     r => { r.headSha = 'CEC2745B7B8A21E77AD9F2839D4255D42305D419'; },
@@ -464,15 +466,24 @@ test('enforces MAF Microsoft.Agents.AI.Workflows ActivitySource readiness and re
     [m => { m.appHostPackages.push({name: 'Aspire.Hosting.AppHost', version: '17.0.0'}); }, 'MAF_ACTIVITY_SOURCE_UNREADY'],
     [m => { m.appHostPackages[0].version = '16.2.0'; }, 'MAF_ACTIVITY_SOURCE_UNREADY'],
     [m => { m.appHostPackages[0].version = '17.0.0-preview.1'; }, 'MAF_ACTIVITY_SOURCE_UNREADY'],
+    [m => { m.appHostPackages[0].version = '999999999999.0.0'; }, 'MAF_ACTIVITY_SOURCE_UNREADY'],
+    [m => { m.appHostPackages[0].version = `${'9'.repeat(80)}.0.0`; }, 'MAF_ACTIVITY_SOURCE_UNREADY'],
     [m => { m.appHostPackages[0].version = 17; }, 'MAF_ACTIVITY_SOURCE_UNREADY'],
+    [m => { m.appHostPackages[2] = {name: 'Aspire.Hosting.Redis', version: '17.0.0'}; }, 'MAF_ACTIVITY_SOURCE_UNREADY'],
+    [m => { m.appHostPackages.push({name: 'Aspire.Hosting.Redis', version: '17.0.0'}); }, 'MAF_ACTIVITY_SOURCE_UNREADY'],
     [m => { m.appHostPackages.pop(); }, 'MAF_ACTIVITY_SOURCE_UNREADY'],
     [m => { m.appHostPackages.push({name: 'Aspire.Hosting.GitHub.Models', version: '9.2.0'}); }, 'RETIRED_GITHUB_MODELS_PACKAGE_FORBIDDEN'],
     [m => { m.agentPackages.push({name: 'Microsoft.Extensions.AI.GitHubModels', version: '1.0.0'}); }, 'RETIRED_GITHUB_MODELS_PACKAGE_FORBIDDEN'],
+    [m => { m.agentPackages.push({name: 'GitHub.Models-Preview', version: '1.0.0'}); }, 'RETIRED_GITHUB_MODELS_PACKAGE_FORBIDDEN'],
     [m => { m.agentPackages.push({name: 'Microsoft.SemanticKernel', version: '1.40.0'}); }, 'EXCLUDED_AGENT_FRAMEWORK_FORBIDDEN'],
+    [m => { m.agentPackages.push({name: 'semantic-kernel', version: '1.40.0'}); }, 'EXCLUDED_AGENT_FRAMEWORK_FORBIDDEN'],
     [m => { m.agentPackages.push({name: 'AutoGen.Core', version: '0.2.0'}); }, 'EXCLUDED_AGENT_FRAMEWORK_FORBIDDEN'],
     [m => { m.agentPackages = []; }, 'MAF_ACTIVITY_SOURCE_UNREADY'],
     [m => { m.agentPackages[0].version = '0.9.0'; }, 'MAF_ACTIVITY_SOURCE_UNREADY'],
     [m => { m.agentPackages[2].version = '1.27.9'; }, 'MAF_ACTIVITY_SOURCE_UNREADY'],
+    [m => { m.agentPackages[3].version = '1.20.9'; }, 'MAF_ACTIVITY_SOURCE_UNREADY'],
+    [m => { m.agentPackages[4] = {name: 'Unapproved.Telemetry.Exporter', version: '1.21.0'}; }, 'MAF_ACTIVITY_SOURCE_UNREADY'],
+    [m => { m.agentPackages.push({name: 'Unapproved.Agent.Sdk', version: '1.0.0'}); }, 'MAF_ACTIVITY_SOURCE_UNREADY'],
     [m => { m.agentPackages.pop(); }, 'MAF_ACTIVITY_SOURCE_UNREADY']
   ];
 
@@ -541,15 +552,63 @@ test('verifyMafSourceManifests fails closed on malformed inputs, retired GitHub 
     'EXCLUDED_AGENT_FRAMEWORK_FORBIDDEN'
   );
 
-  // Valid XML prolog, benign comments (including documenting retired packages), verbatim C# strings, and escaped quotes/chars remain accepted.
+  assert.equal(
+    verifyMafSourceManifests({
+      ...loadRepoManifests(),
+      agentsCsprojSource: loadRepoManifests().agentsCsprojSource.replace(
+        '</ItemGroup>',
+        '  <PackageReference Version="9.2.0" Include="Aspire.Hosting.GitHub.Models" />\n  </ItemGroup>'
+      )
+    }).reason,
+    'RETIRED_GITHUB_MODELS_PACKAGE_FORBIDDEN'
+  );
+
+  assert.equal(
+    verifyMafSourceManifests({
+    ...loadRepoManifests(),
+    telemetrySource: `using Aspire.Hosting.GitHub.Models;\n${loadRepoManifests().telemetrySource}`
+    }).reason,
+    'RETIRED_GITHUB_MODELS_PACKAGE_FORBIDDEN'
+  );
+
+  assert.equal(
+    verifyMafSourceManifests({
+    ...loadRepoManifests(),
+    telemetrySource: `using Microsoft.SemanticKernel;\n${loadRepoManifests().telemetrySource}`
+    }).reason,
+    'EXCLUDED_AGENT_FRAMEWORK_FORBIDDEN'
+  );
+
+  // Valid XML prolog, benign comments (including inside interpolation holes),
+  // multi-line argument formatting, reversed PackageReference attributes, and synchronized MAF version bumps remain accepted.
   const benignDecorated = loadRepoManifests();
   benignDecorated.appHostSource =
-    `// Aspire.Hosting.GitHub.Models is retired and unused\n/* Microsoft.SemanticKernel is excluded */\n${benignDecorated.appHostSource} // trailing comment without newline`;
-  benignDecorated.telemetrySource =
-    `${benignDecorated.telemetrySource}\ninternal static class BenignLiterals { internal static readonly string Verbatim = @"verbatim ""quote"" /* not comment */"; internal static readonly string Escaped = "escaped \\" // not comment"; internal const char Quote = '\\''; }`;
+    `  // Leading preamble comment\n  /* Leading preamble block comment */\n${benignDecorated.appHostSource}`
+    .replace(
+      'DistributedApplication.CreateBuilder(args)',
+      'DistributedApplication.CreateBuilder(/* comment */ args)'
+    )
+    .replace(
+      'builder.AddNodeApp("synthetic-shadow", "./tools/engineering-factory", "aspire-telemetry-smoke.mjs")',
+      'builder.AddNodeApp(\n    @"synthetic-shadow",\n    "./tools/engineering-factory",\n    "aspire-telemetry-smoke.mjs")'
+    ) + ' // trailing comment without newline';
+  benignDecorated.localOtlpBootstrapSource = benignDecorated.localOtlpBootstrapSource.replace(
+    '$"{uri.Scheme}://{uri.Authority}/"',
+    '$"{/* GitHub.Models is retired */ uri.Scheme}://{uri.Authority}/"'
+  );
   benignDecorated.agentsCsprojSource =
-    `<?xml version="1.0" encoding="utf-8"?>\n<!-- Aspire.Hosting.GitHub.Models is retired -->\n${benignDecorated.agentsCsprojSource}\n<!-- trailing comment -->\n`;
+    `<?xml version="1.0" encoding="utf-8"?>\n<!-- Aspire.Hosting.GitHub.Models is retired -->\n${benignDecorated.agentsCsprojSource
+      .replaceAll('1.28.0', '1.29.0')
+      .replace(
+        '<PackageReference Include="OpenTelemetry" Version="1.21.0" />',
+        '<PackageReference Version="1.21.0" Include="OpenTelemetry" />'
+      )}\n<!-- trailing comment -->\n`;
+  benignDecorated.telemetrySource = benignDecorated.telemetrySource.replace('"1.28.0"', '"1.29.0"');
   assert.equal(verifyMafSourceManifests(benignDecorated).valid, true);
+
+  const commentOnlyAppHost = loadRepoManifests();
+  commentOnlyAppHost.appHostSource = '// only comment';
+  assert.equal(verifyMafSourceManifests(commentOnlyAppHost).reason, 'MAF_ACTIVITY_SOURCE_UNREADY');
 
   const eofDirectiveOnly = loadRepoManifests();
   eofDirectiveOnly.appHostSource = '#:package Aspire.Hosting.AppHost@17.0.0';
@@ -557,8 +616,23 @@ test('verifyMafSourceManifests fails closed on malformed inputs, retired GitHub 
 
   for (const mutate of [
     m => { m.appHostSource = 'var b = 1;'; },
+    m => { m.appHostSource = 'var b = 1'; },
     m => { m.appHostSource = 'bad\rcarriage'; },
+    m => { m.appHostSource = '/* unclosed preamble comment'; },
+    m => { m.appHostSource = '#:packageAspire.Hosting.AppHost@17.0.0'; },
+    m => { m.appHostSource = '#:package /* inline comment invalid in dotnet 10 */ Aspire.Hosting.AppHost@17.0.0\n'; },
+    m => { m.appHostSource = '#:package   \n'; },
+    m => { m.appHostSource = `${m.appHostSource}\n;`; },
+    m => { m.appHostSource = m.appHostSource.replaceAll(';', '{}'); },
     m => { m.appHostSource = `${m.appHostSource}\n/* unclosed block comment`; },
+    m => { m.appHostSource = `${m.appHostSource}\nvar literal = @"verbatim ""quote"""; var ch = '\\''; var esc = "\\\""; var interp = $"a{{b}}c\\"";`; },
+    m => { m.appHostSource = `${m.appHostSource}\nvar bad = @$"verbatim interp";`; },
+    m => { m.appHostSource = `${m.appHostSource}\nvar bad = $"unclosed\\x";`; },
+    m => { m.appHostSource = `${m.appHostSource}\nvar bad = $"stray }";`; },
+    m => { m.appHostSource = `${m.appHostSource}\nvar bad = $"{}";`; },
+    m => { m.appHostSource = `${m.appHostSource}\nvar bad = $"unclosed interp\n";`; },
+    m => { m.appHostSource = `${m.appHostSource}\nvar bad = $123;`; },
+    m => { m.appHostSource = `${m.appHostSource}\nvar bad = 'ab';`; },
     m => { m.appHostSource = `${m.appHostSource}\nvar bad = @"unclosed verbatim;`; },
     m => { m.appHostSource = `${m.appHostSource}\nvar bad = """raw""";`; },
     m => { m.appHostSource = `${m.appHostSource}\n}`; },
@@ -623,9 +697,23 @@ test('verifyMafSourceManifests fails closed on malformed inputs, retired GitHub 
     m => { m.appHostSource = m.appHostSource.replaceAll('.WithExplicitStart()', ''); },
     m => { m.agentsCsprojSource = 'bad\rxml'; },
     m => { m.agentsCsprojSource = '<?xml bad'; },
+    m => { m.agentsCsprojSource = `<?xml bogus?>\n${m.agentsCsprojSource}`; },
     m => { m.agentsCsprojSource = `<?xml bad ><Project Sdk="Microsoft.NET.Sdk">?>`; },
+    m => { m.agentsCsprojSource = m.agentsCsprojSource.replace('<PropertyGroup>', '< PropertyGroup>'); },
+    m => { m.agentsCsprojSource = m.agentsCsprojSource.replace('</PropertyGroup>', '</ PropertyGroup>'); },
+    m => { m.agentsCsprojSource = m.agentsCsprojSource.replace('</TargetFramework>', '< /TargetFramework>'); },
+    m => {
+      // Whitespace-padded CopilotSkipCliDownload evaluates != 'true' in MSBuild and must fail closed.
+      m.agentsCsprojSource = m.agentsCsprojSource.replace(
+        '<CopilotSkipCliDownload>true</CopilotSkipCliDownload>',
+        '<CopilotSkipCliDownload> true </CopilotSkipCliDownload>'
+      );
+    },
     m => { m.agentsCsprojSource = `${m.agentsCsprojSource}<!-- unclosed`; },
+    m => { m.agentsCsprojSource = `${m.agentsCsprojSource}<!-- bad --->`; },
     m => { m.agentsCsprojSource = `${m.agentsCsprojSource}<!-- illegal -- double dash -->`; },
+    m => { m.agentsCsprojSource = `<!-- comment before xml decl --><?xml version="1.0"?>\n${m.agentsCsprojSource}`; },
+    m => { m.agentsCsprojSource = m.agentsCsprojSource.replace('<Project ', '<Project <!-- c --> '); },
     m => { m.agentsCsprojSource = `<!DOCTYPE Project>\n${m.agentsCsprojSource}`; },
     m => { m.agentsCsprojSource = `${m.agentsCsprojSource}\nstray-trailing-text`; },
     m => { m.agentsCsprojSource = '<Project Sdk="Microsoft.NET.Sdk">stray</Project>'; },
@@ -642,6 +730,19 @@ test('verifyMafSourceManifests fails closed on malformed inputs, retired GitHub 
     m => { m.agentsCsprojSource = '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0'; },
     m => { m.agentsCsprojSource = '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework'; },
     m => { m.agentsCsprojSource = m.agentsCsprojSource.replace('</TargetFramework>', '</Mismatch>'); },
+    m => {
+      // Unallowlisted or altered MSBuild properties (e.g. EnableDefaultCompileItems or OutputType) must fail closed.
+      m.agentsCsprojSource = m.agentsCsprojSource.replace(
+        '<OutputType>Exe</OutputType>',
+        '<OutputType>Library</OutputType>'
+      );
+    },
+    m => {
+      m.agentsCsprojSource = m.agentsCsprojSource.replace(
+        '</PropertyGroup>',
+        '  <EnableDefaultCompileItems>false</EnableDefaultCompileItems>\n  </PropertyGroup>'
+      );
+    },
     m => {
       // Lowercase MSBuild property override must fail closed (MSBuild is case-insensitive).
       m.agentsCsprojSource = m.agentsCsprojSource.replace(
@@ -700,6 +801,75 @@ test('verifyMafSourceManifests fails closed on malformed inputs, retired GitHub 
       m.telemetrySource = m.telemetrySource.replace(
         '"Microsoft.Agents.AI.Workflows"',
         '"Microsoft.Agen\\xs.AI.Workflows"'
+      );
+    },
+    m => {
+      // Empty statement semicolon after if (...) disabling exporters must fail closed.
+      m.localOtlpBootstrapSource = m.localOtlpBootstrapSource.replace(
+        'if (validated is null)',
+        'if (validated is null);'
+      );
+    },
+    m => {
+      // Splitting guarded block with `} {` before `return null;` must fail closed.
+      m.localOtlpBootstrapSource = m.localOtlpBootstrapSource.replace(
+        'return null;',
+        '} { return null;'
+      );
+    },
+    m => {
+      // Desynchronized TelemetryVersion vs Microsoft.Agents.AI.Workflows csproj version must fail closed.
+      m.telemetrySource = m.telemetrySource.replace('"1.28.0"', '"1.29.0"');
+    },
+    m => {
+      m.agentsCsprojSource = m.agentsCsprojSource.replace('<ItemGroup>', '<ItemGroup><OtherItem Foo="1" />');
+    },
+    m => {
+      m.agentsCsprojSource = m.agentsCsprojSource.replace(
+        '<PackageReference Include="OpenTelemetry" Version="1.21.0" />',
+        '<PackageReference Include="OpenTelemetry" Include="OpenTelemetry" />'
+      );
+    },
+    m => {
+      // Mismatched ActivitySource initializer ignoring verified constant must fail closed.
+      m.telemetrySource = m.telemetrySource.replace(
+        'AgentsActivitySource = new(AgentsSourceName, TelemetryVersion)',
+        'AgentsActivitySource = new("Unregistered.Agent.Source", TelemetryVersion)'
+      );
+    },
+    m => {
+      // Replacing ParseLoopbackEndpoint return URI with an unvalidated remote URI must fail closed.
+      m.localOtlpBootstrapSource = m.localOtlpBootstrapSource.replace(
+        'return new Uri($"{uri.Scheme}://{uri.Authority}/");',
+        'return new Uri("https://example.com:4318/");'
+      );
+    },
+    m => {
+      // Conditional early null return disabling telemetry when endpoint is configured must fail closed.
+      m.localOtlpBootstrapSource = m.localOtlpBootstrapSource.replace(
+        'ArgumentNullException.ThrowIfNull(env);',
+        'ArgumentNullException.ThrowIfNull(env);\n        if (env.ContainsKey("OTEL_EXPORTER_OTLP_ENDPOINT")) return null;'
+      );
+    },
+    m => {
+      // Weakening ContainsForbiddenOverrides input filter must fail closed.
+      m.localOtlpBootstrapSource = m.localOtlpBootstrapSource.replace(
+        'env.Where(static kv => !string.IsNullOrEmpty(kv.Value))',
+        'env.Where(static kv => false)'
+      );
+    },
+    m => {
+      // Detaching safe SocketsHttpHandler from options.HttpClientFactory must fail closed.
+      m.localOtlpBootstrapSource = m.localOtlpBootstrapSource.replace(
+        'options.HttpClientFactory = static () => new HttpClient(',
+        'using var ignored = new HttpClient('
+      );
+    },
+    m => {
+      // Overwriting rawHeaders after ValidateHeaders(rawHeaders) before returning config must fail closed.
+      m.localOtlpBootstrapSource = m.localOtlpBootstrapSource.replace(
+        'ValidateHeaders(rawHeaders);',
+        'ValidateHeaders(rawHeaders);\n        rawHeaders = "";'
       );
     },
     m => { m.telemetrySource = m.telemetrySource.replaceAll('"Microsoft.Agents.AI.Workflows"', '"Other.Workflows"'); },
