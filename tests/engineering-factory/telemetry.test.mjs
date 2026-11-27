@@ -177,7 +177,7 @@ test('telemetrySummary classifies coordinator, event-journal and protected-merge
 
  // Aggregate coordinator tick & planner scheduled variants
  assert.deepEqual(telemetrySummary(null),{outcome:'unknown',reason:'NONE'});
- assert.deepEqual(telemetrySummary(new Proxy({},{get(){assert.fail('proxy read');}})),{outcome:'unknown',reason:'NONE'});
+ assert.deepEqual(telemetrySummary(new Proxy({},{get(){assert.fail('proxy read');}})),{outcome:'unknown',reason:'OTHER'});
  assert.deepEqual(telemetrySummary({lane:'core',taskId:1,state:'shadow-reviewed'}),{outcome:'eligible',reason:'NONE'});
  assert.deepEqual(telemetrySummary({state:'blocked'}),{outcome:'blocked',reason:'NONE'});
  assert.deepEqual(telemetrySummary({shadow:true,scheduled:[{id:1,lane:'core',paths:['src']}],reason:'SHADOW_PLAN'}),
@@ -284,8 +284,57 @@ test('createExecutionReceipt enforces versioned laptop-free schema, unknown vs v
 
  const accessor={...base};
  Object.defineProperty(accessor,'durationMs',{enumerable:true,get:()=>1});
+ let getterCalls=0;
+ const resultGetter={};
+ Object.defineProperty(resultGetter,'reason',{enumerable:true,get:()=>{getterCalls++;return 'SHADOW_ELIGIBLE';}});
+ const nestedCompletedGetter={reason:'SHADOW_TICK_COMPLETE',completed:[{}]};
+ Object.defineProperty(nestedCompletedGetter.completed[0],'state',{
+  enumerable:true,
+  get:()=>{getterCalls++;throw Error('nested getter executed');}
+ });
+ const cyclicResult={reason:'SHADOW_ELIGIBLE'};
+ cyclicResult.self=cyclicResult;
+ const sparseCompleted=[];
+ sparseCompleted[1]={state:'shadow-reviewed'};
+ const symbolKeyResult={[Symbol('secret')]:'x',reason:'SHADOW_ELIGIBLE'};
+ const tooManyKeysResult=Object.fromEntries(Array.from({length:65},(_,i)=>[`k${i}`,i]));
+
+ // Single-stage dispatch, ci, and acceptance receipts and projections succeed
+ for(const singleStage of ['dispatch','ci','acceptance']){
+  const single=createExecutionReceipt({
+   source:'github-hosted',repositoryId:1471342715,receiptId:`gh-200-1-${singleStage}`,
+   observedMs:3000,stage:singleStage,outcome:'eligible',reason:'NONE',durationMs:55
+  });
+  assert.equal(single.valid,true);
+  assert.deepEqual(receiptStageRows(single),{
+   valid:true,
+   source:'github-hosted',
+   rows:[{
+    id:`gh-200-1-${singleStage}-${singleStage}`,
+    repositoryId:1471342715,
+    stage:singleStage,
+    at:3000,
+    duration:55,
+    source:'github-hosted'
+   }]
+  });
+ }
+
+ assert.deepEqual(telemetrySummary(resultGetter),{outcome:'unknown',reason:'OTHER'});
+ assert.deepEqual(telemetrySummary(nestedCompletedGetter),{outcome:'unknown',reason:'OTHER'});
+ assert.deepEqual(telemetrySummary(cyclicResult),{outcome:'unknown',reason:'OTHER'});
+
  for(const bad of [
   null,[],new Proxy(base,{}),accessor,
+  {...base,result:undefined},
+  {...base,result:()=>'SHADOW_ELIGIBLE'},
+  {...base,result:resultGetter},
+  {...base,result:nestedCompletedGetter},
+  {...base,result:cyclicResult},
+  {...base,result:Object.create({reason:'SHADOW_ELIGIBLE'})},
+  {...base,result:{reason:'SHADOW_TICK_COMPLETE',completed:sparseCompleted}},
+  {...base,result:symbolKeyResult},
+  {...base,result:tooManyKeysResult},
   {...base,prompt:'injected'},
   {...base,token:'github_pat_123'},
   {...base,shadow:false},
@@ -328,6 +377,7 @@ test('createExecutionReceipt enforces versioned laptop-free schema, unknown vs v
   assert.equal(rejected.cost.amountMicros,null);
   assert.equal(rejected.humanTouches.count,null);
  }
+ assert.equal(getterCalls,0);
 });
 
 test('receiptStageRows feeds stage-aggregate for #18 and rejects invalid or tampered receipts',()=>{
@@ -377,6 +427,7 @@ test('receiptStageRows feeds stage-aggregate for #18 and rejects invalid or tamp
   {...validSample,liveMerge:true},
   {...validSample,source:'github-proxy'},
   {...validSample,durationMs:-1},
+  {...validSample,durationMs:999},
   {...validSample,stages:{}},
   {...validSample,quota:{state:'unknown',verified:true,includedOnly:null}},
   {...validSample,cost:{state:'verified-zero',verified:true,currency:'USD',amountMicros:5}},

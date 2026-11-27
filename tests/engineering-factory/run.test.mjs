@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {pathToFileURL} from 'node:url';
 import {run,runCliIfDirect} from '../../tools/engineering-factory/run.mjs';
-import {createSignals} from '../../tools/engineering-factory/telemetry.mjs';
+import {createSignals,receiptStageRows} from '../../tools/engineering-factory/telemetry.mjs';
+import {aggregateStage} from '../../tools/engineering-factory/stage-aggregate.mjs';
 import {plan} from '../../tools/engineering-factory/shadow-runtime.mjs';
 
 test('runner exposes sanitized optional telemetry for available command stages',async()=>{
@@ -184,13 +185,33 @@ test('runner emits sanitized laptop-free receipts across commands without requir
   assert.equal(pullJson.includes(leak),false);
 
  assert.equal(await run(['--receipt','--reconcile-issue'],{
-  clock,env:{},reconcileIssue:async()=>({shadow:true,reconciled:false,reason:'LEASE_HELD'}),
+  clock,env:{},receiptId:'local-reconcile-issue-fixed',
+  reconcileIssue:async()=>({shadow:true,reconciled:false,reason:'LEASE_HELD'}),
   write:v=>localIssueOut.push(JSON.parse(v))
  }),0);
  assert.equal(localIssueOut[0].source,'synthetic');
- assert.equal(localIssueOut[0].receiptId,'local-reconcile-issue');
+ assert.equal(localIssueOut[0].receiptId,'local-reconcile-issue-fixed');
  assert.equal(localIssueOut[0].outcome,'blocked');
  assert.equal(localIssueOut[0].reason,'LEASE');
+ assert.deepEqual(receiptStageRows(localIssueOut[0]),receiptStageRows(localIssueOut[0]));
+
+ // Repeated local runs receive distinct IDs even at identical timestamps and aggregate without DUPLICATE_EVIDENCE
+ const localSamples=[];
+ for(let i=0;i<5;i++){
+  let sampleTick=0;
+  assert.equal(await run(['--inventory','--receipt'],{
+   clock:()=>(sampleTick++===0?1000:1010+i),
+   env:{},
+   inventory:async()=>({shadow:true,issues:[9],pulls:[],evidenceComplete:false,liveDispatch:false,liveMerge:false}),
+   write:v=>localSamples.push(JSON.parse(v))
+  }),0);
+ }
+ assert.equal(new Set(localSamples.map(r=>r.receiptId)).size,5);
+ const localRows=localSamples.flatMap(r=>receiptStageRows(r).rows);
+ assert.deepEqual(aggregateStage(localRows,{
+  repositoryId:1471342715,stage:'reconcile',from:1000,to:2000,
+  complete:true,source:'synthetic',observedMs:2000,nowMs:2100,maxAgeMs:5000
+ }),{state:'synthetic',reason:'MEASURED_FIXTURE',sampleCount:5,p50:12,p95:14});
 
  const sideReceipts=[];
  assert.equal(await run(['--inventory'],{

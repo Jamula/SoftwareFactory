@@ -7,6 +7,11 @@ import {telemetrySummary,createExecutionReceipt} from './telemetry.mjs';
 export {telemetrySummary};
 
 const repositoryId=1471342715;
+let localReceiptSequence=0;
+const nextLocalSequence=()=>{
+  localReceiptSequence=(localReceiptSequence%1000000000)+1;
+  return localReceiptSequence;
+};
 const commandSpecs=new Map([
   ['--smoke',{stage:'evaluate',tag:'smoke',syntheticOnly:true}],
   ['--inventory',{stage:'reconcile',tag:'inventory',syntheticOnly:false}],
@@ -39,22 +44,21 @@ function safeClock(clock) {
   }
 }
 
-function resolveReceiptSource(env,spec) {
+function resolveReceiptSource(env,spec,finishedAt,injectedReceiptId) {
   const runId=typeof env?.GITHUB_RUN_ID==='string'&&/^[1-9][0-9]{0,19}$/.test(env.GITHUB_RUN_ID)?env.GITHUB_RUN_ID:null;
   const rawAttempt=env?.GITHUB_RUN_ATTEMPT??'1';
   const attempt=typeof rawAttempt==='string'&&/^[1-9][0-9]{0,3}$/.test(rawAttempt)?rawAttempt:null;
+  const discriminator=()=>finishedAt!==null?`${finishedAt}-${nextLocalSequence()}`:`${nextLocalSequence()}`;
   if(spec.syntheticOnly) {
-    return {
-      source:'synthetic',
-      receiptId:runId&&attempt?`gh-${runId}-${attempt}-${spec.tag}`:`synthetic-${spec.tag}`
-    };
+    const defaultId=runId&&attempt?`gh-${runId}-${attempt}-${spec.tag}`:`synthetic-${spec.tag}-${discriminator()}`;
+    return {source:'synthetic',receiptId:injectedReceiptId??defaultId};
   }
   if(env?.GITHUB_ACTIONS==='true') {
     if(env.GITHUB_REPOSITORY_ID!==String(repositoryId)||!runId||!attempt)
       return {source:'invalid',receiptId:'invalid'};
-    return {source:'github-hosted',receiptId:`gh-${runId}-${attempt}-${spec.tag}`};
+    return {source:'github-hosted',receiptId:injectedReceiptId??`gh-${runId}-${attempt}-${spec.tag}`};
   }
-  return {source:'synthetic',receiptId:`local-${spec.tag}`};
+  return {source:'synthetic',receiptId:injectedReceiptId??`local-${spec.tag}-${discriminator()}`};
 }
 
 async function observedResult(observe,stage,work) {
@@ -66,8 +70,8 @@ async function observedResult(observe,stage,work) {
   return result;
 }
 
-function buildStageReceipt({env,spec,startedAt,finishedAt,result,quota,cost,humanTouches,correlation}) {
-  const {source,receiptId}=resolveReceiptSource(env,spec);
+function buildStageReceipt({env,spec,startedAt,finishedAt,result,receiptId:injectedId,quota,cost,humanTouches,correlation}) {
+  const {source,receiptId}=resolveReceiptSource(env,spec,finishedAt,injectedId);
   const durationMs=startedAt!==null&&finishedAt!==null&&finishedAt>=startedAt?finishedAt-startedAt:null;
   return createExecutionReceipt({
     source,
@@ -87,7 +91,7 @@ function buildStageReceipt({env,spec,startedAt,finishedAt,result,quota,cost,huma
 // The injected I/O and inventory functions permit deterministic offline CLI tests.
 export async function run(args,{write=console.log,fail=console.error,inventory=readInventory,replay=smoke,
   reconcile=reconcilePullTrigger,reconcileIssue=reconcileIssueTrigger,env=process.env,
-  observe=(_stage,work)=>work(),clock=Date.now,writeReceipt,quota=null,cost=null,
+  observe=(_stage,work)=>work(),clock=Date.now,writeReceipt,receiptId,quota=null,cost=null,
   humanTouches=null,correlation=null}={}) {
   const parsed=parseArgs(args);
   if(!parsed) {
@@ -116,7 +120,7 @@ export async function run(args,{write=console.log,fail=console.error,inventory=r
       return exitCode;
     }
     const finishedAt=safeClock(clock);
-    const receipt=buildStageReceipt({env,spec,startedAt,finishedAt,result,quota,cost,humanTouches,correlation});
+    const receipt=buildStageReceipt({env,spec,startedAt,finishedAt,result,receiptId,quota,cost,humanTouches,correlation});
     if(parsed.emitReceipt) {
       write(JSON.stringify(receipt));
       if(typeof writeReceipt==='function') {
@@ -131,7 +135,7 @@ export async function run(args,{write=console.log,fail=console.error,inventory=r
     if(wantsReceipt) {
       const finishedAt=safeClock(clock);
       const receipt=buildStageReceipt({
-        env,spec,startedAt,finishedAt,result:{reason:'READ_FAILED'},quota,cost,humanTouches,correlation
+        env,spec,startedAt,finishedAt,result:{reason:'READ_FAILED'},receiptId,quota,cost,humanTouches,correlation
       });
       if(parsed.emitReceipt) write(JSON.stringify(receipt));
       if(typeof writeReceipt==='function') {

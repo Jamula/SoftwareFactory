@@ -3,7 +3,9 @@ import {types} from 'node:util';
 import {normalizeStageDurations} from './stage-latency.mjs';
 
 export const EXECUTION_RECEIPT_SCHEMA_VERSION=1;
-const stages=new Set(['reconcile','normalize','evaluate','queue','review','merge-shadow','verify-main']);
+const stages=new Set([
+  'reconcile','normalize','evaluate','dispatch','ci','queue','review','merge-shadow','verify-main','acceptance'
+]);
 const outcomes=new Set(['eligible','blocked','failed','unknown']);
 const reasons=new Set([
   'NONE','INVALID_EVIDENCE','STALE','DEPENDENCY','QUOTA','POLICY',
@@ -80,30 +82,65 @@ const unknownCodes=new Set([
   'NO_READY_WORK','NO_CLAIM','NO_RECOVERABLE_INTENT'
 ]);
 
+function ownValue(value,key) {
+  const descriptor=Object.getOwnPropertyDescriptor(value,key);
+  return descriptor!==undefined&&Object.hasOwn(descriptor,'value')?descriptor.value:undefined;
+}
+
+function plainResultValue(value,budget={remaining:2048},depth=0) {
+  if(--budget.remaining<0||depth>6||types.isProxy(value)) return false;
+  if(value===null||['string','number','boolean'].includes(typeof value)) return true;
+  if(typeof value!=='object') return false;
+  if(Array.isArray(value)) {
+    if(Object.getPrototypeOf(value)!==Array.prototype||value.length>256||
+       Reflect.ownKeys(value).length!==value.length+1) return false;
+    for(let i=0;i<value.length;i++) {
+      const descriptor=Object.getOwnPropertyDescriptor(value,i);
+      if(!Object.hasOwn(descriptor,'value')||!plainResultValue(descriptor.value,budget,depth+1)) return false;
+    }
+    return true;
+  }
+  if(Object.getPrototypeOf(value)!==Object.prototype) return false;
+  const keys=Reflect.ownKeys(value);
+  if(keys.length>64) return false;
+  for(const key of keys) {
+    if(typeof key!=='string') return false;
+    const descriptor=Object.getOwnPropertyDescriptor(value,key);
+    if(!Object.hasOwn(descriptor,'value')||!plainResultValue(descriptor.value,budget,depth+1)) return false;
+  }
+  return true;
+}
+
 export function telemetrySummary(result) {
-  if(!result||typeof result!=='object'||types.isProxy(result)) return {outcome:'unknown',reason:'NONE'};
-  const code=typeof result.reason==='string'?result.reason:'';
+  if(result===null||result===undefined||typeof result!=='object') return {outcome:'unknown',reason:'NONE'};
+  if(!plainResultValue(result)) return {outcome:'unknown',reason:'OTHER'};
+  const rawReason=ownValue(result,'reason');
+  const code=typeof rawReason==='string'?rawReason:'';
   if(code==='SHADOW_TICK_COMPLETE') {
-    if(!Array.isArray(result.completed)||result.completed.length===0) return {outcome:'unknown',reason:'NONE'};
-    const summaries=result.completed.map(item=>telemetrySummary(item));
+    const completed=ownValue(result,'completed');
+    if(!Array.isArray(completed)||completed.length===0) return {outcome:'unknown',reason:'NONE'};
+    const summaries=completed.map(item=>telemetrySummary(item));
     const failure=summaries.find(item=>item.outcome==='failed');
     if(failure) return failure;
     const blocked=summaries.find(item=>item.outcome!=='eligible');
     return blocked??{outcome:'eligible',reason:'NONE'};
   }
+  const state=ownValue(result,'state');
+  const reconciled=ownValue(result,'reconciled');
   if(!code) {
-    if(result.state==='shadow-reviewed') return {outcome:'eligible',reason:'NONE'};
-    if(result.reconciled===false||result.state==='blocked') return {outcome:'blocked',reason:'NONE'};
+    if(state==='shadow-reviewed') return {outcome:'eligible',reason:'NONE'};
+    if(reconciled===false||state==='blocked') return {outcome:'blocked',reason:'NONE'};
     return {outcome:'unknown',reason:'NONE'};
   }
   const reason=reasonLabels.get(code)??'OTHER';
   if(failedCodes.has(code)) return {outcome:'failed',reason};
-  if(result.reconciled===false||result.state==='blocked'||result.accepted===false||result.eligible===false)
+  if(reconciled===false||state==='blocked'||ownValue(result,'accepted')===false||ownValue(result,'eligible')===false)
     return {outcome:'blocked',reason};
-  if(result.reconciled===true||unknownCodes.has(code)) return {outcome:'unknown',reason};
+  if(reconciled===true||unknownCodes.has(code)) return {outcome:'unknown',reason};
   if(code==='SHADOW_PLAN') {
-    const planned=(Array.isArray(result.ready)&&result.ready.length>0)||
-      (Array.isArray(result.scheduled)&&result.scheduled.length>0);
+    const ready=ownValue(result,'ready');
+    const scheduled=ownValue(result,'scheduled');
+    const planned=(Array.isArray(ready)&&ready.length>0)||(Array.isArray(scheduled)&&scheduled.length>0);
     return {outcome:planned?'eligible':'unknown',reason};
   }
   if(eligibleCodes.has(code)) return {outcome:'eligible',reason};
@@ -185,6 +222,11 @@ function invalidReceipt() {
   };
 }
 
+function consistentPrimaryStageDuration(stage,durationMs,stagesMap) {
+  return durationMs===null||!Object.hasOwn(stagesMap,stage)||
+    stagesMap[stage]===null||stagesMap[stage]===durationMs;
+}
+
 export function createExecutionReceipt(input) {
   if(!ownData(input,receiptInputKeys)) return invalidReceipt();
   if((input.shadow!==undefined&&input.shadow!==true)||
@@ -198,6 +240,7 @@ export function createExecutionReceipt(input) {
   if(hasResult===hasExplicit) return invalidReceipt();
   let outcome,reason;
   if(hasResult) {
+    if(!plainResultValue(input.result)) return invalidReceipt();
     ({outcome,reason}=telemetrySummary(input.result));
   } else {
     if(!outcomes.has(input.outcome)||!reasons.has(input.reason)) return invalidReceipt();
@@ -209,9 +252,7 @@ export function createExecutionReceipt(input) {
   const stageCheck=input.stages===undefined||input.stages===null
     ?{valid:true,stages:{[input.stage]:durationMs}}
     :normalizeStageDurations(input.stages);
-  if(!stageCheck.valid) return invalidReceipt();
-  if(durationMs!==null&&Object.hasOwn(stageCheck.stages,input.stage)&&
-     stageCheck.stages[input.stage]!==null&&stageCheck.stages[input.stage]!==durationMs)
+  if(!stageCheck.valid||!consistentPrimaryStageDuration(input.stage,durationMs,stageCheck.stages))
     return invalidReceipt();
   const quota=normalizeQuota(input.quota);
   const cost=normalizeCost(input.cost);
@@ -247,7 +288,8 @@ function validStoredTouches(t) {
   );
 }
 
-// Convert one validated execution receipt into stage-aggregate rows for #18 reporting.
+// Project one validated receipt into stage rows preserving source provenance.
+// Synthetic rows feed stage-aggregate.mjs directly; hosted provenance aggregation belongs to #18.
 export function receiptStageRows(receipt) {
   if(!exactData(receipt,receiptKeys)||receipt.schemaVersion!==EXECUTION_RECEIPT_SCHEMA_VERSION||
      receipt.valid!==true||receipt.shadow!==true||receipt.liveDispatch!==false||receipt.liveMerge!==false||
@@ -257,7 +299,8 @@ export function receiptStageRows(receipt) {
      (receipt.durationMs!==null&&!nonnegative(receipt.durationMs)))
     return {valid:false,reason:'INVALID_RECEIPT',rows:[]};
   const stageCheck=normalizeStageDurations(receipt.stages);
-  if(!stageCheck.valid||!validStoredQuota(receipt.quota)||!validStoredCost(receipt.cost)||
+  if(!stageCheck.valid||!consistentPrimaryStageDuration(receipt.stage,receipt.durationMs,stageCheck.stages)||
+     !validStoredQuota(receipt.quota)||!validStoredCost(receipt.cost)||
      !validStoredTouches(receipt.humanTouches)||!normalizeCorrelation(receipt.correlation))
     return {valid:false,reason:'INVALID_RECEIPT',rows:[]};
   const rows=[];
