@@ -10,6 +10,7 @@ import {
   DEFAULT_REPO,
   buildFactoryBoardSnapshot,
   buildUnavailableSnapshot,
+  combineRestChecksAndStatus,
   createBoardPoller,
   extractMilestoneStep,
   fetchFactoryBoardSnapshot,
@@ -18,6 +19,7 @@ import {
   formatBoardStatus,
   inferIssueMilestoneId,
   inferPullMilestoneId,
+  initFactoryBoardClient,
   normalizeCheckRollup,
   normalizeMergeQueue,
   normalizeReviewStatus,
@@ -154,13 +156,14 @@ test("extractMilestoneStep and milestone inference handle active, historical, la
   );
 });
 
-test("normalizeCheckRollup, normalizeReviewStatus, and normalizeMergeQueue fail closed on missing or mixed states", () => {
+test("normalizeCheckRollup, combineRestChecksAndStatus, normalizeReviewStatus, and normalizeMergeQueue fail closed on missing, truncated, or mixed states", () => {
   assert.deepEqual(normalizeCheckRollup(null), {
     state: "UNKNOWN",
     total: 0,
     passed: 0,
     failed: 0,
     pending: 0,
+    truncated: false,
   });
   assert.deepEqual(normalizeCheckRollup({ state: "SUCCESS", contexts: [] }), {
     state: "PASS",
@@ -168,6 +171,7 @@ test("normalizeCheckRollup, normalizeReviewStatus, and normalizeMergeQueue fail 
     passed: 0,
     failed: 0,
     pending: 0,
+    truncated: false,
   });
   assert.deepEqual(normalizeCheckRollup({ state: "FAILURE" }), {
     state: "FAIL",
@@ -175,6 +179,7 @@ test("normalizeCheckRollup, normalizeReviewStatus, and normalizeMergeQueue fail 
     passed: 0,
     failed: 0,
     pending: 0,
+    truncated: false,
   });
   assert.deepEqual(normalizeCheckRollup({ state: "ERROR" }), {
     state: "FAIL",
@@ -182,6 +187,7 @@ test("normalizeCheckRollup, normalizeReviewStatus, and normalizeMergeQueue fail 
     passed: 0,
     failed: 0,
     pending: 0,
+    truncated: false,
   });
   assert.deepEqual(normalizeCheckRollup({ state: "PENDING" }), {
     state: "PENDING",
@@ -189,6 +195,7 @@ test("normalizeCheckRollup, normalizeReviewStatus, and normalizeMergeQueue fail 
     passed: 0,
     failed: 0,
     pending: 0,
+    truncated: false,
   });
   assert.deepEqual(normalizeCheckRollup({ state: "EXPECTED" }), {
     state: "PENDING",
@@ -196,6 +203,15 @@ test("normalizeCheckRollup, normalizeReviewStatus, and normalizeMergeQueue fail 
     passed: 0,
     failed: 0,
     pending: 0,
+    truncated: false,
+  });
+  assert.deepEqual(normalizeCheckRollup({ state: "UNRECOGNIZED" }), {
+    state: "UNKNOWN",
+    total: 0,
+    passed: 0,
+    failed: 0,
+    pending: 0,
+    truncated: false,
   });
   assert.deepEqual(normalizeCheckRollup({}), {
     state: "UNKNOWN",
@@ -203,6 +219,7 @@ test("normalizeCheckRollup, normalizeReviewStatus, and normalizeMergeQueue fail 
     passed: 0,
     failed: 0,
     pending: 0,
+    truncated: false,
   });
   assert.deepEqual(normalizeCheckRollup({ contexts: [null, { unknownField: 1 }] }), {
     state: "UNKNOWN",
@@ -210,6 +227,7 @@ test("normalizeCheckRollup, normalizeReviewStatus, and normalizeMergeQueue fail 
     passed: 0,
     failed: 0,
     pending: 0,
+    truncated: false,
   });
 
   assert.deepEqual(
@@ -221,7 +239,45 @@ test("normalizeCheckRollup, normalizeReviewStatus, and normalizeMergeQueue fail 
         { state: "SUCCESS" },
       ],
     }),
-    { state: "PASS", total: 4, passed: 4, failed: 0, pending: 0 },
+    { state: "PASS", total: 4, passed: 4, failed: 0, pending: 0, truncated: false },
+  );
+
+  // Aggregate FAILURE / PENDING overrides passing bounded context slice
+  assert.deepEqual(
+    normalizeCheckRollup({
+      state: "FAILURE",
+      totalCount: 60,
+      truncated: true,
+      contexts: [{ status: "COMPLETED", conclusion: "SUCCESS" }],
+    }),
+    { state: "FAIL", total: 60, passed: 1, failed: 0, pending: 0, truncated: true },
+  );
+  assert.deepEqual(
+    normalizeCheckRollup({
+      state: "PENDING",
+      totalCount: 60,
+      contexts: [{ status: "COMPLETED", conclusion: "SUCCESS" }],
+    }),
+    { state: "PENDING", total: 60, passed: 1, failed: 0, pending: 0, truncated: true },
+  );
+  // Truncated contexts without authoritative aggregate state fail closed to UNKNOWN
+  assert.deepEqual(
+    normalizeCheckRollup({
+      state: null,
+      totalCount: 120,
+      contexts: [{ status: "COMPLETED", conclusion: "SUCCESS" }],
+    }),
+    { state: "UNKNOWN", total: 120, passed: 1, failed: 0, pending: 0, truncated: true },
+  );
+  // Truncated contexts with authoritative aggregate SUCCESS preserve PASS
+  assert.deepEqual(
+    normalizeCheckRollup({
+      state: "SUCCESS",
+      totalCount: 120,
+      truncated: true,
+      contexts: [{ status: "COMPLETED", conclusion: "SUCCESS" }],
+    }),
+    { state: "PASS", total: 120, passed: 1, failed: 0, pending: 0, truncated: true },
   );
 
   assert.deepEqual(
@@ -233,7 +289,7 @@ test("normalizeCheckRollup, normalizeReviewStatus, and normalizeMergeQueue fail 
         { state: "EXPECTED" },
       ],
     }),
-    { state: "PENDING", total: 4, passed: 1, failed: 0, pending: 3 },
+    { state: "PENDING", total: 4, passed: 1, failed: 0, pending: 3, truncated: false },
   );
 
   assert.deepEqual(
@@ -245,8 +301,46 @@ test("normalizeCheckRollup, normalizeReviewStatus, and normalizeMergeQueue fail 
         { state: "FAILURE" },
       ],
     }),
-    { state: "FAIL", total: 4, passed: 0, failed: 3, pending: 1 },
+    { state: "FAIL", total: 4, passed: 0, failed: 3, pending: 1, truncated: false },
   );
+
+  // combineRestChecksAndStatus: requires both endpoints complete unless failure is established
+  assert.equal(combineRestChecksAndStatus(null, null), null);
+  const completeRest = combineRestChecksAndStatus(
+    { total_count: 1, check_runs: [{ status: "COMPLETED", conclusion: "SUCCESS" }] },
+    { state: "pending", total_count: 0, statuses: [] },
+  );
+  assert.equal(normalizeCheckRollup(completeRest).state, "PASS");
+
+  const failingLegacyStatus = combineRestChecksAndStatus(
+    { total_count: 1, check_runs: [{ status: "COMPLETED", conclusion: "SUCCESS" }] },
+    { state: "failure", total_count: 1, statuses: [{ context: "ci/ext", state: "failure" }] },
+  );
+  assert.equal(normalizeCheckRollup(failingLegacyStatus).state, "FAIL");
+
+  const pendingLegacyStatus = combineRestChecksAndStatus(
+    { total_count: 1, check_runs: [{ status: "COMPLETED", conclusion: "SUCCESS" }] },
+    { state: "pending", total_count: 2, statuses: [{ context: "ci/ext", state: "success" }, { context: "ci/2", state: "success" }] },
+  );
+  assert.equal(normalizeCheckRollup(pendingLegacyStatus).state, "PENDING");
+
+  const missingStatusEndpoint = combineRestChecksAndStatus(
+    { total_count: 1, check_runs: [{ status: "COMPLETED", conclusion: "SUCCESS" }] },
+    null,
+  );
+  assert.equal(normalizeCheckRollup(missingStatusEndpoint).state, "UNKNOWN");
+
+  const truncatedChecksWithFailure = combineRestChecksAndStatus(
+    { total_count: 150, check_runs: [{ status: "COMPLETED", conclusion: "FAILURE" }] },
+    null,
+  );
+  assert.equal(normalizeCheckRollup(truncatedChecksWithFailure).state, "FAIL");
+
+  const truncatedStatusesWithAggregateError = combineRestChecksAndStatus(
+    null,
+    { state: "error", total_count: 150, statuses: [{ context: "ci/ok", state: "success" }] },
+  );
+  assert.equal(normalizeCheckRollup(truncatedStatusesWithAggregateError).state, "FAIL");
 
   assert.equal(normalizeReviewStatus("APPROVED"), "APPROVED");
   assert.equal(normalizeReviewStatus("changes_requested"), "CHANGES_REQUESTED");
@@ -453,10 +547,32 @@ test("buildFactoryBoardSnapshot, summarizeSnapshot, and buildUnavailableSnapshot
     previousSnapshot: null,
   });
   assert.equal(coldUnavailable.ok, false);
+  assert.equal(coldUnavailable.verified, false);
   assert.equal(coldUnavailable.stale, false);
   assert.equal(coldUnavailable.source, "unavailable");
-  assert.equal(coldUnavailable.totals.completionPercent, 0);
+  assert.equal(coldUnavailable.totals, null);
+  assert.deepEqual(coldUnavailable.milestones, []);
   assert.equal(coldUnavailable.error.code, "SNAPSHOT_UNAVAILABLE");
+
+  // Repeated cold-start failure must NOT convert unverified snapshot into stale verified data
+  const secondColdUnavailable = buildUnavailableSnapshot({
+    repo: DEFAULT_REPO,
+    generatedAt: "2026-11-27T01:05:20Z",
+    error: { code: "NET_DOWN", message: "Still offline" },
+    previousSnapshot: coldUnavailable,
+  });
+  assert.equal(secondColdUnavailable.verified, false);
+  assert.equal(secondColdUnavailable.stale, false);
+  assert.equal(secondColdUnavailable.totals, null);
+
+  // Truncated inventory marks partial: true and completionPercent: null
+  const partialSnap = buildFactoryBoardSnapshot(
+    { ...raw, truncated: true },
+    { repo: DEFAULT_REPO, source: "github-rest", generatedAt: "2026-11-27T01:06:00Z" },
+  );
+  assert.equal(partialSnap.partial, true);
+  assert.equal(partialSnap.totals.completionPercent, null);
+  assert.equal(partialSnap.milestones[0].completionPercent, null);
 
   const emptyInputSnap = buildFactoryBoardSnapshot(null, {
     repo: DEFAULT_REPO,
@@ -587,13 +703,77 @@ test("fetchViaGhGraphql, fetchViaPublicRest, and fetchFactoryBoardSnapshot handl
   assert.equal(ghSnap.source, "gh-graphql");
   assert.equal(ghSnap.totals.openPulls, 2);
 
-  // Sparse GraphQL repository object (missing optional arrays)
-  const sparseRaw = await fetchViaGhGraphql({
+  // Sparse GraphQL repository object + multi-page cursor pagination + truncation detection
+  let gqlCalls = 0;
+  const paginatedGqlRaw = await fetchViaGhGraphql({
     owner: "Jamula",
     name: "SoftwareFactory",
-    execGh: async () => JSON.stringify({ data: { repository: { openPulls: { nodes: [{ number: 1, title: "T", commits: { nodes: [{ commit: { statusCheckRollup: { state: "SUCCESS", contexts: null } } }] } }] } } } }),
+    maxIssuePages: 2,
+    execGh: async (args) => {
+      gqlCalls += 1;
+      if (args.some((a) => a.startsWith("cursor="))) {
+        return JSON.stringify({
+          data: {
+            repository: {
+              issues: {
+                pageInfo: { hasNextPage: true, endCursor: "cur-2" },
+                nodes: [{ number: 99, title: "[M01.08] Page 2 issue", state: "OPEN" }],
+              },
+            },
+          },
+        });
+      }
+      return JSON.stringify({
+        data: {
+          repository: {
+            openIssues: {
+              pageInfo: { hasNextPage: true, endCursor: "cur-1" },
+              nodes: [{ number: 98, title: "[M01.07] Page 1 issue", state: "OPEN" }],
+            },
+            openPulls: {
+              nodes: [
+                {
+                  number: 1,
+                  title: "T",
+                  commits: {
+                    nodes: [
+                      {
+                        commit: {
+                          statusCheckRollup: { state: "SUCCESS", contexts: null },
+                        },
+                      },
+                    ],
+                  },
+                },
+              ],
+            },
+          },
+        },
+      });
+    },
   });
-  assert.equal(sparseRaw.openPulls.length, 1);
+  assert.equal(gqlCalls, 2);
+  assert.equal(paginatedGqlRaw.issues.length, 2);
+  assert.equal(paginatedGqlRaw.truncated, true);
+
+  await assert.rejects(
+    () =>
+      fetchViaGhGraphql({
+        owner: "Jamula",
+        name: "SoftwareFactory",
+        execGh: async (args) =>
+          args.some((a) => a.startsWith("cursor="))
+            ? JSON.stringify({ errors: [{ message: "page error" }] })
+            : JSON.stringify({
+                data: {
+                  repository: {
+                    openIssues: { pageInfo: { hasNextPage: true, endCursor: "c1" }, nodes: [] },
+                  },
+                },
+              }),
+      }),
+    /GH_GRAPHQL_ERRORS/,
+  );
 
   await assert.rejects(
     () =>
@@ -614,14 +794,29 @@ test("fetchViaGhGraphql, fetchViaPublicRest, and fetchFactoryBoardSnapshot handl
     /GH_REPOSITORY_MISSING/,
   );
 
-  // Fallback to public REST when gh fails
+  // Fallback to public REST when gh fails, including multi-page /issues and /reviews pagination
   const restRequest = async (url) => {
+    const parsedUrl = new URL(url);
+    const page = Number(parsedUrl.searchParams.get("page") ?? "1");
     if (url.includes("/milestones?")) {
       return new Response(
         JSON.stringify([{ number: 6, title: "M02 - Fast SoftwareFactory", state: "open" }]),
       );
     }
     if (url.includes("/issues?")) {
+      if (page === 1) {
+        return new Response(
+          JSON.stringify([
+            {
+              number: 128,
+              title: "PR disguised on page 1 of /issues",
+              state: "open",
+              pull_request: { url: "https://api.github.com/..." },
+            },
+          ]),
+          { headers: { link: '<https://api.github.com/next>; rel="next"' } },
+        );
+      }
       return new Response(
         JSON.stringify([
           {
@@ -635,18 +830,13 @@ test("fetchViaGhGraphql, fetchViaPublicRest, and fetchFactoryBoardSnapshot handl
           },
           {
             number: 19,
-            title: "Unlabeled issue",
+            title: "Unlabeled issue on page 2",
             state: "open",
             labels: null,
             milestone: null,
           },
-          {
-            number: 128,
-            title: "PR disguised in /issues",
-            state: "open",
-            pull_request: { url: "https://api.github.com/..." },
-          },
         ]),
+        { headers: { link: '<https://api.github.com/prev>; rel="prev"' } },
       );
     }
     if (url.includes("/pulls?state=open")) {
@@ -701,12 +891,30 @@ test("fetchViaGhGraphql, fetchViaPublicRest, and fetchFactoryBoardSnapshot handl
     if (url.includes(`/commits/${"c".repeat(40)}/check-runs`)) {
       return new Response(
         JSON.stringify({
+          total_count: 1,
           check_runs: [{ status: "COMPLETED", conclusion: "SUCCESS" }],
         }),
       );
     }
+    if (url.includes(`/commits/${"c".repeat(40)}/status`)) {
+      return new Response(
+        JSON.stringify({
+          state: "pending",
+          total_count: 0,
+          statuses: [],
+        }),
+      );
+    }
     if (url.includes("/pulls/128/reviews")) {
-      return new Response(JSON.stringify([{ user: { login: "rev1" }, state: "APPROVED" }]));
+      if (page === 1) {
+        return new Response(
+          JSON.stringify([{ user: { login: "rev1" }, state: "APPROVED" }]),
+          { headers: { link: '<https://api.github.com/r2>; rel="next"' } },
+        );
+      }
+      return new Response(
+        JSON.stringify([{ user: { login: "rev1" }, state: "CHANGES_REQUESTED" }]),
+      );
     }
     // Simulate check/review rate limit on second PR -> fail-closed UNKNOWN
     return new Response("rate limited", { status: 403 });
@@ -721,6 +929,7 @@ test("fetchViaGhGraphql, fetchViaPublicRest, and fetchFactoryBoardSnapshot handl
   assert.equal(restRaw.issues.length, 2);
   assert.equal(restRaw.openPulls.length, 3);
   assert.equal(restRaw.mergedPulls.length, 1);
+  assert.equal(restRaw.truncated, false);
 
   const fallbackSnap = await fetchFactoryBoardSnapshot({
     repo: DEFAULT_REPO,
@@ -733,9 +942,39 @@ test("fetchViaGhGraphql, fetchViaPublicRest, and fetchFactoryBoardSnapshot handl
   assert.equal(fallbackSnap.ok, true);
   assert.equal(fallbackSnap.source, "github-rest");
   assert.equal(fallbackSnap.openPulls[0].ci.state, "PASS");
-  assert.equal(fallbackSnap.openPulls[0].reviewStatus, "APPROVED");
+  // Page 2 CHANGES_REQUESTED overrides Page 1 APPROVED!
+  assert.equal(fallbackSnap.openPulls[0].reviewStatus, "CHANGES_REQUESTED");
   assert.equal(fallbackSnap.openPulls[1].ci.state, "UNKNOWN");
   assert.equal(fallbackSnap.openPulls[1].reviewStatus, "UNKNOWN");
+
+  // Truncated REST reviews fail closed to UNKNOWN; truncated issues mark partial
+  const truncatedRestRaw = await fetchViaPublicRest({
+    owner: "Jamula",
+    name: "SoftwareFactory",
+    maxPages: 1,
+    maxReviewPages: 1,
+    perPage: 1,
+    request: async (url) => {
+      if (url.includes("/pulls?state=closed")) return new Response("[]");
+      if (url.includes("/pulls?state=open")) {
+        return new Response(
+          JSON.stringify([{ number: 1, title: "PR", head: { ref: "b", sha: "e".repeat(40) } }]),
+        );
+      }
+      if (url.includes("/check-runs")) {
+        return new Response(JSON.stringify({ total_count: 1, check_runs: [{ status: "COMPLETED", conclusion: "SUCCESS" }] }));
+      }
+      if (url.includes("/status")) {
+        return new Response(JSON.stringify({ state: "pending", total_count: 0, statuses: [] }));
+      }
+      if (url.includes("/reviews")) {
+        return new Response(JSON.stringify([{ user: { login: "r" }, state: "APPROVED" }]));
+      }
+      return new Response(JSON.stringify([{ number: 1, title: "M01 - Auto", state: "open" }]));
+    },
+  });
+  assert.equal(truncatedRestRaw.truncated, true);
+  assert.equal(truncatedRestRaw.openPulls[0].reviews, undefined);
 
   await assert.rejects(
     () =>
@@ -743,6 +982,18 @@ test("fetchViaGhGraphql, fetchViaPublicRest, and fetchFactoryBoardSnapshot handl
         owner: "Jamula",
         name: "SoftwareFactory",
         request: async () => new Response(JSON.stringify({ notArray: true })),
+      }),
+    /REST_PAYLOAD_INVALID/,
+  );
+  await assert.rejects(
+    () =>
+      fetchViaPublicRest({
+        owner: "Jamula",
+        name: "SoftwareFactory",
+        request: async (url) =>
+          url.includes("state=closed")
+            ? new Response(JSON.stringify({ notArray: true }))
+            : new Response("[]"),
       }),
     /REST_PAYLOAD_INVALID/,
   );
@@ -974,17 +1225,80 @@ test("board-ui loopback HTTP/SSE server and createFactoryBoardCanvasSpec satisfy
   const firstChunk = await sseReader.read();
   assert.match(sseDecoder.decode(firstChunk.value), /event: state/);
 
-  // Test HTTP GET /, GET /api/state, POST /api/refresh, POST /api/control, and error routes
+  // Test HTTP GET /, GET /client.mjs, GET /api/state, Host/Origin/CSRF protections, and POST routes
   const htmlRes = await fetch(opened.url);
   assert.equal(htmlRes.status, 200);
-  assert.match(await htmlRes.text(), /SoftwareFactory Live Board/);
+  const htmlBody = await htmlRes.text();
+  assert.match(htmlBody, /SoftwareFactory Live Board/);
+  const tokenMatch = /data-board-token="([a-f0-9]+)"/.exec(htmlBody);
+  assert.ok(tokenMatch, "HTML body must embed per-instance capability token");
+  const boardToken = tokenMatch[1];
+
+  const clientJsRes = await fetch(`${opened.url}client.mjs`);
+  assert.equal(clientJsRes.status, 200);
+  assert.match(clientJsRes.headers.get("content-type") ?? "", /text\/javascript/);
+  assert.match(await clientJsRes.text(), /initFactoryBoardClient/);
+
+  // DNS rebinding / Host mismatch, cross-origin, cross-site, Content-Type, and token checks
+  const rebindRes = await new Promise((resolve, reject) => {
+    const u = new URL(opened.url);
+    import("node:http").then(({ request }) => {
+      const req = request(
+        {
+          hostname: "127.0.0.1",
+          port: u.port,
+          path: "/api/state",
+          method: "GET",
+          headers: { Host: `evil.example:${u.port}` },
+        },
+        (res) => resolve(res.statusCode),
+      );
+      req.on("error", reject);
+      req.end();
+    });
+  });
+  assert.equal(rebindRes, 403);
+
+  const badOriginRes = await fetch(`${opened.url}api/state`, {
+    headers: { Origin: "https://evil.example" },
+  });
+  assert.equal(badOriginRes.status, 403);
+
+  const crossSiteSubresourceRes = await fetch(`${opened.url}api/state`, {
+    headers: { "Sec-Fetch-Site": "cross-site" },
+  });
+  assert.equal(crossSiteSubresourceRes.status, 403);
+
+  const textPlainPostRes = await fetch(`${opened.url}api/refresh`, {
+    method: "POST",
+    headers: { "Content-Type": "text/plain", "X-Factory-Board-Token": boardToken },
+    body: "{}",
+  });
+  assert.equal(textPlainPostRes.status, 415);
+
+  const missingTokenPostRes = await fetch(`${opened.url}api/refresh`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: "{}",
+  });
+  assert.equal(missingTokenPostRes.status, 403);
 
   const stateRes = await fetch(`${opened.url}api/state`);
   assert.equal(stateRes.status, 200);
   const stateJson = await stateRes.json();
   assert.equal(stateJson.snapshot.totals.openPulls, 1);
 
-  const postRefreshRes = await fetch(`${opened.url}api/refresh`, { method: "POST" });
+  const authedHeaders = {
+    "Content-Type": "application/json",
+    "X-Factory-Board-Token": boardToken,
+    Origin: opened.url.slice(0, -1),
+  };
+
+  const postRefreshRes = await fetch(`${opened.url}api/refresh`, {
+    method: "POST",
+    headers: authedHeaders,
+    body: "",
+  });
   assert.equal(postRefreshRes.status, 200);
 
   // Read pushed SSE update triggered by /api/refresh
@@ -993,7 +1307,7 @@ test("board-ui loopback HTTP/SSE server and createFactoryBoardCanvasSpec satisfy
 
   const pauseRes = await fetch(`${opened.url}api/control`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: authedHeaders,
     body: JSON.stringify({ paused: true, intervalSeconds: 30 }),
   });
   assert.equal(pauseRes.status, 200);
@@ -1003,24 +1317,28 @@ test("board-ui loopback HTTP/SSE server and createFactoryBoardCanvasSpec satisfy
 
   const badIntervalHttp = await fetch(`${opened.url}api/control`, {
     method: "POST",
+    headers: authedHeaders,
     body: JSON.stringify({ intervalSeconds: 2 }),
   });
   assert.equal(badIntervalHttp.status, 400);
 
   const badJsonHttp = await fetch(`${opened.url}api/control`, {
     method: "POST",
+    headers: authedHeaders,
     body: "{broken",
   });
   assert.equal(badJsonHttp.status, 400);
 
   const arrayJsonHttp = await fetch(`${opened.url}api/control`, {
     method: "POST",
+    headers: authedHeaders,
     body: "[]",
   });
   assert.equal(arrayJsonHttp.status, 400);
 
   const tooLargeHttp = await fetch(`${opened.url}api/control`, {
     method: "POST",
+    headers: authedHeaders,
     body: "x".repeat(5000),
   });
   assert.equal(tooLargeHttp.status, 413);
@@ -1061,9 +1379,412 @@ test("board-ui loopback HTTP/SSE server and createFactoryBoardCanvasSpec satisfy
   assert.equal(manager.size(), 0);
   await manager.closeAll();
 
-  // Direct startLoopbackBoardServer double-close idempotency
-  const standalone = await startLoopbackBoardServer({ fetchSnapshot: fakeFetchSnapshot });
+  // Concurrent openInstance coalescing and cancellation during pending startup
+  let startCalls = 0;
+  let releaseStartup;
+  const startupGate = new Promise((r) => {
+    releaseStartup = r;
+  });
+  let closedCancelledServer = false;
+  const coalescedManager = createBoardInstanceManager({
+    startServer: async (opts) => {
+      startCalls += 1;
+      await startupGate;
+      const real = await startLoopbackBoardServer({ ...opts, fetchSnapshot: fakeFetchSnapshot });
+      return {
+        ...real,
+        async close() {
+          closedCancelledServer = true;
+          await real.close();
+        },
+      };
+    },
+  });
+
+  const [concurrentA, concurrentB] = [
+    coalescedManager.openInstance({ instanceId: "race-1" }),
+    coalescedManager.openInstance({ instanceId: "race-1", input: { intervalSeconds: 35 } }),
+  ];
+  releaseStartup();
+  const [resA, resB] = await Promise.all([concurrentA, concurrentB]);
+  assert.equal(startCalls, 1);
+  assert.equal(resA.url, resB.url);
+  assert.equal(resB.status, "Auto-refreshing (35s)");
+  await coalescedManager.closeAll();
+
+  // Cancel while startup is still in flight
+  let releaseCancelGate;
+  const cancelGate = new Promise((r) => {
+    releaseCancelGate = r;
+  });
+  closedCancelledServer = false;
+  const cancelManager = createBoardInstanceManager({
+    startServer: async (opts) => {
+      await cancelGate;
+      const real = await startLoopbackBoardServer({ ...opts, fetchSnapshot: fakeFetchSnapshot });
+      return {
+        ...real,
+        async close() {
+          closedCancelledServer = true;
+          await real.close();
+        },
+      };
+    },
+  });
+  const pendingOpen = cancelManager.openInstance({ instanceId: "cancel-1" });
+  const closePromise = cancelManager.closeInstance("cancel-1");
+  releaseCancelGate();
+  await assert.rejects(() => pendingOpen, /closed during startup/);
+  assert.equal(await closePromise, true);
+  assert.equal(closedCancelledServer, true);
+  assert.equal(cancelManager.size(), 0);
+
+  // Direct startLoopbackBoardServer with slow initial snapshot + active SSE keepalive + close with live SSE client
+  let releaseSlowSnap;
+  const slowSnapGate = new Promise((r) => {
+    releaseSlowSnap = r;
+  });
+  const intervalCallbacks = [];
+  const customTimers = {
+    setInterval(fn) {
+      intervalCallbacks.push(fn);
+      return { id: intervalCallbacks.length, unref() {} };
+    },
+    clearInterval() {},
+  };
+  const standalone = await startLoopbackBoardServer({
+    timers: customTimers,
+    fetchSnapshot: async (opts) => {
+      await slowSnapGate;
+      return fakeFetchSnapshot(opts);
+    },
+  });
+  const liveSsePromise = fetch(`${standalone.url}events`);
+  const liveSseRes = await liveSsePromise;
+  const liveSseReader = liveSseRes.body.getReader();
+  const initialNullChunk = await liveSseReader.read();
+  assert.match(new TextDecoder().decode(initialNullChunk.value), /"snapshot":null/);
+  // Trigger SSE keepAlive callback
+  intervalCallbacks.at(-1)();
+  const keepAliveChunk = await liveSseReader.read();
+  assert.match(new TextDecoder().decode(keepAliveChunk.value), /: keepalive/);
+
+  const pendingStateFetch = fetch(`${standalone.url}api/state`);
+  releaseSlowSnap();
+  const resolvedStateRes = await pendingStateFetch;
+  assert.equal(resolvedStateRes.status, 200);
+  // Close server while SSE stream is still open to verify server-initiated SSE cleanup
   await standalone.close();
   await standalone.close();
+  await liveSseReader.cancel().catch(() => {});
   assert.ok(logs.length >= 1);
+});
+
+test("initFactoryBoardClient renders verified, partial, stale, and cold-unavailable states and handles UI controls", async () => {
+  const makeEl = (tag = "div") => {
+    const listeners = new Map();
+    const classes = new Set();
+    const attrs = new Map();
+    const children = [];
+    let inner = "";
+    let drawers = [];
+    let filterButtons = [];
+    const node = {
+      tagName: tag.toUpperCase(),
+      textContent: "",
+      className: "",
+      hidden: false,
+      disabled: false,
+      value: "20",
+      open: true,
+      options: [{ value: "10" }, { value: "20" }, { value: "30" }],
+      get innerHTML() {
+        return inner;
+      },
+      set innerHTML(val) {
+        inner = String(val);
+        drawers = [...inner.matchAll(/data-ms="([^"]+)"/g)].map((m) => {
+          const dListeners = new Map();
+          return {
+            open: true,
+            getAttribute: (k) => (k === "data-ms" ? m[1] : null),
+            addEventListener: (ev, fn) => dListeners.set(ev, fn),
+            triggerToggle(nextOpen) {
+              this.open = nextOpen;
+              dListeners.get("toggle")?.();
+            },
+          };
+        });
+      },
+      appendChild(child) {
+        children.push(child);
+        if (tag === "select") {
+          node.options.push(child);
+        }
+      },
+      setAttribute(k, v) {
+        attrs.set(k, String(v));
+      },
+      getAttribute(k) {
+        return attrs.get(k) ?? null;
+      },
+      addEventListener(ev, fn) {
+        listeners.set(ev, fn);
+      },
+      async trigger(ev, payload = {}) {
+        const fn = listeners.get(ev);
+        if (fn) await fn(payload);
+      },
+      querySelectorAll(sel) {
+        if (sel === "details.issue-drawer") return drawers;
+        if (sel === "button") return filterButtons;
+        return [];
+      },
+      classList: {
+        toggle(cls, force) {
+          if (force) classes.add(cls);
+          else classes.delete(cls);
+        },
+        has(cls) {
+          return classes.has(cls);
+        },
+      },
+      setFilterButtons(btns) {
+        filterButtons = btns;
+      },
+    };
+    return node;
+  };
+
+  const elements = new Map(
+    [
+      "sse-dot",
+      "sse-text",
+      "repo-pill",
+      "status-text",
+      "toggle-pause",
+      "updated-text",
+      "source-text",
+      "error-banner",
+      "kpi-grid",
+      "milestones-grid",
+      "open-prs-wrap",
+      "merged-prs-wrap",
+      "refresh-now",
+      "pr-filters",
+    ].map((id) => [id, makeEl()]),
+  );
+  elements.set("interval-select", makeEl("select"));
+
+  const filterBtns = ["all", "queue", "fail", "pending", "pass"].map((f) => {
+    const b = makeEl("button");
+    b.setAttribute("data-filter", f);
+    b.closest = () => b;
+    return b;
+  });
+  elements.get("pr-filters").setFilterButtons(filterBtns);
+
+  const bodyEl = makeEl("body");
+  bodyEl.setAttribute("data-board-token", "tok-123");
+
+  const sseHandlers = new Map();
+  class FakeEventSource {
+    constructor(url) {
+      this.url = url;
+    }
+    addEventListener(ev, fn) {
+      sseHandlers.set(ev, fn);
+    }
+  }
+
+  const posted = [];
+  let initialStateEnvelope = {
+    config: { repo: DEFAULT_REPO, intervalSeconds: 45, paused: false, status: "Auto-refreshing (45s)" },
+    snapshot: null,
+  };
+
+  const fakeWin = {
+    document: {
+      body: bodyEl,
+      getElementById: (id) => elements.get(id),
+      createElement: (tag) => makeEl(tag),
+    },
+    EventSource: FakeEventSource,
+    fetch: async (path, opts) => {
+      if (path === "/api/state") {
+        return new Response(JSON.stringify(initialStateEnvelope), { status: 200 });
+      }
+      posted.push({ path, headers: opts.headers, body: JSON.parse(opts.body) });
+      return new Response(
+        JSON.stringify({
+          config: { repo: DEFAULT_REPO, intervalSeconds: 60, paused: true, status: "Paused" },
+          snapshot: buildUnavailableSnapshot({
+            repo: DEFAULT_REPO,
+            generatedAt: "2026-11-27T03:00:00Z",
+            error: { code: "OFFLINE", message: "No network" },
+            previousSnapshot: null,
+          }),
+        }),
+        { status: 200 },
+      );
+    },
+  };
+
+  const client = initFactoryBoardClient(fakeWin);
+  // Calling render() before envelope arrives is a safe no-op
+  client.render();
+
+  // Unit assertions on pure client helpers
+  assert.equal(client.safeHref("https://github.com/Jamula/SoftwareFactory/pull/1"), "https://github.com/Jamula/SoftwareFactory/pull/1");
+  assert.equal(client.safeHref("javascript:alert(1)"), "#");
+  assert.equal(client.safeHref("https://evil.example/x"), "#");
+  assert.equal(client.safeHref("://broken"), "#");
+  assert.equal(client.fmtTime(null), "—");
+  assert.equal(client.fmtTime("not-a-date"), "not-a-date");
+  assert.match(client.fmtTime("2026-11-27T01:02:03Z"), /2026-11-27 01:02:03 UTC/);
+
+  assert.match(client.ciBadge(null), /UNKNOWN/);
+  assert.match(client.ciBadge({ state: "PASS", passed: 3, total: 3 }), /PASS 3\/3/);
+  assert.match(client.ciBadge({ state: "FAIL", passed: 1, total: 2 }), /FAIL 1\/2/);
+  assert.match(client.ciBadge({ state: "PENDING", passed: 0, total: 0 }), /PENDING/);
+  assert.match(client.ciBadge({ state: "UNKNOWN", passed: 0, total: 0 }), /UNKNOWN/);
+
+  assert.match(client.reviewBadge("APPROVED"), /APPROVED/);
+  assert.match(client.reviewBadge("CHANGES_REQUESTED"), /CHANGES REQ/);
+  assert.match(client.reviewBadge("REVIEW_REQUIRED"), /REVIEW REQ/);
+  assert.match(client.reviewBadge("PENDING"), /PENDING/);
+  assert.match(client.reviewBadge("UNKNOWN"), /UNKNOWN/);
+
+  assert.match(client.queueBadge({ mergeQueue: { queued: true, position: 1 } }), /QUEUED #2/);
+  assert.match(client.queueBadge({ mergeQueue: { queued: true, position: null } }), /QUEUED</);
+  assert.match(client.queueBadge({ isDraft: true, mergeQueue: { queued: false } }), /DRAFT/);
+  assert.match(client.queueBadge({ isDraft: false, mergeStateStatus: "DIRTY", autoMerge: true, mergeQueue: { queued: false } }), /DIRTY · AUTO/);
+  assert.match(client.queueBadge({ isDraft: false, mergeStateStatus: "CLEAN", autoMerge: false, mergeQueue: { queued: false } }), /CLEAN/);
+  assert.match(client.queueBadge({ isDraft: false, mergeStateStatus: "BLOCKED", autoMerge: false, mergeQueue: { queued: false } }), /BLOCKED/);
+
+  // Wait for /api/state initial promise
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(elements.get("updated-text").textContent, "Loading initial snapshot…");
+  assert.equal(elements.get("interval-select").value, "45");
+
+  // SSE open / error / bad JSON / rich verified snapshot
+  sseHandlers.get("open")();
+  assert.equal(elements.get("sse-text").textContent, "Live SSE");
+  sseHandlers.get("error")();
+  assert.equal(elements.get("sse-text").textContent, "Reconnecting…");
+  sseHandlers.get("state")({ data: "{invalid" });
+  assert.equal(elements.get("sse-text").textContent, "Stream parse error");
+
+  const richSnap = buildFactoryBoardSnapshot(
+    {
+      truncated: true,
+      milestones: [{ number: 2, title: "M01 - Autonomous SoftwareFactory", state: "OPEN" }],
+      issues: [
+        { number: 4, title: "[M01.01 P0] Closed item", state: "CLOSED", labels: ["M01", "P0"] },
+        { number: 5, title: "[M01.03 P1] Open item", state: "OPEN", labels: ["M01", "P1"] },
+      ],
+      openPulls: [
+        {
+          number: 130,
+          title: "M01.03: Passing queued (#5)",
+          headRefName: "u/dev/1",
+          reviewDecision: "APPROVED",
+          mergeStateStatus: "CLEAN",
+          mergeQueueEntry: { state: "QUEUED", position: 0 },
+          checkRollup: { contexts: [{ status: "COMPLETED", conclusion: "SUCCESS" }] },
+        },
+        {
+          number: 131,
+          title: "M01.04: Pending",
+          headRefName: "",
+          reviewDecision: "REVIEW_REQUIRED",
+          checkRollup: { contexts: [{ status: "IN_PROGRESS", conclusion: "" }] },
+        },
+        {
+          number: 132,
+          title: "Unmapped failing",
+          headRefName: "u/dev/3",
+          reviewDecision: "CHANGES_REQUESTED",
+          checkRollup: { contexts: [{ status: "COMPLETED", conclusion: "FAILURE" }] },
+        },
+      ],
+      mergedPulls: [
+        { number: 120, title: "M01.01: Merged", mergedAt: "2026-11-27T00:00:00Z", headRefName: "u/m" },
+        { number: 121, title: "Unmapped merged", mergedAt: "2026-11-27T00:01:00Z", headRefName: "" },
+      ],
+    },
+    { repo: DEFAULT_REPO, source: "gh-graphql", generatedAt: "2026-11-27T02:30:00Z" },
+  );
+
+  sseHandlers.get("state")({
+    data: JSON.stringify({
+      config: { repo: DEFAULT_REPO, intervalSeconds: 20, paused: false, status: "Auto-refreshing (20s)" },
+      snapshot: richSnap,
+    }),
+  });
+
+  assert.equal(elements.get("error-banner").hidden, false);
+  assert.match(elements.get("error-banner").textContent, /Partial bounded inventory/);
+  assert.match(elements.get("kpi-grid").innerHTML, /Closed Issues \(Proxy\)/);
+  assert.match(elements.get("kpi-grid").innerHTML, /≥ 1 closed/);
+
+  // Toggle milestone drawer closed & open
+  const drawers = elements.get("milestones-grid").querySelectorAll("details.issue-drawer");
+  drawers[0].triggerToggle(false);
+  assert.equal(client.state.openDrawers.has("M01"), false);
+  drawers[0].triggerToggle(true);
+  assert.equal(client.state.openDrawers.has("M01"), true);
+
+  // Exercise all PR filter tabs + non-button click ignore
+  await elements.get("pr-filters").trigger("click", { target: { closest: () => null } });
+  for (const btn of filterBtns) {
+    await elements.get("pr-filters").trigger("click", { target: btn });
+  }
+
+  // Trigger Refresh now, Pause toggle, and Interval select (sending X-Factory-Board-Token!)
+  await elements.get("refresh-now").trigger("click");
+  await elements.get("toggle-pause").trigger("click");
+  await elements.get("interval-select").trigger("change", { target: { value: "60" } });
+
+  assert.equal(posted.length, 3);
+  assert.equal(posted[0].headers["X-Factory-Board-Token"], "tok-123");
+  // Cold-start unavailable response from fakeWin.fetch renders unknown placeholders ("—")
+  assert.match(elements.get("kpi-grid").innerHTML, /Unavailable until verified read/);
+  assert.match(elements.get("milestones-grid").innerHTML, /awaiting verified snapshot/);
+
+  // Also test stale degraded snapshot banner rendering
+  const completeSnap = buildFactoryBoardSnapshot(
+    {
+      milestones: [{ number: 2, title: "M01 - Auto", state: "OPEN" }],
+      issues: [{ number: 1, title: "[M01] Closed", state: "CLOSED", labels: ["M01"] }],
+      openPulls: [],
+      mergedPulls: [],
+    },
+    { repo: DEFAULT_REPO, source: "gh-graphql", generatedAt: "2026-11-27T02:40:00Z" },
+  );
+  // Healthy verified snapshot hides error-banner and renders 100% closed proxy
+  sseHandlers.get("state")({
+    data: JSON.stringify({
+      config: { repo: DEFAULT_REPO, intervalSeconds: 20, paused: false, status: "Auto-refreshing (20s)" },
+      snapshot: completeSnap,
+    }),
+  });
+  assert.equal(elements.get("error-banner").hidden, true);
+  assert.equal(elements.get("error-banner").textContent, "");
+  assert.match(elements.get("kpi-grid").innerHTML, /100% closed \(activity proxy, not verified acceptance\)/);
+
+  const staleDegraded = buildUnavailableSnapshot({
+    repo: DEFAULT_REPO,
+    generatedAt: "2026-11-27T02:45:00Z",
+    error: { code: "TIMEOUT", message: "Slow network" },
+    previousSnapshot: completeSnap,
+  });
+  sseHandlers.get("state")({
+    data: JSON.stringify({
+      config: { repo: DEFAULT_REPO, intervalSeconds: 20, paused: false, status: "Auto-refreshing (20s)" },
+      snapshot: staleDegraded,
+    }),
+  });
+  assert.match(elements.get("error-banner").textContent, /Degraded \(showing last verified snapshot\)/);
+  assert.match(elements.get("kpi-grid").innerHTML, /activity proxy, not verified acceptance/);
 });

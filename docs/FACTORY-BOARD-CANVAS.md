@@ -7,9 +7,9 @@ Project-scoped Copilot CLI Extension Canvas providing a live, auto-refreshing, r
 | File | Responsibility |
 | --- | --- |
 | `.github/extensions/factory-board/extension.mjs` | Copilot CLI extension entrypoint registering canvas `factory-board` via `@microsoft/copilot-sdk/extension`. |
-| `.github/extensions/factory-board/board-ui.mjs` | Ephemeral loopback (`127.0.0.1:0`) HTTP + Server-Sent Events (`/events`) server and Copilot App themed HTML/CSS/JS renderer. |
-| `tools/engineering-factory/factory-board.mjs` | Pure/injectable GitHub metadata fetcher (`gh` GraphQL with bounded public REST fallback), snapshot normalizer, and polling state coordinator. |
-| `tests/engineering-factory/factory-board.test.mjs` | Headless `node:test` replay and loopback integration suite (`>=98%` line and `>=95%` branch coverage). |
+| `.github/extensions/factory-board/board-ui.mjs` | Declarative extension UI re-export binding the loopback HTTP/SSE server, themed renderer, and canvas specification from `tools/engineering-factory/factory-board.mjs`. |
+| `tools/engineering-factory/factory-board.mjs` | Instrumented, coverage-enforced GitHub metadata fetcher (`gh` GraphQL + bounded paginated REST fallback), snapshot normalizer, polling coordinator, loopback HTTP/SSE server, and browser UI controller (`initFactoryBoardClient`). |
+| `tests/engineering-factory/factory-board.test.mjs` | Headless `node:test` replay, browser controller, and loopback integration suite (`>=98%` line and `>=95%` branch coverage). |
 
 Do not add a `package.json` or `node_modules` directory under `.github/extensions/factory-board/`; the Copilot CLI resolves `@microsoft/copilot-sdk/extension` automatically and reserves `stdout` for JSON-RPC over stdio.
 
@@ -46,6 +46,7 @@ Press `Ctrl+C` to stop the preview process.
 
 ## Safety, telemetry, and governance boundaries
 
-- **Read-only and metadata-only**: Reads milestone, issue, PR, check-run, review, and merge-queue metadata via `gh api graphql` (`GH_PAGER=""`) when authenticated locally, falling back automatically to bounded `GET` requests against `https://api.github.com/repos/Jamula/SoftwareFactory/...` (`AbortSignal.timeout(5000)`, `redirect: "error"`, 1 MiB response cap).
-- **Fail-closed**: Missing check/review data reports `UNKNOWN` rather than `PASS`. Total read failures mark `ok: false` with explicit error codes (`stale: true` if preserving the last verified snapshot) and never fabricate progress.
-- **Strict acceptance accounting**: Accepted (`CLOSED`) issues and active (`OPEN`) pull requests are reported separately per [engineering standards](ENGINEERING-STANDARDS.md). GitHub Issues and PRs remain authoritative; the canvas does not persist a competing backlog or authorize dispatch/merge actions.
+- **Read-only and metadata-only**: Reads milestone, issue, PR, check-run, commit-status, review, and merge-queue metadata via bounded paginated `gh api graphql` (`GH_PAGER=""`) when authenticated locally, falling back automatically to bounded paginated `GET` requests against `https://api.github.com/repos/Jamula/SoftwareFactory/...` (`AbortSignal.timeout(5000)`, `redirect: "error"`, 1 MiB response cap).
+- **Loopback authority and capability protection**: Validates the exact bound `127.0.0.1:<port>` `Host` authority on every route, rejects cross-origin/cross-site requests, and requires `Content-Type: application/json` plus a per-instance cryptographic `X-Factory-Board-Token` capability header on `POST` control routes.
+- **Fail-closed and completeness-aware**: Truncated or partially unavailable check/status/review reads report `UNKNOWN` unless a failure is established. Repository inventories exceeding pagination caps mark `partial: true` (`completionPercent: null`) rather than presenting sampled subsets as complete totals. Cold-start failures keep aggregates `null`/unavailable rather than fabricating zero counts, and only `verified: true` snapshots are preserved as `stale: true` across subsequent failures.
+- **Activity proxy vs. verified acceptance**: Closed (`CLOSED`) issues and active (`OPEN`) pull requests are labeled and reported separately as GitHub activity proxies rather than verified acceptance outcomes per [engineering standards](ENGINEERING-STANDARDS.md). GitHub Issues and PRs remain authoritative; the canvas does not persist a competing backlog or authorize dispatch/merge actions.
