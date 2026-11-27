@@ -4,18 +4,24 @@ const sha=v=>typeof v==='string'&&/^[a-f0-9]{40}$/.test(v);
 const pos=v=>Number.isSafeInteger(v)&&v>0;
 const data=(v,keys)=>v!==null&&typeof v==='object'&&!types.isProxy(v)&&!Array.isArray(v)&&keys.every(k=>Object.hasOwn(Object.getOwnPropertyDescriptor(v,k)??{},'value'));
 const dense=(v,max)=>!types.isProxy(v)&&Array.isArray(v)&&Object.getPrototypeOf(v)===Array.prototype&&v.length<=max&&Reflect.ownKeys(v).length===v.length+1&&Array.from({length:v.length},(_,i)=>Object.hasOwn(Object.getOwnPropertyDescriptor(v,i)??{},'value')).every(Boolean);
-const required=['build-test','upload-coverage-javascript','windows-aspire-runtime','CodeQL'];
+const defaultRequired=Object.freeze(['build-test','upload-coverage-javascript','windows-aspire-runtime','CodeQL']);
+const defaultScope=Object.freeze({repositoryId:1471342715,requiredChecks:defaultRequired});
+const validScope=scope=>data(scope,['repositoryId','requiredChecks'])&&pos(scope.repositoryId)&&
+ dense(scope.requiredChecks,32)&&scope.requiredChecks.length>0&&
+ scope.requiredChecks.every(name=>typeof name==='string'&&name.length>0)&&
+ new Set(scope.requiredChecks).size===scope.requiredChecks.length&&
+ (scope.repositoryId!==1471342715||defaultRequired.every(name=>scope.requiredChecks.includes(name)));
 const deny=reason=>({shadow:true,eligible:false,liveMerge:false,reason});
 // Input is normalized by a separately trusted adapter. This diagnostic cannot
 // establish protection enforcement or authorize any repository operation.
-export function platformMergeGates(head,policy,e){
- if(!sha(head)||!data(policy,['repositoryId','trusted','required'])||policy.repositoryId!==1471342715||policy.trusted!==true||!dense(policy.required,32))return deny('POLICY_UNKNOWN');
+export function platformMergeGates(head,policy,e,scope=defaultScope){
+ if(!validScope(scope)||!sha(head)||!data(policy,['repositoryId','trusted','required'])||policy.repositoryId!==scope.repositoryId||policy.trusted!==true||!dense(policy.required,32))return deny('POLICY_UNKNOWN');
  const expected=new Map();
  for(const c of policy.required){
   if(!data(c,['name','appId'])||typeof c.name!=='string'||!c.name||!pos(c.appId)||expected.has(c.name))return deny('POLICY_UNKNOWN');
   expected.set(c.name,c.appId);
  }
- if(required.some(n=>!expected.has(n)))return deny('PLATFORM_POLICY_INCOMPLETE');
+ if(scope.requiredChecks.some(n=>!expected.has(n)))return deny('PLATFORM_POLICY_INCOMPLETE');
  if(!data(e,['head','complete','checks','review','coverageVerified','securityClear','threadsResolved','baseHealthy','independentFavorable'])||e.head!==head||e.complete!==true||!dense(e.checks,256))return deny('EVIDENCE_UNKNOWN');
  const seen=new Set();
  for(const c of e.checks){
