@@ -1687,8 +1687,24 @@ export async function simulateDurableCasLifecycle(scenario) {
           continue;
         }
         const deliveryKey = `${ev.candidate.repositoryId}:${ev.deliveryId}`;
+        const deliveryFingerprint = JSON.stringify([
+          checked.workId,
+          ev.eventSequence,
+          ev.candidate.lane,
+          ev.candidate.ownedPaths,
+          ev.candidate.workerId,
+          ev.candidate.runId,
+          checked.runAttempt,
+          ev.candidate.leaseTtlMs,
+          checked.maxExecutionMs,
+          checked.maxAttempts,
+          ev.candidate.traceparent ?? null,
+          ev.candidate.lockSha256 ?? null,
+          ev.authoritativeHeadSha ?? null,
+          ev.readyAtMs ?? null
+        ]);
         const previousDelivery = seenDeliveries.get(deliveryKey);
-        if (previousDelivery !== undefined && previousDelivery.workId !== checked.workId) {
+        if (previousDelivery !== undefined && previousDelivery.fingerprint !== deliveryFingerprint) {
           deliveryConflictsRejected += 1;
           outcomes.push(Object.freeze({
             deliveryId: ev.deliveryId,
@@ -1708,9 +1724,9 @@ export async function simulateDurableCasLifecycle(scenario) {
           }));
           continue;
         }
-        seenDeliveries.set(deliveryKey, {workId: checked.workId, consumed: false});
+        seenDeliveries.set(deliveryKey, {fingerprint: deliveryFingerprint, consumed: false});
         if (ev.authoritativeHeadSha !== undefined && ev.candidate.headSha !== ev.authoritativeHeadSha) {
-          seenDeliveries.set(deliveryKey, {workId: checked.workId, consumed: true});
+          seenDeliveries.set(deliveryKey, {fingerprint: deliveryFingerprint, consumed: true});
           staleHeadRejected += 1;
           outcomes.push(Object.freeze({
             deliveryId: ev.deliveryId,
@@ -1725,7 +1741,7 @@ export async function simulateDurableCasLifecycle(scenario) {
           : `${ev.candidate.repositoryId}:pr:${ev.candidate.pullNumber}`;
         const prevSeq = latestSequenceByTarget.get(targetKey);
         if (prevSeq !== undefined && ev.eventSequence < prevSeq) {
-          seenDeliveries.set(deliveryKey, {workId: checked.workId, consumed: true});
+          seenDeliveries.set(deliveryKey, {fingerprint: deliveryFingerprint, consumed: true});
           outOfOrderRejected += 1;
           outcomes.push(Object.freeze({
             deliveryId: ev.deliveryId,
@@ -1745,7 +1761,7 @@ export async function simulateDurableCasLifecycle(scenario) {
           maxCasAttempts
         });
         if (claimRes.ok) {
-          seenDeliveries.set(deliveryKey, {workId: checked.workId, consumed: true});
+          seenDeliveries.set(deliveryKey, {fingerprint: deliveryFingerprint, consumed: true});
           claimsGranted += 1;
           if (ev.readyAtMs !== undefined) readyLatenciesMs.push(step.nowMs - ev.readyAtMs);
           outcomes.push(Object.freeze({
@@ -1757,7 +1773,7 @@ export async function simulateDurableCasLifecycle(scenario) {
           }));
         } else {
           if (DUPLICATE_REJECTION_REASONS.has(claimRes.reason)) {
-            seenDeliveries.set(deliveryKey, {workId: checked.workId, consumed: true});
+            seenDeliveries.set(deliveryKey, {fingerprint: deliveryFingerprint, consumed: true});
             duplicateClaimsRejected += 1;
           }
           outcomes.push(Object.freeze({
