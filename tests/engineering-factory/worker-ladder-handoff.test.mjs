@@ -122,6 +122,9 @@ function makeLease(overrides = {}) {
 
 function makeSerializedStateObject(lease = makeLease(), extra = {}) {
   return {
+    schemaVersion: CHECKPOINT_SCHEMA_VERSION,
+    checkpointId: 'cp-issue-7-rev-1',
+    providerNeutral: true,
     repositoryId: REPO_ID,
     issue: lease.issue,
     pr: Object.hasOwn(lease, 'pr') ? lease.pr : null,
@@ -130,6 +133,7 @@ function makeSerializedStateObject(lease = makeLease(), extra = {}) {
     ownedPaths: [...lease.ownedPaths],
     leaseGeneration: lease.leaseGeneration,
     checkpointRevision: 1,
+    createdAtMs: NOW_MS - 10_000,
     completedSteps: ['analyze', 'implement'],
     remainingSteps: ['test', 'verify-coverage'],
     ...extra
@@ -988,7 +992,7 @@ test('enforces checkpoint SHA-256 integrity, secret prohibition, bounded retries
     handoff: {
       mode: 'provider-handoff',
       attempt: 1,
-      targetProvider: makeExhaustedPrimaryProvider()
+      targetProvider: {...makeExhaustedPrimaryProvider(), entitlementId: 'secondary-pool'}
     }
   }));
   assert.equal(exhaustedTarget.reason, 'CAPACITY_EXHAUSTED');
@@ -1003,7 +1007,7 @@ test('enforces checkpoint SHA-256 integrity, secret prohibition, bounded retries
     handoff: {
       mode: 'provider-handoff',
       attempt: 1,
-      targetProvider: makeProvider({verifiedProviderWorkerCeiling: 2})
+      targetProvider: makeProvider({entitlementId: 'secondary-pool', verifiedProviderWorkerCeiling: 2})
     }
   }));
   assert.equal(underRungTarget.reason, 'CAPACITY_EXHAUSTED');
@@ -1011,7 +1015,7 @@ test('enforces checkpoint SHA-256 integrity, secret prohibition, bounded retries
   assert.equal(underRungTarget.actualMaxWorkers, 2);
 
   // Target provider quota observed before checkpoint creation fails closed as stale
-  const preCheckpointTarget = makeProvider();
+  const preCheckpointTarget = makeProvider({entitlementId: 'secondary-pool'});
   preCheckpointTarget.billingEntitlement.accounting.observedAtMs = checkpoint.createdAtMs - 1;
   const staleTargetRes = evaluateWorkerLadderAndQuotaHandoff(makeFixture({
     primaryProvider: makeExhaustedPrimaryProvider(),
@@ -1307,13 +1311,13 @@ test('validates 4-part provider capabilities, peer leases, protected control-pla
         }
       }
     }),
-    activePeerLeases: [peerNoCommitments],
+    activePeerLeases: [{...peerNoCommitments, entitlementId: 'secondary-pool'}],
     lease: makeLease(),
     checkpoint: makeCheckpoint(),
     handoff: {
       mode: 'provider-handoff',
       attempt: 1,
-      targetProvider: makeProvider()
+      targetProvider: makeProvider({entitlementId: 'secondary-pool'})
     }
   }));
   assert.equal(targetMissingPeerCommit.decisionCode, 'PEER_RESERVATION_COMMITMENTS_UNKNOWN');
@@ -1888,5 +1892,103 @@ test('enforces active-peer rung bounds, overdrawn/under-reserved peer quotas, un
       })).decisionCode,
       'PEER_LEASES_INVALID'
     );
+  }
+
+  // 8. requestsPerWorkerRun === 0 when provider slots are full reports concurrency saturation (not quota exhaustion);
+  //    mixed-provider peers allow aggregate repository scaling up to structuralCeiling;
+  //    same-entitlement handoff is rejected; and createdAtMs/checkpointId/schemaVersion/providerNeutral in serializedState are bound
+  const zeroReqFullPrimary = makeProvider({verifiedProviderWorkerCeiling: 1});
+  zeroReqFullPrimary.billingEntitlement.accounting.requestsPerWorkerRun = 0;
+  const zeroReqBusyPeer = {
+    leaseId: 'peer-copilot-slot-1',
+    providerFamily: 'github-copilot',
+    issue: 701,
+    lane: 'lane-busy-1',
+    ownedPaths: ['src/busy-1.mjs'],
+    leaseGeneration: 1,
+    expiresAtMs: NOW_MS + 60_000,
+    reservedUnits: 50,
+    reservedRequests: 0
+  };
+  const zeroReqPausedCheck = evaluateWorkerLadderAndQuotaHandoff(makeFixture({
+    primaryProvider: zeroReqFullPrimary,
+    ladder: makeLadder({currentRung: 1, verifiedPriorRung: 0, requestedRung: 1, observedSimultaneousWorkers: 1}),
+    activePeerLeases: [zeroReqBusyPeer],
+    lease,
+    checkpoint,
+    handoff: {mode: 'provider-handoff', attempt: 1, targetProvider: codex51Target}
+  }));
+  assert.equal(zeroReqPausedCheck.decisionCode, 'PRIMARY_QUOTA_NOT_EXHAUSTED');
+
+  // Mixed-provider steady-state scaling: 2 active Codex peers + Copilot ceiling 2 + repo cap 12 supports targetRung 4
+  const mixedPeersScale = evaluateWorkerLadderAndQuotaHandoff(makeFixture({
+    primaryProvider: makeProvider({verifiedProviderWorkerCeiling: 2}),
+    ladder: makeLadder({
+      currentRung: 2,
+      verifiedPriorRung: 1,
+      requestedRung: 4,
+      repoConcurrencyCap: 12,
+      observedSimultaneousWorkers: 2
+    }),
+    activePeerLeases: [
+      {
+        leaseId: 'codex-p1',
+        providerFamily: 'openai-codex',
+        issue: 801,
+        lane: 'codex-l1',
+        ownedPaths: ['src/c1.mjs'],
+        leaseGeneration: 1,
+        expiresAtMs: NOW_MS + 60_000,
+        reservedUnits: 10,
+        reservedRequests: 1
+      },
+      {
+        leaseId: 'codex-p2',
+        providerFamily: 'openai-codex',
+        issue: 802,
+        lane: 'codex-l2',
+        ownedPaths: ['src/c2.mjs'],
+        leaseGeneration: 1,
+        expiresAtMs: NOW_MS + 60_000,
+        reservedUnits: 10,
+        reservedRequests: 1
+      }
+    ]
+  }));
+  assert.equal(mixedPeersScale.admitted, true);
+  assert.equal(mixedPeersScale.decisionCode, 'WORKER_LADDER_SCALE_RECOMMENDED');
+  assert.equal(mixedPeersScale.verifiedCapacityCeiling, 4);
+  assert.equal(mixedPeersScale.maxFundedRung, 4);
+  assert.equal(mixedPeersScale.actualMaxWorkers, 2);
+
+  // Same-entitlement targetProvider on provider-handoff is rejected (must use quota-refresh)
+  const sameEntitlementHandoff = evaluateWorkerLadderAndQuotaHandoff(makeFixture({
+    primaryProvider: {...makeExhaustedPrimaryProvider(), entitlementId: 'copilot-org'},
+    lease,
+    checkpoint,
+    handoff: {
+      mode: 'provider-handoff',
+      attempt: 1,
+      targetProvider: makeProvider({entitlementId: 'copilot-org'})
+    }
+  }));
+  assert.equal(sameEntitlementHandoff.admitted, false);
+  assert.equal(sameEntitlementHandoff.reason, 'POLICY_UNKNOWN');
+  assert.equal(sameEntitlementHandoff.decisionCode, 'HANDOFF_TARGET_SAME_ENTITLEMENT');
+
+  // Relabeling envelope createdAtMs, checkpointId, schemaVersion, or providerNeutral without rehashing fails closed
+  for (const badStatePatch of [
+    {schemaVersion: 0},
+    {checkpointId: 'cp-other'},
+    {providerNeutral: false},
+    {createdAtMs: NOW_MS - 99_000}
+  ]) {
+    const raw = JSON.stringify(makeSerializedStateObject(lease, badStatePatch));
+    const res = evaluateWorkerLadderAndQuotaHandoff(makeFixture({
+      primaryProvider: makeExhaustedPrimaryProvider(),
+      lease,
+      checkpoint: {...checkpoint, serializedState: raw, sha256: computeCheckpointSha256(raw)}
+    }));
+    assert.equal(res.decisionCode, 'CHECKPOINT_STATE_BINDING_MISMATCH');
   }
 });

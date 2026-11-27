@@ -581,7 +581,6 @@ function computeProviderCapacity(providerEval, repoConcurrencyCap, peerStats) {
     return {error: blockedResult('BUDGET_UNKNOWN', 'PEER_RESERVATION_COMMITMENTS_UNKNOWN')};
   }
 
-  const hardCeiling = Math.min(verifiedProviderWorkerCeiling, repoConcurrencyCap);
   if (provPeers.activeCount > verifiedProviderWorkerCeiling ||
       peerStats.activeCount > repoConcurrencyCap) {
     return {error: blockedResult('BUDGET_OR_CONCURRENCY', 'ACTIVE_PEERS_EXCEED_VERIFIED_CEILING')};
@@ -589,6 +588,7 @@ function computeProviderCapacity(providerEval, repoConcurrencyCap, peerStats) {
 
   const providerSlotsLeft = verifiedProviderWorkerCeiling - provPeers.activeCount;
   const repoSlotsLeft = repoConcurrencyCap - peerStats.activeCount;
+  const structuralCeiling = Math.min(repoConcurrencyCap, peerStats.activeCount + providerSlotsLeft);
   const reservedUnits = netDeducted ? 0 : provPeers.committedUnits;
   const reservedRequests = netDeducted ? 0 : provPeers.committedRequests;
   const dailyUsed = ghAwCaps !== null
@@ -601,7 +601,7 @@ function computeProviderCapacity(providerEval, repoConcurrencyCap, peerStats) {
   if (overdrawn) {
     return {
       error: null,
-      hardCeiling,
+      structuralCeiling,
       providerSlotsLeft: 0,
       repoSlotsLeft,
       fundedAdditionalSlots: 0,
@@ -617,17 +617,16 @@ function computeProviderCapacity(providerEval, repoConcurrencyCap, peerStats) {
     const remainingDaily = ghAwCaps.maxDailyUnits - dailyUsed;
     unitSlots = Math.min(unitSlots, Math.floor(remainingDaily / accounting.unitsPerWorkerRun));
   }
-  const requestSlots = accounting.requestsPerWorkerRun === 0
-    ? providerSlotsLeft
-    : Math.floor(effectiveRequests / accounting.requestsPerWorkerRun);
-  const fundedAdditionalSlots = Math.min(unitSlots, requestSlots);
+  const fundedAdditionalSlots = accounting.requestsPerWorkerRun === 0
+    ? unitSlots
+    : Math.min(unitSlots, Math.floor(effectiveRequests / accounting.requestsPerWorkerRun));
   const additionalCapacity = Math.min(providerSlotsLeft, repoSlotsLeft, fundedAdditionalSlots);
   const verifiedCapacityCeiling = peerStats.activeCount + additionalCapacity;
   const maxFundedRung = highestLadderRung(verifiedCapacityCeiling);
 
   return {
     error: null,
-    hardCeiling,
+    structuralCeiling,
     providerSlotsLeft,
     repoSlotsLeft,
     fundedAdditionalSlots,
@@ -866,13 +865,17 @@ function evaluateProviderNeutralCheckpoint(checkpoint, lease, leasePr, repositor
     parsed.ownedPaths.every(p => typeof p === 'string') &&
     new Set(parsed.ownedPaths).size === parsed.ownedPaths.length &&
     samePathSet(parsed.ownedPaths, lease.ownedPaths);
-  if (parsed.repositoryId !== repositoryId ||
+  if (parsed.schemaVersion !== CHECKPOINT_SCHEMA_VERSION ||
+      parsed.checkpointId !== checkpoint.checkpointId ||
+      parsed.providerNeutral !== true ||
+      parsed.repositoryId !== repositoryId ||
       parsed.issue !== lease.issue ||
       !Object.hasOwn(parsed, 'pr') || parsed.pr !== leasePr ||
       parsed.headSha !== lease.headSha ||
       parsed.lane !== lease.lane ||
       parsed.leaseGeneration !== lease.leaseGeneration ||
       parsed.checkpointRevision !== checkpoint.checkpointRevision ||
+      parsed.createdAtMs !== checkpoint.createdAtMs ||
       !parsedPathsValid) {
     return {error: blockedResult('STALE_CHECKPOINT', 'CHECKPOINT_STATE_BINDING_MISMATCH')};
   }
@@ -1259,6 +1262,13 @@ export function evaluateWorkerLadderAndQuotaHandoff(input) {
         checkpointReceipt: cpReceipt
       });
     }
+    if (targetEval.providerKey === primaryEval.providerKey) {
+      return blockedResult('POLICY_UNKNOWN', 'HANDOFF_TARGET_SAME_ENTITLEMENT', 0, {
+        handoffState: 'QUOTA_EXHAUSTED_CHECKPOINT_PAUSED',
+        preservedLease: pausedLease,
+        checkpointReceipt: cpReceipt
+      });
+    }
     if (targetEval.accounting.observedAtMs < cpReceipt.createdAtMs) {
       return blockedResult('STALE_QUOTA', 'HANDOFF_TARGET_QUOTA_PRECEDES_CHECKPOINT', 0, {
         handoffState: 'QUOTA_EXHAUSTED_CHECKPOINT_PAUSED',
@@ -1337,7 +1347,7 @@ export function evaluateWorkerLadderAndQuotaHandoff(input) {
   if (primaryCap.maxFundedRung === 0) {
     return blockedResult('CAPACITY_EXHAUSTED', 'INCLUDED_QUOTA_EXHAUSTED', 0);
   }
-  if (ladderEval.requestedRung > primaryCap.hardCeiling) {
+  if (ladderEval.requestedRung > primaryCap.structuralCeiling) {
     return blockedResult(
       'CAPACITY_UNVERIFIED',
       'WORKER_LADDER_EXCEEDS_VERIFIED_CEILING',
