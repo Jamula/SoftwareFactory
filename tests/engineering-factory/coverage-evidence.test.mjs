@@ -99,7 +99,6 @@ test('verifyCandidateGateReceipt reconciles rulesets, fork PRs, merge_group chec
    bypass_actors:0,
    secret_scanning_required:true,
    code_scanning_tools:[
-    {tool:'DependencyGraph',security_alerts_threshold:'high_or_higher',alerts_threshold:'errors'},
     {tool:'CodeQL',security_alerts_threshold:'medium_or_higher',alerts_threshold:'errors_and_warnings'}
    ]
   },
@@ -111,6 +110,7 @@ test('verifyCandidateGateReceipt reconciles rulesets, fork PRs, merge_group chec
   codeScanning:{tool:'CodeQL',head:h,status:'completed',conclusion:'success',openAlerts:0},
   secretScanningClear:true,
   threadsResolved:true,
+  trustedReviewers:['copilot-pull-request-reviewer[bot]','human-reviewer'],
   review:{
    head:h,
    reviewer:'copilot-pull-request-reviewer[bot]',
@@ -135,7 +135,9 @@ test('verifyCandidateGateReceipt reconciles rulesets, fork PRs, merge_group chec
 
  for(const patch of [
   {repository:'example/other'},{repositoryId:1},{branch:'dev'},{headRepository:'bad'},
-  {isFork:'no'},{head:'bad'},{mergeGroupHead:'bad'},{secretScanningClear:'yes'},{threadsResolved:null},{extra:1}
+  {isFork:'no'},{head:'bad'},{mergeGroupHead:'bad'},{secretScanningClear:'yes'},{threadsResolved:null},
+  {trustedReviewers:null},{trustedReviewers:[]},{trustedReviewers:[' bad']},
+  {trustedReviewers:['human-reviewer','Human-Reviewer']},{extra:1}
  ])assert.equal(verifyReceipt({...baseReceipt(),...patch}).reason,'RECEIPT_UNKNOWN');
  assert.equal(verifyReceipt(null).reason,'RECEIPT_UNKNOWN');
  assert.equal(verifyReceipt({repository:'Jamula/SoftwareFactory'}).reason,'RECEIPT_UNKNOWN');
@@ -162,7 +164,14 @@ test('verifyCandidateGateReceipt reconciles rulesets, fork PRs, merge_group chec
   {merge_queue_grouping:'SOLO'},{bypass_actors:1},{secret_scanning_required:false},
   {required_status_checks:baseReceipt().ruleset.required_status_checks.slice(0,2)},
   {required_status_checks:baseReceipt().ruleset.required_status_checks.map((c,i)=>i===0?{...c,integration_id:99}:c)},
-  {code_scanning_tools:[{tool:'CodeQL',security_alerts_threshold:'high_or_higher',alerts_threshold:'errors'}]}
+  {code_scanning_tools:[]},
+  {code_scanning_tools:[
+   {tool:'CodeQL',security_alerts_threshold:'medium_or_higher',alerts_threshold:'errors_and_warnings'},
+   {tool:'DependencyGraph',security_alerts_threshold:'high_or_higher',alerts_threshold:'errors'}
+  ]},
+  {code_scanning_tools:[{tool:'OtherScanner',security_alerts_threshold:'medium_or_higher',alerts_threshold:'errors_and_warnings'}]},
+  {code_scanning_tools:[{tool:'CodeQL',security_alerts_threshold:'high_or_higher',alerts_threshold:'errors_and_warnings'}]},
+  {code_scanning_tools:[{tool:'CodeQL',security_alerts_threshold:'medium_or_higher',alerts_threshold:'errors'}]}
  ])assert.equal(verifyReceipt({...baseReceipt(),ruleset:{...baseReceipt().ruleset,...patch}}).reason,'RULESET_INCOMPLETE');
 
  for(const badPullChecks of [
@@ -204,11 +213,14 @@ test('verifyCandidateGateReceipt reconciles rulesets, fork PRs, merge_group chec
 
  for(const patch of [
   {head:mg},{independent:false},{reviewer:' bad'},{author:''},{agent:''},
-  {reviewer:'Contributor',state:'APPROVED'},{reviewer:'Coding-Agent',state:'APPROVED'},
+  {reviewer:'outside-user',state:'APPROVED'},
   {reviewer:'human-reviewer',state:'COMMENTED'},{state:'CHANGES_REQUESTED'},
   {summaryDisposition:'actionable'},{summaryDisposition:'uncertain'},
   {unresolvedSummaryFindings:1},{blockingReviewCount:1}
  ])assert.equal(verifyReceipt({...baseReceipt(),review:{...baseReceipt().review,...patch}}).reason,'INDEPENDENT_REVIEW_INCOMPLETE');
+ assert.equal(verifyReceipt({...baseReceipt(),trustedReviewers:['human-reviewer']}).reason,'INDEPENDENT_REVIEW_INCOMPLETE');
+ assert.equal(verifyReceipt({...baseReceipt(),trustedReviewers:['contributor','human-reviewer'],review:{...baseReceipt().review,reviewer:'Contributor',state:'APPROVED'}}).reason,'INDEPENDENT_REVIEW_INCOMPLETE');
+ assert.equal(verifyReceipt({...baseReceipt(),trustedReviewers:['coding-agent','human-reviewer'],review:{...baseReceipt().review,reviewer:'Coding-Agent',state:'APPROVED'}}).reason,'INDEPENDENT_REVIEW_INCOMPLETE');
  assert.equal(verifyReceipt({...baseReceipt(),review:null}).reason,'INDEPENDENT_REVIEW_INCOMPLETE');
 
  const stricterRulesetReceipt=baseReceipt();

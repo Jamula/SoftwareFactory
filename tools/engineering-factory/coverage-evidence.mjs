@@ -10,7 +10,7 @@ const POLICY_KEYS = new Set([
 const RECEIPT_KEYS = [
   'repository', 'repositoryId', 'branch', 'headRepository', 'isFork',
   'head', 'mergeGroupHead', 'ruleset', 'pullChecks', 'mergeGroupChecks',
-  'codeScanning', 'secretScanningClear', 'threadsResolved', 'review',
+  'codeScanning', 'secretScanningClear', 'threadsResolved', 'trustedReviewers', 'review',
   'expectedComponents', 'coverageReports'
 ];
 const RECEIPT_ALLOWED_KEYS = new Set([...RECEIPT_KEYS, 'branchless']);
@@ -167,15 +167,16 @@ function verifyRuleset(ruleset) {
   }
   if (REQUIRED_STATUS_CONTEXTS.some(ctx => requiredMap.get(ctx) !== ACTIONS_APP_ID))
     return {ok: false, reason: 'RULESET_INCOMPLETE'};
-  let hasCodeql = false;
   for (let i = 0; i < ruleset.code_scanning_tools.length; i++) {
     const tool = ruleset.code_scanning_tools[i];
     if (!exact(tool, ['tool', 'security_alerts_threshold', 'alerts_threshold']) ||
         typeof tool.tool !== 'string') return {ok: false, reason: 'RULESET_UNKNOWN'};
-    if (tool.tool === 'CodeQL' && tool.security_alerts_threshold === 'medium_or_higher' &&
-        tool.alerts_threshold === 'errors_and_warnings') hasCodeql = true;
   }
-  if (!hasCodeql) return {ok: false, reason: 'RULESET_INCOMPLETE'};
+  const scanner = ruleset.code_scanning_tools[0];
+  if (ruleset.code_scanning_tools.length !== 1 || scanner.tool !== 'CodeQL' ||
+      scanner.security_alerts_threshold !== 'medium_or_higher' ||
+      scanner.alerts_threshold !== 'errors_and_warnings')
+    return {ok: false, reason: 'RULESET_INCOMPLETE'};
   return {ok: true, requiredMap, minimumCoverage: ruleset.minimum_coverage};
 }
 
@@ -206,7 +207,12 @@ export function verifyCandidateGateReceipt(receipt) {
       receipt.repositoryId !== FACTORY_REPO_ID || receipt.branch !== 'main' ||
       !repoName(receipt.headRepository) || typeof receipt.isFork !== 'boolean' ||
       !sha(receipt.head) || !sha(receipt.mergeGroupHead) ||
-      typeof receipt.secretScanningClear !== 'boolean' || typeof receipt.threadsResolved !== 'boolean')
+      typeof receipt.secretScanningClear !== 'boolean' || typeof receipt.threadsResolved !== 'boolean' ||
+      !dense(receipt.trustedReviewers, 64) || !receipt.trustedReviewers.length ||
+      !receipt.trustedReviewers.every(reviewerId))
+    return gateDeny('RECEIPT_UNKNOWN');
+  const allowlist = new Set(receipt.trustedReviewers.map(r => r.toLowerCase()));
+  if (allowlist.size !== receipt.trustedReviewers.length)
     return gateDeny('RECEIPT_UNKNOWN');
   if (receipt.isFork || receipt.headRepository !== FACTORY_REPO)
     return gateDeny('FORK_PR_PLATFORM_GATES_UNTRUSTED');
@@ -225,11 +231,14 @@ export function verifyCandidateGateReceipt(receipt) {
     return gateDeny('SECURITY_OR_THREADS_UNRESOLVED');
   const rv = receipt.review;
   if (!exact(rv, REVIEW_KEYS) || rv.head !== receipt.head || rv.independent !== true ||
-      !reviewerId(rv.reviewer) || !reviewerId(rv.author) || !reviewerId(rv.agent) ||
-      rv.reviewer.toLowerCase() === rv.author.toLowerCase() ||
-      rv.reviewer.toLowerCase() === rv.agent.toLowerCase() ||
+      !reviewerId(rv.reviewer) || !reviewerId(rv.author) || !reviewerId(rv.agent))
+    return gateDeny('INDEPENDENT_REVIEW_INCOMPLETE');
+  const reviewerLower = rv.reviewer.toLowerCase();
+  if (!allowlist.has(reviewerLower) ||
+      reviewerLower === rv.author.toLowerCase() ||
+      reviewerLower === rv.agent.toLowerCase() ||
       !(rv.state === 'APPROVED' || (rv.state === 'COMMENTED' &&
-        ['copilot-pull-request-reviewer', 'copilot-pull-request-reviewer[bot]'].includes(rv.reviewer.toLowerCase()))) ||
+        ['copilot-pull-request-reviewer', 'copilot-pull-request-reviewer[bot]'].includes(reviewerLower))) ||
       rv.summaryDisposition !== 'clear' || rv.unresolvedSummaryFindings !== 0 || rv.blockingReviewCount !== 0)
     return gateDeny('INDEPENDENT_REVIEW_INCOMPLETE');
   const covPolicy = receipt.branchless === undefined
