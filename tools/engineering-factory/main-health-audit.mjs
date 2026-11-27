@@ -375,13 +375,32 @@ function auditRuleset(ruleset) {
 
 function auditJsCoverage(jsCov, expectedHead, lineMin, invalidReason, trustedSet, excludedSet) {
   if (!exactPlainObject(jsCov, ['head', 'expectedComponents', 'components'], ['branchless']) ||
-      !isSha40(jsCov.head)) {
+      !isSha40(jsCov.head) ||
+      jsCov.head !== expectedHead ||
+      !isDenseArray(jsCov.expectedComponents, 250) ||
+      !isDenseArray(jsCov.components, 250)) {
     return {ok: false, reason: invalidReason, summary: null};
   }
-  if (jsCov.head !== expectedHead) {
-    return {ok: false, reason: invalidReason, summary: null};
+  for (let i = 0; i < jsCov.components.length; i++) {
+    if (!exactPlainObject(
+      jsCov.components[i],
+      ['component', 'head', 'lines', 'lineTotal', 'branches', 'branchTotal'],
+      []
+    )) {
+      return {ok: false, reason: invalidReason, summary: null};
+    }
   }
   const hasBranchless = Object.hasOwn(jsCov, 'branchless');
+  if (hasBranchless) {
+    if (!isDenseArray(jsCov.branchless, 250)) {
+      return {ok: false, reason: invalidReason, summary: null};
+    }
+    for (let i = 0; i < jsCov.branchless.length; i++) {
+      if (!exactPlainObject(jsCov.branchless[i], ['component', 'head', 'reviewedBy', 'reason'], [])) {
+        return {ok: false, reason: invalidReason, summary: null};
+      }
+    }
+  }
   const policy = hasBranchless
     ? {repository: SOFTWARE_FACTORY_REPO, lineMin, branchMin: 95, branchless: jsCov.branchless}
     : {repository: SOFTWARE_FACTORY_REPO, lineMin, branchMin: 95};

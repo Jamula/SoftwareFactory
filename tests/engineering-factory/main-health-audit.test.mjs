@@ -1018,9 +1018,44 @@ test('enforces >=98% line and >=95% branch coverage on every JS and .NET 10 C# c
   badMainJsShape.main.jsCoverage = {head: 'bad', expectedComponents: [], components: []};
   assert.equal(auditProtectedMainAndCandidateGates(badMainJsShape).reason, 'MAIN_JS_COVERAGE_INVALID');
 
+  const sparseExpectedComponents = makeHealthyMainInput();
+  sparseExpectedComponents.main.jsCoverage.expectedComponents = new Array(2);
+  assert.equal(
+    auditProtectedMainAndCandidateGates(sparseExpectedComponents).reason,
+    'MAIN_JS_COVERAGE_INVALID'
+  );
+
+  const sparseJsComponents = makeHealthyMainInput();
+  sparseJsComponents.main.jsCoverage.components = new Array(2);
+  assert.equal(auditProtectedMainAndCandidateGates(sparseJsComponents).reason, 'MAIN_JS_COVERAGE_INVALID');
+
   const badMainJsInventory = makeHealthyMainInput();
   badMainJsInventory.main.jsCoverage.expectedComponents = ['engineering-factory.core'];
   assert.equal(auditProtectedMainAndCandidateGates(badMainJsInventory).reason, 'MAIN_JS_COVERAGE_INVALID');
+
+  const nonEnumJsCount = makeHealthyMainInput();
+  Object.defineProperty(nonEnumJsCount.main.jsCoverage.components[0], 'lines', {
+    value: 100,
+    enumerable: false
+  });
+  assert.equal(auditProtectedMainAndCandidateGates(nonEnumJsCount).reason, 'MAIN_JS_COVERAGE_INVALID');
+
+  const badBranchlessArray = cloneJson(branchlessOk);
+  badBranchlessArray.candidate.jsCoverage.branchless = 'not-array';
+  assert.equal(
+    auditProtectedMainAndCandidateGates(badBranchlessArray).reason,
+    'CANDIDATE_JS_COVERAGE_INVALID'
+  );
+
+  const nonEnumBranchlessEntry = cloneJson(branchlessOk);
+  Object.defineProperty(nonEnumBranchlessEntry.candidate.jsCoverage.branchless[0], 'reason', {
+    value: 'pure frozen constant schema module',
+    enumerable: false
+  });
+  assert.equal(
+    auditProtectedMainAndCandidateGates(nonEnumBranchlessEntry).reason,
+    'CANDIDATE_JS_COVERAGE_INVALID'
+  );
 
   for (const mutate of [
     d => { d.head = CAND_SHA; },
