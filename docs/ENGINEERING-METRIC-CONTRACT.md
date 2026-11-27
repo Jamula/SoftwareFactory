@@ -13,7 +13,7 @@ Supports #18 (M02.02) and coordinates #9, #15, #16. Aspire remains local diagnos
 | Cost | Verified attributable incremental USD spend / accepted units (`verified-zero` `$0` vs `verified-spend` vs `unknown`); missing receipt or zero denominator is `unknown` |
 | Utilization | Observed `activeMs / allocatedMs` (`activeMs + blockedMs + idleMs`), with bounded `blockedByReasonMs` (`DEPENDENCY`, `REVIEW`, `CI`, `QUOTA`, `MERGE_QUEUE`, `POLICY`, `SECURITY`, `OTHER`) |
 | Coverage & safety | Exact-head component and overall covered/total line and branch counts validated against caller-configured `coveragePolicy` (`software-factory` floor >=98% / >=95%; `consumer` floor >=95% / >=90% or stricter) plus zero failed-main, unauthorized-write, duplicate-dispatch, and budget violations |
-| Improvement | Comparable accepted throughput / matched baseline (`>= 5` comparable accepted units in both non-overlapping equal-duration windows, passed quality on both, and no line/branch coverage or cost regression); undefined when baseline missing, zero, or guardrails regress |
+| Improvement | Comparable accepted throughput / matched baseline (`>= 5` comparable accepted units in both non-overlapping equal-duration windows, passed quality and measured rework/interventions on both, and no line/branch coverage, rework, intervention, or cost regression); undefined when baseline missing, zero, or guardrails regress |
 
 ## Provenance isolation
 

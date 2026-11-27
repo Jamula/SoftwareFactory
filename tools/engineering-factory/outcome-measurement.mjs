@@ -420,12 +420,13 @@ function validScorecardSnapshot(s) {
     s.window.fromMs < s.window.toMs &&
     ownData(s.counts, ['accepted']) && time(s.counts.accepted) &&
     ownData(s.throughput, ['acceptedOutcomesPerDay', 'readyToAcceptedP50Ms', 'readyToAcceptedP95Ms']) &&
+    ownData(s.rework, ['status', 'reworkRounds', 'reopenedCount']) &&
     ownData(s.cost, ['status', 'costPerAcceptedUsdMicros']) &&
     ownData(s.quality, [
       'status', 'coveredLines', 'totalLines', 'coveredBranches', 'totalBranches',
       'minLinePercent', 'minBranchPercent'
     ]) &&
-    ownData(s.humanInterventions, ['status']);
+    ownData(s.humanInterventions, ['status', 'routineCount', 'governanceCount', 'totalCount']);
 }
 
 export function compareVelocityScorecards(baseline, candidate) {
@@ -467,18 +468,38 @@ export function compareVelocityScorecards(baseline, candidate) {
   const passedQuality = s => s.quality.status === 'passed' &&
     id(s.quality.totalLines) && time(s.quality.coveredLines) && s.quality.coveredLines <= s.quality.totalLines &&
     id(s.quality.totalBranches) && time(s.quality.coveredBranches) && s.quality.coveredBranches <= s.quality.totalBranches;
+  const measuredRework = s => s.rework.status === 'measured' &&
+    boundedCount(s.rework.reworkRounds) && boundedCount(s.rework.reopenedCount);
+  const measuredInterventions = s => s.humanInterventions.status === 'measured' &&
+    boundedCount(s.humanInterventions.routineCount) &&
+    boundedCount(s.humanInterventions.governanceCount) &&
+    s.humanInterventions.totalCount === s.humanInterventions.routineCount + s.humanInterventions.governanceCount;
+  const countOrRateIncreased = (candCount, baseCount) =>
+    candCount > baseCount ||
+    BigInt(candCount) * BigInt(baseline.counts.accepted) >
+      BigInt(baseCount) * BigInt(candidate.counts.accepted);
   const coverageRegressed = () =>
     BigInt(candidate.quality.coveredLines) * BigInt(baseline.quality.totalLines) <
       BigInt(baseline.quality.coveredLines) * BigInt(candidate.quality.totalLines) ||
     BigInt(candidate.quality.coveredBranches) * BigInt(baseline.quality.totalBranches) <
       BigInt(baseline.quality.coveredBranches) * BigInt(candidate.quality.totalBranches);
+  const reworkOrInterventionsRegressed = () =>
+    countOrRateIncreased(
+      candidate.rework.reworkRounds + candidate.rework.reopenedCount,
+      baseline.rework.reworkRounds + baseline.rework.reopenedCount
+    ) ||
+    countOrRateIncreased(candidate.rework.reopenedCount, baseline.rework.reopenedCount) ||
+    countOrRateIncreased(candidate.humanInterventions.totalCount, baseline.humanInterventions.totalCount) ||
+    countOrRateIncreased(candidate.humanInterventions.routineCount, baseline.humanInterventions.routineCount);
   if (!verifiedCost(baseline) || !verifiedCost(candidate) ||
       candidate.cost.costPerAcceptedUsdMicros > baseline.cost.costPerAcceptedUsdMicros ||
       !validLatencies(baseline) || !validLatencies(candidate) ||
       !passedQuality(baseline) || !passedQuality(candidate) ||
       baseline.quality.minLinePercent !== candidate.quality.minLinePercent ||
       baseline.quality.minBranchPercent !== candidate.quality.minBranchPercent ||
-      coverageRegressed()) {
+      !measuredRework(baseline) || !measuredRework(candidate) ||
+      !measuredInterventions(baseline) || !measuredInterventions(candidate) ||
+      coverageRegressed() || reworkOrInterventionsRegressed()) {
     return unavailable('GUARDRAIL_UNVERIFIED_OR_REGRESSED');
   }
   const throughputMultiplier = candidate.throughput.acceptedOutcomesPerDay / baseline.throughput.acceptedOutcomesPerDay;
@@ -488,8 +509,7 @@ export function compareVelocityScorecards(baseline, candidate) {
       ? 'VERIFIED_COMPARABLE_COHORTS'
       : 'SYNTHETIC_COMPARABLE_COHORTS',
     provenance: candidate.provenance,
-    autonomousClaimEligible: candidate.autonomousSpeedClaimEligible &&
-      baseline.humanInterventions.status === 'measured',
+    autonomousClaimEligible: candidate.autonomousSpeedClaimEligible,
     throughputMultiplier,
     achievedCheckpoints: THROUGHPUT_CHECKPOINTS.filter(m => throughputMultiplier >= m),
     readyToAcceptedDeltaP50Ms: candidate.throughput.readyToAcceptedP50Ms - baseline.throughput.readyToAcceptedP50Ms,

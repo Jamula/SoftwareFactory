@@ -914,6 +914,47 @@ test('compares matched >=5 unit baseline and candidate cohorts and enforces qual
     baseline,
     {...candidate10, quality: {...candidate10.quality, minBranchPercent: 90}}
   ).reason, 'GUARDRAIL_UNVERIFIED_OR_REGRESSED');
+  // Rework and human-intervention tracking must be measured in both cohorts,
+  // and neither absolute counts nor per-accepted rates may increase.
+  assert.equal(compareVelocityScorecards(
+    {...baseline, rework: {...baseline.rework, status: 'unknown'}},
+    candidate10
+  ).reason, 'GUARDRAIL_UNVERIFIED_OR_REGRESSED');
+  assert.equal(compareVelocityScorecards(
+    baseline,
+    {...candidate10, rework: {...candidate10.rework, status: 'partial'}}
+  ).reason, 'GUARDRAIL_UNVERIFIED_OR_REGRESSED');
+  assert.equal(compareVelocityScorecards(
+    {...baseline, humanInterventions: {...baseline.humanInterventions, status: 'unknown'}},
+    candidate10
+  ).reason, 'GUARDRAIL_UNVERIFIED_OR_REGRESSED');
+  assert.equal(compareVelocityScorecards(
+    baseline,
+    {...candidate10, humanInterventions: {...candidate10.humanInterventions, status: 'partial'}}
+  ).reason, 'GUARDRAIL_UNVERIFIED_OR_REGRESSED');
+  assert.equal(compareVelocityScorecards(
+    baseline,
+    {...candidate10, rework: {...candidate10.rework, reworkRounds: 1}}
+  ).reason, 'GUARDRAIL_UNVERIFIED_OR_REGRESSED');
+  assert.equal(compareVelocityScorecards(
+    {...baseline, rework: {...baseline.rework, reworkRounds: 2, reopenedCount: 0}},
+    {...candidate10, rework: {...candidate10.rework, reworkRounds: 1, reopenedCount: 1}}
+  ).reason, 'GUARDRAIL_UNVERIFIED_OR_REGRESSED');
+  assert.equal(compareVelocityScorecards(
+    baseline,
+    {...candidate10, humanInterventions: {...candidate10.humanInterventions, governanceCount: 1, totalCount: 1}}
+  ).reason, 'GUARDRAIL_UNVERIFIED_OR_REGRESSED');
+  assert.equal(compareVelocityScorecards(
+    {...baseline, humanInterventions: {...baseline.humanInterventions, governanceCount: 2, totalCount: 2}},
+    {...candidate10, humanInterventions: {...candidate10.humanInterventions, routineCount: 1, governanceCount: 1, totalCount: 2}}
+  ).reason, 'GUARDRAIL_UNVERIFIED_OR_REGRESSED');
+  // Per-accepted rate increase when absolute count is unchanged across fewer accepted units (2/5 > 2/10).
+  const baseline10 = makeWindowScorecard(baselineQuery, 10);
+  const candidate5 = makeWindowScorecard(scorecardQuery, 5);
+  assert.equal(compareVelocityScorecards(
+    {...baseline10, rework: {...baseline10.rework, reworkRounds: 2}},
+    {...candidate5, rework: {...candidate5.rework, reworkRounds: 2}}
+  ).reason, 'GUARDRAIL_UNVERIFIED_OR_REGRESSED');
   assert.equal(compareVelocityScorecards(null, candidate10).reason, 'INVALID_SCORECARD');
 });
 
