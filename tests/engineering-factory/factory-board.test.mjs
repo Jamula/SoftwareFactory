@@ -1301,6 +1301,82 @@ test("fetchViaGhGraphql, fetchViaPublicRest, and fetchFactoryBoardSnapshot handl
   assert.equal(pagedClosedRaw.mergedPulls[0].number, 2);
   assert.equal(pagedClosedRaw.truncated, true);
 
+  // Deduplicate repeated open & merged PRs across updated-descending pages before detail/window caps
+  let openDetailCalls = 0;
+  const dedupedRestRaw = await fetchViaPublicRest({
+    owner: "Jamula",
+    name: "SoftwareFactory",
+    maxPages: 2,
+    perPage: 10,
+    maxDetailPulls: 2,
+    request: async (url) => {
+      if (url.includes("/commits/")) {
+        openDetailCalls += 1;
+        return new Response(JSON.stringify({ total_count: 0, check_runs: [], state: "pending", statuses: [] }));
+      }
+      if (url.includes("/reviews")) {
+        return new Response("[]");
+      }
+      if (url.includes("/pulls?state=open")) {
+        if (url.includes("&page=1")) {
+          return new Response(
+            JSON.stringify([{ number: 50, title: "Open 50", head: { ref: "b1", sha: "a".repeat(40) } }]),
+            { headers: { link: '<https://api.github.com/next>; rel="next"' } },
+          );
+        }
+        return new Response(
+          JSON.stringify([
+            { number: 50, title: "Open 50 dup", head: { ref: "b1", sha: "a".repeat(40) } },
+            { number: 51, title: "Open 51", head: { ref: "b2", sha: "b".repeat(40) } },
+          ]),
+        );
+      }
+      if (url.includes("/pulls?state=closed")) {
+        if (url.includes("&page=1")) {
+          return new Response(
+            JSON.stringify([
+              ...Array.from({ length: 11 }, (_, idx) => ({
+                number: idx + 1,
+                title: `Merged ${idx + 1}`,
+                merged_at: "2026-11-27T00:00:00Z",
+                head: { ref: "m" },
+              })),
+              { number: 1, title: "Merged 1 dup", merged_at: "2026-11-27T00:00:00Z", head: { ref: "m" } },
+            ]),
+            { headers: { link: '<https://api.github.com/next>; rel="next"' } },
+          );
+        }
+        return new Response(
+          JSON.stringify([{ number: 12, title: "Merged 12", merged_at: "2026-11-27T00:00:00Z", head: { ref: "m" } }]),
+        );
+      }
+      return new Response("[]");
+    },
+  });
+  assert.equal(dedupedRestRaw.openPulls.length, 2);
+  // 2 check/status calls per distinct open PR = 4 total (duplicate #50 did not spend quota)
+  assert.equal(openDetailCalls, 4);
+  assert.equal(dedupedRestRaw.mergedPulls.length, 12);
+  assert.equal(new Set(dedupedRestRaw.mergedPulls.map((p) => p.number)).size, 12);
+  // buildFactoryBoardSnapshot also deduplicates raw openPulls/mergedPulls defensively
+  const dedupedSnap = buildFactoryBoardSnapshot(
+    {
+      milestones: [],
+      issues: [],
+      openPulls: [
+        { number: 50, title: "Open 50" },
+        { number: 50, title: "Open 50 dup" },
+      ],
+      mergedPulls: [
+        { number: 12, title: "Merged 12" },
+        { number: 12, title: "Merged 12 dup" },
+      ],
+    },
+    { repo: DEFAULT_REPO, source: "github-rest", generatedAt: "2026-11-27T01:00:00Z" },
+  );
+  assert.equal(dedupedSnap.openPulls.length, 1);
+  assert.equal(dedupedSnap.mergedPulls.length, 1);
+
   await assert.rejects(
     () =>
       fetchViaPublicRest({
@@ -1973,13 +2049,7 @@ test("board-ui loopback HTTP/SSE server and createFactoryBoardCanvasSpec satisfy
   await liveSseReader.cancel().catch(() => {});
   assert.ok(logs.length >= 1);
 
-  // Close server while SSE stream is still open to verify server-initiated SSE cleanup
-  await standalone.close();
-  await standalone.close();
-  await liveSseReader.cancel().catch(() => {});
-  assert.ok(logs.length >= 1);
-
-  // Deterministic SSE backpressure coalescing & slow-viewer disconnection
+  // Deterministic SSE backpressure coalescing, oversized state_notify fallback, & slow-viewer disconnection
   let clearedTimers = 0;
   const reg = createSseClientRegistry({
     timers: { setInterval: () => 1, clearInterval: () => { clearedTimers += 1; } },
@@ -2027,13 +2097,20 @@ test("board-ui loopback HTTP/SSE server and createFactoryBoardCanvasSpec satisfy
     "event: state\ndata: {\"v\":1}\n\n",
     "event: state\ndata: {\"v\":3}\n\n",
   ]);
+  // Oversized state snapshot (> maxBufferBytes) sends compact state_notify WITHOUT disconnecting healthy viewer
+  const largeFrame = `event: state\ndata: ${JSON.stringify({ huge: "x".repeat(256) })}\n\n`;
+  reg.broadcastState(largeFrame);
+  assert.equal(destroyedCount, 0);
+  assert.equal(reg.size(), 1);
+  assert.equal(writtenFrames.at(-1), 'event: state_notify\ndata: {"pull":true}\n\n');
   // Drain with no pending frame is a clean no-op
   flushNext = false;
   reg.write(slowRes, ": keepalive\n\n");
   flushNext = true;
   drainListener();
-  // Oversized frame or exceeded writableLength disconnects slow viewer immediately
-  reg.write(slowRes, "x".repeat(256));
+  // Exceeded unread writableLength disconnects slow viewer immediately
+  slowRes.writableLength = 256;
+  reg.write(slowRes, ": keepalive\n\n");
   assert.equal(destroyedCount, 1);
   assert.equal(reg.size(), 0);
   assert.equal(clearedTimers, 1);
@@ -2274,6 +2351,8 @@ test("initFactoryBoardClient renders verified, partial, stale, and cold-unavaila
       issues: [
         { number: 4, title: "[M01.01 P0] Closed item", state: "CLOSED", labels: ["M01", "P0"] },
         { number: 5, title: "[M01.03 P1] Open item", state: "OPEN", labels: ["M01", "P1"] },
+        { number: 76, title: "Ordinary unassigned bug", state: "OPEN", labels: [] },
+        { number: 77, title: "Closed unassigned item", state: "CLOSED", labels: [] },
       ],
       openPulls: [
         {
@@ -2318,7 +2397,10 @@ test("initFactoryBoardClient renders verified, partial, stale, and cold-unavaila
   assert.equal(elements.get("error-banner").hidden, false);
   assert.match(elements.get("error-banner").textContent, /Partial bounded inventory/);
   assert.match(elements.get("kpi-grid").innerHTML, /Closed Issues \(Proxy\)/);
-  assert.match(elements.get("kpi-grid").innerHTML, /≥ 1 closed/);
+  assert.match(elements.get("kpi-grid").innerHTML, /≥ 2 closed/);
+  // Unassigned issues are rendered in a dedicated Unassigned Issues card/drawer
+  assert.match(elements.get("milestones-grid").innerHTML, /Unassigned Issues/);
+  assert.match(elements.get("milestones-grid").innerHTML, /#76<\/span> Ordinary unassigned bug/);
   // Partial milestone progress bars expose milestone aria-label and aria-valuetext without numeric aria-valuenow
   assert.match(elements.get("milestones-grid").innerHTML, /role="progressbar" aria-label="M01 - Autonomous SoftwareFactory closed issue activity proxy" aria-valuetext="Unknown \(partial inventory\)"/);
   assert.doesNotMatch(elements.get("milestones-grid").innerHTML, /aria-valuenow=/);
@@ -2453,6 +2535,25 @@ test("initFactoryBoardClient renders verified, partial, stale, and cold-unavaila
     }),
   });
   assert.equal(elements.get("milestones-grid").restoredFocusKey, "ms-summary-M01");
+
+  // state_notify triggers /api/state pull, and stale lower seq envelopes are ignored
+  initialStateEnvelope = {
+    seq: 10,
+    config: { repo: DEFAULT_REPO, intervalSeconds: 25, paused: false, status: "Auto-refreshing (25s)" },
+    snapshot: updatedFocusSnap,
+  };
+  sseHandlers.get("state_notify")();
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(elements.get("interval-select").value, "25");
+  // Stale lower-seq envelope must be ignored
+  sseHandlers.get("state")({
+    data: JSON.stringify({
+      seq: 9,
+      config: { repo: DEFAULT_REPO, intervalSeconds: 120, paused: true, status: "Paused" },
+      snapshot: updatedFocusSnap,
+    }),
+  });
+  assert.equal(elements.get("interval-select").value, "25");
 });
 
 test("startFactoryBoardExtension and extension.mjs register canvas, forward logs, and close on session end", async () => {

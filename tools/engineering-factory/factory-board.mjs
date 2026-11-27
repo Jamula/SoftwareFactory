@@ -399,10 +399,17 @@ export function buildFactoryBoardSnapshot(raw, { repo, source, generatedAt }) {
   }
 
   const openPulls = [];
+  const seenOpenPullNumbers = new Set();
   for (const pr of rawOpenPulls) {
-    if (!Number.isSafeInteger(pr?.number) || pr.number < 1 || typeof pr.title !== "string") {
+    if (
+      !Number.isSafeInteger(pr?.number) ||
+      pr.number < 1 ||
+      typeof pr.title !== "string" ||
+      seenOpenPullNumbers.has(pr.number)
+    ) {
       continue;
     }
+    seenOpenPullNumbers.add(pr.number);
     const linkedIssueNumbers = extractReferencedIssueNumbers(
       pr.title,
       pr.closingIssuesReferences,
@@ -440,10 +447,17 @@ export function buildFactoryBoardSnapshot(raw, { repo, source, generatedAt }) {
   }
 
   const mergedPulls = [];
+  const seenMergedPullNumbers = new Set();
   for (const pr of rawMergedPulls) {
-    if (!Number.isSafeInteger(pr?.number) || pr.number < 1 || typeof pr.title !== "string") {
+    if (
+      !Number.isSafeInteger(pr?.number) ||
+      pr.number < 1 ||
+      typeof pr.title !== "string" ||
+      seenMergedPullNumbers.has(pr.number)
+    ) {
       continue;
     }
+    seenMergedPullNumbers.add(pr.number);
     const linkedIssueNumbers = extractReferencedIssueNumbers(
       pr.title,
       pr.closingIssuesReferences,
@@ -1091,6 +1105,7 @@ export async function fetchViaPublicRest({
 
   const getClosedMergedPulls = async (pageLimit = Math.min(maxPages, 3)) => {
     const merged = [];
+    const seenMergedNumbers = new Set();
     let truncated = false;
     const closedPerPage = Math.min(perPage, 50);
     for (let page = 1; page <= pageLimit; page += 1) {
@@ -1101,7 +1116,15 @@ export async function fetchViaPublicRest({
         throw new Error("REST_PAYLOAD_INVALID");
       }
       for (const pr of json) {
-        if (pr && typeof pr.merged_at === "string" && pr.merged_at.length > 0) {
+        if (
+          pr &&
+          Number.isSafeInteger(pr.number) &&
+          pr.number > 0 &&
+          !seenMergedNumbers.has(pr.number) &&
+          typeof pr.merged_at === "string" &&
+          pr.merged_at.length > 0
+        ) {
+          seenMergedNumbers.add(pr.number);
           merged.push(pr);
         }
       }
@@ -1150,8 +1173,20 @@ export async function fetchViaPublicRest({
       : Math.max(0, Math.floor((minRemaining - 10) / worstCasePerDetailPull));
   const effectiveMaxDetailPulls = Math.min(maxDetailPulls, detailQuotaCap);
 
+  const seenOpenNumbers = new Set();
+  const uniqueOpenPulls = [];
+  for (const pr of openPullsPaged.items) {
+    if (Number.isSafeInteger(pr?.number) && pr.number > 0) {
+      if (seenOpenNumbers.has(pr.number)) {
+        continue;
+      }
+      seenOpenNumbers.add(pr.number);
+    }
+    uniqueOpenPulls.push(pr);
+  }
+
   const openPulls = await Promise.all(
-    openPullsPaged.items.map(async (pr, index) => {
+    uniqueOpenPulls.map(async (pr, index) => {
       const headSha = pr?.head?.sha;
       let checkRollup = null;
       let reviews = undefined;
@@ -1379,12 +1414,14 @@ export function createBoardPoller({
   let paused = false;
   let closed = false;
   let snapshot = null;
+  let seq = 0;
   let inflight = null;
   let timerHandle = null;
   const rateLimitState = { blockedUntilMs: 0, nextPollAtMs: 0 };
   const listeners = new Set();
 
   const buildEnvelope = () => ({
+    seq,
     snapshot,
     config: {
       repo: parsed.fullName,
@@ -1395,6 +1432,7 @@ export function createBoardPoller({
   });
 
   const notify = () => {
+    seq += 1;
     const envelope = buildEnvelope();
     for (const listener of listeners) {
       listener(envelope);
@@ -1526,11 +1564,26 @@ export function initFactoryBoardClient(win) {
 
   const state = {
     envelope: null,
+    lastSeq: -1,
     prFilter: "all",
     openDrawers: new Set(["M01", "M02"]),
     refreshing: false,
     sectionHtml: new Map(),
   };
+
+  function applyEnvelope(next) {
+    if (!next || typeof next !== "object") {
+      return;
+    }
+    if (typeof next.seq === "number") {
+      if (next.seq < state.lastSeq) {
+        return;
+      }
+      state.lastSeq = next.seq;
+    }
+    state.envelope = next;
+    render();
+  }
 
   const el = (id) => doc.getElementById(id);
 
@@ -1764,129 +1817,161 @@ export function initFactoryBoardClient(win) {
       )
       .join("");
 
-    const milestonesHtml = snap.milestones
-      .map((m) => {
-        const isOpen = state.openDrawers.has(m.id);
-        const hasKnownPct = m.completionPercent !== null;
-        const pctValue = hasKnownPct ? m.completionPercent : 0;
-        const pctLabel = hasKnownPct ? m.completionPercent + "%" : "Partial";
-        const progressAriaAttrs = hasKnownPct
-          ? 'aria-valuenow="' + pctValue + '" aria-valuemin="0" aria-valuemax="100"'
-          : 'aria-valuetext="Unknown (partial inventory)"';
-        const issuesHtml =
-          m.issues.length === 0
-            ? '<div class="empty-state">No issues assigned</div>'
-            : '<ul class="issue-list">' +
-              m.issues
-                .map((iss) => {
-                  const prLinks = (iss.linkedPullNumbers || [])
-                    .map((num) => '<span class="pill blue mono">PR #' + num + "</span>")
-                    .join(" ");
-                  const prio = iss.priority
-                    ? '<span class="pill' +
-                      (iss.priority === "P0" ? " red" : " muted") +
-                      '">' +
-                      esc(iss.priority) +
-                      "</span>"
-                    : "";
-                  const step = iss.stepId
-                    ? '<span class="pill mono muted">' + esc(iss.stepId) + "</span>"
-                    : "";
-                  const stBadge =
-                    iss.state === "CLOSED"
-                      ? '<span class="pill blue">CLOSED</span>'
-                      : '<span class="pill muted">OPEN</span>';
-                  return (
-                    '<li class="issue-item">' +
-                    '<div class="issue-main">' +
-                    stBadge +
-                    step +
-                    prio +
-                    '<a class="truncate" data-focus-key="issue-' +
-                    iss.number +
-                    '" href="' +
-                    safeHref(iss.url) +
-                    '" target="_blank" rel="noopener noreferrer" title="' +
-                    esc(iss.title) +
-                    '">' +
-                    '<span class="mono">#' +
-                    iss.number +
-                    "</span> " +
-                    esc(iss.title) +
-                    "</a>" +
-                    "</div>" +
-                    '<div class="chip-row">' +
-                    prLinks +
-                    "</div>" +
-                    "</li>"
-                  );
-                })
-                .join("") +
-              "</ul>";
+    const renderIssueItems = (issues) =>
+      issues.length === 0
+        ? '<div class="empty-state">No issues assigned</div>'
+        : '<ul class="issue-list">' +
+          issues
+            .map((iss) => {
+              const prLinks = (iss.linkedPullNumbers || [])
+                .map((num) => '<span class="pill blue mono">PR #' + num + "</span>")
+                .join(" ");
+              const prio = iss.priority
+                ? '<span class="pill' +
+                  (iss.priority === "P0" ? " red" : " muted") +
+                  '">' +
+                  esc(iss.priority) +
+                  "</span>"
+                : "";
+              const step = iss.stepId
+                ? '<span class="pill mono muted">' + esc(iss.stepId) + "</span>"
+                : "";
+              const stBadge =
+                iss.state === "CLOSED"
+                  ? '<span class="pill blue">CLOSED</span>'
+                  : '<span class="pill muted">OPEN</span>';
+              return (
+                '<li class="issue-item">' +
+                '<div class="issue-main">' +
+                stBadge +
+                step +
+                prio +
+                '<a class="truncate" data-focus-key="issue-' +
+                iss.number +
+                '" href="' +
+                safeHref(iss.url) +
+                '" target="_blank" rel="noopener noreferrer" title="' +
+                esc(iss.title) +
+                '">' +
+                '<span class="mono">#' +
+                iss.number +
+                "</span> " +
+                esc(iss.title) +
+                "</a>" +
+                "</div>" +
+                '<div class="chip-row">' +
+                prLinks +
+                "</div>" +
+                "</li>"
+              );
+            })
+            .join("") +
+          "</ul>";
 
-        return (
-          '<article class="milestone-card">' +
-          '<div class="milestone-top">' +
-          '<div><div class="milestone-title">' +
-          esc(m.title) +
-          "</div>" +
-          '<div class="meta-row">' +
-          esc(m.closedIssues + " closed · " + m.openIssues + " open") +
-          "</div></div>" +
-          '<span class="pill ' +
-          (m.completionPercent === 100 && m.totalIssues > 0 ? "blue" : "muted") +
-          '">' +
-          pctLabel +
-          "</span>" +
-          "</div>" +
-          '<div class="progress-track" role="progressbar" aria-label="' +
-          esc(m.title + " closed issue activity proxy") +
-          '" ' +
-          progressAriaAttrs +
-          ">" +
-          '<div class="progress-fill" style="width:' +
-          pctValue +
-          '%"></div>' +
-          "</div>" +
-          '<div class="chip-row">' +
-          '<span class="pill' +
-          (m.activePulls > 0 ? " blue" : " muted") +
-          '">' +
-          m.activePulls +
-          " open PR" +
-          (m.activePulls === 1 ? "" : "s") +
-          "</span>" +
-          (m.ciPassingPulls > 0
-            ? '<span class="pill blue">' + m.ciPassingPulls + " CI pass</span>"
-            : "") +
-          (m.ciPendingPulls > 0
-            ? '<span class="pill">' + m.ciPendingPulls + " CI pending</span>"
-            : "") +
-          (m.ciFailingPulls > 0
-            ? '<span class="pill red">' + m.ciFailingPulls + " CI fail</span>"
-            : "") +
-          (m.queuedPulls === null
-            ? '<span class="pill muted">Queue unknown</span>'
-            : m.queuedPulls > 0
-              ? '<span class="pill blue">' + m.queuedPulls + " queued</span>"
+    const unassignedList = Array.isArray(snap.unassignedIssues) ? snap.unassignedIssues : [];
+    const unassignedCardHtml =
+      unassignedList.length === 0
+        ? ""
+        : (() => {
+            const uClosed = unassignedList.filter((i) => i.state === "CLOSED").length;
+            const uOpen = unassignedList.filter((i) => i.state === "OPEN").length;
+            const uOpenDrawer = state.openDrawers.has("UNASSIGNED");
+            return (
+              '<article class="milestone-card">' +
+              '<div class="milestone-top">' +
+              '<div><div class="milestone-title">Unassigned Issues</div>' +
+              '<div class="meta-row">' +
+              esc(uClosed + " closed · " + uOpen + " open") +
+              "</div></div>" +
+              '<span class="pill muted">Unassigned</span>' +
+              "</div>" +
+              '<details class="issue-drawer" data-ms="UNASSIGNED"' +
+              (uOpenDrawer ? " open" : "") +
+              ">" +
+              '<summary data-focus-key="ms-summary-UNASSIGNED">Issues (' +
+              unassignedList.length +
+              ")</summary>" +
+              renderIssueItems(unassignedList) +
+              "</details>" +
+              "</article>"
+            );
+          })();
+
+    const milestonesHtml =
+      snap.milestones
+        .map((m) => {
+          const isOpen = state.openDrawers.has(m.id);
+          const hasKnownPct = m.completionPercent !== null;
+          const pctValue = hasKnownPct ? m.completionPercent : 0;
+          const pctLabel = hasKnownPct ? m.completionPercent + "%" : "Partial";
+          const progressAriaAttrs = hasKnownPct
+            ? 'aria-valuenow="' + pctValue + '" aria-valuemin="0" aria-valuemax="100"'
+            : 'aria-valuetext="Unknown (partial inventory)"';
+          const issuesHtml = renderIssueItems(m.issues);
+
+          return (
+            '<article class="milestone-card">' +
+            '<div class="milestone-top">' +
+            '<div><div class="milestone-title">' +
+            esc(m.title) +
+            "</div>" +
+            '<div class="meta-row">' +
+            esc(m.closedIssues + " closed · " + m.openIssues + " open") +
+            "</div></div>" +
+            '<span class="pill ' +
+            (m.completionPercent === 100 && m.totalIssues > 0 ? "blue" : "muted") +
+            '">' +
+            pctLabel +
+            "</span>" +
+            "</div>" +
+            '<div class="progress-track" role="progressbar" aria-label="' +
+            esc(m.title + " closed issue activity proxy") +
+            '" ' +
+            progressAriaAttrs +
+            ">" +
+            '<div class="progress-fill" style="width:' +
+            pctValue +
+            '%"></div>' +
+            "</div>" +
+            '<div class="chip-row">' +
+            '<span class="pill' +
+            (m.activePulls > 0 ? " blue" : " muted") +
+            '">' +
+            m.activePulls +
+            " open PR" +
+            (m.activePulls === 1 ? "" : "s") +
+            "</span>" +
+            (m.ciPassingPulls > 0
+              ? '<span class="pill blue">' + m.ciPassingPulls + " CI pass</span>"
               : "") +
-          "</div>" +
-          '<details class="issue-drawer" data-ms="' +
-          esc(m.id) +
-          '"' +
-          (isOpen ? " open" : "") +
-          ">" +
-          '<summary data-focus-key="ms-summary-' +
-          esc(m.id) +
-          '">Issues (' +
-          m.issues.length +
-          ")</summary>" +
-          issuesHtml +
-          "</details>" +
-          "</article>"
-        );
-      })
-      .join("");
+            (m.ciPendingPulls > 0
+              ? '<span class="pill">' + m.ciPendingPulls + " CI pending</span>"
+              : "") +
+            (m.ciFailingPulls > 0
+              ? '<span class="pill red">' + m.ciFailingPulls + " CI fail</span>"
+              : "") +
+            (m.queuedPulls === null
+              ? '<span class="pill muted">Queue unknown</span>'
+              : m.queuedPulls > 0
+                ? '<span class="pill blue">' + m.queuedPulls + " queued</span>"
+                : "") +
+            "</div>" +
+            '<details class="issue-drawer" data-ms="' +
+            esc(m.id) +
+            '"' +
+            (isOpen ? " open" : "") +
+            ">" +
+            '<summary data-focus-key="ms-summary-' +
+            esc(m.id) +
+            '">Issues (' +
+            m.issues.length +
+            ")</summary>" +
+            issuesHtml +
+            "</details>" +
+            "</article>"
+          );
+        })
+        .join("") + unassignedCardHtml;
 
     updateSectionHtml("milestones-grid", milestonesHtml, (grid) => {
       grid.querySelectorAll("details.issue-drawer").forEach((d) => {
@@ -2038,25 +2123,38 @@ export function initFactoryBoardClient(win) {
     render();
   });
 
+  const pullLatestState = () =>
+    fetchImpl("/api/state")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (data) {
+          applyEnvelope(data);
+        }
+      })
+      .catch(() => {});
+
   const source = new EventSourceImpl("/events");
   source.addEventListener("open", () => setSseState("live", "Live SSE"));
   source.addEventListener("error", () => setSseState("error", "Reconnecting…"));
   source.addEventListener("state", (ev) => {
     try {
-      state.envelope = JSON.parse(ev.data);
+      const parsed = JSON.parse(ev.data);
       setSseState("live", "Live SSE");
-      render();
+      applyEnvelope(parsed);
     } catch {
       setSseState("error", "Stream parse error");
     }
+  });
+  source.addEventListener("state_notify", () => {
+    setSseState("live", "Live SSE");
+    void pullLatestState();
   });
 
   fetchImpl("/api/state")
     .then((r) => (r.ok ? r.json() : null))
     .then((data) => {
       if (data && !state.envelope) {
-        state.envelope = data;
-        render();
+        applyEnvelope(data);
       }
     })
     .catch(() => {});
@@ -2373,19 +2471,22 @@ export function createSseClientRegistry({
       remove(res);
       return;
     }
-    const frameBytes = Buffer.byteLength(frame);
-    if ((res.writableLength ?? 0) > maxBufferBytes || frameBytes > maxBufferBytes) {
+    if ((res.writableLength ?? 0) > maxBufferBytes) {
       remove(res);
       res.destroy();
       return;
     }
+    const wireFrame =
+      isState && Buffer.byteLength(frame) > maxBufferBytes
+        ? 'event: state_notify\ndata: {"pull":true}\n\n'
+        : frame;
     if (client.waitingDrain) {
       if (isState) {
-        client.pendingStateFrame = frame;
+        client.pendingStateFrame = wireFrame;
       }
       return;
     }
-    const flushed = res.write(frame);
+    const flushed = res.write(wireFrame);
     if (!flushed) {
       if ((res.writableLength ?? 0) > maxBufferBytes) {
         remove(res);
