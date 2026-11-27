@@ -1,20 +1,28 @@
 import {planLanes} from './planner.mjs';
 
 const failed = reason => ({shadow: true, completed: [], reason});
+const maxExecutionCeilingMs = 10800000;
 
-export async function runTick({config, tasks, active = [], store, tracker, agent, workerId, now, clock}) {
+export async function runTick({
+  config, tasks, active = [], store, tracker, agent, workerId, now, clock, maxExecutionMs, policy
+}) {
   if (!config || config.execution?.enabled !== true || config.execution.stop !== false ||
       config.execution.mode !== 'shadow') return failed('STOPPED');
   if (!store || typeof store.claim !== 'function' || typeof store.checkpoint !== 'function' ||
       typeof store.renew !== 'function' || typeof store.release !== 'function' ||
       typeof store.observeReserved !== 'function' || !tracker || typeof tracker.readTask !== 'function' ||
       !agent || typeof agent.inspect !== 'function' || typeof workerId !== 'string' ||
-      !Number.isSafeInteger(now) || now < 0 || typeof clock !== 'function') return failed('INVALID_RUNTIME');
-  const plan = planLanes(config, tasks, active);
+      !Number.isSafeInteger(now) || now < 0 || typeof clock !== 'function' ||
+      (maxExecutionMs !== undefined && (!Number.isSafeInteger(maxExecutionMs) ||
+        maxExecutionMs < 1 || maxExecutionMs > maxExecutionCeilingMs))) return failed('INVALID_RUNTIME');
+  const plan = planLanes(config, tasks, active, policy);
   if (plan.reason === 'INVALID_PROJECT_CONFIG' || plan.reason === 'INVALID_INVENTORY' ||
       plan.reason === 'INVALID_TASK' || plan.reason === 'DEPENDENCY_UNKNOWN' ||
-      plan.reason === 'DEPENDENCY_CYCLE' || plan.reason === 'INVALID_ACTIVE_LANE' ||
-      plan.reason === 'ACTIVE_PATH_CONFLICT') return failed(plan.reason);
+      plan.reason === 'SCHEDULING_POLICY_UNKNOWN' || plan.reason === 'DEPENDENCY_CYCLE' ||
+      plan.reason === 'INVALID_ACTIVE_LANE' || plan.reason === 'ACTIVE_PATH_CONFLICT') return failed(plan.reason);
+  const executionBudgetMs = maxExecutionMs ?? config.limits.leaseMs * 3;
+  if (!Number.isSafeInteger(now + executionBudgetMs)) return failed('INVALID_RUNTIME');
+  const executionDeadline = now + executionBudgetMs;
   const byId = new Map(tasks.map(task => [task.id, task]));
   const reserved = [...new Set([...active.map(item => item.lane),
     ...tasks.filter(task => task.state === 'active').map(task => task.lane)])];
@@ -25,6 +33,7 @@ export async function runTick({config, tasks, active = [], store, tracker, agent
     } catch { return failed('ACTIVE_RESERVATIONS_UNAVAILABLE'); }
   }
   const outcomes = await Promise.allSettled(plan.scheduled.map(async item => {
+    const monotonicDeadline = performance.now() + executionBudgetMs;
     const workKey = `${config.project.repository.toLowerCase()}#${item.id}`;
     const claim = store.claim(item.lane, workerId, now, config.limits.leaseMs,
       config.limits.maxConcurrentLanes, workKey);
@@ -34,22 +43,84 @@ export async function runTick({config, tasks, active = [], store, tracker, agent
         !Number.isSafeInteger(claim.workGeneration) || claim.workGeneration < 1)
       return {lane: item.lane, taskId: item.id, state: 'blocked', reason: 'WORK_RESERVATION_UNKNOWN'};
     let lastObservedTime = now;
+    let elapsedTimerMs = 0;
     let releaseClaim = true;
-    const renewLease = () => {
+    let inspecting = false;
+    let deadlineExpired = false;
+    const cancellation = new AbortController();
+    const baseIntervalMs = Math.floor(config.limits.leaseMs / 3);
+    const timedOut = () => deadlineExpired || performance.now() >= monotonicDeadline;
+    const remainingMonotonicMs = () => Math.max(1, Math.ceil(monotonicDeadline - performance.now()));
+    const sampleClock = () => {
+      if (timedOut()) return {reason: 'EXECUTION_TIMEOUT'};
       let currentTime;
       try { currentTime = clock(); } catch { return {reason: 'CLOCK_UNAVAILABLE'}; }
       if (!Number.isSafeInteger(currentTime) || currentTime < lastObservedTime) return {reason: 'CLOCK_UNAVAILABLE'};
       lastObservedTime = currentTime;
+      return currentTime >= executionDeadline || timedOut() ? {reason: 'EXECUTION_TIMEOUT'} : {time: currentTime};
+    };
+    const renewLease = () => {
+      const observed = sampleClock();
+      if (observed.reason) return observed;
       try {
-        const renewed = store.renew(item.lane, claim.generation, workerId, currentTime, config.limits.leaseMs,
+        const renewed = store.renew(item.lane, claim.generation, workerId, observed.time, config.limits.leaseMs,
           workKey, claim.workGeneration);
-        return renewed && Number.isSafeInteger(currentTime + config.limits.leaseMs) &&
-          Number.isSafeInteger(renewed.leaseUntil) && renewed.leaseUntil >= currentTime + config.limits.leaseMs ?
-          {time: currentTime} : {reason: 'LEASE_LOST'};
+        if (!renewed || !Number.isSafeInteger(observed.time + config.limits.leaseMs) ||
+            !Number.isSafeInteger(renewed.leaseUntil) || renewed.leaseUntil < observed.time + config.limits.leaseMs)
+          return {reason: 'LEASE_LOST'};
+        return timedOut() ? {reason: 'EXECUTION_TIMEOUT'} : observed;
       } catch { return {reason: 'LEASE_UNAVAILABLE'}; }
     };
+    let laneTimer;
+    let tightenTimer;
+    const laneFailure = new Promise(resolve => {
+      let stepMs = Math.min(baseIntervalMs, executionBudgetMs, remainingMonotonicMs());
+      const schedule = () => {
+        laneTimer = setInterval(() => {
+          elapsedTimerMs += stepMs;
+          const checked = elapsedTimerMs >= executionBudgetMs || timedOut() ?
+            {reason: 'EXECUTION_TIMEOUT'} :
+            (inspecting ? renewLease() : sampleClock());
+          if (checked.reason) {
+            deadlineExpired = true;
+            clearInterval(laneTimer);
+            if (inspecting) releaseClaim = false;
+            resolve(checked);
+            if (inspecting) cancellation.abort();
+            return;
+          }
+          const nextStepMs = Math.min(baseIntervalMs, executionBudgetMs - elapsedTimerMs,
+            executionDeadline - checked.time, remainingMonotonicMs());
+          if (nextStepMs < stepMs) {
+            clearInterval(laneTimer);
+            stepMs = nextStepMs;
+            schedule();
+          }
+        }, stepMs);
+      };
+      tightenTimer = () => {
+        const nextStepMs = Math.min(stepMs, executionDeadline - lastObservedTime, remainingMonotonicMs());
+        if (nextStepMs < stepMs) {
+          clearInterval(laneTimer);
+          stepMs = nextStepMs;
+          schedule();
+        }
+      };
+      schedule();
+    });
+    const raceLane = operation => {
+      tightenTimer();
+      return Promise.race([
+        Promise.resolve().then(() => timedOut() ? {reason: 'EXECUTION_TIMEOUT'} :
+          Promise.resolve(operation()).then(value => timedOut() ? {reason: 'EXECUTION_TIMEOUT'} : {value})),
+        laneFailure
+      ]);
+    };
     try {
-      const evidence = await tracker.readTask(item.id);
+      const firstRead = await raceLane(() => tracker.readTask(item.id));
+      if (firstRead.reason)
+        return {lane: item.lane, taskId: item.id, state: 'blocked', reason: firstRead.reason};
+      const evidence = firstRead.value;
       if (!evidence?.accepted || evidence.task?.id !== item.id)
         return {lane: item.lane, state: 'blocked', reason: 'TASK_READ_FAILED'};
       if (evidence.task.state !== 'approved')
@@ -57,36 +128,25 @@ export async function runTick({config, tasks, active = [], store, tracker, agent
       const beforeInspection = renewLease();
       if (beforeInspection.reason)
         return {lane: item.lane, taskId: item.id, state: 'blocked', reason: beforeInspection.reason};
-      const cancellation = new AbortController();
-      let heartbeat;
-      const leaseFailure = new Promise(resolve => {
-        heartbeat = setInterval(() => {
-          const renewed = renewLease();
-          if (renewed.reason) {
-            clearInterval(heartbeat);
-            releaseClaim = false;
-            resolve(renewed);
-            cancellation.abort();
-          }
-        }, Math.floor(config.limits.leaseMs / 3));
-      });
       let inspection;
       try {
-        inspection = await Promise.race([
-          Promise.resolve().then(() => agent.inspect(byId.get(item.id),
-            {mode: 'shadow', projectKey: config.project.key, signal: cancellation.signal}))
-            .then(review => ({review})),
-          leaseFailure
-        ]);
+        inspection = await raceLane(() => {
+          inspecting = true;
+          return agent.inspect(byId.get(item.id),
+            {mode: 'shadow', projectKey: config.project.key, signal: cancellation.signal});
+        });
       } finally {
-        clearInterval(heartbeat);
+        inspecting = false;
       }
       if (inspection.reason)
         return {lane: item.lane, taskId: item.id, state: 'blocked', reason: inspection.reason};
-      const review = inspection.review;
+      const review = inspection.value;
       if (!review?.accepted || review.shadow !== true)
         return {lane: item.lane, state: 'blocked', reason: 'AGENT_REVIEW_FAILED'};
-      const finalEvidence = await tracker.readTask(item.id);
+      const secondRead = await raceLane(() => tracker.readTask(item.id));
+      if (secondRead.reason)
+        return {lane: item.lane, taskId: item.id, state: 'blocked', reason: secondRead.reason};
+      const finalEvidence = secondRead.value;
       if (!finalEvidence?.accepted || finalEvidence.task?.id !== item.id)
         return {lane: item.lane, state: 'blocked', reason: 'TASK_READ_FAILED'};
       if (finalEvidence.task.state !== 'approved')
@@ -103,6 +163,7 @@ export async function runTick({config, tasks, active = [], store, tracker, agent
     } catch {
       return {lane: item.lane, taskId: item.id, state: 'blocked', reason: 'LANE_FAILED'};
     } finally {
+      clearInterval(laneTimer);
       if (releaseClaim)
         store.release(item.lane, claim.generation, workerId, lastObservedTime, workKey, claim.workGeneration);
     }
