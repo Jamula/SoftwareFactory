@@ -1031,27 +1031,59 @@ test('unified subcommands, parameterized repositoryId, and bounded JSON input en
 
  const consumerSquashScope=[];
  assert.equal(await run(['--evaluate-squash'],{
-  repositoryId:consumerRepoId,env:{},
+  repositoryId:consumerRepoId,repository:consumerRepoName,branch:'main',env:{},
   input:{
-   intent:{repository:'Jamula/FamilyTree',repositoryId:consumerRepoId,branch:'main',number:1,expectedHead:workflowSha,expectedBase:baseSha},
+   intent:{repository:consumerRepoName,repositoryId:consumerRepoId,branch:'main',number:1,expectedHead:workflowSha,expectedBase:baseSha},
    evidence:{}
   },
   evaluateSquash:(_i,_ev,sc)=>{consumerSquashScope.push(sc);return {shadow:true,liveMerge:false,dependentWorkAllowed:false,reason:'EVIDENCE_UNKNOWN'};},
   write:()=>{}
  }),0);
  assert.equal(consumerSquashScope[0].repositoryId,consumerRepoId);
+ assert.equal(consumerSquashScope[0].repository,consumerRepoName);
  assert.equal(consumerSquashScope[0].branch,'main');
 
+ // Consumer --evaluate-squash without trusted FACTORY_EXPECTED_BRANCH / options.branch fails closed
+ // (even when hosted repository is configured and payload supplies intent.branch / scope.branch = "release")
+ const hostedConsumerMissingBranch=[],hostedConsumerMissingBranchRcpt=[];
  assert.equal(await run(['--evaluate-squash'],{
-  repositoryId:consumerRepoId,env:{},
+  env:{
+   ...consumerHostedEnv,
+   FACTORY_EXPECTED_REPOSITORY:consumerRepoName,
+   GITHUB_REPOSITORY:consumerRepoName
+  },
   input:{
-   intent:{repository:'Jamula/FamilyTree',repositoryId:consumerRepoId,number:1,expectedHead:workflowSha,expectedBase:baseSha},
+   scope:{repository:consumerRepoName,repositoryId:consumerRepoId,branch:'release'},
+   intent:{repository:consumerRepoName,repositoryId:consumerRepoId,branch:'release',number:1,expectedHead:workflowSha,expectedBase:baseSha},
    evidence:{}
   },
-  evaluateSquash:(_i,_ev,sc)=>{consumerSquashScope.push(sc);return {shadow:true,liveMerge:false,dependentWorkAllowed:false,reason:'EVIDENCE_UNKNOWN'};},
-  write:()=>{}
+  evaluateSquash:()=>assert.fail('must not invoke squash evaluator when consumer trusted branch is omitted'),
+  write:v=>hostedConsumerMissingBranch.push(JSON.parse(v))
  }),0);
- assert.equal(consumerSquashScope[1].branch,undefined);
+ assert.equal(hostedConsumerMissingBranch[0].reason,'PROVENANCE_MISMATCH');
+
+ assert.equal(await run(['--evaluate-squash','--receipt'],{
+  clock,
+  env:{
+   ...consumerHostedEnv,
+   FACTORY_EXPECTED_REPOSITORY:consumerRepoName,
+   GITHUB_REPOSITORY:consumerRepoName
+  },
+  input:{
+   intent:{repository:consumerRepoName,repositoryId:consumerRepoId,branch:'release',number:1,expectedHead:workflowSha,expectedBase:baseSha},
+   evidence:{}
+  },
+  evaluateSquash:()=>assert.fail('must not invoke squash evaluator when consumer trusted branch is omitted'),
+  write:v=>hostedConsumerMissingBranchRcpt.push(JSON.parse(v))
+ }),0);
+ assert.equal(hostedConsumerMissingBranchRcpt[0].valid,true);
+ assert.equal(hostedConsumerMissingBranchRcpt[0].outcome,'blocked');
+ assert.equal(hostedConsumerMissingBranchRcpt[0].reason,'SECURITY');
+
+ assert.equal(evaluateProtectedSquash(
+  {intent:squashIntent,evidence:squashEvidence},
+  {repositoryId:consumerRepoId,repository:'Jamula/SoftwareFactory',branch:'main'}
+ ).reason,'PROVENANCE_MISMATCH');
 
  // Explicit repositoryId mismatch against payload repositoryId fails closed
  const mismatchEvent=[],mismatchSquash=[],mismatchAdm=[],mismatchM01=[];
@@ -1066,13 +1098,13 @@ test('unified subcommands, parameterized repositoryId, and bounded JSON input en
  }),0);
  assert.equal(mismatchEvent[1].reason,'PROVENANCE_MISMATCH');
  assert.equal(await run(['--evaluate-squash'],{
-  repositoryId:consumerRepoId,env:{},
+  repositoryId:consumerRepoId,repository:consumerRepoName,branch:'main',env:{},
   input:{intent:squashIntent,evidence:squashEvidence,scope:{repository:'Jamula/SoftwareFactory',repositoryId:1471342715}},
   write:v=>mismatchSquash.push(JSON.parse(v))
  }),0);
  assert.equal(mismatchSquash[0].reason,'PROVENANCE_MISMATCH');
  assert.equal(await run(['--evaluate-squash'],{
-  repositoryId:consumerRepoId,env:{},
+  repositoryId:consumerRepoId,repository:consumerRepoName,branch:'main',env:{},
   input:{intent:squashIntent,evidence:squashEvidence},
   write:v=>mismatchSquash.push(JSON.parse(v))
  }),0);

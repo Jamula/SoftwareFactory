@@ -347,19 +347,18 @@ export function evaluateProtectedSquash(input,bindingOrRepoId=DEFAULT_REPOSITORY
     ?{
       repositoryId:bindingOrRepoId,
       repository:bindingOrRepoId===DEFAULT_REPOSITORY_ID?DEFAULT_REPOSITORY:null,
-      branch:bindingOrRepoId===DEFAULT_REPOSITORY_ID?DEFAULT_BRANCH:null,
-      inActions:false
+      branch:bindingOrRepoId===DEFAULT_REPOSITORY_ID?DEFAULT_BRANCH:null
     }
     :(plainJsonObject(bindingOrRepoId)
       ?{
         repositoryId:bindingOrRepoId.repositoryId,
         repository:bindingOrRepoId.repository??null,
-        branch:bindingOrRepoId.branch??(bindingOrRepoId.repositoryId===DEFAULT_REPOSITORY_ID?DEFAULT_BRANCH:null),
-        inActions:bindingOrRepoId.inActions===true
+        branch:bindingOrRepoId.branch??(bindingOrRepoId.repositoryId===DEFAULT_REPOSITORY_ID?DEFAULT_BRANCH:null)
       }
-      :{repositoryId:0,repository:null,branch:null,inActions:false});
-  const {repositoryId,repository:expectedRepository,branch:expectedBranch,inActions}=binding;
-  if(!positiveInt(repositoryId)||(repositoryId!==DEFAULT_REPOSITORY_ID&&inActions&&expectedRepository===null)) {
+      :{repositoryId:0,repository:null,branch:null});
+  const {repositoryId,repository:expectedRepository,branch:expectedBranch}=binding;
+  if(!positiveInt(repositoryId)||expectedRepository===null||expectedBranch===null||
+     (repositoryId!==DEFAULT_REPOSITORY_ID&&expectedRepository.toLowerCase()===DEFAULT_REPOSITORY.toLowerCase())) {
     return blockedSquash('PROVENANCE_MISMATCH');
   }
   if(!plainJsonObject(input)||!Object.keys(input).every(k=>SQUASH_INPUT_KEYS.has(k))||
@@ -367,31 +366,16 @@ export function evaluateProtectedSquash(input,bindingOrRepoId=DEFAULT_REPOSITORY
     return blockedSquash('INTENT_UNKNOWN');
   }
   const hasScope=Object.hasOwn(input,'scope');
-  let scope;
-  if(hasScope) {
-    scope=input.scope;
-  } else if(repositoryId===DEFAULT_FACTORY_SCOPE.repositoryId) {
-    scope=expectedBranch===DEFAULT_BRANCH
+  const scope=hasScope
+    ?input.scope
+    :(repositoryId===DEFAULT_FACTORY_SCOPE.repositoryId&&expectedBranch===DEFAULT_BRANCH
       ?DEFAULT_FACTORY_SCOPE
       :{
-        repository:DEFAULT_REPOSITORY,
-        repositoryId:DEFAULT_REPOSITORY_ID,
-        branch:expectedBranch,
-        requiredChecks:DEFAULT_FACTORY_SCOPE.requiredChecks
-      };
-  } else {
-    const inferredRepo=expectedRepository??
-      (plainJsonObject(input.intent)&&typeof input.intent.repository==='string'?input.intent.repository:null);
-    const inferredBranch=expectedBranch??
-      (plainJsonObject(input.intent)&&typeof input.intent.branch==='string'?input.intent.branch:null);
-    scope=inferredRepo!==null&&inferredRepo.toLowerCase()!==DEFAULT_REPOSITORY.toLowerCase()
-      ?{
-        repository:inferredRepo,
+        repository:expectedRepository,
         repositoryId,
-        ...(inferredBranch!==null?{branch:inferredBranch}:{})
-      }
-      :DEFAULT_FACTORY_SCOPE;
-  }
+        branch:expectedBranch,
+        ...(repositoryId===DEFAULT_FACTORY_SCOPE.repositoryId?{requiredChecks:DEFAULT_FACTORY_SCOPE.requiredChecks}:{})
+      });
   const ev=plainJsonObject(input.evidence)?input.evidence:null;
   const mismatchedRepoName=
     hasMismatchedStringField(scope,'repository',expectedRepository)||
@@ -686,8 +670,7 @@ export async function run(args,options={}) {
       '--evaluate-squash':async()=>evaluateProtectedSquash(parsedInput,{
         repositoryId:effectiveRepositoryId,
         repository:repoBinding.repository,
-        branch:repoBinding.branch,
-        inActions:env?.GITHUB_ACTIONS==='true'
+        branch:repoBinding.branch
       },evaluateSquash),
       '--verify-admission':async()=>{
         if(plainJsonObject(parsedInput)&&(hasMismatchedRepoId(parsedInput,effectiveRepositoryId)||
