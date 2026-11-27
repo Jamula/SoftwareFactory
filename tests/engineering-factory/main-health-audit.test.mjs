@@ -825,6 +825,21 @@ test('fails closed on fork PR skipped runtime checks, summary-only review findin
   });
   assert.equal(auditProtectedMainAndCandidateGates(withExtraStatusRule).reason, 'MAIN_REQUIRED_JOB_MISSING');
 
+  // A same-named job from Actions (15368) inside an active workflow must NOT satisfy integrationId 77777
+  const spoofedSameNameInActiveWf = cloneJson(withExtraStatusRule);
+  spoofedSameNameInActiveWf.main.workflowRuns[0].jobs.push({
+    name: 'mandatory-security-audit',
+    jobId: 2887,
+    appId: GITHUB_ACTIONS_APP_ID,
+    headSha: MAIN_SHA,
+    status: 'completed',
+    conclusion: 'success'
+  });
+  const spoofRes = auditProtectedMainAndCandidateGates(spoofedSameNameInActiveWf);
+  assert.equal(spoofRes.mainHealthy, false);
+  assert.equal(spoofRes.dependentWorkAllowed, false);
+  assert.equal(spoofRes.reason, 'MAIN_REQUIRED_JOB_MISSING');
+
   withExtraStatusRule.main.workflowRuns.push({
     workflow: 'Mandatory security audit',
     runName: 'Mandatory security audit',

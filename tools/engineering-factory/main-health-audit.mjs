@@ -555,7 +555,7 @@ function auditMainSection(main, lineMin, requiredCheckMap) {
   const failedWorkflows = [];
   const failedJobs = [];
   const verifiedActiveWorkflows = new Set();
-  const presentNonDefaultOffJobs = new Set();
+  const satisfiedMainChecks = new Set();
 
   if (main.protected !== true) addReason(reasons, 'MAIN_NOT_PROTECTED');
   if (!main.security.secretScanningClear || main.security.openCodeScanningAlerts !== 0) {
@@ -574,7 +574,6 @@ function auditMainSection(main, lineMin, requiredCheckMap) {
     for (let j = 0; j < run.jobs.length; j++) {
       const job = run.jobs[j];
       presentJobs.add(job.name);
-      if (!isDefaultOff) presentNonDefaultOffJobs.add(job.name);
       if (job.headSha !== main.head) addReason(reasons, 'MAIN_HEAD_MISMATCH');
       const isBuiltInWorkflowOrJob =
         activeWorkflowSet.has(run.workflow) ||
@@ -584,6 +583,13 @@ function auditMainSection(main, lineMin, requiredCheckMap) {
         ? GITHUB_ACTIONS_APP_ID
         : (requiredCheckMap.has(job.name) ? requiredCheckMap.get(job.name) : GITHUB_ACTIONS_APP_ID);
       if (job.appId !== expectedAppId) addReason(reasons, 'UNTRUSTED_CHECK_APP');
+      if (!isDefaultOff &&
+          job.headSha === main.head &&
+          job.appId === expectedAppId &&
+          job.status === 'completed' &&
+          job.conclusion === 'success') {
+        satisfiedMainChecks.add(`${job.name}\u0000${job.appId}`);
+      }
       if (job.status !== 'completed') {
         runHasIncompleteJob = true;
         failedJobs.push(Object.freeze({
@@ -646,8 +652,8 @@ function auditMainSection(main, lineMin, requiredCheckMap) {
     addReason(reasons, 'MAIN_ACTIVE_WORKFLOW_MISSING');
   }
 
-  for (const [requiredContext] of requiredCheckMap) {
-    if (!presentNonDefaultOffJobs.has(requiredContext)) {
+  for (const [requiredContext, requiredIntegrationId] of requiredCheckMap) {
+    if (!satisfiedMainChecks.has(`${requiredContext}\u0000${requiredIntegrationId}`)) {
       addReason(reasons, 'MAIN_REQUIRED_JOB_MISSING');
     }
   }
