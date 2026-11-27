@@ -119,6 +119,7 @@ const COORDINATOR_TESTS = [
   'coordinator', 'event-journal', 'planner', 'project-config', 'provider-adapters',
   'retry', 'review-intent-store', 'review-provider', 'sqlite-state-store'
 ].map(stem => `tests/engineering-coordinator/${stem}.test.mjs`);
+const BASELINE_TEST_INVENTORY = [...COORDINATOR_TESTS, ...FACTORY_TESTS];
 const PINNED_CONTRACT_TESTS = [
   'tests/engineering-coordinator/coordinator.test.mjs',
   'tests/engineering-coordinator/planner.test.mjs',
@@ -136,11 +137,11 @@ const PINNED_CONTRACT_TESTS = [
   'tests/engineering-factory/verify-dashboard-metrics.test.mjs'
 ];
 const runnableTestPath = value => path(value) &&
-  /^tests\/engineering-(?:factory|coordinator)\/[a-z0-9-]+\.test\.mjs$/.test(value);
+  /^tests\/engineering-(?:factory|coordinator)\/[a-zA-Z0-9_-][a-zA-Z0-9_.-]*\.test\.mjs$/.test(value);
 const ROOT_DOC_FILES = new Set(['AGENTS.md', 'CONTRIBUTING.md', 'LICENSE', 'NOTICE', 'VERSION', '.gitignore']);
 const LOCK_FILES = new Set(['package.json', 'package-lock.json']);
 
-export const defaultSoftwareFactoryTestInventory = () => [...COORDINATOR_TESTS, ...FACTORY_TESTS];
+export const defaultSoftwareFactoryTestInventory = () => [...BASELINE_TEST_INVENTORY];
 
 const requiredGateContract = () => ({
   lineCoveragePct: 98,
@@ -150,18 +151,24 @@ const requiredGateContract = () => ({
   windowsRuntime: true
 });
 
-export function softwareFactoryCatalog(revision, testInventory = defaultSoftwareFactoryTestInventory()) {
+export function softwareFactoryCatalog(revision, ...rest) {
   if (!sha(revision)) return blocked('REVISION_UNKNOWN');
-  if (!list(testInventory, 120, runnableTestPath) || !unique(testInventory))
+  const testInventory = rest.length === 0 ? defaultSoftwareFactoryTestInventory() : rest[0];
+  const deletedPaths = rest.length < 2 ? [] : rest[1];
+  if (!list(testInventory, 120, runnableTestPath) || testInventory.length === 0 || !unique(testInventory))
     return blocked('TEST_INVENTORY_UNKNOWN');
+  if (!list(deletedPaths, 500, path) || !unique(deletedPaths))
+    return blocked('CHANGES_UNKNOWN');
+  const inventorySet = new Set(testInventory);
+  const deletedSet = new Set(deletedPaths);
+  if ([...deletedSet].some(deleted => inventorySet.has(deleted)) ||
+      !PINNED_CONTRACT_TESTS.every(suite => inventorySet.has(suite)) ||
+      BASELINE_TEST_INVENTORY.some(suite => !inventorySet.has(suite) && !deletedSet.has(suite)))
+    return blocked('TEST_INVENTORY_UNALIGNED');
   const coordinatorTests = testInventory.filter(item => item.startsWith('tests/engineering-coordinator/')).sort();
   const factoryTests = testInventory.filter(item => item.startsWith('tests/engineering-factory/')).sort();
-  if (coordinatorTests.length === 0 || coordinatorTests.length > 60 ||
-      factoryTests.length === 0 || factoryTests.length > 60)
+  if (coordinatorTests.length > 60 || factoryTests.length > 60)
     return blocked('TEST_INVENTORY_UNKNOWN');
-  const inventorySet = new Set(testInventory);
-  if (!PINNED_CONTRACT_TESTS.every(suite => inventorySet.has(suite)))
-    return blocked('TEST_INVENTORY_UNALIGNED');
   return {
     repository: SF_REPOSITORY,
     revision,
@@ -305,17 +312,18 @@ export function planChangeGraphFastFeedback(evidence, expected) {
     return fastFeedbackDenied('CHANGE_EVIDENCE_UNKNOWN');
   if (!list(evidence.paths, 500, path) || evidence.paths.length === 0 || !unique(evidence.paths))
     return fastFeedbackDenied('CHANGES_UNKNOWN');
-  let deletedSet = new Set();
+  let deletedPaths = [];
   if (Object.hasOwn(evidence, 'deletedPaths')) {
     if (!ownData(evidence, ['deletedPaths']) || !list(evidence.deletedPaths, 500, path) || !unique(evidence.deletedPaths))
       return fastFeedbackDenied('CHANGES_UNKNOWN');
-    deletedSet = new Set(evidence.deletedPaths);
+    deletedPaths = evidence.deletedPaths;
   }
-  const catalog = softwareFactoryCatalog(expected.revision, evidence.testInventory);
+  const catalog = softwareFactoryCatalog(expected.revision, evidence.testInventory, deletedPaths);
   if (catalog.state === 'blocked') return fastFeedbackDenied(catalog.reason);
+  const deletedSet = new Set(deletedPaths);
   const pathSet = new Set(evidence.paths);
   const inventorySet = new Set(evidence.testInventory);
-  if ([...deletedSet].some(deleted => !pathSet.has(deleted) || inventorySet.has(deleted)) ||
+  if ([...deletedSet].some(deleted => !pathSet.has(deleted)) ||
       evidence.paths.some(item => runnableTestPath(item) && !deletedSet.has(item) && !inventorySet.has(item)))
     return fastFeedbackDenied('TEST_INVENTORY_UNALIGNED');
   const normalizedPaths = new Set();

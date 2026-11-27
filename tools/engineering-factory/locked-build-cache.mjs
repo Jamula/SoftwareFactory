@@ -17,6 +17,7 @@ const SF_REPOSITORY='Jamula/SoftwareFactory';
 const PINNED_NODE='26.13.1';
 const PINNED_NPM_CI_FLAGS='--ignore-scripts';
 const PINNED_DOTNET='10.0.404';
+const PINNED_APPHOST_CONFIGURATION='Release';
 const PINNED_ASPIRE='17.0.0';
 const PINNED_NUGET_SOURCE='https://api.nuget.org/v3/index.json';
 const SUPPORTED_RIDS=new Set(['linux-x64','win-x64']);
@@ -25,12 +26,13 @@ const MAX_LOCKED_CONTENT_CHARS=8_388_608;
 
 const DERIVE_FIELDS=[
  'repositoryId','repository','trustedSource','isFork','complete',
- 'rid','node','npmCiFlags','dotnet','aspire',
+ 'rid','node','npmCiFlags','dotnet','apphostConfiguration','aspire',
  'packageJsonDigest','packageLockDigest','apphostDigest','globalJsonDigest'
 ];
 const ENTRY_FIELDS=[
  'target','key','writerRepositoryId','writerRepository','writerTrusted','writerIsFork','writerBranchProtected',
- 'rid','node','npmCiFlags','dotnet','aspire','inputDigest','expectedArtifactDigest','observedArtifactDigest','cleanLayout'
+ 'rid','node','npmCiFlags','dotnet','apphostConfiguration','aspire',
+ 'inputDigest','expectedArtifactDigest','observedArtifactDigest','cleanLayout'
 ];
 
 const cacheBlocked=reason=>({
@@ -55,18 +57,19 @@ export function deriveCiCacheKeys(input){
  if(input.repositoryId!==SF_REPOSITORY_ID||input.repository!==SF_REPOSITORY||input.trustedSource!==true||input.isFork!==false)
   return cacheBlocked('UNTRUSTED_PROVENANCE');
  if(!SUPPORTED_RIDS.has(input.rid)||input.node!==PINNED_NODE||input.npmCiFlags!==PINNED_NPM_CI_FLAGS||
-    input.dotnet!==PINNED_DOTNET||input.aspire!==PINNED_ASPIRE)
+    input.dotnet!==PINNED_DOTNET||input.apphostConfiguration!==PINNED_APPHOST_CONFIGURATION||
+    input.aspire!==PINNED_ASPIRE)
   return cacheBlocked('TOOLCHAIN_OR_OS_DRIFT');
  if(![input.packageJsonDigest,input.packageLockDigest,input.apphostDigest,input.globalJsonDigest].every(digest))
   return cacheBlocked('INVALID_DIGEST');
  const inputDigests={
   npmCi:sha256(['npmCi',input.packageJsonDigest,input.packageLockDigest,PINNED_NPM_CI_FLAGS]),
-  nugetApphost:sha256(['nugetApphost',input.apphostDigest,input.globalJsonDigest]),
+  nugetApphost:sha256(['nugetApphost',input.apphostDigest,input.globalJsonDigest,PINNED_APPHOST_CONFIGURATION,PINNED_NUGET_SOURCE]),
   aspireCli:sha256(['aspireCli',PINNED_ASPIRE,PINNED_NUGET_SOURCE])
  };
  const keys={
   npmCi:`sf-npm-ci-v1-${input.rid}-node-${PINNED_NODE}-${sha256([SF_REPOSITORY_ID,SF_REPOSITORY,'npmCi',input.rid,PINNED_NODE,PINNED_NPM_CI_FLAGS,input.packageJsonDigest,input.packageLockDigest])}`,
-  nugetApphost:`sf-nuget-apphost-v1-${input.rid}-dotnet-${PINNED_DOTNET}-${sha256([SF_REPOSITORY_ID,SF_REPOSITORY,'nugetApphost',input.rid,PINNED_DOTNET,input.apphostDigest,input.globalJsonDigest])}`,
+  nugetApphost:`sf-nuget-apphost-v1-${input.rid}-dotnet-${PINNED_DOTNET}-${PINNED_APPHOST_CONFIGURATION.toLowerCase()}-${sha256([SF_REPOSITORY_ID,SF_REPOSITORY,'nugetApphost',input.rid,PINNED_DOTNET,PINNED_APPHOST_CONFIGURATION,PINNED_NUGET_SOURCE,input.apphostDigest,input.globalJsonDigest])}`,
   aspireCli:`sf-aspire-cli-v1-${input.rid}-aspire-${PINNED_ASPIRE}-${sha256([SF_REPOSITORY_ID,SF_REPOSITORY,'aspireCli',input.rid,PINNED_DOTNET,PINNED_ASPIRE,PINNED_NUGET_SOURCE])}`
  };
  return {
@@ -93,7 +96,8 @@ export function verifyCiCacheEntry(expectedInput,entry){
     entry.writerTrusted!==true||entry.writerIsFork!==false||entry.writerBranchProtected!==true)
   return cacheBlocked('UNTRUSTED_WRITER_PROVENANCE');
  if(entry.rid!==expectedInput.rid||entry.node!==expectedInput.node||entry.npmCiFlags!==expectedInput.npmCiFlags||
-    entry.dotnet!==expectedInput.dotnet||entry.aspire!==expectedInput.aspire)
+    entry.dotnet!==expectedInput.dotnet||entry.apphostConfiguration!==expectedInput.apphostConfiguration||
+    entry.aspire!==expectedInput.aspire)
   return cacheBlocked('TOOLCHAIN_OR_OS_DRIFT');
  if(![entry.inputDigest,entry.expectedArtifactDigest,entry.observedArtifactDigest].every(digest)||
     entry.inputDigest!==derived.inputDigests[entry.target])

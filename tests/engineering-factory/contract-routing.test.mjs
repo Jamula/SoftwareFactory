@@ -122,6 +122,11 @@ test('rejects array prototypes and all extra own keys before invoking array beha
 
 test('softwareFactoryCatalog and planChangeGraphFastFeedback cover all repository paths while preserving fullValidationRequired', () => {
  assert.deepEqual(softwareFactoryCatalog('invalid'), {state: 'blocked', reason: 'REVISION_UNKNOWN'});
+ assert.deepEqual(softwareFactoryCatalog(revision, undefined), {state: 'blocked', reason: 'TEST_INVENTORY_UNKNOWN'});
+ assert.deepEqual(softwareFactoryCatalog(revision, defaultSoftwareFactoryTestInventory(), null), {
+  state: 'blocked',
+  reason: 'CHANGES_UNKNOWN'
+ });
  const head = 'c'.repeat(40);
  const sfExpected = {repository: 'Jamula/SoftwareFactory', revision, head};
  const baseInventory = defaultSoftwareFactoryTestInventory();
@@ -237,7 +242,7 @@ test('softwareFactoryCatalog and planChangeGraphFastFeedback cover all repositor
  assert.deepEqual(unmapped.tests, []);
  assertMandatoryFullGates(unmapped);
 
- const addedSuite = 'tests/engineering-factory/new-regression.test.mjs';
+ const addedSuite = 'tests/engineering-factory/new_regression.v2.test.mjs';
  const addedOutcome = planChangeGraphFastFeedback(
   makeEvidence([addedSuite], {testInventory: [...baseInventory, addedSuite]}),
   sfExpected
@@ -248,7 +253,7 @@ test('softwareFactoryCatalog and planChangeGraphFastFeedback cover all repositor
  assert.ok(addedOutcome.tests.includes(addedSuite));
 
  const oldSuite = 'tests/engineering-factory/profiles.test.mjs';
- const renamedSuite = 'tests/engineering-factory/policy-profiles.test.mjs';
+ const renamedSuite = 'tests/engineering-factory/policy_profiles.test.mjs';
  const renamedInventory = baseInventory.filter(item => item !== oldSuite).concat([renamedSuite]);
  const renamedOutcome = planChangeGraphFastFeedback(
   makeEvidence([oldSuite, renamedSuite], {deletedPaths: [oldSuite], testInventory: renamedInventory}),
@@ -277,6 +282,9 @@ test('softwareFactoryCatalog and planChangeGraphFastFeedback cover all repositor
 
  for (const misalignedEvidence of [
   makeEvidence([addedSuite]),
+  makeEvidence(['tools/engineering-factory/budget.mjs'], {
+   testInventory: baseInventory.filter(item => item !== 'tests/engineering-factory/budget.test.mjs')
+  }),
   makeEvidence([oldSuite], {deletedPaths: [oldSuite], testInventory: [...baseInventory]}),
   makeEvidence(['docs/README.md'], {deletedPaths: ['not-in-paths.mjs']}),
   makeEvidence(['.github/workflows/validate.yml'], {
@@ -291,20 +299,20 @@ test('softwareFactoryCatalog and planChangeGraphFastFeedback cover all repositor
  }
 
  const tooManyFactoryTests = [
-  'tests/engineering-coordinator/coordinator.test.mjs',
-  ...Array.from({length: 61}, (_, i) => `tests/engineering-factory/gen-${i}.test.mjs`)
+  ...baseInventory,
+  ...Array.from({length: 26}, (_, i) => `tests/engineering-factory/gen_${i}.test.mjs`)
  ];
  const tooManyCoordinatorTests = [
-  'tests/engineering-factory/run.test.mjs',
-  ...Array.from({length: 61}, (_, i) => `tests/engineering-coordinator/gen-${i}.test.mjs`)
+  ...baseInventory,
+  ...Array.from({length: 52}, (_, i) => `tests/engineering-coordinator/gen_${i}.test.mjs`)
  ];
  for (const badInventory of [
+  undefined,
   null,
   [],
   ['tools/engineering-factory/budget.mjs'],
+  ['tests/engineering-factory/.hidden.test.mjs'],
   [baseInventory[0], baseInventory[0]],
-  baseInventory.filter(item => item.startsWith('tests/engineering-factory/')),
-  baseInventory.filter(item => item.startsWith('tests/engineering-coordinator/')),
   tooManyFactoryTests,
   tooManyCoordinatorTests
  ]) {

@@ -31,6 +31,7 @@ const ciInput = (overrides = {}) => ({
  node: '26.13.1',
  npmCiFlags: '--ignore-scripts',
  dotnet: '10.0.404',
+ apphostConfiguration: 'Release',
  aspire: '17.0.0',
  packageJsonDigest: hashLockedContent('{"name":"softwarefactory","private":true}'),
  packageLockDigest: hashLockedContent('{"name":"softwarefactory","lockfileVersion":3}'),
@@ -62,7 +63,7 @@ test('deriveCiCacheKeys derives OS-scoped exact-input keys for npm ci, NuGet/App
   assert.equal(derived.skipRequiredChecks, false);
  }
  assert.match(linux.keys.npmCi, /^sf-npm-ci-v1-linux-x64-node-26\.13\.1-[a-f0-9]{64}$/);
- assert.match(linux.keys.nugetApphost, /^sf-nuget-apphost-v1-linux-x64-dotnet-10\.0\.404-[a-f0-9]{64}$/);
+ assert.match(linux.keys.nugetApphost, /^sf-nuget-apphost-v1-linux-x64-dotnet-10\.0\.404-release-[a-f0-9]{64}$/);
  assert.match(linux.keys.aspireCli, /^sf-aspire-cli-v1-linux-x64-aspire-17\.0\.0-[a-f0-9]{64}$/);
  assert.match(windows.keys.aspireCli, /^sf-aspire-cli-v1-win-x64-aspire-17\.0\.0-[a-f0-9]{64}$/);
  assert.notEqual(linux.keys.npmCi, windows.keys.npmCi);
@@ -120,6 +121,8 @@ test('deriveCiCacheKeys fails closed on malformed inputs, fork/untrusted provena
   ciInput({npmCiFlags: '--omit=dev'}),
   ciInput({npmCiFlags: ''}),
   ciInput({dotnet: '10.0.403'}),
+  ciInput({apphostConfiguration: 'Debug'}),
+  ciInput({apphostConfiguration: 'release'}),
   ciInput({aspire: '17.0.1'})
  ]) {
   const denied = deriveCiCacheKeys(drifted);
@@ -157,6 +160,7 @@ test('verifyCiCacheEntry verifies all three CI bottleneck targets across linux-x
     node: '26.13.1',
     npmCiFlags: '--ignore-scripts',
     dotnet: '10.0.404',
+    apphostConfiguration: 'Release',
     aspire: '17.0.0',
     inputDigest: derived.inputDigests[target],
     expectedArtifactDigest: artifactDigest,
@@ -197,6 +201,7 @@ test('verifyCiCacheEntry verifies all three CI bottleneck targets across linux-x
     {...validEntry, node: '26.13.0'},
     {...validEntry, npmCiFlags: '--omit=dev'},
     {...validEntry, dotnet: '10.0.400'},
+    {...validEntry, apphostConfiguration: 'Debug'},
     {...validEntry, aspire: '16.9.0'}
    ]) {
     assert.equal(verifyCiCacheEntry(expected, drifted).reason, 'TOOLCHAIN_OR_OS_DRIFT');
@@ -240,6 +245,7 @@ test('verifyCiCacheEntry verifies all three CI bottleneck targets across linux-x
   node: '26.13.1',
   npmCiFlags: '--ignore-scripts',
   dotnet: '10.0.404',
+  apphostConfiguration: 'Release',
   aspire: '17.0.0',
   inputDigest: derived.inputDigests.npmCi,
   expectedArtifactDigest: 'f'.repeat(64),
@@ -253,6 +259,15 @@ test('verifyCiCacheEntry verifies all three CI bottleneck targets across linux-x
  const omitDevSwitch = verifyCiCacheEntry(ciInput({npmCiFlags: 'omit=dev'}), baseEntry);
  assert.equal(omitDevSwitch.reason, 'TOOLCHAIN_OR_OS_DRIFT');
  assert.equal(omitDevSwitch.candidate, false);
+ const apphostEntry = {
+  ...baseEntry,
+  target: 'nugetApphost',
+  key: derived.keys.nugetApphost,
+  inputDigest: derived.inputDigests.nugetApphost
+ };
+ const debugSwitch = verifyCiCacheEntry(ciInput({apphostConfiguration: 'Debug'}), apphostEntry);
+ assert.equal(debugSwitch.reason, 'TOOLCHAIN_OR_OS_DRIFT');
+ assert.equal(debugSwitch.candidate, false);
  for (const malformed of [
   null, {}, [], new Proxy(baseEntry, {}),
   {...baseEntry, target: 'unknown'},

@@ -25,7 +25,7 @@ The `trusted-ci` marker is a data contract, not an authentication mechanism. A p
 
 `hashLockedContent`, `deriveCiCacheKeys`, and `verifyCiCacheEntry` in `tools/engineering-factory/locked-build-cache.mjs` model exact-input cache keys and fail-closed verification for SoftwareFactory's three hosted CI restore/build bottlenecks per OS RID (`linux-x64` and `win-x64`):
 - **`npmCi`**: `package.json` + `package-lock.json` SHA-256 digests + effective install flags (`--ignore-scripts`) + Node.js `26.13.1`
-- **`nugetApphost`**: `apphost.cs` + `global.json` SHA-256 digests + .NET SDK `10.0.404`
+- **`nugetApphost`**: `apphost.cs` + `global.json` SHA-256 digests + AppHost build configuration (`Release`) + pinned NuGet v3 feed + .NET SDK `10.0.404`
 - **`aspireCli`**: `Aspire.Cli 17.0.0` tool binary + .NET SDK `10.0.404` + pinned NuGet v3 feed per OS RID (`linux-x64` / `win-x64`)
 
 `deriveCiCacheKeys` and `verifyCiCacheEntry` fail closed on fork or untrusted writer provenance (`isFork !== false`, `writerIsFork !== false`, `writerBranchProtected !== true`), OS/toolchain/install-flag drift, input digest mismatch, or cache poisoning (spoofed cache key, tampered observed artifact digest vs. expected writer receipt digest, or unclean archive layout). Even when an entry is verified (`verified: true`, `candidate: true`), `fullVerificationRequired: true` and `skipRequiredChecks: false` remain mandatory.
