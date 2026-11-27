@@ -1,18 +1,25 @@
+import {readFileSync} from 'node:fs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   ASPIRE_FAILURE_CATEGORIES,
   ASPIRE_STAGE_KEYS,
+  BASELINE_CONSOLIDATION_CHECK_COUNT,
+  CHECK_CONSOLIDATION_KINDS,
   FAST_FEEDBACK_STRETCH_MS,
   LANE_TARGET_MS,
   MANDATORY_CI_CHECK_CONTEXTS,
+  MANDATORY_CONSOLIDATED_CHECK_GATES,
   MAX_AUTO_REPAIR_ATTEMPTS,
   PINNED_CI_TOOLCHAIN,
   STANDARD_CI_P50_TARGET_MS,
+  TARGET_CONSOLIDATION_CHECK_COUNT,
   WINDOWS_ASPIRE_RUNTIME_PROVISIONAL_TARGET_MS,
   analyzeAspireRuntimeStages,
   buildExactInputCacheManifest,
   buildMafBoundedRepairHandoff,
+  defaultSoftwareFactoryConsolidationProposal,
+  evaluateCheckConsolidationParity,
   evaluateCiCriticalPath
 } from '../../tools/engineering-factory/ci-stage-benchmark.mjs';
 import {defaultSoftwareFactoryTestInventory} from '../../tools/engineering-factory/contract-routing.mjs';
@@ -87,6 +94,20 @@ test('exported SLO constants and mandatory gate contracts match engineering stan
     'build-test',
     'upload-coverage-javascript',
     'windows-aspire-runtime',
+    'CodeQL'
+  ]);
+  assert.equal(BASELINE_CONSOLIDATION_CHECK_COUNT, 12);
+  assert.equal(TARGET_CONSOLIDATION_CHECK_COUNT, 8);
+  assert.deepEqual(CHECK_CONSOLIDATION_KINDS, [
+    'required-execution',
+    'reporting',
+    'disabled-shadow-inventory'
+  ]);
+  assert.deepEqual(MANDATORY_CONSOLIDATED_CHECK_GATES, [
+    'build-test',
+    'upload-coverage-javascript',
+    'windows-aspire-runtime',
+    '.NET MAF specialist agents',
     'CodeQL'
   ]);
   assert.equal(ASPIRE_STAGE_KEYS.length, 8);
@@ -1259,4 +1280,372 @@ test('buildMafBoundedRepairHandoff fails closed with escalateToHuman on invalid,
     assert.equal(denied.mandatoryFullGatesPreserved, true);
     assert.equal(denied.escalateToHuman, true);
   }
+});
+
+test('evaluateCheckConsolidationParity verifies 12-to-8 check consolidation and distinguishes required execution, reporting, and disabled shadow inventory', () => {
+  const proposal = defaultSoftwareFactoryConsolidationProposal();
+  const verified = evaluateCheckConsolidationParity(proposal);
+
+  assert.equal(verified.valid, true);
+  assert.equal(verified.state, 'verified');
+  assert.equal(verified.shadow, true);
+  assert.equal(verified.consolidationAllowed, true);
+  assert.equal(verified.parityVerified, true);
+  assert.equal(verified.reason, 'CHECK_CONSOLIDATION_PARITY_VERIFIED');
+  assert.equal(verified.exactTwelveToEight, true);
+  assert.equal(verified.meaningfulChecksReducedBy, 4);
+  assert.equal(verified.fullVerificationRequired, true);
+  assert.equal(verified.skipRequiredChecks, false);
+  assert.deepEqual(verified.missingMandatoryGates, []);
+
+  assert.equal(verified.classification.baseline.totalCount, 13);
+  assert.equal(verified.classification.baseline.meaningfulCount, 12);
+  assert.equal(verified.classification.baseline.requiredExecution.length, 7);
+  assert.equal(verified.classification.baseline.reporting.length, 5);
+  assert.deepEqual(verified.classification.baseline.disabledShadowInventory, ['inventory']);
+
+  assert.equal(verified.classification.proposed.totalCount, 9);
+  assert.equal(verified.classification.proposed.meaningfulCount, 8);
+  assert.equal(verified.classification.proposed.requiredExecution.length, 7);
+  assert.deepEqual(verified.classification.proposed.reporting, ['upload-coverage-javascript']);
+  assert.deepEqual(verified.classification.proposed.disabledShadowInventory, ['inventory']);
+  assert.equal(verified.consolidatedChecks.length, 4);
+
+  assert.deepEqual(verified.preservedGates, {
+    buildTest: true,
+    uploadCoverageJavascript: true,
+    windowsAspireRuntime: true,
+    dotnetMafSpecialistAgents: true,
+    codeql: true,
+    secretScanning: true,
+    mergeGroupCoverage: true,
+    independentExactHeadReview: true,
+    coverageThresholds98And95: true,
+    shadowInventoryPreserved: true
+  });
+
+  // Also accepts minimal optional fields and single consolidated '.NET MAF specialist agents' context
+  const minimalChecks = [
+    {context: 'build-test', kind: 'required-execution', triggers: ['pull_request', 'merge_group']},
+    {context: 'upload-coverage-javascript', kind: 'reporting', triggers: ['pull_request', 'merge_group']},
+    {context: 'windows-aspire-runtime', kind: 'required-execution', triggers: ['pull_request', 'merge_group']},
+    {context: '.NET MAF specialist agents', kind: 'required-execution', triggers: ['pull_request', 'merge_group']},
+    {context: 'CodeQL', kind: 'required-execution', triggers: ['pull_request']}
+  ];
+  const minimalVerified = evaluateCheckConsolidationParity({
+    repository: 'Jamula/SoftwareFactory',
+    baselineChecks: [
+      ...minimalChecks,
+      {
+        context: 'legacy-component-check',
+        kind: 'required-execution',
+        triggers: ['pull_request', 'merge_group'],
+        consolidatedInto: 'build-test'
+      }
+    ],
+    proposedChecks: minimalChecks,
+    gates: {
+      secretScanning: true,
+      mergeGroupCoverage: true,
+      independentExactHeadReview: true,
+      lineCoverageMinPct: 98,
+      branchCoverageMinPct: 95
+    }
+  });
+  assert.equal(minimalVerified.valid, true);
+  assert.equal(minimalVerified.consolidationAllowed, true);
+  assert.equal(minimalVerified.exactTwelveToEight, false);
+  assert.equal(minimalVerified.meaningfulChecksReducedBy, 1);
+});
+
+test('evaluateCheckConsolidationParity blocks any proposal dropping mandatory execution/reporting checks, secret scanning, merge_group, review, coverage, or shadow inventory', () => {
+  // Dropping each mandatory check context / workflow gate blocks with MANDATORY_CHECK_DROPPED
+  for (const [label, filterFn, preservedKey] of [
+    ['build-test', c => c.context !== 'build-test', 'buildTest'],
+    ['upload-coverage-javascript', c => c.context !== 'upload-coverage-javascript', 'uploadCoverageJavascript'],
+    ['windows-aspire-runtime', c => c.context !== 'windows-aspire-runtime', 'windowsAspireRuntime'],
+    ['.NET MAF specialist agents', c => c.workflow !== '.NET MAF specialist agents', 'dotnetMafSpecialistAgents'],
+    ['CodeQL', c => c.context !== 'CodeQL', 'codeql']
+  ]) {
+    const p = defaultSoftwareFactoryConsolidationProposal();
+    p.proposedChecks = p.proposedChecks.filter(filterFn);
+    const res = evaluateCheckConsolidationParity(p);
+    assert.equal(res.valid, false);
+    assert.equal(res.state, 'blocked');
+    assert.equal(res.consolidationAllowed, false);
+    assert.equal(res.reason, 'MANDATORY_CHECK_DROPPED');
+    assert.deepEqual(res.missingMandatoryGates, [label]);
+    assert.equal(res.preservedGates[preservedKey], false);
+  }
+
+  // Dropping secret scanning, merge_group coverage, or independent exact-head review
+  const noSecretScan = defaultSoftwareFactoryConsolidationProposal();
+  noSecretScan.gates.secretScanning = false;
+  const secretRes = evaluateCheckConsolidationParity(noSecretScan);
+  assert.equal(secretRes.consolidationAllowed, false);
+  assert.equal(secretRes.reason, 'SECRET_SCANNING_DROPPED');
+  assert.equal(secretRes.preservedGates.secretScanning, false);
+
+  const noReview = defaultSoftwareFactoryConsolidationProposal();
+  noReview.gates.independentExactHeadReview = false;
+  const reviewRes = evaluateCheckConsolidationParity(noReview);
+  assert.equal(reviewRes.consolidationAllowed, false);
+  assert.equal(reviewRes.reason, 'INDEPENDENT_REVIEW_DROPPED');
+  assert.equal(reviewRes.preservedGates.independentExactHeadReview, false);
+
+  const noMergeGroupFlag = defaultSoftwareFactoryConsolidationProposal();
+  noMergeGroupFlag.gates.mergeGroupCoverage = false;
+  const mgFlagRes = evaluateCheckConsolidationParity(noMergeGroupFlag);
+  assert.equal(mgFlagRes.consolidationAllowed, false);
+  assert.equal(mgFlagRes.reason, 'MERGE_GROUP_COVERAGE_DROPPED');
+  assert.equal(mgFlagRes.preservedGates.mergeGroupCoverage, false);
+
+  // Structural merge_group drops on mandatory checks and consolidated checks
+  for (const dropCtx of [
+    'build-test',
+    'upload-coverage-javascript',
+    'windows-aspire-runtime',
+    'windows-dotnet-agents',
+    'pinned-synthetic-replay'
+  ]) {
+    const p = defaultSoftwareFactoryConsolidationProposal();
+    const check = p.proposedChecks.find(c => c.context === dropCtx);
+    check.triggers = ['pull_request', 'push_main'];
+    const res = evaluateCheckConsolidationParity(p);
+    assert.equal(res.consolidationAllowed, false, dropCtx);
+    assert.equal(res.reason, 'MERGE_GROUP_COVERAGE_DROPPED', dropCtx);
+    assert.equal(res.preservedGates.mergeGroupCoverage, false, dropCtx);
+  }
+
+  // Mandatory role downgrades, untrusted producer, missing pull_request trigger, and Windows MAF drop
+  const downgradeWindows = defaultSoftwareFactoryConsolidationProposal();
+  downgradeWindows.proposedChecks.find(c => c.context === 'windows-aspire-runtime').kind = 'reporting';
+  assert.equal(evaluateCheckConsolidationParity(downgradeWindows).reason, 'MANDATORY_CHECK_ROLE_INVALID');
+
+  const misclassifyUpload = defaultSoftwareFactoryConsolidationProposal();
+  misclassifyUpload.proposedChecks.find(c => c.context === 'upload-coverage-javascript').kind = 'required-execution';
+  assert.equal(evaluateCheckConsolidationParity(misclassifyUpload).reason, 'MANDATORY_CHECK_ROLE_INVALID');
+
+  const untrustedBuildTest = defaultSoftwareFactoryConsolidationProposal();
+  untrustedBuildTest.proposedChecks.find(c => c.context === 'build-test').trustedProducer = false;
+  assert.equal(evaluateCheckConsolidationParity(untrustedBuildTest).reason, 'MANDATORY_CHECK_ROLE_INVALID');
+
+  const wrongPlatformWin = defaultSoftwareFactoryConsolidationProposal();
+  wrongPlatformWin.proposedChecks.find(c => c.context === 'windows-aspire-runtime').platforms = ['linux'];
+  assert.equal(evaluateCheckConsolidationParity(wrongPlatformWin).reason, 'MANDATORY_CHECK_ROLE_INVALID');
+
+  const dropWindowsDotnet = defaultSoftwareFactoryConsolidationProposal();
+  dropWindowsDotnet.proposedChecks = dropWindowsDotnet.proposedChecks.filter(
+    c => c.context !== 'windows-dotnet-agents'
+  );
+  const winMafDroppedRes = evaluateCheckConsolidationParity(dropWindowsDotnet);
+  assert.equal(winMafDroppedRes.reason, 'MANDATORY_CHECK_ROLE_INVALID');
+  assert.equal(winMafDroppedRes.preservedGates.dotnetMafSpecialistAgents, false);
+
+  const noPrTrigger = defaultSoftwareFactoryConsolidationProposal();
+  noPrTrigger.proposedChecks.find(c => c.context === 'CodeQL').triggers = ['push_main'];
+  assert.equal(evaluateCheckConsolidationParity(noPrTrigger).reason, 'MANDATORY_CHECK_ROLE_INVALID');
+
+  // Coverage gate weakening
+  for (const gateOverride of [
+    {lineCoverageMinPct: 97.9},
+    {branchCoverageMinPct: 94.9},
+    {nativeCoverageIntegrated: false}
+  ]) {
+    const p = defaultSoftwareFactoryConsolidationProposal();
+    Object.assign(p.gates, gateOverride);
+    const res = evaluateCheckConsolidationParity(p);
+    assert.equal(res.reason, 'COVERAGE_GATE_WEAKENED');
+    assert.equal(res.preservedGates.coverageThresholds98And95, false);
+  }
+
+  // Shadow inventory deletion, promotion, disguise, or disabled ingestion
+  const dropShadow = defaultSoftwareFactoryConsolidationProposal();
+  dropShadow.proposedChecks = dropShadow.proposedChecks.filter(c => c.context !== 'inventory');
+  assert.equal(evaluateCheckConsolidationParity(dropShadow).reason, 'SHADOW_INVENTORY_VIOLATION');
+
+  const promoteShadow = defaultSoftwareFactoryConsolidationProposal();
+  promoteShadow.proposedChecks.find(c => c.context === 'inventory').kind = 'reporting';
+  assert.equal(evaluateCheckConsolidationParity(promoteShadow).reason, 'SHADOW_INVENTORY_VIOLATION');
+
+  const disguiseActiveAsShadow = defaultSoftwareFactoryConsolidationProposal();
+  disguiseActiveAsShadow.proposedChecks.find(c => c.context === 'pinned-synthetic-replay').kind = 'disabled-shadow-inventory';
+  assert.equal(evaluateCheckConsolidationParity(disguiseActiveAsShadow).reason, 'SHADOW_INVENTORY_VIOLATION');
+
+  const disableShadowFlag = defaultSoftwareFactoryConsolidationProposal();
+  disableShadowFlag.gates.shadowEventIngestionPreserved = false;
+  assert.equal(evaluateCheckConsolidationParity(disableShadowFlag).reason, 'SHADOW_INVENTORY_VIOLATION');
+
+  // Unverified consolidation: missing consolidatedInto, execution->reporting downgrade, platform loss, or unproven equivalence
+  const unmappedDrop = defaultSoftwareFactoryConsolidationProposal();
+  delete unmappedDrop.baselineChecks.find(c => c.context === 'test-coverage').consolidatedInto;
+  assert.equal(evaluateCheckConsolidationParity(unmappedDrop).reason, 'UNVERIFIED_CHECK_CONSOLIDATION');
+
+  const execIntoReporting = defaultSoftwareFactoryConsolidationProposal();
+  execIntoReporting.baselineChecks.find(c => c.context === 'pinned-synthetic-replay').consolidatedInto = 'upload-coverage-javascript';
+  execIntoReporting.proposedChecks = execIntoReporting.proposedChecks.filter(
+    c => c.context !== 'pinned-synthetic-replay'
+  );
+  assert.equal(evaluateCheckConsolidationParity(execIntoReporting).reason, 'UNVERIFIED_CHECK_CONSOLIDATION');
+
+  const retainedDowngrade = defaultSoftwareFactoryConsolidationProposal();
+  retainedDowngrade.proposedChecks.find(c => c.context === 'pinned-synthetic-replay').kind = 'reporting';
+  assert.equal(evaluateCheckConsolidationParity(retainedDowngrade).reason, 'UNVERIFIED_CHECK_CONSOLIDATION');
+
+  const retainedPlatformDropped = defaultSoftwareFactoryConsolidationProposal();
+  delete retainedPlatformDropped.proposedChecks.find(c => c.context === 'pinned-synthetic-replay').platforms;
+  assert.equal(evaluateCheckConsolidationParity(retainedPlatformDropped).reason, 'UNVERIFIED_CHECK_CONSOLIDATION');
+
+  const targetPlatformMismatch = defaultSoftwareFactoryConsolidationProposal();
+  targetPlatformMismatch.baselineChecks.push({
+    context: 'legacy-win-smoke',
+    kind: 'reporting',
+    platforms: ['windows'],
+    triggers: ['pull_request'],
+    consolidatedInto: 'build-test' // Linux-only target!
+  });
+  assert.equal(evaluateCheckConsolidationParity(targetPlatformMismatch).reason, 'UNVERIFIED_CHECK_CONSOLIDATION');
+
+  const unprovenEquivalence = defaultSoftwareFactoryConsolidationProposal();
+  unprovenEquivalence.gates.equivalentVerificationProven = false;
+  assert.equal(evaluateCheckConsolidationParity(unprovenEquivalence).reason, 'UNVERIFIED_CHECK_CONSOLIDATION');
+
+  // Check-count contract mismatch: >8 meaningful checks or increasing check count
+  const nineMeaningful = defaultSoftwareFactoryConsolidationProposal();
+  nineMeaningful.proposedChecks.push({
+    context: 'extra-ninth-check',
+    kind: 'reporting',
+    platforms: ['linux'],
+    triggers: ['pull_request']
+  });
+  assert.equal(evaluateCheckConsolidationParity(nineMeaningful).reason, 'CHECK_COUNT_CONTRACT_MISMATCH');
+
+  const bloatedFromSeven = defaultSoftwareFactoryConsolidationProposal();
+  bloatedFromSeven.baselineChecks = bloatedFromSeven.proposedChecks.filter(
+    c => c.context !== 'pinned-synthetic-replay'
+  );
+  assert.equal(evaluateCheckConsolidationParity(bloatedFromSeven).reason, 'CHECK_COUNT_CONTRACT_MISMATCH');
+});
+
+test('evaluateCheckConsolidationParity fails closed on proxies, malformed descriptors, cross-repo inputs, and duplicates', () => {
+  const base = defaultSoftwareFactoryConsolidationProposal();
+  const proxyInput = new Proxy(base, {get() { throw new Error('proxy must not run'); }});
+  const proxyGates = {...base, gates: new Proxy(base.gates, {get() { throw new Error('proxy must not run'); }})};
+  const proxyCheck = {
+    ...base,
+    proposedChecks: [new Proxy(base.proposedChecks[0], {get() { throw new Error('proxy must not run'); }})]
+  };
+
+  for (const bad of [
+    null,
+    [],
+    proxyInput,
+    proxyGates,
+    proxyCheck,
+    {...base, repository: ' Jamula/SoftwareFactory '},
+    {...base, repositoryId: 0},
+    {...base, gates: {...base.gates, secretScanning: 'true'}},
+    {...base, gates: {...base.gates, mergeGroupCoverage: 1}},
+    {...base, gates: {...base.gates, independentExactHeadReview: null}},
+    {...base, gates: {...base.gates, lineCoverageMinPct: 101}},
+    {...base, gates: {...base.gates, branchCoverageMinPct: -1}},
+    {...base, gates: {...base.gates, nativeCoverageIntegrated: 'yes'}},
+    {...base, gates: {...base.gates, equivalentVerificationProven: 'yes'}},
+    {...base, gates: {...base.gates, shadowEventIngestionPreserved: 'yes'}},
+    {...base, baselineChecks: []},
+    {...base, proposedChecks: []},
+    {...base, proposedChecks: [{...base.proposedChecks[0], workflow: ' bad '}]},
+    {...base, proposedChecks: [{...base.proposedChecks[0], platforms: ['darwin']}]},
+    {...base, proposedChecks: [{...base.proposedChecks[0], platforms: ['linux', 'linux']}]},
+    {...base, proposedChecks: [{...base.proposedChecks[0], trustedProducer: 'true'}]},
+    {...base, baselineChecks: [{...base.baselineChecks[8], consolidatedInto: ''}]},
+    {...base, proposedChecks: [{...base.proposedChecks[0], triggers: ['pull_request', 'pull_request']}]},
+    {...base, proposedChecks: [{...base.proposedChecks[0], kind: 'unknown'}]}
+  ]) {
+    const res = evaluateCheckConsolidationParity(bad);
+    assert.equal(res.valid, false);
+    assert.equal(res.consolidationAllowed, false);
+    assert.equal(res.reason, 'CONSOLIDATION_INPUT_INVALID');
+  }
+
+  assert.equal(
+    evaluateCheckConsolidationParity({...base, repository: 'other/repo'}).reason,
+    'UNTRUSTED_REPOSITORY'
+  );
+  assert.equal(
+    evaluateCheckConsolidationParity({...base, repositoryId: 999}).reason,
+    'UNTRUSTED_REPOSITORY'
+  );
+  assert.equal(
+    evaluateCheckConsolidationParity({
+      ...base,
+      baselineChecks: [base.baselineChecks[0], base.baselineChecks[0]]
+    }).reason,
+    'DUPLICATE_CHECK_CONTEXT'
+  );
+  assert.equal(
+    evaluateCheckConsolidationParity({
+      ...base,
+      proposedChecks: [base.proposedChecks[0], base.proposedChecks[0]]
+    }).reason,
+    'DUPLICATE_CHECK_CONTEXT'
+  );
+});
+
+test('dotnet-agents.yml enforces SHA-pinned exact-input NuGet caching, 98/95 Coverlet gates, stage timing, and zero script interpolation', () => {
+  const workflowUrl = new URL('../../.github/workflows/dotnet-agents.yml', import.meta.url);
+  const content = readFileSync(workflowUrl, 'utf8');
+
+  assert.match(content, /^name: \.NET MAF specialist agents$/m);
+  assert.match(content, /^permissions:\n  contents: read$/m);
+  assert.match(content, /runs-on: ubuntu-latest/);
+  assert.match(content, /runs-on: windows-latest/);
+
+  // Every uses: line must be pinned to an exact 40-char lowercase hex commit SHA
+  const usesMatches = [...content.matchAll(/^\s*-?\s*uses:\s*([^\s#]+)/gm)].map(m => m[1]);
+  assert.equal(usesMatches.length, 8);
+  for (const ref of usesMatches) {
+    assert.match(ref, /^actions\/[a-z0-9/-]+@[a-f0-9]{40}$/);
+  }
+  assert.ok(usesMatches.includes('actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'));
+  assert.ok(usesMatches.includes('actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73'));
+  assert.ok(usesMatches.includes('actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9'));
+  assert.ok(usesMatches.includes('actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9'));
+  assert.equal(content.includes('restore-keys:'), false);
+
+  // Write-capable actions/cache is gated strictly to protected main push on Jamula/SoftwareFactory
+  assert.match(
+    content,
+    /if: github\.event_name == 'push' && github\.ref == 'refs\/heads\/main' && github\.ref_protected == true && github\.repository == 'Jamula\/SoftwareFactory' && github\.repository_id == '1471342715'/
+  );
+
+  // Per-stage millisecond durations and Coverlet 98/95 enforcement on both platforms
+  for (const token of ['restore_ms=', 'build_ms=', 'test_coverage_ms=', 'smoke_ms=', 'CollectCoverage=true']) {
+    assert.equal(content.split(token).length - 1, 2, `expected ${token} in both Linux and Windows jobs`);
+  }
+
+  // Zero ${{ ... }} interpolation inside any run: | script block
+  const lines = content.split('\n');
+  let runIndent = null;
+  let runBlocksChecked = 0;
+  for (const line of lines) {
+    if (runIndent !== null) {
+      if (line.trim() === '') continue;
+      const indent = line.match(/^ */)[0].length;
+      if (indent > runIndent) {
+        assert.equal(line.includes('${{'), false, `forbidden expression interpolation in run script: ${line}`);
+        continue;
+      }
+      runIndent = null;
+    }
+    const startMatch = line.match(/^( *)(?:-\s*)?run:\s*(\||.+)$/);
+    if (startMatch) {
+      runBlocksChecked++;
+      assert.equal(startMatch[2].includes('${{'), false, `forbidden inline expression in run: ${line}`);
+      if (line.trimEnd().endsWith('|')) {
+        runIndent = startMatch[1].length;
+      }
+    }
+  }
+  assert.equal(runBlocksChecked, 8);
 });
