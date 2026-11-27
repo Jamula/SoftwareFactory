@@ -1046,16 +1046,19 @@ const CHECK_TRIGGERS_SET = new Set([
   'workflow_run'
 ]);
 const CHECK_PLATFORMS_SET = new Set(['linux', 'windows']);
-const CONSOLIDATION_INPUT_REQUIRED_KEYS = ['repository', 'baselineChecks', 'proposedChecks', 'gates'];
-const CONSOLIDATION_INPUT_OPTIONAL_KEYS = ['repositoryId'];
+const CONSOLIDATION_INPUT_REQUIRED_KEYS = [
+  'repositoryId',
+  'repository',
+  'baselineChecks',
+  'proposedChecks',
+  'gates'
+];
 const CONSOLIDATION_GATES_REQUIRED_KEYS = [
   'secretScanning',
   'mergeGroupCoverage',
   'independentExactHeadReview',
   'lineCoverageMinPct',
-  'branchCoverageMinPct'
-];
-const CONSOLIDATION_GATES_OPTIONAL_KEYS = [
+  'branchCoverageMinPct',
   'nativeCoverageIntegrated',
   'equivalentVerificationProven',
   'shadowEventIngestionPreserved'
@@ -1159,56 +1162,64 @@ export function defaultSoftwareFactoryConsolidationProposal() {
       workflow: 'Factory validation',
       kind: 'required-execution',
       platforms: ['linux'],
-      triggers: [...standardTriggers]
+      triggers: [...standardTriggers],
+      trustedProducer: true
     },
     {
       context: 'upload-coverage-javascript',
       workflow: 'Factory validation',
       kind: 'reporting',
       platforms: ['linux'],
-      triggers: [...standardTriggers]
+      triggers: [...standardTriggers],
+      trustedProducer: true
     },
     {
       context: 'windows-aspire-runtime',
       workflow: 'Windows Aspire runtime',
       kind: 'required-execution',
       platforms: ['windows'],
-      triggers: [...standardTriggers]
+      triggers: [...standardTriggers],
+      trustedProducer: true
     },
     {
       context: 'linux-dotnet-agents',
       workflow: DOTNET_MAF_SPECIALIST_WORKFLOW,
       kind: 'required-execution',
       platforms: ['linux'],
-      triggers: [...standardTriggers]
+      triggers: [...standardTriggers],
+      trustedProducer: true
     },
     {
       context: 'windows-dotnet-agents',
       workflow: DOTNET_MAF_SPECIALIST_WORKFLOW,
       kind: 'required-execution',
       platforms: ['windows'],
-      triggers: [...standardTriggers]
+      triggers: [...standardTriggers],
+      trustedProducer: true
     },
     {
       context: 'CodeQL',
       workflow: 'CodeQL',
       kind: 'required-execution',
       platforms: ['linux'],
-      triggers: [...standardTriggers]
+      triggers: [...standardTriggers],
+      trustedProducer: true
     },
     {
       context: 'CodeQL / Analyze (actions)',
       workflow: 'CodeQL',
       kind: 'required-execution',
       platforms: ['linux'],
-      triggers: ['pull_request', 'push_main']
+      triggers: ['pull_request', 'push_main'],
+      trustedProducer: true
     },
     {
       context: 'pinned-synthetic-replay',
       workflow: 'Reusable replay smoke',
       kind: 'required-execution',
       platforms: ['linux'],
-      triggers: [...standardTriggers]
+      triggers: [...standardTriggers],
+      trustedProducer: true
     }
   ];
   const shadowInventory = {
@@ -1216,7 +1227,8 @@ export function defaultSoftwareFactoryConsolidationProposal() {
     workflow: 'Factory shadow reconciliation',
     kind: 'disabled-shadow-inventory',
     platforms: ['linux'],
-    triggers: ['schedule', 'workflow_dispatch', 'issues', 'pull_request_target', 'push_main', 'workflow_run']
+    triggers: ['schedule', 'workflow_dispatch', 'issues', 'pull_request_target', 'push_main', 'workflow_run'],
+    trustedProducer: true
   };
   return {
     repositoryId: SF_REPOSITORY_ID,
@@ -1229,6 +1241,7 @@ export function defaultSoftwareFactoryConsolidationProposal() {
         kind: 'reporting',
         platforms: ['linux'],
         triggers: [...standardTriggers],
+        trustedProducer: true,
         consolidatedInto: 'build-test'
       },
       {
@@ -1237,6 +1250,7 @@ export function defaultSoftwareFactoryConsolidationProposal() {
         kind: 'reporting',
         platforms: ['linux'],
         triggers: [...standardTriggers],
+        trustedProducer: true,
         consolidatedInto: 'build-test'
       },
       {
@@ -1245,6 +1259,7 @@ export function defaultSoftwareFactoryConsolidationProposal() {
         kind: 'reporting',
         platforms: ['linux'],
         triggers: ['pull_request'],
+        trustedProducer: true,
         consolidatedInto: 'CodeQL'
       },
       {
@@ -1253,6 +1268,7 @@ export function defaultSoftwareFactoryConsolidationProposal() {
         kind: 'reporting',
         platforms: ['linux'],
         triggers: ['pull_request'],
+        trustedProducer: true,
         consolidatedInto: 'CodeQL'
       },
       {...shadowInventory, platforms: [...shadowInventory.platforms], triggers: [...shadowInventory.triggers]}
@@ -1275,10 +1291,10 @@ export function defaultSoftwareFactoryConsolidationProposal() {
 }
 
 export function evaluateCheckConsolidationParity(input) {
-  if (!isPlainDataObject(input, CONSOLIDATION_INPUT_REQUIRED_KEYS, CONSOLIDATION_INPUT_OPTIONAL_KEYS) ||
+  if (!isPlainDataObject(input, CONSOLIDATION_INPUT_REQUIRED_KEYS) ||
+      !Number.isSafeInteger(input.repositoryId) || input.repositoryId <= 0 ||
       !isTrimmedLabel(input.repository) ||
-      (Object.hasOwn(input, 'repositoryId') && (!Number.isSafeInteger(input.repositoryId) || input.repositoryId <= 0)) ||
-      !isPlainDataObject(input.gates, CONSOLIDATION_GATES_REQUIRED_KEYS, CONSOLIDATION_GATES_OPTIONAL_KEYS) ||
+      !isPlainDataObject(input.gates, CONSOLIDATION_GATES_REQUIRED_KEYS) ||
       typeof input.gates.secretScanning !== 'boolean' ||
       typeof input.gates.mergeGroupCoverage !== 'boolean' ||
       typeof input.gates.independentExactHeadReview !== 'boolean' ||
@@ -1286,9 +1302,9 @@ export function evaluateCheckConsolidationParity(input) {
       input.gates.lineCoverageMinPct < 0 || input.gates.lineCoverageMinPct > 100 ||
       typeof input.gates.branchCoverageMinPct !== 'number' || !Number.isFinite(input.gates.branchCoverageMinPct) ||
       input.gates.branchCoverageMinPct < 0 || input.gates.branchCoverageMinPct > 100 ||
-      (Object.hasOwn(input.gates, 'nativeCoverageIntegrated') && typeof input.gates.nativeCoverageIntegrated !== 'boolean') ||
-      (Object.hasOwn(input.gates, 'equivalentVerificationProven') && typeof input.gates.equivalentVerificationProven !== 'boolean') ||
-      (Object.hasOwn(input.gates, 'shadowEventIngestionPreserved') && typeof input.gates.shadowEventIngestionPreserved !== 'boolean') ||
+      typeof input.gates.nativeCoverageIntegrated !== 'boolean' ||
+      typeof input.gates.equivalentVerificationProven !== 'boolean' ||
+      typeof input.gates.shadowEventIngestionPreserved !== 'boolean' ||
       !isExactArray(input.baselineChecks, 64) || input.baselineChecks.length === 0 ||
       !input.baselineChecks.every(isValidConsolidationCheck) ||
       !isExactArray(input.proposedChecks, 64) || input.proposedChecks.length === 0 ||
@@ -1296,8 +1312,7 @@ export function evaluateCheckConsolidationParity(input) {
     return consolidationBlocked('CONSOLIDATION_INPUT_INVALID');
   }
 
-  if (input.repository !== SF_REPOSITORY_SLUG ||
-      (Object.hasOwn(input, 'repositoryId') && input.repositoryId !== SF_REPOSITORY_ID)) {
+  if (input.repository !== SF_REPOSITORY_SLUG || input.repositoryId !== SF_REPOSITORY_ID) {
     return consolidationBlocked('UNTRUSTED_REPOSITORY');
   }
 
@@ -1332,13 +1347,13 @@ export function evaluateCheckConsolidationParity(input) {
   if (dotnetMafChecks.length === 0) missingMandatoryGates.push(DOTNET_MAF_SPECIALIST_WORKFLOW);
   if (codeqlCheck === undefined) missingMandatoryGates.push('CodeQL');
 
-  const isTrusted = check => check.trustedProducer !== false;
-  const hasPlatform = (check, expected) => !Object.hasOwn(check, 'platforms') || check.platforms.includes(expected);
+  const isTrusted = check => check.trustedProducer === true;
+  const hasExplicitPlatform = (check, expected) =>
+    Object.hasOwn(check, 'platforms') && check.platforms.includes(expected);
   const dotnetMafPlatforms = new Set();
-  let dotnetMafDeclaresPlatforms = false;
-  for (const check of dotnetMafChecks) {
-    if (Object.hasOwn(check, 'platforms')) {
-      dotnetMafDeclaresPlatforms = true;
+  const dotnetMafAllHavePlatforms = dotnetMafChecks.every(check => Object.hasOwn(check, 'platforms'));
+  if (dotnetMafAllHavePlatforms) {
+    for (const check of dotnetMafChecks) {
       for (const platform of check.platforms) dotnetMafPlatforms.add(platform);
     }
   }
@@ -1346,31 +1361,34 @@ export function evaluateCheckConsolidationParity(input) {
   const buildTestOk = buildTestCheck !== undefined &&
     buildTestCheck.kind === 'required-execution' &&
     isTrusted(buildTestCheck) &&
-    hasPlatform(buildTestCheck, 'linux') &&
+    hasExplicitPlatform(buildTestCheck, 'linux') &&
     buildTestCheck.triggers.includes('pull_request');
   const uploadCoverageOk = uploadCoverageCheck !== undefined &&
     uploadCoverageCheck.kind === 'reporting' &&
     isTrusted(uploadCoverageCheck) &&
-    hasPlatform(uploadCoverageCheck, 'linux') &&
+    hasExplicitPlatform(uploadCoverageCheck, 'linux') &&
     uploadCoverageCheck.triggers.includes('pull_request');
   const windowsAspireOk = windowsAspireCheck !== undefined &&
     windowsAspireCheck.kind === 'required-execution' &&
     isTrusted(windowsAspireCheck) &&
-    hasPlatform(windowsAspireCheck, 'windows') &&
+    hasExplicitPlatform(windowsAspireCheck, 'windows') &&
     windowsAspireCheck.triggers.includes('pull_request');
   const dotnetMafOk = dotnetMafChecks.length > 0 &&
+    dotnetMafAllHavePlatforms &&
     dotnetMafChecks.every(check =>
       check.kind === 'required-execution' &&
       isTrusted(check) &&
       check.triggers.includes('pull_request')
     ) &&
-    (!dotnetMafDeclaresPlatforms || (dotnetMafPlatforms.has('linux') && dotnetMafPlatforms.has('windows')));
+    dotnetMafPlatforms.has('linux') &&
+    dotnetMafPlatforms.has('windows');
   const codeqlOk = codeqlCheck !== undefined &&
     codeqlCheck.kind === 'required-execution' &&
     isTrusted(codeqlCheck) &&
+    hasExplicitPlatform(codeqlCheck, 'linux') &&
     codeqlCheck.triggers.includes('pull_request');
 
-  const shadowInventoryOk = input.gates.shadowEventIngestionPreserved !== false &&
+  const shadowInventoryOk = input.gates.shadowEventIngestionPreserved === true &&
     classification.baseline.disabledShadowInventory.every(ctx => {
       const base = baselineByContext.get(ctx);
       const prop = proposedByContext.get(ctx);
@@ -1407,7 +1425,7 @@ export function evaluateCheckConsolidationParity(input) {
   const independentReviewOk = input.gates.independentExactHeadReview === true;
   const coverageThresholdsOk = input.gates.lineCoverageMinPct >= 98 &&
     input.gates.branchCoverageMinPct >= 95 &&
-    input.gates.nativeCoverageIntegrated !== false;
+    input.gates.nativeCoverageIntegrated === true;
 
   const preservedGates = {
     buildTest: buildTestOk,
@@ -1487,11 +1505,11 @@ export function evaluateCheckConsolidationParity(input) {
   if (!mergeGroupOk) {
     return consolidationBlocked('MERGE_GROUP_COVERAGE_DROPPED', classification, [], preservedGates);
   }
-  if (input.gates.equivalentVerificationProven === false) {
+  if (input.gates.equivalentVerificationProven !== true) {
     return consolidationBlocked('UNVERIFIED_CHECK_CONSOLIDATION', classification, [], preservedGates);
   }
   if (classification.proposed.meaningfulCount > TARGET_CONSOLIDATION_CHECK_COUNT ||
-      classification.proposed.meaningfulCount > classification.baseline.meaningfulCount) {
+      classification.proposed.meaningfulCount >= classification.baseline.meaningfulCount) {
     return consolidationBlocked('CHECK_COUNT_CONTRACT_MISMATCH', classification, [], preservedGates);
   }
 

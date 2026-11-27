@@ -1324,39 +1324,98 @@ test('evaluateCheckConsolidationParity verifies 12-to-8 check consolidation and 
     shadowInventoryPreserved: true
   });
 
-  // Also accepts minimal optional fields and single consolidated '.NET MAF specialist agents' context
+  // Also accepts single consolidated '.NET MAF specialist agents' context when explicit Linux/Windows platforms,
+  // trusted producers, repositoryId, and affirmative verification prerequisites are supplied
   const minimalChecks = [
-    {context: 'build-test', kind: 'required-execution', triggers: ['pull_request', 'merge_group']},
-    {context: 'upload-coverage-javascript', kind: 'reporting', triggers: ['pull_request', 'merge_group']},
-    {context: 'windows-aspire-runtime', kind: 'required-execution', triggers: ['pull_request', 'merge_group']},
-    {context: '.NET MAF specialist agents', kind: 'required-execution', triggers: ['pull_request', 'merge_group']},
-    {context: 'CodeQL', kind: 'required-execution', triggers: ['pull_request']},
-    {context: 'inventory', kind: 'disabled-shadow-inventory', triggers: ['schedule', 'workflow_dispatch']}
+    {
+      context: 'build-test',
+      kind: 'required-execution',
+      platforms: ['linux'],
+      triggers: ['pull_request', 'merge_group'],
+      trustedProducer: true
+    },
+    {
+      context: 'upload-coverage-javascript',
+      kind: 'reporting',
+      platforms: ['linux'],
+      triggers: ['pull_request', 'merge_group'],
+      trustedProducer: true
+    },
+    {
+      context: 'windows-aspire-runtime',
+      kind: 'required-execution',
+      platforms: ['windows'],
+      triggers: ['pull_request', 'merge_group'],
+      trustedProducer: true
+    },
+    {
+      context: '.NET MAF specialist agents',
+      kind: 'required-execution',
+      platforms: ['linux', 'windows'],
+      triggers: ['pull_request', 'merge_group'],
+      trustedProducer: true
+    },
+    {
+      context: 'CodeQL',
+      kind: 'required-execution',
+      platforms: ['linux'],
+      triggers: ['pull_request'],
+      trustedProducer: true
+    },
+    {
+      context: 'inventory',
+      kind: 'disabled-shadow-inventory',
+      triggers: ['schedule', 'workflow_dispatch'],
+      trustedProducer: true
+    }
   ];
-  const minimalVerified = evaluateCheckConsolidationParity({
+  const minimalProposal = {
+    repositoryId: 1471342715,
     repository: 'Jamula/SoftwareFactory',
     baselineChecks: [
-      ...minimalChecks,
+      ...minimalChecks.map(c => ({
+        ...c,
+        ...(c.platforms ? {platforms: [...c.platforms]} : {}),
+        triggers: [...c.triggers]
+      })),
       {
         context: 'legacy-component-check',
         kind: 'required-execution',
         triggers: ['pull_request', 'merge_group'],
+        trustedProducer: true,
         consolidatedInto: 'build-test'
       }
     ],
-    proposedChecks: minimalChecks,
+    proposedChecks: minimalChecks.map(c => ({
+      ...c,
+      ...(c.platforms ? {platforms: [...c.platforms]} : {}),
+      triggers: [...c.triggers]
+    })),
     gates: {
       secretScanning: true,
       mergeGroupCoverage: true,
       independentExactHeadReview: true,
       lineCoverageMinPct: 98,
-      branchCoverageMinPct: 95
+      branchCoverageMinPct: 95,
+      nativeCoverageIntegrated: true,
+      equivalentVerificationProven: true,
+      shadowEventIngestionPreserved: true
     }
-  });
+  };
+  const minimalVerified = evaluateCheckConsolidationParity(minimalProposal);
   assert.equal(minimalVerified.valid, true);
   assert.equal(minimalVerified.consolidationAllowed, true);
   assert.equal(minimalVerified.exactTwelveToEight, false);
   assert.equal(minimalVerified.meaningfulChecksReducedBy, 1);
+
+  // Missing platform metadata on '.NET MAF specialist agents' (or other mandatory checks) is rejected
+  const missingMafPlatforms = structuredClone(minimalProposal);
+  delete missingMafPlatforms.baselineChecks.find(c => c.context === '.NET MAF specialist agents').platforms;
+  delete missingMafPlatforms.proposedChecks.find(c => c.context === '.NET MAF specialist agents').platforms;
+  const missingMafPlatformsRes = evaluateCheckConsolidationParity(missingMafPlatforms);
+  assert.equal(missingMafPlatformsRes.consolidationAllowed, false);
+  assert.equal(missingMafPlatformsRes.reason, 'MANDATORY_CHECK_ROLE_INVALID');
+  assert.equal(missingMafPlatformsRes.preservedGates.dotnetMafSpecialistAgents, false);
 });
 
 test('evaluateCheckConsolidationParity blocks any proposal dropping mandatory execution/reporting checks, secret scanning, merge_group, review, coverage, or shadow inventory', () => {
@@ -1530,6 +1589,7 @@ test('evaluateCheckConsolidationParity blocks any proposal dropping mandatory ex
     kind: 'reporting',
     platforms: ['linux'],
     triggers: ['pull_request', 'merge_group'],
+    trustedProducer: true,
     consolidatedInto: 'CodeQL / Analyze (actions)' // lacks merge_group!
   });
   assert.equal(
@@ -1542,7 +1602,8 @@ test('evaluateCheckConsolidationParity blocks any proposal dropping mandatory ex
     context: 'pr-only-target',
     kind: 'reporting',
     platforms: ['linux'],
-    triggers: ['pull_request']
+    triggers: ['pull_request'],
+    trustedProducer: true
   });
   consolidatedPushMainMissing.proposedChecks = consolidatedPushMainMissing.proposedChecks.filter(
     c => c.context !== 'pinned-synthetic-replay'
@@ -1587,6 +1648,7 @@ test('evaluateCheckConsolidationParity blocks any proposal dropping mandatory ex
     kind: 'reporting',
     platforms: ['windows'],
     triggers: ['pull_request'],
+    trustedProducer: true,
     consolidatedInto: 'build-test' // Linux-only target!
   });
   assert.equal(evaluateCheckConsolidationParity(targetPlatformMismatch).reason, 'UNVERIFIED_CHECK_CONSOLIDATION');
@@ -1601,9 +1663,14 @@ test('evaluateCheckConsolidationParity blocks any proposal dropping mandatory ex
     context: 'extra-ninth-check',
     kind: 'reporting',
     platforms: ['linux'],
-    triggers: ['pull_request']
+    triggers: ['pull_request'],
+    trustedProducer: true
   });
   assert.equal(evaluateCheckConsolidationParity(nineMeaningful).reason, 'CHECK_COUNT_CONTRACT_MISMATCH');
+
+  const noReductionEightToEight = defaultSoftwareFactoryConsolidationProposal();
+  noReductionEightToEight.baselineChecks = structuredClone(noReductionEightToEight.proposedChecks);
+  assert.equal(evaluateCheckConsolidationParity(noReductionEightToEight).reason, 'CHECK_COUNT_CONTRACT_MISMATCH');
 
   const bloatedFromSeven = defaultSoftwareFactoryConsolidationProposal();
   bloatedFromSeven.baselineChecks = bloatedFromSeven.proposedChecks.filter(
@@ -1621,12 +1688,25 @@ test('evaluateCheckConsolidationParity fails closed on proxies, malformed descri
     proposedChecks: [new Proxy(base.proposedChecks[0], {get() { throw new Error('proxy must not run'); }})]
   };
 
+  const missingRepoId = structuredClone(base);
+  delete missingRepoId.repositoryId;
+  const missingNativeCoverage = structuredClone(base);
+  delete missingNativeCoverage.gates.nativeCoverageIntegrated;
+  const missingEquivalentProof = structuredClone(base);
+  delete missingEquivalentProof.gates.equivalentVerificationProven;
+  const missingShadowPreserved = structuredClone(base);
+  delete missingShadowPreserved.gates.shadowEventIngestionPreserved;
+
   for (const bad of [
     null,
     [],
     proxyInput,
     proxyGates,
     proxyCheck,
+    missingRepoId,
+    missingNativeCoverage,
+    missingEquivalentProof,
+    missingShadowPreserved,
     {...base, repository: ' Jamula/SoftwareFactory '},
     {...base, repositoryId: 0},
     {...base, gates: {...base.gates, secretScanning: 'true'}},
