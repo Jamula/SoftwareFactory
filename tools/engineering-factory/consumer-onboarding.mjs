@@ -99,18 +99,27 @@ const strictSnapshotShape = s =>
   dense(s.reviews) &&
   s.reviews.every(r => exact(r, ['reviewer', 'head', 'state']));
 
-function sameData(candidateVal, expectedVal) {
+function sameData(candidateVal, expectedVal, depth = 0) {
+  if (depth > 8) return false;
   if (!expectedVal || typeof expectedVal !== 'object') {
     return Object.is(candidateVal, expectedVal);
   }
   if (Array.isArray(expectedVal)) {
-    return dense(candidateVal) &&
+    return dense(expectedVal) &&
+      dense(candidateVal) &&
       candidateVal.length === expectedVal.length &&
-      expectedVal.every((item, i) => sameData(candidateVal[i], item));
+      expectedVal.every((item, i) => sameData(candidateVal[i], item, depth + 1));
   }
-  const keys = Object.keys(expectedVal);
+  const keys = !types.isProxy(expectedVal) &&
+    Object.getPrototypeOf(expectedVal) === Object.prototype
+    ? Reflect.ownKeys(expectedVal)
+    : null;
+  if (!keys ||
+      !keys.every(key => typeof key === 'string' && 'value' in Object.getOwnPropertyDescriptor(expectedVal, key))) {
+    return false;
+  }
   return exact(candidateVal, keys) &&
-    keys.every(key => sameData(candidateVal[key], expectedVal[key]));
+    keys.every(key => sameData(candidateVal[key], expectedVal[key], depth + 1));
 }
 
 const singleMutation = (baseSnap, candidate, field) => {
@@ -336,7 +345,7 @@ export function verifyConsumerOnboardingPackage(pkg, registry = []) {
       rb.killSwitch !== true ||
       rb.revokeCredentialId !== creds.credentialId ||
       rb.revertWorkflowPinPrRequired !== true ||
-      rb.queuedLiveMutations !== 0) {
+      !Object.is(rb.queuedLiveMutations, 0)) {
     return denyOnboarding('ROLLBACK_INVALID');
   }
 
@@ -385,13 +394,11 @@ export function verifyIndependentRollback(targetRepository, rollbackReceipt, pac
     return denyRollback('ROLLBACK_TARGET_UNKNOWN');
   }
 
-  if (!strictPolicyShape(rollbackReceipt.postPolicy) ||
-      rollbackReceipt.postPolicy.repository !== targetPkg.policy.repository ||
-      rollbackReceipt.postPolicy.mode !== 'disabled' ||
-      rollbackReceipt.postPolicy.killSwitch !== true ||
+  const expectedPostPolicy = { ...targetPkg.policy, mode: 'disabled', killSwitch: true };
+  if (!sameData(rollbackReceipt.postPolicy, expectedPostPolicy) ||
       rollbackReceipt.revokedCredentialId !== targetPkg.credentials.credentialId ||
       rollbackReceipt.pinRevertedViaReviewedPr !== true ||
-      rollbackReceipt.queuedLiveMutations !== 0) {
+      !Object.is(rollbackReceipt.queuedLiveMutations, 0)) {
     return denyRollback('TARGET_ROLLBACK_INCOMPLETE');
   }
 

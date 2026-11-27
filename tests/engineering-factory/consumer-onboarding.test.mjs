@@ -528,7 +528,7 @@ test('requires complete exact-mutation shadow denial replay suite and rollback c
     killSwitchPolicy: suite.killSwitchPolicy
   };
 
-  // Enumerable getters on nested snapshot fields must never be invoked during comparison
+  // Enumerable getters on nested snapshot fields (candidate OR expected side) must never be invoked
   let getterInvocations = 0;
   const baselineGetterCoverage = { ...cand.coverage };
   Object.defineProperty(baselineGetterCoverage, 'line', {
@@ -546,10 +546,57 @@ test('requires complete exact-mutation shadow denial replay suite and rollback c
       throw new Error('getter must not run');
     }
   });
+  const throwingExpectedPriority = {};
+  Object.defineProperty(throwingExpectedPriority, 'bad', {
+    enumerable: true,
+    get: () => {
+      getterInvocations += 1;
+      throw new Error('expected-side getter must not run');
+    }
+  });
+  const throwingExpectedArray = [1];
+  Object.defineProperty(throwingExpectedArray, 0, {
+    enumerable: true,
+    get: () => {
+      getterInvocations += 1;
+      throw new Error('expected-side array getter must not run');
+    }
+  });
+  const proxyExpectedPriority = new Proxy(
+    { bad: 1 },
+    {
+      get() {
+        getterInvocations += 1;
+        throw new Error('expected-side proxy trap must not run');
+      }
+    }
+  );
+  const symbolExpectedPriority = { [Symbol('meta')]: 1 };
+  const cyclicPriority = {};
+  cyclicPriority.self = cyclicPriority;
+
+  const makeExpectedPrioritySuite = (expectedPriority, candidatePriority) => {
+    const baseCand = { ...cand, priority: expectedPriority };
+    return {
+      eligibleCandidate: baseCand,
+      staleReview: { ...baseCand, priority: candidatePriority, reviews: suite.staleReview.reviews },
+      dismissedReview: { ...baseCand, priority: candidatePriority, reviews: suite.dismissedReview.reviews },
+      commentedBotReview: { ...baseCand, priority: candidatePriority, reviews: suite.commentedBotReview.reviews },
+      wrongRepository: { ...baseCand, priority: candidatePriority, repository: 'example/foreign-repository' },
+      missingQuota: { ...baseCand, priority: candidatePriority, remainingCredits: 0 },
+      killSwitchPolicy: suite.killSwitchPolicy
+    };
+  };
 
   for (const badSuite of [
     null,
     unhealthyDerivedSuite,
+    makeExpectedPrioritySuite(throwingExpectedPriority, { bad: 1 }),
+    makeExpectedPrioritySuite(throwingExpectedArray, [1]),
+    makeExpectedPrioritySuite(proxyExpectedPriority, { bad: 1 }),
+    makeExpectedPrioritySuite(Object.create(null), {}),
+    makeExpectedPrioritySuite(symbolExpectedPriority, {}),
+    makeExpectedPrioritySuite(cyclicPriority, cyclicPriority),
     { ...suite, eligibleCandidate: null },
     { ...suite, eligibleCandidate: { ...cand, coverage: null } },
     { ...suite, eligibleCandidate: { ...cand, paths: 'bad' } },
@@ -675,9 +722,13 @@ test('verifyIndependentRollback proves single-repo rollback stops target without
     { ...receipt, postPolicy: { ...familyTreePkg.policy } },
     { ...receipt, postPolicy: { ...spellbookPkg.policy, mode: 'shadow' } },
     { ...receipt, postPolicy: { ...spellbookPkg.policy, killSwitch: false } },
+    { ...receipt, postPolicy: { ...spellbookPkg.policy, coverage: { line: 0, branch: 0 } } },
+    { ...receipt, postPolicy: { ...spellbookPkg.policy, maxActive: 8 } },
+    { ...receipt, postPolicy: { ...spellbookPkg.policy, checks: [spellbookPkg.policy.checks[0]] } },
     { ...receipt, revokedCredentialId: 'cred-other' },
     { ...receipt, pinRevertedViaReviewedPr: false },
-    { ...receipt, queuedLiveMutations: 2 }
+    { ...receipt, queuedLiveMutations: 2 },
+    { ...receipt, queuedLiveMutations: -0 }
   ]) {
     assert.equal(verifyIndependentRollback('example/spellbook', incomplete, cohort).reason, 'TARGET_ROLLBACK_INCOMPLETE');
   }
