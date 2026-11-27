@@ -1687,29 +1687,30 @@ export async function simulateDurableCasLifecycle(scenario) {
           continue;
         }
         const deliveryKey = `${ev.candidate.repositoryId}:${ev.deliveryId}`;
-        const previousWorkId = seenDeliveries.get(deliveryKey);
-        if (previousWorkId !== undefined) {
-          if (previousWorkId !== checked.workId) {
-            deliveryConflictsRejected += 1;
-            outcomes.push(Object.freeze({
-              deliveryId: ev.deliveryId,
-              workId: checked.workId,
-              ok: false,
-              reason: 'DELIVERY_CONFLICT'
-            }));
-          } else {
-            duplicateClaimsRejected += 1;
-            outcomes.push(Object.freeze({
-              deliveryId: ev.deliveryId,
-              workId: checked.workId,
-              ok: false,
-              reason: 'DUPLICATE_DELIVERY'
-            }));
-          }
+        const previousDelivery = seenDeliveries.get(deliveryKey);
+        if (previousDelivery !== undefined && previousDelivery.workId !== checked.workId) {
+          deliveryConflictsRejected += 1;
+          outcomes.push(Object.freeze({
+            deliveryId: ev.deliveryId,
+            workId: checked.workId,
+            ok: false,
+            reason: 'DELIVERY_CONFLICT'
+          }));
           continue;
         }
-        seenDeliveries.set(deliveryKey, checked.workId);
+        if (previousDelivery !== undefined && previousDelivery.consumed) {
+          duplicateClaimsRejected += 1;
+          outcomes.push(Object.freeze({
+            deliveryId: ev.deliveryId,
+            workId: checked.workId,
+            ok: false,
+            reason: 'DUPLICATE_DELIVERY'
+          }));
+          continue;
+        }
+        seenDeliveries.set(deliveryKey, {workId: checked.workId, consumed: false});
         if (ev.authoritativeHeadSha !== undefined && ev.candidate.headSha !== ev.authoritativeHeadSha) {
+          seenDeliveries.set(deliveryKey, {workId: checked.workId, consumed: true});
           staleHeadRejected += 1;
           outcomes.push(Object.freeze({
             deliveryId: ev.deliveryId,
@@ -1724,6 +1725,7 @@ export async function simulateDurableCasLifecycle(scenario) {
           : `${ev.candidate.repositoryId}:pr:${ev.candidate.pullNumber}`;
         const prevSeq = latestSequenceByTarget.get(targetKey);
         if (prevSeq !== undefined && ev.eventSequence < prevSeq) {
+          seenDeliveries.set(deliveryKey, {workId: checked.workId, consumed: true});
           outOfOrderRejected += 1;
           outcomes.push(Object.freeze({
             deliveryId: ev.deliveryId,
@@ -1733,7 +1735,6 @@ export async function simulateDurableCasLifecycle(scenario) {
           }));
           continue;
         }
-        latestSequenceByTarget.set(targetKey, ev.eventSequence);
 
         const claimRes = await claimWorkQueueLease({
           refStore: instrumentedStore,
@@ -1743,6 +1744,8 @@ export async function simulateDurableCasLifecycle(scenario) {
           maxCasAttempts
         });
         if (claimRes.ok) {
+          seenDeliveries.set(deliveryKey, {workId: checked.workId, consumed: true});
+          latestSequenceByTarget.set(targetKey, ev.eventSequence);
           claimsGranted += 1;
           if (ev.readyAtMs !== undefined) readyLatenciesMs.push(step.nowMs - ev.readyAtMs);
           outcomes.push(Object.freeze({
@@ -1753,7 +1756,10 @@ export async function simulateDurableCasLifecycle(scenario) {
             generation: claimRes.lease.generation
           }));
         } else {
-          if (DUPLICATE_REJECTION_REASONS.has(claimRes.reason)) duplicateClaimsRejected += 1;
+          if (DUPLICATE_REJECTION_REASONS.has(claimRes.reason)) {
+            seenDeliveries.set(deliveryKey, {workId: checked.workId, consumed: true});
+            duplicateClaimsRejected += 1;
+          }
           outcomes.push(Object.freeze({
             deliveryId: ev.deliveryId,
             workId: checked.workId,

@@ -2542,20 +2542,92 @@ test('simulateDurableCasLifecycle handles seeded initialState compaction, replay
   assert.equal(seededResult.metrics.mainUnhealthyBlocks, 1);
 
   // >32 simultaneously ACTIVE leases in planUnifiedWorkQueue still fails closed with INVALID_ACTIVE_LEASES
+  // (ensure maxExecutionMs = 5900 so claimedAtMs(100) + maxExecutionMs(5900) === executionDeadlineMs(6000) passes isValidQueueEntry!)
   const thirtyThreeActive = Array.from({length: 33}, (_, idx) => ({
     ...seededEntries[0],
     workId: `${REPO_ID}:issue:${idx + 5000}`,
     issueNumber: idx + 5000,
     generation: idx + 1,
     leaseExpiresAtMs: 5000,
+    maxExecutionMs: 5900,
     executionDeadlineMs: 6000
   }));
+  assert.equal(planUnifiedWorkQueue({
+    config,
+    shadowInput: {enabled: true, stop: false, capacity: 2, quotaVerified: true, tasks: []},
+    activeLeases: thirtyThreeActive.slice(0, 32),
+    nowMs: 200
+  }).reason, 'INVALID_ACTIVE_LANE');
   assert.equal(planUnifiedWorkQueue({
     config,
     shadowInput: {enabled: true, stop: false, capacity: 2, quotaVerified: true, tasks: []},
     activeLeases: thirtyThreeActive,
     nowMs: 200
   }).reason, 'INVALID_ACTIVE_LEASES');
+
+  // Transient LANE_RESERVED contention during replay_events keeps the delivery retryable on the same runner
+  // once the lane settles, while still rejecting conflicting deliveryId reuse (DELIVERY_CONFLICT) and post-claim duplicates!
+  const transientLaneReplaySim = await simulateDurableCasLifecycle({
+    config,
+    steps: [
+      {
+        kind: 'replay_events',
+        nowMs: 1000,
+        events: [
+          {
+            deliveryId: 'holder-delivery',
+            eventSequence: 1,
+            candidate: makeIssueCandidate({issueNumber: 701, lane: 'factory', ownedPaths: ['tools/engineering-factory/a.mjs'], workerId: 'worker-holder', runId: 9701})
+          },
+          {
+            deliveryId: 'contending-delivery',
+            eventSequence: 1,
+            candidate: makeIssueCandidate({issueNumber: 702, lane: 'factory', ownedPaths: ['tools/engineering-factory/b.mjs'], workerId: 'worker-waiter', runId: 9702})
+          },
+          // Mutating the unconsumed deliveryId to a different workId STILL triggers DELIVERY_CONFLICT
+          {
+            deliveryId: 'contending-delivery',
+            eventSequence: 1,
+            candidate: makeIssueCandidate({issueNumber: 703, lane: 'docs', ownedPaths: ['docs/c.md'], workerId: 'worker-spoof', runId: 9703})
+          }
+        ]
+      },
+      // Settle holder-delivery to free 'factory' lane
+      {
+        kind: 'worker_action',
+        action: 'settle',
+        workId: `${REPO_ID}:issue:701`,
+        workerId: 'worker-holder',
+        generation: 1,
+        outcome: 'completed',
+        nowMs: 1500
+      },
+      // Replay contending-delivery on the same runner -> now grants lease cleanly; immediate second replay -> DUPLICATE_DELIVERY
+      {
+        kind: 'replay_events',
+        nowMs: 1600,
+        events: [
+          {
+            deliveryId: 'contending-delivery',
+            eventSequence: 1,
+            candidate: makeIssueCandidate({issueNumber: 702, lane: 'factory', ownedPaths: ['tools/engineering-factory/b.mjs'], workerId: 'worker-waiter', runId: 9702})
+          },
+          {
+            deliveryId: 'contending-delivery',
+            eventSequence: 1,
+            candidate: makeIssueCandidate({issueNumber: 702, lane: 'factory', ownedPaths: ['tools/engineering-factory/b.mjs'], workerId: 'worker-waiter', runId: 9702})
+          }
+        ]
+      }
+    ]
+  });
+  assert.equal(transientLaneReplaySim.ok, true);
+  assert.equal(transientLaneReplaySim.steps[0].outcomes[0].ok, true);
+  assert.equal(transientLaneReplaySim.steps[0].outcomes[1].reason, 'LANE_RESERVED');
+  assert.equal(transientLaneReplaySim.steps[0].outcomes[2].reason, 'DELIVERY_CONFLICT');
+  assert.equal(transientLaneReplaySim.steps[2].outcomes[0].ok, true);
+  assert.equal(transientLaneReplaySim.steps[2].outcomes[0].reason, 'LEASE_CLAIMED');
+  assert.equal(transientLaneReplaySim.steps[2].outcomes[1].reason, 'DUPLICATE_DELIVERY');
 
   // Same-deliveryId replay after expiry rejects with DUPLICATE_DELIVERY (same runner),
   // and A -> B -> A replay under maxAttempts: 3 across direct settle('requeued'), expiry/reconcile,
