@@ -316,15 +316,19 @@ test('evaluateCodeqlPythonResidual fails closed on missing, incomplete, untruste
     matchedChecks:[]
   });
 
-  assert.deepEqual(evaluateCodeqlPythonResidual([
-    {id:1,name:'Analyze (javascript-typescript)',status:'completed',conclusion:'success',app:'untrusted-bot'}
-  ]),{
-    valid:false,
-    residualPythonCodeql:false,
-    remediation:null,
-    reason:'UNTRUSTED_CODEQL_PRODUCER',
-    matchedChecks:[]
-  });
+  for(const untrustedEntry of [
+    {id:1,name:'Analyze (javascript-typescript)',status:'completed',conclusion:'success',app:'untrusted-bot'},
+    {id:2,name:'Analyze (javascript-typescript)',status:'completed',conclusion:'success'},
+    {id:3,name:'CodeQL',status:'completed',conclusion:'success'}
+  ]){
+    assert.deepEqual(evaluateCodeqlPythonResidual([untrustedEntry]),{
+      valid:false,
+      residualPythonCodeql:false,
+      remediation:null,
+      reason:'UNTRUSTED_CODEQL_PRODUCER',
+      matchedChecks:[]
+    });
+  }
 
   for(const incompleteEntry of [
     {id:1,name:'Analyze (javascript-typescript)',status:'in_progress',conclusion:null,app:'github-actions'},
@@ -378,6 +382,10 @@ test('evaluateCodeqlPythonResidual fails closed on missing, incomplete, untruste
     ],
     [{name:'Analyze (javascript-typescript)',status:'completed',conclusion:'success',head_sha:'bad-sha'}],
     [{name:'Analyze (javascript-typescript)',status:'completed',conclusion:'success',head:'bad-sha'}],
+    [{name:'Analyze (javascript-typescript)',status:'completed',conclusion:'success',head_sha:{toString(){throw Error('SHA_TOSTRING');}}}],
+    [{name:'Analyze (javascript-typescript)',status:'completed',conclusion:'success',head_sha:{toString:null}}],
+    [{name:'Analyze (javascript-typescript)',status:'completed',conclusion:'success',head:{[Symbol.toPrimitive](){throw Error('SHA_TOPRIMITIVE');}}}],
+    [{name:'Analyze (javascript-typescript)',status:'completed',conclusion:'success',head:revoked.proxy}],
     [{
       name:'Analyze (javascript-typescript)',
       status:'completed',

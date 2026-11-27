@@ -81,6 +81,8 @@ function isDenseArray(value,maxLen=MAX_INVENTORY_ITEMS){
   return true;
 }
 
+const isSha40=value=>typeof value==='string'&&SHA40_PATTERN.test(value);
+
 const isBoundedText=(value,maxLen)=>
   typeof value==='string'&&value.trim().length>0&&value.length<=maxLen&&!CONTROL_CHAR_PATTERN.test(value);
 
@@ -136,8 +138,8 @@ function validateCheckRunEntry(entry,seenIds,headState){
   }
   const hasHeadSha=Object.hasOwn(entry,'head_sha');
   const hasHead=Object.hasOwn(entry,'head');
-  if(hasHeadSha&&!SHA40_PATTERN.test(entry.head_sha))return null;
-  if(hasHead&&!SHA40_PATTERN.test(entry.head))return null;
+  if(hasHeadSha&&!isSha40(entry.head_sha))return null;
+  if(hasHead&&!isSha40(entry.head))return null;
   if(hasHeadSha&&hasHead&&entry.head_sha!==entry.head)return null;
   const entryHead=hasHeadSha?entry.head_sha:(hasHead?entry.head:null);
   if(entryHead!==null){
@@ -295,7 +297,7 @@ export function evaluateCodeqlPythonResidual(checkRuns){
         pythonChecks.push(entry.name);
       }
     }else if(kind==='codeql'){
-      if(entry.appSlug!==null&&!TRUSTED_CODEQL_APPS.has(entry.appSlug)){
+      if(entry.appSlug===null||!TRUSTED_CODEQL_APPS.has(entry.appSlug)){
         hasUntrustedCodeqlProducer=true;
       }else{
         codeqlChecks.push(entry);
