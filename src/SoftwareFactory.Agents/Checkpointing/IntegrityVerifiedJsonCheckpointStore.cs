@@ -184,31 +184,24 @@ public sealed class IntegrityVerifiedJsonCheckpointStore : ICheckpointStore<Json
             }
 
             string[] files = Directory.GetFiles(sessionDir, "*.checkpoint.json");
-            var envelopes = new List<StoredCheckpointEnvelope>(files.Length);
-            foreach (string file in files)
-            {
-                string fileName = Path.GetFileName(file);
-                string expectedCheckpointId = fileName[..^".checkpoint.json".Length];
-                envelopes.Add(ReadAndVerifyEnvelope(file, sessionId, expectedCheckpointId));
-            }
+            List<StoredCheckpointEnvelope> envelopes = files
+                .Select(file => ReadAndVerifyEnvelope(
+                    file,
+                    sessionId,
+                    Path.GetFileName(file)[..^".checkpoint.json".Length]))
+                .ToList();
 
             envelopes.Sort(static (left, right) => left.Sequence.CompareTo(right.Sequence));
 
-            var results = new List<CheckpointInfo>(envelopes.Count);
-            foreach (StoredCheckpointEnvelope envelope in envelopes)
-            {
-                if (withParent is not null)
-                {
-                    bool matchesParent = string.Equals(envelope.ParentSessionId, withParent.SessionId, StringComparison.Ordinal)
-                        && string.Equals(envelope.ParentCheckpointId, withParent.CheckpointId, StringComparison.Ordinal);
-                    if (!matchesParent)
-                    {
-                        continue;
-                    }
-                }
+            IEnumerable<StoredCheckpointEnvelope> matching = withParent is null
+                ? envelopes
+                : envelopes.Where(envelope =>
+                    string.Equals(envelope.ParentSessionId, withParent.SessionId, StringComparison.Ordinal)
+                    && string.Equals(envelope.ParentCheckpointId, withParent.CheckpointId, StringComparison.Ordinal));
 
-                results.Add(new CheckpointInfo(envelope.SessionId, envelope.CheckpointId));
-            }
+            List<CheckpointInfo> results = matching
+                .Select(static envelope => new CheckpointInfo(envelope.SessionId, envelope.CheckpointId))
+                .ToList();
 
             return ValueTask.FromResult<IEnumerable<CheckpointInfo>>(results);
         }
@@ -316,9 +309,8 @@ public sealed class IntegrityVerifiedJsonCheckpointStore : ICheckpointStore<Json
     private static long GetMaxExistingSequence(string sessionDir)
     {
         long maxSequence = 0L;
-        foreach (string file in Directory.GetFiles(sessionDir, "*.checkpoint.json"))
+        foreach (string fileName in Directory.GetFiles(sessionDir, "*.checkpoint.json").Select(static path => Path.GetFileName(path)))
         {
-            string fileName = Path.GetFileName(file);
             string stem = fileName[..^".checkpoint.json".Length];
             if (!stem.StartsWith("cp-", StringComparison.Ordinal)
                 || !long.TryParse(stem.AsSpan(3), System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out long parsed)
@@ -360,9 +352,9 @@ public sealed class IntegrityVerifiedJsonCheckpointStore : ICheckpointStore<Json
                 }
             }
 
-            foreach (JsonProperty prop in element.EnumerateObject())
+            foreach (JsonElement propValue in element.EnumerateObject().Select(static prop => prop.Value))
             {
-                VerifyEmbeddedContractsMatchBinding(prop.Value, expected);
+                VerifyEmbeddedContractsMatchBinding(propValue, expected);
             }
         }
         else if (element.ValueKind == JsonValueKind.Array)
@@ -391,7 +383,7 @@ public sealed class IntegrityVerifiedJsonCheckpointStore : ICheckpointStore<Json
         string prefix = fullBase.EndsWith(Path.DirectorySeparatorChar)
             ? fullBase
             : fullBase + Path.DirectorySeparatorChar;
-        string combined = Path.GetFullPath(Path.Combine(fullBase, childName));
+        string combined = Path.GetFullPath(Path.Join(fullBase, childName));
         if (!combined.StartsWith(prefix, StringComparison.Ordinal))
         {
             throw new CheckpointIntegrityException("UNSAFE_CHECKPOINT_PATH", "Checkpoint path escaped root directory.");
@@ -437,11 +429,7 @@ public sealed class IntegrityVerifiedJsonCheckpointStore : ICheckpointStore<Json
         {
             case JsonValueKind.Object:
                 writer.WriteStartObject();
-                var props = new List<JsonProperty>();
-                foreach (JsonProperty prop in element.EnumerateObject())
-                {
-                    props.Add(prop);
-                }
+                List<JsonProperty> props = [.. element.EnumerateObject()];
 
                 props.Sort(static (a, b) => string.CompareOrdinal(a.Name, b.Name));
                 foreach (JsonProperty prop in props)

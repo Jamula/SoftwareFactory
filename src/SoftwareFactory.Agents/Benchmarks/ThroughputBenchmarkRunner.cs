@@ -75,14 +75,7 @@ public static class ThroughputBenchmarkRunner
         for (int index = 0; index < logicalLanes; index++)
         {
             string lanePath = $"src/lane-{index:D3}";
-            foreach (string existing in assignedPaths)
-            {
-                if (PathOwnershipGuard.PathsOverlap(existing, lanePath))
-                {
-                    duplicatePathLeases++;
-                }
-            }
-
+            duplicatePathLeases += assignedPaths.Count(existing => PathOwnershipGuard.PathsOverlap(existing, lanePath));
             assignedPaths.Add(lanePath);
         }
 
@@ -153,14 +146,8 @@ public static class ThroughputBenchmarkRunner
             }
 
             WorkflowExecutionReceipt[] batchReceipts = await Task.WhenAll(batchTasks).ConfigureAwait(false);
-            foreach (WorkflowExecutionReceipt receipt in batchReceipts)
-            {
-                totalSupersteps += receipt.SuperstepsCompleted;
-                if (receipt.Decision.Outcome == "eligible")
-                {
-                    acceptedUnits++;
-                }
-            }
+            totalSupersteps += batchReceipts.Sum(static receipt => receipt.SuperstepsCompleted);
+            acceptedUnits += batchReceipts.Count(static receipt => receipt.Decision.Outcome == "eligible");
         }
 
         stopwatch.Stop();

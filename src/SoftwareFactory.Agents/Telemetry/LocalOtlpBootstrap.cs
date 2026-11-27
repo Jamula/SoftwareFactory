@@ -278,31 +278,11 @@ public static class LocalOtlpBootstrap
         }
     }
 
-    private static bool ContainsForbiddenOverrides(IReadOnlyDictionary<string, string?> env)
-    {
-        foreach ((string key, string? value) in env)
-        {
-            if (string.IsNullOrEmpty(value))
-            {
-                continue;
-            }
-
-            if (ForbiddenExactEnvKeys.Contains(key))
-            {
-                return true;
-            }
-
-            foreach (string prefix in ForbiddenEnvPrefixes)
-            {
-                if (key.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
-                {
-                    return true;
-                }
-            }
-        }
-
-        return false;
-    }
+    private static bool ContainsForbiddenOverrides(IReadOnlyDictionary<string, string?> env) =>
+        env.Where(static kv => !string.IsNullOrEmpty(kv.Value))
+            .Select(static kv => kv.Key)
+            .Any(static key => ForbiddenExactEnvKeys.Contains(key)
+                || ForbiddenEnvPrefixes.Any(prefix => key.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)));
 
     private static bool IsSafeServiceName(string? value)
     {
@@ -326,12 +306,11 @@ public static class LocalOtlpBootstrap
     private static Dictionary<string, string?> SnapshotProcessEnvironment()
     {
         var snapshot = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
-        foreach (System.Collections.DictionaryEntry entry in Environment.GetEnvironmentVariables())
+        foreach (System.Collections.DictionaryEntry entry in Environment.GetEnvironmentVariables()
+                     .Cast<System.Collections.DictionaryEntry>()
+                     .Where(static e => e.Key is string))
         {
-            if (entry.Key is string key)
-            {
-                snapshot[key] = entry.Value as string;
-            }
+            snapshot[(string)entry.Key] = entry.Value as string;
         }
 
         return snapshot;

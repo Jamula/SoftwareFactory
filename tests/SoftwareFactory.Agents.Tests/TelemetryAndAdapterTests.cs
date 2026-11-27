@@ -236,13 +236,7 @@ public sealed class TelemetryAndAdapterTests
         {
             await cts.CancelAsync();
             tcpListener.Stop();
-            try
-            {
-                await serverTask;
-            }
-            catch (OperationCanceledException)
-            {
-            }
+            await serverTask;
         }
     }
 

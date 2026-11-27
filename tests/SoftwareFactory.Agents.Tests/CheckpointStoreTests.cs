@@ -23,7 +23,7 @@ public sealed class CheckpointStoreTests
     [Fact]
     public async Task Store_PersistsVerifiesOrdersAndFiltersCheckpointsDeterministically()
     {
-        string tempDir = Path.Combine(Path.GetTempPath(), $"sf-cp-test-{Guid.NewGuid():N}");
+        string tempDir = Path.Join(Path.GetTempPath(), $"sf-cp-test-{Guid.NewGuid():N}");
         try
         {
             CheckpointBinding binding = ValidBinding();
@@ -56,7 +56,7 @@ public sealed class CheckpointStoreTests
             Assert.Equal(3, restored.GetProperty("a").GetArrayLength());
 
             // Deleting an earlier checkpoint never reuses existing sequence IDs; next sequence advances monotonically to cp-000003:
-            File.Delete(Path.Combine(tempDir, "session-1", $"{cp1.CheckpointId}.checkpoint.json"));
+            File.Delete(Path.Join(tempDir, "session-1", $"{cp1.CheckpointId}.checkpoint.json"));
             using JsonDocument doc3 = JsonDocument.Parse("{\"step\":3}");
             CheckpointInfo cp3 = await reloadedStore.CreateCheckpointAsync("session-1", doc3.RootElement, parent: cp2);
             Assert.Equal("cp-000003", cp3.CheckpointId);
@@ -73,7 +73,7 @@ public sealed class CheckpointStoreTests
     [Fact]
     public async Task Store_RejectsInvalidArgumentsMissingFilesTamperingAndBindingDriftFailClosed()
     {
-        string tempDir = Path.Combine(Path.GetTempPath(), $"sf-cp-neg-{Guid.NewGuid():N}");
+        string tempDir = Path.Join(Path.GetTempPath(), $"sf-cp-neg-{Guid.NewGuid():N}");
         try
         {
             Assert.Equal(
@@ -136,7 +136,7 @@ public sealed class CheckpointStoreTests
                 (await Assert.ThrowsAsync<CheckpointIntegrityException>(async () => await staleHeadStore.RetrieveCheckpointAsync("session-ok", cp1))).ReasonCode);
 
             // Payload tamper -> SHA-256 mismatch:
-            string cpFile = Path.Combine(tempDir, "session-ok", $"{cp1.CheckpointId}.checkpoint.json");
+            string cpFile = Path.Join(tempDir, "session-ok", $"{cp1.CheckpointId}.checkpoint.json");
             string originalRaw = await File.ReadAllTextAsync(cpFile, Encoding.UTF8);
             await File.WriteAllTextAsync(cpFile, originalRaw.Replace("\"v\"", "\"tampered\"", StringComparison.Ordinal), Encoding.UTF8);
             Assert.Equal(
@@ -185,8 +185,8 @@ public sealed class CheckpointStoreTests
                     await store.CreateCheckpointAsync("session-embed", badEmbeddedDoc.RootElement))).ReasonCode);
 
             // Non-overwriting commit rejects collisions without modifying existing committed file:
-            string collisionExisting = Path.Combine(tempDir, "immutable.checkpoint.json");
-            string collisionTemp = Path.Combine(tempDir, "candidate.tmp");
+            string collisionExisting = Path.Join(tempDir, "immutable.checkpoint.json");
+            string collisionTemp = Path.Join(tempDir, "candidate.tmp");
             await File.WriteAllTextAsync(collisionExisting, "committed-state", Encoding.UTF8);
             await File.WriteAllTextAsync(collisionTemp, "rogue-overwrite", Encoding.UTF8);
             Assert.Equal(
@@ -197,9 +197,9 @@ public sealed class CheckpointStoreTests
             Assert.False(File.Exists(collisionTemp));
 
             // Malformed checkpoint filename in session directory fails closed:
-            string badNameDir = Path.Combine(tempDir, "session-bad-file");
+            string badNameDir = Path.Join(tempDir, "session-bad-file");
             Directory.CreateDirectory(badNameDir);
-            await File.WriteAllTextAsync(Path.Combine(badNameDir, "rogue.checkpoint.json"), "{}", Encoding.UTF8);
+            await File.WriteAllTextAsync(Path.Join(badNameDir, "rogue.checkpoint.json"), "{}", Encoding.UTF8);
             Assert.Equal(
                 "MALFORMED_CHECKPOINT_FILENAME",
                 (await Assert.ThrowsAsync<CheckpointIntegrityException>(async () =>

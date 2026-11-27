@@ -135,14 +135,7 @@ public sealed class DeterministicSyntheticChatClient : IOfflineSyntheticChatClie
 
     private static SpecialistPromptRequest ParseLastUserPrompt(IEnumerable<ChatMessage> messages)
     {
-        ChatMessage? lastUser = null;
-        foreach (ChatMessage message in messages)
-        {
-            if (message.Role == ChatRole.User)
-            {
-                lastUser = message;
-            }
-        }
+        ChatMessage? lastUser = messages.LastOrDefault(static message => message.Role == ChatRole.User);
 
         if (lastUser is null || string.IsNullOrWhiteSpace(lastUser.Text))
         {

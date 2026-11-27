@@ -116,7 +116,7 @@ public sealed class SpecialistWorkflowAndCliTests
     [Fact]
     public async Task Workflow_SupportsCrashSafeCheckpointResumptionWithoutRepeatingPriorSupersteps()
     {
-        string checkpointDir = Path.Combine(Path.GetTempPath(), $"sf-wf-resume-{Guid.NewGuid():N}");
+        string checkpointDir = Path.Join(Path.GetTempPath(), $"sf-wf-resume-{Guid.NewGuid():N}");
         try
         {
             WorkItemContract contract = ContractAndOwnershipTests.ValidFactoryContract(maxRepairIterations: 2);
@@ -176,7 +176,7 @@ public sealed class SpecialistWorkflowAndCliTests
                             HeadSha = contract.HeadSha
                         })).ReasonCode);
 
-            string cpFile = Path.Combine(checkpointDir, "resume-session", $"{checkpoints[1].CheckpointId}.checkpoint.json");
+            string cpFile = Path.Join(checkpointDir, "resume-session", $"{checkpoints[1].CheckpointId}.checkpoint.json");
             string raw = await File.ReadAllTextAsync(cpFile, Encoding.UTF8);
             await File.WriteAllTextAsync(cpFile, raw.Replace("\"Sequence\":2", "\"Sequence\":99", StringComparison.Ordinal), Encoding.UTF8);
             await Assert.ThrowsAsync<CheckpointIntegrityException>(async () =>

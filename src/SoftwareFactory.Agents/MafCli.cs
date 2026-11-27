@@ -98,7 +98,7 @@ public static class MafCli
 
     public static async Task<SmokeReceipt> ExecuteSyntheticSmokeAsync(CancellationToken cancellationToken = default)
     {
-        string checkpointDir = Path.Combine(Path.GetTempPath(), $"sf-maf-smoke-{Guid.NewGuid():N}");
+        string checkpointDir = Path.Join(Path.GetTempPath(), $"sf-maf-smoke-{Guid.NewGuid():N}");
         try
         {
             const string headSha = "c77612ec77612ec77612ec77612ec77612ec7761";
