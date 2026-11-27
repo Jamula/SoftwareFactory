@@ -146,6 +146,18 @@ test("extractMilestoneStep and milestone inference handle active, historical, la
     ),
     "M02",
   );
+  // Historical milestone skips legacy v1 title code ("M02.05") and returns null when unlinked
+  assert.equal(
+    inferPullMilestoneId(
+      {
+        milestoneTitle: "Historical v1 M02",
+        title: "M02.05: Prevent duplicate claims",
+        linkedIssueNumbers: [],
+      },
+      issueMap,
+    ),
+    null,
+  );
   assert.equal(
     inferPullMilestoneId(
       {
@@ -1130,6 +1142,71 @@ test("fetchViaGhGraphql, fetchViaPublicRest, and fetchFactoryBoardSnapshot handl
   assert.equal(truncatedRestRaw.truncated, true);
   assert.equal(truncatedRestRaw.openPulls[0].reviews, undefined);
 
+  // 429 on detail sub-request without headers persists 60s backoff in rateLimit
+  const detail429Raw = await fetchViaPublicRest({
+    owner: "Jamula",
+    name: "SoftwareFactory",
+    nowMs: 1_000_000,
+    request: async (url) => {
+      if (url.includes("/pulls?state=open")) {
+        return new Response(
+          JSON.stringify([{ number: 7, title: "PR", head: { ref: "b", sha: "a".repeat(40) } }]),
+        );
+      }
+      if (url.includes("/check-runs")) {
+        return new Response("throttled", { status: 429 });
+      }
+      return new Response("[]");
+    },
+  });
+  assert.equal(detail429Raw.rateLimit.blockedUntilMs, 1_060_000);
+  assert.equal(detail429Raw.rateLimit.nextPollAtMs, 1_060_000);
+
+  // Remaining quota of 11 (only 1 above 10-request reserve) skips 5-request detail reads
+  let detailCallsAt11 = 0;
+  await fetchViaPublicRest({
+    owner: "Jamula",
+    name: "SoftwareFactory",
+    request: async (url) => {
+      if (url.includes("/commits/") || url.includes("/reviews")) {
+        detailCallsAt11 += 1;
+      }
+      if (url.includes("/pulls?state=open")) {
+        return new Response(
+          JSON.stringify([{ number: 8, title: "PR", head: { ref: "b", sha: "b".repeat(40) } }]),
+          { headers: { "x-ratelimit-remaining": "11" } },
+        );
+      }
+      return new Response("[]", { headers: { "x-ratelimit-remaining": "11" } });
+    },
+  });
+  assert.equal(detailCallsAt11, 0);
+
+  // Closed PR pagination walks past unmerged closures and marks truncated when cap reached
+  const pagedClosedRaw = await fetchViaPublicRest({
+    owner: "Jamula",
+    name: "SoftwareFactory",
+    maxPages: 2,
+    perPage: 1,
+    request: async (url) => {
+      if (url.includes("/pulls?state=closed")) {
+        if (url.includes("&page=1")) {
+          return new Response(JSON.stringify([{ number: 1, title: "Closed unmerged", merged_at: null }]), {
+            headers: { link: '<https://api.github.com/next>; rel="next"' },
+          });
+        }
+        return new Response(
+          JSON.stringify([{ number: 2, title: "Merged on page 2", merged_at: "2026-11-27T00:00:00Z", head: { ref: "m" } }]),
+          { headers: { link: '<https://api.github.com/next2>; rel="next"' } },
+        );
+      }
+      return new Response("[]");
+    },
+  });
+  assert.equal(pagedClosedRaw.mergedPulls.length, 1);
+  assert.equal(pagedClosedRaw.mergedPulls[0].number, 2);
+  assert.equal(pagedClosedRaw.truncated, true);
+
   await assert.rejects(
     () =>
       fetchViaPublicRest({
@@ -1429,14 +1506,41 @@ test("board-ui loopback HTTP/SSE server and createFactoryBoardCanvasSpec satisfy
   const firstChunk = await sseReader.read();
   assert.match(sseDecoder.decode(firstChunk.value), /event: state/);
 
-  // Test HTTP GET /, GET /client.mjs, GET /api/state, Host/Origin/CSRF protections, and POST routes
+  // Test HTTP GET /, GET /client.mjs, GET /api/state, Host/Origin/CSRF/CSP framing protections, and POST routes
   const htmlRes = await fetch(opened.url);
   assert.equal(htmlRes.status, 200);
+  assert.match(htmlRes.headers.get("content-security-policy") ?? "", /frame-ancestors 'self' tauri:\/\/localhost/);
   const htmlBody = await htmlRes.text();
   assert.match(htmlBody, /SoftwareFactory Live Board/);
   const tokenMatch = /data-board-token="([a-f0-9]+)"/.exec(htmlBody);
   assert.ok(tokenMatch, "HTML body must embed per-instance capability token");
   const boardToken = tokenMatch[1];
+
+  // Unapproved external Referer or cross-site non-iframe request on GET / is rejected (403)
+  const evilFrameRes = await fetch(opened.url, {
+    headers: { Referer: "https://evil.example/clickjack.html", "Sec-Fetch-Dest": "iframe", "Sec-Fetch-Site": "cross-site" },
+  });
+  assert.equal(evilFrameRes.status, 403);
+  const brokenRefererRes = await fetch(opened.url, {
+    headers: { Referer: "://invalid" },
+  });
+  assert.equal(brokenRefererRes.status, 403);
+  const approvedTauriFrameRes = await fetch(opened.url, {
+    headers: { Referer: "tauri://localhost/index.html", "Sec-Fetch-Dest": "iframe", "Sec-Fetch-Site": "cross-site" },
+  });
+  assert.equal(approvedTauriFrameRes.status, 200);
+  const approvedSameOriginFrameRes = await fetch(opened.url, {
+    headers: { Referer: opened.url },
+  });
+  assert.equal(approvedSameOriginFrameRes.status, 200);
+  const approvedHttpsTauriFrameRes = await fetch(opened.url, {
+    headers: { Referer: "https://tauri.localhost/panel" },
+  });
+  assert.equal(approvedHttpsTauriFrameRes.status, 200);
+  const crossSiteTopRes = await fetch(opened.url, {
+    headers: { "Sec-Fetch-Site": "cross-site", "Sec-Fetch-Dest": "document" },
+  });
+  assert.equal(crossSiteTopRes.status, 403);
 
   const clientJsRes = await fetch(`${opened.url}client.mjs`);
   assert.equal(clientJsRes.status, 200);
@@ -1665,12 +1769,26 @@ test("board-ui loopback HTTP/SSE server and createFactoryBoardCanvasSpec satisfy
     clearInterval() {},
   };
   const standalone = await startLoopbackBoardServer({
+    standalone: true,
     timers: customTimers,
     fetchSnapshot: async (opts) => {
       await slowSnapGate;
       return fakeFetchSnapshot(opts);
     },
   });
+  const standaloneRootRes = await fetch(standalone.url);
+  assert.equal(standaloneRootRes.headers.get("x-frame-options"), "DENY");
+  assert.match(standaloneRootRes.headers.get("content-security-policy") ?? "", /frame-ancestors 'none'/);
+  const standaloneIframeBlocked = await fetch(standalone.url, {
+    headers: { "Sec-Fetch-Dest": "iframe" },
+  });
+  assert.equal(standaloneIframeBlocked.status, 403);
+  const emptyAncestorsServer = await startLoopbackBoardServer({
+    frameAncestors: [],
+    timers: customTimers,
+    fetchSnapshot: fakeFetchSnapshot,
+  });
+  await emptyAncestorsServer.close();
   const liveSsePromise = fetch(`${standalone.url}events`);
   const liveSseRes = await liveSsePromise;
   const liveSseReader = liveSseRes.body.getReader();
@@ -1750,6 +1868,14 @@ test("initFactoryBoardClient renders verified, partial, stale, and cold-unavaila
       querySelectorAll(sel) {
         if (sel === "details.issue-drawer") return drawers;
         if (sel === "button") return filterButtons;
+        if (sel === "[data-focus-key]") {
+          return [...inner.matchAll(/data-focus-key="([^"]+)"/g)].map((m) => ({
+            getAttribute: (k) => (k === "data-focus-key" ? m[1] : null),
+            focus() {
+              node.restoredFocusKey = m[1];
+            },
+          }));
+        }
         return [];
       },
       classList: {
@@ -1817,6 +1943,7 @@ test("initFactoryBoardClient renders verified, partial, stale, and cold-unavaila
 
   const fakeWin = {
     document: {
+      activeElement: null,
       body: bodyEl,
       getElementById: (id) => elements.get(id),
       createElement: (tag) => makeEl(tag),
@@ -2018,8 +2145,32 @@ test("initFactoryBoardClient renders verified, partial, stale, and cold-unavaila
       snapshot: restUnknownQueueSnap,
     }),
   });
-  assert.match(elements.get("kpi-grid").innerHTML, /Unknown queue/);
-  assert.match(elements.get("milestones-grid").innerHTML, /Queue unknown/);
+  // Unchanged SSE refresh skips DOM rewrite; changed refresh restores activeElement focus by data-focus-key
+  fakeWin.document.activeElement = {
+    getAttribute: (k) => (k === "data-focus-key" ? "ms-summary-M01" : null),
+  };
+  sseHandlers.get("state")({
+    data: JSON.stringify({
+      config: { repo: DEFAULT_REPO, intervalSeconds: 20, paused: false, status: "Auto-refreshing (20s)" },
+      snapshot: restUnknownQueueSnap,
+    }),
+  });
+  const updatedFocusSnap = buildFactoryBoardSnapshot(
+    {
+      milestones: [{ number: 2, title: "M01 - Auto", state: "OPEN" }],
+      issues: [{ number: 9, title: "[M01] New item", state: "OPEN", labels: ["M01"] }],
+      openPulls: [{ number: 150, title: "[M01] REST PR", mergeQueueEntry: undefined }],
+      mergedPulls: [],
+    },
+    { repo: DEFAULT_REPO, source: "github-rest", generatedAt: "2026-11-27T02:51:00Z" },
+  );
+  sseHandlers.get("state")({
+    data: JSON.stringify({
+      config: { repo: DEFAULT_REPO, intervalSeconds: 20, paused: false, status: "Auto-refreshing (20s)" },
+      snapshot: updatedFocusSnap,
+    }),
+  });
+  assert.equal(elements.get("milestones-grid").restoredFocusKey, "ms-summary-M01");
 });
 
 test("startFactoryBoardExtension and extension.mjs register canvas, forward logs, and close on session end", async () => {

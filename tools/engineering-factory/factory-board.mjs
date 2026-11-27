@@ -152,15 +152,20 @@ export function inferIssueMilestoneId(issue) {
 }
 
 export function inferPullMilestoneId(pull, issueMilestoneMap) {
-  if (pull.milestoneTitle && !isHistoricalMilestoneTitle(pull.milestoneTitle)) {
+  const historicalMilestone = Boolean(
+    pull.milestoneTitle && isHistoricalMilestoneTitle(pull.milestoneTitle),
+  );
+  if (pull.milestoneTitle && !historicalMilestone) {
     const fromMilestone = extractMilestoneStep(pull.milestoneTitle).milestoneId;
     if (fromMilestone) {
       return fromMilestone;
     }
   }
-  const fromTitle = extractMilestoneStep(pull.title).milestoneId;
-  if (fromTitle) {
-    return fromTitle;
+  if (!historicalMilestone) {
+    const fromTitle = extractMilestoneStep(pull.title).milestoneId;
+    if (fromTitle) {
+      return fromTitle;
+    }
   }
   for (const issueNumber of pull.linkedIssueNumbers) {
     const mapped = issueMilestoneMap.get(issueNumber);
@@ -981,6 +986,9 @@ export async function fetchViaPublicRest({
         (response.status === 403 && (rl.remaining === 0 || rl.retryAfterMs !== null)))
     ) {
       const blockedUntilMs = rl.retryAfterMs ?? rl.resetAtMs ?? nowMs + 60_000;
+      if (latestRetryAfterMs === null || blockedUntilMs > latestRetryAfterMs) {
+        latestRetryAfterMs = blockedUntilMs;
+      }
       throw Object.assign(new Error("REST_RATE_LIMITED"), {
         code: "REST_RATE_LIMITED",
         blockedUntilMs,
@@ -1030,16 +1038,39 @@ export async function fetchViaPublicRest({
     return { items, truncated };
   };
 
+  const getClosedMergedPulls = async (pageLimit = Math.min(maxPages, 3)) => {
+    const merged = [];
+    let truncated = false;
+    const closedPerPage = Math.min(perPage, 50);
+    for (let page = 1; page <= pageLimit; page += 1) {
+      const { response, json } = await getResponseAndJson(
+        `/pulls?state=closed&sort=updated&direction=desc&per_page=${closedPerPage}&page=${page}`,
+      );
+      if (!Array.isArray(json)) {
+        throw new Error("REST_PAYLOAD_INVALID");
+      }
+      for (const pr of json) {
+        if (pr && typeof pr.merged_at === "string" && pr.merged_at.length > 0) {
+          merged.push(pr);
+        }
+      }
+      const hasMore = hasNextRestPage(response, json.length, closedPerPage);
+      if (!hasMore || merged.length >= 12) {
+        break;
+      }
+      if (page === pageLimit) {
+        truncated = true;
+      }
+    }
+    return { items: merged.slice(0, 12), truncated };
+  };
+
   const milestonesPaged = await getPaginatedArray("/milestones?state=all");
-  const [issuesPaged, openPullsPaged, closedPullsJson] = await Promise.all([
+  const [issuesPaged, openPullsPaged, closedMergedPaged] = await Promise.all([
     getPaginatedArray("/issues?state=all"),
     getPaginatedArray("/pulls?state=open&sort=updated&direction=desc"),
-    getJson("/pulls?state=closed&sort=updated&direction=desc&per_page=20"),
+    getClosedMergedPulls(),
   ]);
-
-  if (!Array.isArray(closedPullsJson)) {
-    throw new Error("REST_PAYLOAD_INVALID");
-  }
 
   const milestones = milestonesPaged.items.map((m) => ({
     number: m?.number,
@@ -1061,7 +1092,12 @@ export async function fetchViaPublicRest({
       milestoneTitle: item.milestone?.title ?? null,
     }));
 
-  const allowDetails = minRemaining === null || minRemaining > 10;
+  const worstCasePerDetailPull = 2 + Math.max(1, maxReviewPages);
+  const detailQuotaCap =
+    minRemaining === null
+      ? maxDetailPulls
+      : Math.max(0, Math.floor((minRemaining - 10) / worstCasePerDetailPull));
+  const effectiveMaxDetailPulls = Math.min(maxDetailPulls, detailQuotaCap);
 
   const openPulls = await Promise.all(
     openPullsPaged.items.map(async (pr, index) => {
@@ -1069,8 +1105,7 @@ export async function fetchViaPublicRest({
       let checkRollup = null;
       let reviews = undefined;
       if (
-        allowDetails &&
-        index < maxDetailPulls &&
+        index < effectiveMaxDetailPulls &&
         typeof headSha === "string" &&
         headSha.length > 0 &&
         Number.isSafeInteger(pr?.number)
@@ -1108,21 +1143,21 @@ export async function fetchViaPublicRest({
     }),
   );
 
-  const mergedPulls = closedPullsJson
-    .filter((pr) => pr && typeof pr.merged_at === "string" && pr.merged_at.length > 0)
-    .slice(0, 12)
-    .map((pr) => ({
-      number: pr.number,
-      title: pr.title,
-      url: pr.html_url,
-      mergedAt: pr.merged_at,
-      headRefName: pr.head?.ref,
-      milestoneTitle: pr.milestone?.title ?? null,
-      closingIssuesReferences: [],
-    }));
+  const mergedPulls = closedMergedPaged.items.map((pr) => ({
+    number: pr.number,
+    title: pr.title,
+    url: pr.html_url,
+    mergedAt: pr.merged_at,
+    headRefName: pr.head?.ref,
+    milestoneTitle: pr.milestone?.title ?? null,
+    closingIssuesReferences: [],
+  }));
 
   const truncated =
-    milestonesPaged.truncated || issuesPaged.truncated || openPullsPaged.truncated;
+    milestonesPaged.truncated ||
+    issuesPaged.truncated ||
+    openPullsPaged.truncated ||
+    closedMergedPaged.truncated;
 
   let blockedUntilMs = latestRetryAfterMs ?? 0;
   let nextPollAtMs = blockedUntilMs;
@@ -1414,9 +1449,29 @@ export function initFactoryBoardClient(win) {
     prFilter: "all",
     openDrawers: new Set(["M01", "M02"]),
     refreshing: false,
+    sectionHtml: new Map(),
   };
 
   const el = (id) => doc.getElementById(id);
+
+  function updateSectionHtml(id, nextHtml, onUpdated) {
+    const container = el(id);
+    if (state.sectionHtml.get(id) === nextHtml && container.innerHTML === nextHtml) {
+      return;
+    }
+    const activeKey = doc.activeElement?.getAttribute?.("data-focus-key") ?? null;
+    state.sectionHtml.set(id, nextHtml);
+    container.innerHTML = nextHtml;
+    if (onUpdated) {
+      onUpdated(container);
+    }
+    if (activeKey) {
+      const target = [...container.querySelectorAll("[data-focus-key]")].find(
+        (n) => n.getAttribute("data-focus-key") === activeKey,
+      );
+      target?.focus?.({ preventScroll: true });
+    }
+  }
   const esc = (v) =>
     String(v ?? "")
       .replaceAll("&", "&amp;")
@@ -1570,9 +1625,9 @@ export function initFactoryBoardClient(win) {
         .join("");
       const unavailableHtml =
         '<div class="empty-state">Live GitHub metadata unavailable — awaiting verified snapshot.</div>';
-      el("milestones-grid").innerHTML = unavailableHtml;
-      el("open-prs-wrap").innerHTML = unavailableHtml;
-      el("merged-prs-wrap").innerHTML = unavailableHtml;
+      updateSectionHtml("milestones-grid", unavailableHtml);
+      updateSectionHtml("open-prs-wrap", unavailableHtml);
+      updateSectionHtml("merged-prs-wrap", unavailableHtml);
       return;
     }
 
@@ -1610,7 +1665,7 @@ export function initFactoryBoardClient(win) {
       {
         label: "Recent Merges",
         value: String(t.mergedRecentPulls),
-        sub: "Latest merged PR window",
+        sub: "Recently updated merged PRs",
       },
     ]
       .map(
@@ -1629,7 +1684,7 @@ export function initFactoryBoardClient(win) {
       )
       .join("");
 
-    el("milestones-grid").innerHTML = snap.milestones
+    const milestonesHtml = snap.milestones
       .map((m) => {
         const isOpen = state.openDrawers.has(m.id);
         const pctValue = m.completionPercent === null ? 0 : m.completionPercent;
@@ -1663,7 +1718,9 @@ export function initFactoryBoardClient(win) {
                     stBadge +
                     step +
                     prio +
-                    '<a class="truncate" href="' +
+                    '<a class="truncate" data-focus-key="issue-' +
+                    iss.number +
+                    '" href="' +
                     safeHref(iss.url) +
                     '" target="_blank" rel="noopener noreferrer" title="' +
                     esc(iss.title) +
@@ -1733,7 +1790,9 @@ export function initFactoryBoardClient(win) {
           '"' +
           (isOpen ? " open" : "") +
           ">" +
-          "<summary>Issues (" +
+          '<summary data-focus-key="ms-summary-' +
+          esc(m.id) +
+          '">Issues (' +
           m.issues.length +
           ")</summary>" +
           issuesHtml +
@@ -1743,15 +1802,15 @@ export function initFactoryBoardClient(win) {
       })
       .join("");
 
-    el("milestones-grid")
-      .querySelectorAll("details.issue-drawer")
-      .forEach((d) => {
+    updateSectionHtml("milestones-grid", milestonesHtml, (grid) => {
+      grid.querySelectorAll("details.issue-drawer").forEach((d) => {
         d.addEventListener("toggle", () => {
           const id = d.getAttribute("data-ms");
           if (d.open) state.openDrawers.add(id);
           else state.openDrawers.delete(id);
         });
       });
+    });
 
     const filteredPrs = snap.openPulls.filter((pr) => {
       if (state.prFilter === "queue") {
@@ -1766,7 +1825,7 @@ export function initFactoryBoardClient(win) {
       return true;
     });
 
-    el("open-prs-wrap").innerHTML =
+    const openPrsHtml =
       filteredPrs.length === 0
         ? '<div class="empty-state">No open pull requests match the current filter.</div>'
         : "<table><thead><tr>" +
@@ -1776,7 +1835,9 @@ export function initFactoryBoardClient(win) {
             .map(
               (pr) =>
                 "<tr>" +
-                '<td><a href="' +
+                '<td><a data-focus-key="open-pr-' +
+                pr.number +
+                '" href="' +
                 safeHref(pr.url) +
                 '" target="_blank" rel="noopener noreferrer"><span class="mono">#' +
                 pr.number +
@@ -1804,10 +1865,11 @@ export function initFactoryBoardClient(win) {
             )
             .join("") +
           "</tbody></table>";
+    updateSectionHtml("open-prs-wrap", openPrsHtml);
 
-    el("merged-prs-wrap").innerHTML =
+    const mergedPrsHtml =
       snap.mergedPulls.length === 0
-        ? '<div class="empty-state">No recently merged pull requests.</div>'
+        ? '<div class="empty-state">No recently updated merged pull requests.</div>'
         : "<table><thead><tr>" +
           "<th>PR</th><th>Milestone</th><th>Branch</th><th>Merged At</th>" +
           "</tr></thead><tbody>" +
@@ -1815,7 +1877,9 @@ export function initFactoryBoardClient(win) {
             .map(
               (pr) =>
                 "<tr>" +
-                '<td><a href="' +
+                '<td><a data-focus-key="merged-pr-' +
+                pr.number +
+                '" href="' +
                 safeHref(pr.url) +
                 '" target="_blank" rel="noopener noreferrer"><span class="mono">#' +
                 pr.number +
@@ -1837,6 +1901,7 @@ export function initFactoryBoardClient(win) {
             )
             .join("") +
           "</tbody></table>";
+    updateSectionHtml("merged-prs-wrap", mergedPrsHtml);
   }
 
   async function postJson(path, body) {
@@ -2116,9 +2181,9 @@ export function renderBoardHtml({
       </div>
       <div class="table-wrap" id="open-prs-wrap"></div>
     </section>
-    <section aria-label="Recently merged pull requests">
+    <section aria-label="Recently updated merged pull requests">
       <div class="section-header">
-        <h2>Recently Merged Pull Requests</h2>
+        <h2>Recently Updated Merged Pull Requests</h2>
       </div>
       <div class="table-wrap" id="merged-prs-wrap"></div>
     </section>
@@ -2182,14 +2247,44 @@ function readBoundedBody(req, maxBytes = MAX_POST_BYTES) {
   });
 }
 
+const DEFAULT_CANVAS_FRAME_ANCESTORS = Object.freeze([
+  "'self'",
+  "tauri://localhost",
+  "https://tauri.localhost",
+  "http://tauri.localhost",
+  "app://localhost",
+]);
+
+function isApprovedParentOrigin(raw, expectedOrigin) {
+  try {
+    const parsed = new URL(raw);
+    if (parsed.origin === expectedOrigin) {
+      return true;
+    }
+    if (parsed.protocol === "tauri:" || parsed.protocol === "app:") {
+      return parsed.hostname === "localhost";
+    }
+    return parsed.hostname === "tauri.localhost";
+  } catch {
+    return false;
+  }
+}
+
 export async function startLoopbackBoardServer({
   repo = DEFAULT_REPO,
   intervalSeconds = DEFAULT_INTERVAL_SECONDS,
   fetchSnapshot = fetchFactoryBoardSnapshot,
   timers,
   onLog,
+  standalone = false,
+  frameAncestors = standalone ? ["'none'"] : DEFAULT_CANVAS_FRAME_ANCESTORS,
 } = {}) {
   const runtimeTimers = timers ?? { setInterval, clearInterval };
+  const frameAncestorsDirective =
+    Array.isArray(frameAncestors) && frameAncestors.length > 0
+      ? frameAncestors.join(" ")
+      : "'none'";
+  const cspHeader = `default-src 'self'; style-src 'self' 'unsafe-inline'; frame-ancestors ${frameAncestorsDirective}; base-uri 'self'; object-src 'none'`;
   const normalizedRepo = parseRepoSlug(repo).fullName;
   const poller = createBoardPoller({
     repo: normalizedRepo,
@@ -2243,18 +2338,37 @@ export async function startLoopbackBoardServer({
       const url = new URL(req.url ?? "/", expectedOrigin);
       const pathname = url.pathname;
       const method = req.method ?? "GET";
+      const fetchSite = req.headers["sec-fetch-site"];
+      const fetchDest = req.headers["sec-fetch-dest"];
 
       if (method === "GET" && (pathname === "/" || pathname === "/index.html")) {
-        res.writeHead(200, {
+        const refererHeader = req.headers.referer;
+        if (
+          (fetchDest === "iframe" && frameAncestorsDirective === "'none'") ||
+          (typeof refererHeader === "string" &&
+            !isApprovedParentOrigin(refererHeader, expectedOrigin)) ||
+          (fetchSite === "cross-site" && fetchDest !== "iframe")
+        ) {
+          sendJson(res, 403, {
+            error: "FORBIDDEN_FRAME_ORIGIN",
+            message: "Unapproved cross-site framing or navigation is forbidden.",
+          });
+          return;
+        }
+        const headers = {
           "Content-Type": "text/html; charset=utf-8",
           "Cache-Control": "no-store",
           "X-Content-Type-Options": "nosniff",
-        });
+          "Content-Security-Policy": cspHeader,
+        };
+        if (frameAncestorsDirective === "'none'") {
+          headers["X-Frame-Options"] = "DENY";
+        }
+        res.writeHead(200, headers);
         res.end(html);
         return;
       }
 
-      const fetchSite = req.headers["sec-fetch-site"];
       if (typeof fetchSite === "string" && fetchSite === "cross-site") {
         sendJson(res, 403, {
           error: "FORBIDDEN_FETCH_SITE",
