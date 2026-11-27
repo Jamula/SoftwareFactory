@@ -149,24 +149,36 @@ const ownData = (obj, key) => {
   return Boolean(desc && desc.enumerable && Object.hasOwn(desc, 'value'));
 };
 
-function plainJson(value, depth) {
-  if (depth > 12 || types.isProxy(value)) return false;
+function plainJson(value, depth, seen, budget) {
+  if (--budget.remaining < 0 || depth > 12 || types.isProxy(value)) return false;
   if (value === null || typeof value === 'string' || typeof value === 'boolean') return true;
   if (typeof value === 'number') return Number.isFinite(value);
-  if (typeof value !== 'object') return false;
+  if (typeof value !== 'object' || seen.has(value)) return false;
+  seen.add(value);
   const proto = Object.getPrototypeOf(value);
   if (Array.isArray(value)) {
-    return proto === Array.prototype &&
-      value.length <= 64 &&
-      Reflect.ownKeys(value).length === value.length + 1 &&
-      Array.from({ length: value.length }, (_, i) =>
-        ownData(value, i) && plainJson(value[i], depth + 1)
-      ).every(Boolean);
+    if (
+      proto !== Array.prototype ||
+      value.length > 64 ||
+      Reflect.ownKeys(value).length !== value.length + 1
+    ) {
+      return false;
+    }
+    for (let i = 0; i < value.length; i += 1) {
+      if (!ownData(value, i) || !plainJson(value[i], depth + 1, seen, budget)) return false;
+    }
+    return true;
   }
   if (proto !== Object.prototype) return false;
   const keys = Reflect.ownKeys(value);
-  return keys.length <= 64 &&
-    keys.every(k => typeof k === 'string' && ownData(value, k) && plainJson(value[k], depth + 1));
+  if (keys.length > 64) return false;
+  for (let i = 0; i < keys.length; i += 1) {
+    const k = keys[i];
+    if (typeof k !== 'string' || !ownData(value, k) || !plainJson(value[k], depth + 1, seen, budget)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 const isRecord = value => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -248,7 +260,7 @@ const validCandidateShape = candidate =>
   validSnapshotShape(candidate.snapshot);
 
 const validInputShape = input =>
-  plainJson(input, 0) &&
+  plainJson(input, 0, new WeakSet(), { remaining: 5000 }) &&
   exact(input, INPUT_KEYS) &&
   BOOLEAN_INPUT_KEYS.every(k => bool(input[k])) &&
   validAuthorizationShape(input.authorization) &&
@@ -482,6 +494,12 @@ export function evaluateFamilyHubShadowReadiness(input) {
   const isIndependentAllowlistedReviewer = reviewer =>
     allowlistedReviewers.has(identity(reviewer)) && isIndependentReviewer(reviewer);
 
+  const omitsOnlyContext = (candidateChecks, omittedName) =>
+    equalValidatedValue(
+      candidateChecks,
+      snap.checks.filter(c => c.name !== omittedName)
+    );
+
   const suite = input.shadowDenialSuite;
   const denialMutationsValid =
     singleMutation(snap, suite.staleReview, 'reviews') &&
@@ -510,9 +528,9 @@ export function evaluateFamilyHubShadowReadiness(input) {
     sha40(suite.behindMainCandidate.base) &&
     suite.behindMainCandidate.base !== candidate.latestProtectedMainSha &&
     singleMutation(snap, suite.missingCopilotReviewCheck, 'checks') &&
-    !suite.missingCopilotReviewCheck.checks.some(c => c.name === 'copilot-review') &&
+    omitsOnlyContext(suite.missingCopilotReviewCheck.checks, 'copilot-review') &&
     singleMutation(snap, suite.missingValidateCheck, 'checks') &&
-    !suite.missingValidateCheck.checks.some(c => c.name === 'validate');
+    omitsOnlyContext(suite.missingValidateCheck.checks, 'validate');
 
   if (!denialMutationsValid) {
     return deny('SHADOW_DENIAL_PROOF_INCOMPLETE');

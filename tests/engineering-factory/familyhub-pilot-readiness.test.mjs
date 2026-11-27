@@ -166,12 +166,30 @@ test('strictly rejects proxies, custom prototypes, accessors, non-enumerable key
   });
 
   const protoArray = Object.setPrototypeOf([valid.peerOnboardingPackages[0]], Object.prototype);
-  const oversizedPeers = Array.from({ length: 65 }, () => valid.peerOnboardingPackages[0]);
+  const oversizedPeers = Array.from({ length: 65 }, (_, idx) => ({ idx }));
   const oversizedKeysObj = Object.fromEntries(Array.from({ length: 65 }, (_, idx) => [`k${idx}`, idx]));
   let tooDeep = { leaf: 1 };
   for (let i = 0; i < 14; i += 1) {
     tooDeep = { child: tooDeep };
   }
+  const cyclicArray = [];
+  cyclicArray.push(cyclicArray);
+  let sharedSubtreeDag = ['leaf'];
+  for (let i = 0; i < 10; i += 1) {
+    sharedSubtreeDag = [sharedSubtreeDag, sharedSubtreeDag];
+  }
+  const startDagMs = performance.now();
+  assert.equal(
+    evaluateFamilyHubShadowReadiness({
+      ...structuredClone(valid),
+      peerOnboardingPackages: sharedSubtreeDag
+    }).reason,
+    'INPUT_SCHEMA_INVALID'
+  );
+  assert.equal(performance.now() - startDagMs < 200, true);
+  const budgetOverflowTree = Array.from({ length: 60 }, () =>
+    Array.from({ length: 60 }, () => ({ a: 1, b: 2 }))
+  );
 
   for (const malformed of [
     null,
@@ -330,13 +348,16 @@ test('strictly rejects proxies, custom prototypes, accessors, non-enumerable key
     { ...valid, rollbackReceipt: { ...valid.rollbackReceipt, repository: 'invalid_slug' } },
     { ...valid, rollbackReceipt: { ...valid.rollbackReceipt, [Symbol('hidden')]: 1 } },
     { ...valid, rollbackReceipt: { ...valid.rollbackReceipt, queuedLiveMutations: Number.NaN } },
-    { ...valid, rollbackReceipt: oversizedKeysObj },
-    { ...valid, rollbackReceipt: tooDeep },
+    { ...structuredClone(valid), rollbackReceipt: oversizedKeysObj },
+    { ...structuredClone(valid), rollbackReceipt: tooDeep },
+    { ...structuredClone(valid), peerOnboardingPackages: cyclicArray },
+    { ...structuredClone(valid), peerOnboardingPackages: sharedSubtreeDag },
+    { ...structuredClone(valid), rollbackReceipt: { tree: budgetOverflowTree } },
     {
-      ...valid,
+      ...structuredClone(valid),
       candidate: {
-        ...valid.candidate,
-        snapshot: { ...valid.candidate.snapshot, repository: 'invalid_slug' }
+        ...structuredClone(valid.candidate),
+        snapshot: { ...structuredClone(valid.candidate.snapshot), repository: 'invalid_slug' }
       }
     }
   ]) {
@@ -705,6 +726,20 @@ test('enforces stronger consumer component coverage, core shadow gates, denial s
     },
     f => {
       f.shadowDenialSuite.commentedZeroThreadsReview.reviews = [];
+    },
+    f => {
+      // Empty checks drops all contexts rather than isolating copilot-review alone.
+      f.shadowDenialSuite.missingCopilotReviewCheck.checks = [];
+    },
+    f => {
+      // Dropping both copilot-review and validate fails isolated single-check omission.
+      f.shadowDenialSuite.missingCopilotReviewCheck.checks = structuredClone(
+        f.candidate.snapshot.checks.filter(c => c.name === 'fictional-hub-gate')
+      );
+    },
+    f => {
+      // Empty checks drops all contexts rather than isolating validate alone.
+      f.shadowDenialSuite.missingValidateCheck.checks = [];
     },
     f => {
       f.shadowDenialSuite.missingCopilotReviewCheck.checks = structuredClone(
