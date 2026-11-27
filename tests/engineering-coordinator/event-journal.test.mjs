@@ -311,6 +311,18 @@ test('exports and imports deterministic cross-run snapshots with fencing and def
     assert.equal(recoveredDeferred.generation, 2);
     assert.equal(restored.complete(deferredClaim, 60041), false);
     assert.equal(restored.complete(recoveredDeferred, 60041), true);
+
+    // Defer -> reclaim -> complete clears retryAfter so subsequent export/import roundtrips cleanly.
+    const postDeferredExport = exportJournalSnapshot(restored);
+    const completedDeferred = postDeferredExport.entries.find(row => row.deliveryId === 'deferred-1');
+    assert.equal(completedDeferred.completed, true);
+    assert.equal(completedDeferred.retryAfter, null);
+    const third = openEventJournal(':memory:');
+    try {
+      assert.equal(importJournalSnapshot(third, JSON.parse(JSON.stringify(postDeferredExport))).imported, true);
+    } finally {
+      third.close();
+    }
   } finally {
     source.close();
     restored.close();
@@ -390,6 +402,19 @@ test('snapshot import merges monotonically and rolls back atomically on conflict
       shadow: true,
       entries: [{repositoryId: 1, deliveryId: 'extra', kind: 'main', subject: 0, head, owner: null, generation: 0, expires: 0, completed: false, retryAfter: null}]
     }).reason, 'JOURNAL_FULL');
+
+    // Multi-repository totals above 10,000 reject unscoped exports explicitly while per-repo snapshots succeed.
+    db.exec(`
+      WITH RECURSIVE ids(value) AS (SELECT 1 UNION ALL SELECT value + 1 FROM ids WHERE value < 10)
+      INSERT INTO coordinator_events (repository_id, delivery_id, kind, subject, head)
+      SELECT 2, 'r2-' || value, 'manual', 0, '${head}' FROM ids;
+    `);
+    assert.deepEqual(exportJournalSnapshot(fullStore), {
+      shadow: true, exported: false, reason: 'SNAPSHOT_LIMIT'
+    });
+    const repo2Snap = exportJournalSnapshot(fullStore, {repositoryId: 2});
+    assert.equal(repo2Snap.exported, true);
+    assert.equal(repo2Snap.entries.length, 10);
   } finally {
     db.close();
     fullStore.close();

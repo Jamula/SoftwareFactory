@@ -208,11 +208,42 @@ test('reconciles same-repository completed review triggers and rejects stale or 
    new Response(JSON.stringify(url.includes('/reviews/') ? badReview : pullPayload)))).reason, 'IDENTITY_UNKNOWN');
  }
 
+ // Re-read pull identity after review GET and reject mid-read head, state/base/draft, repo ID, or HTTP changes.
+ for (const [secondPull, expectedReason] of [
+  [{...pullPayload, head: {repo, sha: 'c'.repeat(40)}}, 'HEAD_CHANGED'],
+  [{...pullPayload, state: 'closed'}, 'PULL_STATE_CHANGED'],
+  [{...pullPayload, draft: true}, 'PULL_STATE_CHANGED'],
+  [{...pullPayload, base: {...pullPayload.base, sha: 'd'.repeat(40)}}, 'PULL_STATE_CHANGED'],
+  [{...pullPayload, base: {...pullPayload.base, repo: {...repo, id: 2}}, head: {...pullPayload.head, repo: {...repo, id: 2}}}, 'IDENTITY_UNKNOWN']
+ ]) {
+  let pullReads = 0;
+  const changingRequest = async url => url.includes('/reviews/')
+   ? new Response(JSON.stringify(reviewPayload))
+   : new Response(JSON.stringify(++pullReads === 1 ? pullPayload : secondPull));
+  assert.equal((await readReviewIdentity(2, 77, changingRequest)).reason, expectedReason);
+ }
+ {
+  let pullReads = 0;
+  assert.equal((await readReviewIdentity(2, 77, async url =>
+   url.includes('/reviews/')
+    ? new Response(JSON.stringify(reviewPayload))
+    : (++pullReads === 1 ? new Response(JSON.stringify(pullPayload)) : new Response(null, {status: 503}))
+  )).reason, 'READ_FAILED');
+ }
+
  const reviewEnv = {...actions, GITHUB_EVENT_NAME: 'pull_request_review', FACTORY_REVIEW_ID: '77'};
  const matched = await reconcileReviewTrigger(reviewEnv, {clock: () => 100, request});
  assert.equal(matched.reconciled, true);
  assert.equal(matched.reason, 'REVIEW_IDENTITY_MATCHED');
  assert.equal(matched.reviewState, 'APPROVED');
+
+ {
+  let pullReads = 0;
+  const midReadStateChange = async url => url.includes('/reviews/')
+   ? new Response(JSON.stringify(reviewPayload))
+   : new Response(JSON.stringify(++pullReads === 1 ? pullPayload : {...pullPayload, draft: true}));
+  assertBlocked(await reconcileReviewTrigger(reviewEnv, {clock: () => 100, request: midReadStateChange}), 'PULL_STATE_CHANGED');
+ }
 
  assertBlocked(await reconcileReviewTrigger(reviewEnv, null), 'TRUST_UNKNOWN');
  assertBlocked(await reconcileReviewTrigger({...reviewEnv, GITHUB_EVENT_NAME: 'pull_request'}, {clock: () => 100, request}), 'TRUST_UNKNOWN');
@@ -351,11 +382,6 @@ test('orchestrates pull, review, check, main, issue and manual triggers through 
     id: 77, user: {login: 'reviewer-a', id: 10}, state: 'APPROVED', commit_id: e.head
    }));
   }
-  if (url.includes('/pulls/2/reviews?')) {
-   return new Response(JSON.stringify([
-    {id: 77, user: {login: 'reviewer-a', id: 10}, state: 'APPROVED', commit_id: currentPullHead}
-   ]));
-  }
   if (url.endsWith('/actions/runs/501')) {
    return new Response(JSON.stringify({
     id: 501, repository: repo, head_repository: repo, head_sha: e.head,
@@ -423,17 +449,26 @@ test('orchestrates pull, review, check, main, issue and manual triggers through 
  } finally {
   crashedJournal.close();
  }
- // At t=2000 an incoming push trigger recovers 'crashed-review' first while reporting 'after-crash' as QUEUED (unverified), then a subsequent pass reconciles 'after-crash'.
+ // At t=2000 an unrelated push trigger does NOT falsely acknowledge 'crashed-review' without its reviewId (leaves it EVIDENCE_UNKNOWN).
  const queuedBehind = await reconcileEventTrigger({...actions, GITHUB_EVENT_NAME: 'push', GITHUB_REF: 'refs/heads/main', GITHUB_RUN_ID: 'after-crash'}, {
   clock: () => 2000, request, snapshot: crashedSnapshot
  });
  assert.equal(queuedBehind.reconciled, false);
  assert.equal(queuedBehind.reason, 'QUEUED');
  assert.equal(queuedBehind.recoveredDeliveryId, 'crashed-review');
- assert.equal(queuedBehind.recoveryReason, 'SHADOW_RECONCILED');
+ assert.equal(queuedBehind.recoveryReason, 'EVIDENCE_UNKNOWN');
+
+ // Re-delivering 'crashed-review' after its lease expires (t=60000) supplies FACTORY_REVIEW_ID and completes it cleanly; then 'after-crash' reconciles.
+ const retriedReview = await reconcileEventTrigger({
+  ...actions, GITHUB_EVENT_NAME: 'pull_request_review', FACTORY_REVIEW_ID: '77', GITHUB_RUN_ID: 'crashed-review'
+ }, {
+  clock: () => 60000, request, snapshot: JSON.parse(JSON.stringify(queuedBehind.snapshot))
+ });
+ assert.equal(retriedReview.reconciled, true);
+ assert.equal(retriedReview.reason, 'SHADOW_RECONCILED');
 
  const replayMain = await reconcileEventTrigger({...actions, GITHUB_EVENT_NAME: 'push', GITHUB_REF: 'refs/heads/main', GITHUB_RUN_ID: 'after-crash'}, {
-  clock: () => 2001, request, snapshot: JSON.parse(JSON.stringify(queuedBehind.snapshot))
+  clock: () => 60001, request, snapshot: JSON.parse(JSON.stringify(retriedReview.snapshot))
  });
  assert.equal(replayMain.reconciled, true);
  assert.equal(replayMain.reason, 'SHADOW_RECONCILED');
@@ -459,11 +494,7 @@ test('scoped journal reader and event trigger reject malformed inputs, snapshots
  const reader = createScopedJournalReader({}, {
   request: async url => {
    if (url.includes('/pulls/99')) return new Response(null, {status: 404});
-   if (url.includes('/pulls/3/reviews?')) {
-    return new Response('[]', {headers: {link: '<https://api.github.com/next>; rel="next"'}});
-   }
-   if (url.includes('/pulls/4/reviews?')) return new Response('[]');
-   if (url.includes('/pulls/3') || url.includes('/pulls/4') || url.includes('/pulls/5')) {
+   if (url.includes('/pulls/4') || url.includes('/pulls/5')) {
     const num = Number(url.split('/pulls/')[1].split('/')[0]);
     const headSha = num === 5 ? 'd'.repeat(40) : e.head;
     const repo = {id: 1471342715, full_name: 'Jamula/SoftwareFactory'};
@@ -486,7 +517,6 @@ test('scoped journal reader and event trigger reject malformed inputs, snapshots
  assert.equal(await reader({repositoryId: 99, kind: 'pull', subject: 1, head: e.head}), null);
  assert.equal(await reader({repositoryId: 1471342715, kind: 'pull', subject: 99, head: e.head}), null);
  assert.equal(await reader({repositoryId: 1471342715, kind: 'review', subject: 99, head: e.head}), null);
- assert.equal(await reader({repositoryId: 1471342715, kind: 'review', subject: 3, head: e.head}), null);
  assert.equal(await reader({repositoryId: 1471342715, kind: 'review', subject: 4, head: e.head}), null);
  assert.equal((await reader({repositoryId: 1471342715, kind: 'review', subject: 5, head: e.head})).head, 'd'.repeat(40));
  assert.equal(await reader({repositoryId: 1471342715, kind: 'check', subject: 99, head: e.head}), null);

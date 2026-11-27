@@ -108,14 +108,16 @@ export function openEventJournal(filename) {
       UPDATE coordinator_events SET completed = 1, expires = 0
       WHERE repository_id = ? AND delivery_id = ? AND owner = ?
         AND generation = ? AND completed = 0 AND expires > ?
+      RETURNING id
     `);
     const selectSnapshot = db.prepare(`
       SELECT e.repository_id AS repositoryId, e.delivery_id AS deliveryId, e.kind, e.subject, e.head,
              e.owner, e.generation, e.expires, e.completed, d.retry_after AS retryAfter
       FROM coordinator_events AS e
-      LEFT JOIN coordinator_event_deferrals AS d ON d.event_id = e.id
+      LEFT JOIN coordinator_event_deferrals AS d ON d.event_id = e.id AND e.completed = 0
       WHERE (? IS NULL OR e.repository_id = ?)
       ORDER BY e.id ASC
+      LIMIT 10001
     `);
     const existingFull = db.prepare(`
       SELECT id, kind, subject, head, generation, completed
@@ -183,7 +185,10 @@ export function openEventJournal(filename) {
           const {repositoryId, deliveryId, owner, generation} = ticket;
           if (!isRepo(repositoryId) || !isToken(deliveryId) || !isToken(owner) ||
               !isRepo(generation) || !isTime(now)) return false;
-          return complete.run(repositoryId, deliveryId, owner, generation, now).changes === 1;
+          const completedRow = complete.get(repositoryId, deliveryId, owner, generation, now);
+          if (!completedRow) return false;
+          clearDeferral.run(completedRow.id);
+          return true;
         } catch { return false; }
       },
       close() { db.close(); }
@@ -192,7 +197,11 @@ export function openEventJournal(filename) {
     journalHandles.set(journal, {
       exportSnapshot(repositoryId) {
         try {
-          const entries = selectSnapshot.all(repositoryId, repositoryId).map(row => Object.freeze({
+          const rows = selectSnapshot.all(repositoryId, repositoryId);
+          if (rows.length > 10000) {
+            return {shadow: true, exported: false, reason: 'SNAPSHOT_LIMIT'};
+          }
+          const entries = rows.map(row => Object.freeze({
             repositoryId: row.repositoryId,
             deliveryId: row.deliveryId,
             kind: row.kind,

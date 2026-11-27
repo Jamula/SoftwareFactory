@@ -198,11 +198,19 @@ export async function readReviewIdentity(number, reviewId, request = fetch, scop
       !reviewStates.has(r.state) || !sha(r.commit_id)) {
     return blockedRead('IDENTITY_UNKNOWN');
   }
+  const finalPull = await readPullIdentity(number, request, scope);
+  if (finalPull.reason !== 'IDENTITY_ONLY') return blockedRead(finalPull.reason);
+  if (finalPull.repositoryId !== pull.repositoryId) return blockedRead('IDENTITY_UNKNOWN');
+  if (finalPull.head !== pull.head) return blockedRead('HEAD_CHANGED');
+  if (finalPull.base !== pull.base || finalPull.state !== pull.state || finalPull.draft !== pull.draft) {
+    return blockedRead('PULL_STATE_CHANGED');
+  }
   return {
     ...blockedRead('IDENTITY_ONLY'),
-    repositoryId: pull.repositoryId, number, reviewId,
+    repositoryId: finalPull.repositoryId, number, reviewId,
     reviewer: r.user.login, reviewerId: r.user.id, reviewState: r.state,
-    commitId: r.commit_id, head: pull.head, base: pull.base, state: pull.state, draft: pull.draft
+    commitId: r.commit_id, head: finalPull.head, base: finalPull.base,
+    state: finalPull.state, draft: finalPull.draft
   };
 }
 
@@ -262,6 +270,8 @@ function explicitScopeFrom(resolved) {
   };
 }
 
+const preservedReadReasons = new Set(['RATE_OR_PERMISSION_UNKNOWN', 'HEAD_CHANGED', 'PULL_STATE_CHANGED']);
+
 async function observeFresh(event, trust, clock, loader) {
   const startedAt = clock();
   const observed = eventEnvelope({...event, receivedMs: startedAt}, trust, startedAt);
@@ -277,8 +287,8 @@ async function observeFresh(event, trust, clock, loader) {
     return {ok: false, reason: 'STALE_EVENT'};
   }
   if (!own(current, ['reason']) || current.reason !== 'IDENTITY_ONLY') {
-    const reason = own(current, ['reason']) && current.reason === 'RATE_OR_PERMISSION_UNKNOWN'
-      ? 'RATE_OR_PERMISSION_UNKNOWN' : 'READ_FAILED';
+    const reason = own(current, ['reason']) && preservedReadReasons.has(current.reason)
+      ? current.reason : 'READ_FAILED';
     return {ok: false, reason};
   }
   return {ok: true, observed, current, observedMs: finishedAt - startedAt};
@@ -472,22 +482,11 @@ export function createScopedJournalReader(scope = {}, readerOptions = {}) {
           ? {shadow: true, fresh: true, repositoryId: resolved.repositoryId, kind: 'review', subject: ticket.subject, head: freshHead}
           : null;
       }
+      // Without the exact triggering review ID, supersede only moved PR heads;
+      // leave unchanged-head review claims unacknowledged rather than matching unrelated reviews.
       const p = await readPullIdentity(ticket.subject, request, explicitScope);
-      if (p.reason !== 'IDENTITY_ONLY') return null;
-      if (p.head !== ticket.head) {
-        return {shadow: true, fresh: true, repositoryId: resolved.repositoryId, kind: 'review', subject: ticket.subject, head: p.head};
-      }
-      const reviews = await readPublicGitHubJson(
-        `${resolved.apiRoot}/pulls/${ticket.subject}/reviews?per_page=100&page=1`, request
-      );
-      if (!reviews.ok || reviews.hasNext || !Array.isArray(reviews.value) || reviews.value.length > 100) {
-        return null;
-      }
-      const matched = reviews.value.some(row => positive(row?.id) && validLogin(row?.user?.login) &&
-        positive(row?.user?.id) && reviewStates.has(row.state) && row.commit_id === p.head);
-      return matched
-        ? {shadow: true, fresh: true, repositoryId: resolved.repositoryId, kind: 'review', subject: ticket.subject, head: p.head}
-        : null;
+      if (p.reason !== 'IDENTITY_ONLY' || p.head === ticket.head) return null;
+      return {shadow: true, fresh: true, repositoryId: resolved.repositoryId, kind: 'review', subject: ticket.subject, head: p.head};
     }
     if (ticket.kind === 'check') {
       const c = await readCheckRunIdentity(ticket.subject, request, explicitScope);
