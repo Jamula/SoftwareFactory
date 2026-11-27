@@ -119,8 +119,28 @@ const COORDINATOR_TESTS = [
   'coordinator', 'event-journal', 'planner', 'project-config', 'provider-adapters',
   'retry', 'review-intent-store', 'review-provider', 'sqlite-state-store'
 ].map(stem => `tests/engineering-coordinator/${stem}.test.mjs`);
+const PINNED_CONTRACT_TESTS = [
+  'tests/engineering-coordinator/coordinator.test.mjs',
+  'tests/engineering-coordinator/planner.test.mjs',
+  'tests/engineering-coordinator/project-config.test.mjs',
+  'tests/engineering-factory/aspire-telemetry-smoke.test.mjs',
+  'tests/engineering-factory/contract-routing.test.mjs',
+  'tests/engineering-factory/copilot-hosted-pilot.test.mjs',
+  'tests/engineering-factory/coverage-evidence.test.mjs',
+  'tests/engineering-factory/local-otel-sdk.test.mjs',
+  'tests/engineering-factory/local-shadow-host.test.mjs',
+  'tests/engineering-factory/locked-build-cache.test.mjs',
+  'tests/engineering-factory/platform-merge-gates.test.mjs',
+  'tests/engineering-factory/run.test.mjs',
+  'tests/engineering-factory/validation-diagnosis.test.mjs',
+  'tests/engineering-factory/verify-dashboard-metrics.test.mjs'
+];
+const runnableTestPath = value => path(value) &&
+  /^tests\/engineering-(?:factory|coordinator)\/[a-z0-9-]+\.test\.mjs$/.test(value);
 const ROOT_DOC_FILES = new Set(['AGENTS.md', 'CONTRIBUTING.md', 'LICENSE', 'NOTICE', 'VERSION', '.gitignore']);
 const LOCK_FILES = new Set(['package.json', 'package-lock.json']);
+
+export const defaultSoftwareFactoryTestInventory = () => [...COORDINATOR_TESTS, ...FACTORY_TESTS];
 
 const requiredGateContract = () => ({
   lineCoveragePct: 98,
@@ -130,8 +150,18 @@ const requiredGateContract = () => ({
   windowsRuntime: true
 });
 
-export function softwareFactoryCatalog(revision) {
+export function softwareFactoryCatalog(revision, testInventory = defaultSoftwareFactoryTestInventory()) {
   if (!sha(revision)) return blocked('REVISION_UNKNOWN');
+  if (!list(testInventory, 120, runnableTestPath) || !unique(testInventory))
+    return blocked('TEST_INVENTORY_UNKNOWN');
+  const coordinatorTests = testInventory.filter(item => item.startsWith('tests/engineering-coordinator/')).sort();
+  const factoryTests = testInventory.filter(item => item.startsWith('tests/engineering-factory/')).sort();
+  if (coordinatorTests.length === 0 || coordinatorTests.length > 60 ||
+      factoryTests.length === 0 || factoryTests.length > 60)
+    return blocked('TEST_INVENTORY_UNKNOWN');
+  const inventorySet = new Set(testInventory);
+  if (!PINNED_CONTRACT_TESTS.every(suite => inventorySet.has(suite)))
+    return blocked('TEST_INVENTORY_UNALIGNED');
   return {
     repository: SF_REPOSITORY,
     revision,
@@ -170,7 +200,7 @@ export function softwareFactoryCatalog(revision) {
         root: 'tools/engineering-coordinator',
         interface: 'tools/engineering-coordinator/coordinator.mjs',
         decision: 'docs/COORDINATOR-EVENT-JOURNAL.md',
-        tests: [...COORDINATOR_TESTS],
+        tests: coordinatorTests,
         dependsOn: ['coordinator-config', 'coordinator-agents']
       },
       {
@@ -180,7 +210,7 @@ export function softwareFactoryCatalog(revision) {
         root: 'tests/engineering-coordinator',
         interface: 'tests/engineering-coordinator/coordinator.test.mjs',
         decision: 'docs/COORDINATOR-REVIEW-PROVIDER.md',
-        tests: [...COORDINATOR_TESTS],
+        tests: [...coordinatorTests],
         dependsOn: ['engineering-coordinator']
       },
       {
@@ -190,7 +220,7 @@ export function softwareFactoryCatalog(revision) {
         root: 'tools/engineering-factory',
         interface: 'package.json',
         decision: 'docs/ENGINEERING-STANDARDS.md',
-        tests: [...FACTORY_TESTS],
+        tests: factoryTests,
         dependsOn: ['engineering-coordinator']
       },
       {
@@ -200,7 +230,7 @@ export function softwareFactoryCatalog(revision) {
         root: 'tests/engineering-factory',
         interface: 'tests/engineering-factory/coverage-reporter.mjs',
         decision: 'docs/VERIFIED-OUTCOME-REPORTING.md',
-        tests: [...FACTORY_TESTS],
+        tests: [...factoryTests],
         dependsOn: ['engineering-factory']
       },
       {
@@ -268,13 +298,26 @@ const fastFeedbackDenied = reason => ({
 export function planChangeGraphFastFeedback(evidence, expected) {
   if (!ownData(expected, ['repository', 'revision', 'head']) ||
       expected.repository !== SF_REPOSITORY || !sha(expected.revision) || !sha(expected.head) ||
-      !ownData(evidence, ['repository', 'producer', 'verified', 'complete', 'base', 'head', 'paths']) ||
+      !ownData(evidence, ['repository', 'producer', 'verified', 'complete', 'base', 'head', 'paths', 'testInventory']) ||
       evidence.repository !== SF_REPOSITORY || evidence.producer !== 'trusted-ci' ||
       evidence.verified !== true || evidence.complete !== true ||
       evidence.base !== expected.revision || evidence.head !== expected.head)
     return fastFeedbackDenied('CHANGE_EVIDENCE_UNKNOWN');
   if (!list(evidence.paths, 500, path) || evidence.paths.length === 0 || !unique(evidence.paths))
     return fastFeedbackDenied('CHANGES_UNKNOWN');
+  let deletedSet = new Set();
+  if (Object.hasOwn(evidence, 'deletedPaths')) {
+    if (!ownData(evidence, ['deletedPaths']) || !list(evidence.deletedPaths, 500, path) || !unique(evidence.deletedPaths))
+      return fastFeedbackDenied('CHANGES_UNKNOWN');
+    deletedSet = new Set(evidence.deletedPaths);
+  }
+  const catalog = softwareFactoryCatalog(expected.revision, evidence.testInventory);
+  if (catalog.state === 'blocked') return fastFeedbackDenied(catalog.reason);
+  const pathSet = new Set(evidence.paths);
+  const inventorySet = new Set(evidence.testInventory);
+  if ([...deletedSet].some(deleted => !pathSet.has(deleted) || inventorySet.has(deleted)) ||
+      evidence.paths.some(item => runnableTestPath(item) && !deletedSet.has(item) && !inventorySet.has(item)))
+    return fastFeedbackDenied('TEST_INVENTORY_UNALIGNED');
   const normalizedPaths = new Set();
   let lockChanged = false;
   for (const item of evidence.paths) {
@@ -284,13 +327,11 @@ export function planChangeGraphFastFeedback(evidence, expected) {
       normalizedPaths.add(item);
     }
   }
-  const catalog = softwareFactoryCatalog(expected.revision);
   const mapped = planKnowledgeRoutes(catalog, {repository: expected.repository, revision: expected.revision}, [...normalizedPaths]);
   if (mapped.state !== 'shadow-mapped') return fastFeedbackDenied(mapped.reason);
   const tests = new Set(mapped.routes.flatMap(route => route.tests));
   if (lockChanged) {
-    for (const suite of COORDINATOR_TESTS) tests.add(suite);
-    for (const suite of FACTORY_TESTS) tests.add(suite);
+    for (const suite of evidence.testInventory) tests.add(suite);
   }
   return {
     state: 'shadow-mapped',

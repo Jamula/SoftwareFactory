@@ -15,7 +15,7 @@ The evaluator exposes pure, offline, shadow-only metadata helpers for repository
 - `docs` and root governance files (`README.md`, `SECURITY.md`, `AGENTS.md`, `CONTRIBUTING.md`, `LICENSE`, `NOTICE`, `VERSION`, `.gitignore`)
 - `package.json` and `package-lock.json`
 
-Every mapped or blocked result strictly preserves `fullValidationRequired: true`, `requiredValidation: 'full'`, `skipRequiredChecks: false`, and mandatory required gates (`98%` line coverage, `95%` branch coverage, security checks, and Linux/Windows runtime verification). Unmapped, incomplete, duplicate, or untrusted change inventories fail closed.
+Every mapped or blocked result strictly preserves `fullValidationRequired: true`, `requiredValidation: 'full'`, `skipRequiredChecks: false`, and mandatory required gates (`98%` line coverage, `95%` branch coverage, security checks, and Linux/Windows runtime verification). `planChangeGraphFastFeedback` reconciles selection against a trusted candidate-head `testInventory` (and optional `deletedPaths`), automatically including newly added or renamed `.test.mjs` suites, excluding deleted suites, and blocking fail-closed (`TEST_INVENTORY_UNKNOWN` or `TEST_INVENTORY_UNALIGNED`) when inventory alignment cannot be established. Unmapped, incomplete, duplicate, or untrusted change inventories also fail closed.
 
 The `trusted-ci` marker is a data contract, not an authentication mechanism. A protected workflow adapter must bind it to authoritative GitHub metadata before supplying the evidence.
 

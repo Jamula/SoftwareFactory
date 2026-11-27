@@ -247,6 +247,12 @@ test('verifyCiCacheEntry verifies all three CI bottleneck targets across linux-x
   cleanLayout: true
  };
  assert.equal(verifyCiCacheEntry(ciInput({isFork: true}), baseEntry).reason, 'UNTRUSTED_PROVENANCE');
+ const staleManifest = verifyCiCacheEntry(ciInput({packageJsonDigest: '0'.repeat(64)}), baseEntry);
+ assert.equal(staleManifest.reason, 'DIGEST_MISMATCH');
+ assert.equal(staleManifest.candidate, false);
+ const omitDevSwitch = verifyCiCacheEntry(ciInput({npmCiFlags: 'omit=dev'}), baseEntry);
+ assert.equal(omitDevSwitch.reason, 'TOOLCHAIN_OR_OS_DRIFT');
+ assert.equal(omitDevSwitch.candidate, false);
  for (const malformed of [
   null, {}, [], new Proxy(baseEntry, {}),
   {...baseEntry, target: 'unknown'},
