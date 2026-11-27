@@ -26,6 +26,8 @@ export const ONBOARDING_STACK_PROFILES = Object.freeze({
   'baseline-95-90': Object.freeze({
     defaultBranch: 'main',
     mergeMethod: 'squash',
+    lockBranchAndMerge: false,
+    minRequiredChecks: 1,
     coverage: Object.freeze({ line: 95, branch: 90 }),
     maxActive: 1,
     checks: Object.freeze([Object.freeze({ name: 'build-test', appId: 12345 })]),
@@ -35,6 +37,8 @@ export const ONBOARDING_STACK_PROFILES = Object.freeze({
   'web-genealogy-95-90': Object.freeze({
     defaultBranch: 'main',
     mergeMethod: 'squash',
+    lockBranchAndMerge: true,
+    minRequiredChecks: 1,
     coverage: Object.freeze({ line: 95, branch: 90 }),
     maxActive: 1,
     checks: Object.freeze([Object.freeze({ name: 'build-test', appId: 12345 })]),
@@ -44,6 +48,8 @@ export const ONBOARDING_STACK_PROFILES = Object.freeze({
   'ios-webkit-97-90': Object.freeze({
     defaultBranch: 'main',
     mergeMethod: 'squash',
+    lockBranchAndMerge: true,
+    minRequiredChecks: 2,
     coverage: Object.freeze({ line: 97, branch: 90 }),
     maxActive: 2,
     checks: Object.freeze([
@@ -59,6 +65,8 @@ export const ONBOARDING_STACK_PROFILES = Object.freeze({
   'strict-up-to-date-migration-gated': Object.freeze({
     defaultBranch: 'trunk',
     mergeMethod: 'merge',
+    lockBranchAndMerge: true,
+    minRequiredChecks: 1,
     coverage: Object.freeze({ line: 100, branch: 100 }),
     maxActive: 1,
     checks: Object.freeze([Object.freeze({ name: 'fictional-hub-gate', appId: 23456 })]),
@@ -553,8 +561,16 @@ const quoteJsonString = value => {
     const mapped = JSON_CHAR_ESCAPES[code];
     if (mapped !== undefined) {
       out += mapped;
-    } else if (code < 0x20) {
+    } else if (code < 0x20 || (code >= 0xdc00 && code <= 0xdfff)) {
       out += `\\u${code.toString(16).padStart(4, '0')}`;
+    } else if (code >= 0xd800 && code <= 0xdbff) {
+      const next = i + 1 < value.length ? value.charCodeAt(i + 1) : 0;
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        out += value[i] + value[i + 1];
+        i += 1;
+      } else {
+        out += `\\u${code.toString(16).padStart(4, '0')}`;
+      }
     } else {
       out += value[i];
     }
@@ -966,6 +982,12 @@ export function buildReadOnlyOnboardingPlan(discoveryInput) {
       !strictPolicyShape(candidatePolicy) ||
       candidatePolicy.owners.some(o => !text(o.prefix, 200) || o.prefix.includes('//'))) {
     return denyDiscovery('DISCOVERED_REPOSITORY_INVALID');
+  }
+
+  if ((profile.lockBranchAndMerge &&
+        (defaultBranch !== profile.defaultBranch || mergeMethod !== profile.mergeMethod)) ||
+      candidatePolicy.checks.length < profile.minRequiredChecks) {
+    return denyDiscovery('LOCAL_GATE_WEAKENED');
   }
 
   const rawExistingFiles = hasDiscovered

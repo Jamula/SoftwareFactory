@@ -1072,8 +1072,9 @@ test('buildReadOnlyOnboardingPlan plans greenfield and existing-repository onboa
   assert.equal(publicGreenfield.executionOptions.copilotCloudAutomationsSupported, false);
 
   // Existing-repository mode preserves Spellbook 97/90, FamilyHub trunk/100/100, and custom stricter discovered gates
+  // Also exercises unpaired UTF-16 surrogates, valid surrogate pairs, quotes, backslashes, and control chars in hook-free JSON
   const mutableChecks = [
-    { name: 'fictional-"webkit"\\gate\u0001', appId: 34567 },
+    { name: 'fictional-"webkit"\\gate\u0001-🚀-\ud800x-\udfff-\ud800', appId: 34567 },
     { name: 'fictional-ios-gate', appId: 34568 }
   ];
   const mutableOwners = [
@@ -1131,7 +1132,58 @@ test('buildReadOnlyOnboardingPlan plans greenfield and existing-repository onboa
   assert.equal(spellbookPlan.reviewPolicy.formalApprovedReviewRequired, true);
   assert.equal(spellbookPlan.reviewPolicy.allowCommentedBotApproval, false);
   assert.equal(spellbookPlan.executionOptions.copilotCloudAutomationsSupported, true);
+  assert.equal(
+    spellbookPlan.plannedFiles[1].content,
+    `${JSON.stringify(spellbookPlan.policy, null, 2)}\n`
+  );
+  assert.equal(
+    Buffer.from(spellbookPlan.plannedFiles[1].content, 'utf8').toString('utf8'),
+    spellbookPlan.plannedFiles[1].content
+  );
+  assert.equal(spellbookPlan.plannedFiles[1].content.includes('\ufffd'), false);
   assert.deepEqual(JSON.parse(spellbookPlan.plannedFiles[1].content), spellbookPlan.policy);
+
+  // Surrogate-escaped policy content reruns idempotently in planConsumerBootstrap without EXISTING_FILE_CONFLICT
+  const surrogateBootstrapRerun = planConsumerBootstrap({
+    repository: spellbookPlan.repository,
+    repositoryId: spellbookPlan.repositoryId,
+    workflowPin: spellbookPlan.workflowPin,
+    checks: structuredClone(spellbookPlan.policy.checks),
+    owners: structuredClone(spellbookPlan.policy.owners),
+    reviewers: structuredClone(spellbookPlan.policy.reviewers),
+    existingState: {
+      defaultBranch: spellbookPlan.policy.defaultBranch,
+      mergeMethod: spellbookPlan.policy.mergeMethod,
+      lineCoverageGate: spellbookPlan.policy.coverage.line,
+      branchCoverageGate: spellbookPlan.policy.coverage.branch,
+      maxConcurrency: spellbookPlan.policy.maxActive,
+      existingFiles: [...spellbookPlan.plannedFiles]
+    }
+  });
+  assert.equal(surrogateBootstrapRerun.valid, true);
+  assert.equal(surrogateBootstrapRerun.reason, 'IDEMPOTENT_NOOP');
+
+  // Flexible baseline-95-90 profile accepts custom discovered branch and mergeMethod
+  const customBaselineExisting = buildReadOnlyOnboardingPlan({
+    mode: 'existing-repository',
+    repository: 'example/custom-existing',
+    repositoryId: 900399,
+    pinnedFactorySha: reviewedWorkflowSha,
+    stackProfile: 'baseline-95-90',
+    discoveredRepository: {
+      defaultBranch: 'release',
+      mergeMethod: 'rebase',
+      checks: [{ name: 'ci-gate', appId: 15368 }],
+      reviewers: ['synthetic-reviewer'],
+      owners: [{ prefix: 'src/', owner: 'synthetic-owner' }],
+      coverage: { line: 95, branch: 90 },
+      maxConcurrency: 1,
+      existingFiles: []
+    }
+  });
+  assert.equal(customBaselineExisting.valid, true);
+  assert.equal(customBaselineExisting.policy.defaultBranch, 'release');
+  assert.equal(customBaselineExisting.policy.mergeMethod, 'rebase');
 
   // Inferred existing-repository mode when complete discoveredRepository inventory is provided and mode omitted
   const hubPlan = buildReadOnlyOnboardingPlan({
@@ -1632,6 +1684,35 @@ test('buildReadOnlyOnboardingPlan fails closed on >5 mandatory settings, unsafe 
       'LOCAL_GATE_WEAKENED'
     );
   }
+
+  // Named consumer profiles reject conflicting defaultBranch/mergeMethod or fewer required checks than profile floor
+  assert.equal(
+    buildReadOnlyOnboardingPlan({
+      ...validMinimal,
+      stackProfile: 'strict-up-to-date-migration-gated',
+      mode: 'existing-repository',
+      discoveredRepository: { ...completeDiscovered, defaultBranch: 'main', mergeMethod: 'squash' }
+    }).reason,
+    'LOCAL_GATE_WEAKENED'
+  );
+  assert.equal(
+    buildReadOnlyOnboardingPlan({
+      ...validMinimal,
+      stackProfile: 'strict-up-to-date-migration-gated',
+      mode: 'existing-repository',
+      discoveredRepository: { ...completeDiscovered, defaultBranch: 'trunk', mergeMethod: 'squash' }
+    }).reason,
+    'LOCAL_GATE_WEAKENED'
+  );
+  assert.equal(
+    buildReadOnlyOnboardingPlan({
+      ...validMinimal,
+      stackProfile: 'ios-webkit-97-90',
+      mode: 'existing-repository',
+      discoveredRepository: { ...completeDiscovered, checks: [{ name: 'only-one-gate', appId: 34567 }] }
+    }).reason,
+    'LOCAL_GATE_WEAKENED'
+  );
 
   // Discovered repository and existing files structural validation
   const getterDiscovered = { ...completeDiscovered };
