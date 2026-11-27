@@ -76,10 +76,11 @@ function normalizeSnapshot(snapshot) {
   const encodedPayloads = new Map();
   let previousLane = '';
   for (const entry of snapshot.lanes) {
-    if (!exactRecord(entry, ['laneId', 'generation', 'owner', 'leaseUntil', 'payload', 'workKey', 'workGeneration']) ||
+    if (!exactRecord(entry, ['laneId', 'generation', 'owner', 'leaseUntil', 'payload',
+      'workKey', 'workGeneration', 'checkpointRevision']) ||
         !validLane(entry.laneId) || entry.laneId <= previousLane || !positive(entry.generation) ||
         !validOwner(entry.owner) || !time(entry.leaseUntil) || !plainObject(entry.payload) ||
-        !validAssociation(entry.workKey, entry.workGeneration)) return null;
+        !validAssociation(entry.workKey, entry.workGeneration) || !time(entry.checkpointRevision)) return null;
     const payload = canonicalValue(entry.payload);
     if (!payload) return null;
     const encoded = JSON.stringify(payload);
@@ -88,7 +89,8 @@ function normalizeSnapshot(snapshot) {
     encodedPayloads.set(entry.laneId, encoded);
     lanes.push(Object.freeze({
       laneId: entry.laneId, generation: entry.generation, owner: entry.owner,
-      leaseUntil: entry.leaseUntil, payload, workKey: entry.workKey, workGeneration: entry.workGeneration
+      leaseUntil: entry.leaseUntil, payload, workKey: entry.workKey,
+      workGeneration: entry.workGeneration, checkpointRevision: entry.checkpointRevision
     }));
   }
   const workClaims = [];
@@ -154,7 +156,9 @@ export function createSQLiteStateStore(filename) {
     db.exec('BEGIN IMMEDIATE');
     const exists = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='coordinator_lane_work'").get();
     if (!exists) {
-      db.exec("CREATE TABLE coordinator_lane_work (lane_id TEXT PRIMARY KEY, generation INTEGER NOT NULL, work_key TEXT, work_generation INTEGER); INSERT INTO coordinator_lane_work SELECT lane_id, generation, '', 0 FROM coordinator_lanes");
+      db.exec("CREATE TABLE coordinator_lane_work (lane_id TEXT PRIMARY KEY, generation INTEGER NOT NULL, work_key TEXT, work_generation INTEGER, checkpoint_revision INTEGER NOT NULL DEFAULT 0); INSERT INTO coordinator_lane_work SELECT lane_id, generation, '', 0, 0 FROM coordinator_lanes");
+    } else if (!db.prepare("SELECT 1 FROM pragma_table_info('coordinator_lane_work') WHERE name='checkpoint_revision'").get()) {
+      db.exec('ALTER TABLE coordinator_lane_work ADD COLUMN checkpoint_revision INTEGER NOT NULL DEFAULT 0');
     }
     db.exec('CREATE TABLE IF NOT EXISTS coordinator_snapshot_fence (id INTEGER PRIMARY KEY CHECK (id = 1), snapshot_generation INTEGER NOT NULL, last_snapshot_at INTEGER NOT NULL, observed_at INTEGER NOT NULL); INSERT OR IGNORE INTO coordinator_snapshot_fence VALUES (1, 0, 0, 0)');
     db.exec('COMMIT');
@@ -166,7 +170,7 @@ export function createSQLiteStateStore(filename) {
   const read = db.prepare('SELECT lane_id, generation, owner, lease_until, payload FROM coordinator_lanes WHERE lane_id = ?');
   const countLanes = db.prepare('SELECT count(*) AS total FROM coordinator_lanes');
   const countWork = db.prepare('SELECT count(*) AS total FROM coordinator_work_claims');
-  const exportLanes = db.prepare('SELECT l.lane_id, l.generation, l.owner, l.lease_until, l.payload, w.work_key, w.work_generation FROM coordinator_lanes AS l LEFT JOIN coordinator_lane_work AS w ON w.lane_id = l.lane_id AND w.generation = l.generation ORDER BY l.lane_id ASC');
+  const exportLanes = db.prepare('SELECT l.lane_id, l.generation, l.owner, l.lease_until, l.payload, w.work_key, w.work_generation, w.checkpoint_revision FROM coordinator_lanes AS l LEFT JOIN coordinator_lane_work AS w ON w.lane_id = l.lane_id AND w.generation = l.generation ORDER BY l.lane_id ASC');
   const exportWork = db.prepare('SELECT work_key, lane_id, generation, owner, lease_until FROM coordinator_work_claims ORDER BY work_key ASC');
   const exportReservations = db.prepare('SELECT lane_id, expires FROM coordinator_reservations WHERE expires > ? ORDER BY lane_id ASC');
   const readFence = db.prepare('SELECT snapshot_generation, last_snapshot_at, observed_at FROM coordinator_snapshot_fence WHERE id = 1');
@@ -177,7 +181,8 @@ export function createSQLiteStateStore(filename) {
   const prune = db.prepare('DELETE FROM coordinator_reservations WHERE expires <= ?');
   const reserve = db.prepare('INSERT INTO coordinator_reservations(lane_id,expires) VALUES(?,?) ON CONFLICT(lane_id) DO UPDATE SET expires=max(coordinator_reservations.expires,excluded.expires)');
   const put = db.prepare('INSERT INTO coordinator_lanes(lane_id,generation,owner,lease_until,payload) VALUES(?,?,?,?,?) ON CONFLICT(lane_id) DO UPDATE SET generation=excluded.generation, owner=excluded.owner, lease_until=excluded.lease_until, payload=excluded.payload');
-  const putAssociation = db.prepare('INSERT INTO coordinator_lane_work VALUES(?,?,?,?) ON CONFLICT(lane_id) DO UPDATE SET generation=excluded.generation, work_key=excluded.work_key, work_generation=excluded.work_generation');
+  const putAssociation = db.prepare('INSERT INTO coordinator_lane_work(lane_id,generation,work_key,work_generation,checkpoint_revision) VALUES(?,?,?,?,?) ON CONFLICT(lane_id) DO UPDATE SET generation=excluded.generation, work_key=excluded.work_key, work_generation=excluded.work_generation, checkpoint_revision=excluded.checkpoint_revision');
+  const bumpCheckpointRevision = db.prepare('UPDATE coordinator_lane_work SET checkpoint_revision = checkpoint_revision + 1 WHERE lane_id = ? AND generation = ? AND checkpoint_revision < 9007199254740991');
   const association = ' AND EXISTS (SELECT 1 FROM coordinator_lane_work WHERE coordinator_lane_work.lane_id=coordinator_lanes.lane_id AND coordinator_lane_work.generation=coordinator_lanes.generation AND work_key IS ? AND work_generation IS ?)';
   const update = db.prepare('UPDATE coordinator_lanes SET payload=? WHERE lane_id=? AND generation=? AND owner=? AND lease_until>?' + association);
   const renewLease = db.prepare('UPDATE coordinator_lanes SET lease_until=? WHERE lane_id=? AND generation=? AND owner=? AND lease_until>?' + association);
@@ -242,7 +247,7 @@ export function createSQLiteStateStore(filename) {
         const payload = current?.payload ?? '{}';
         const state = JSON.parse(payload);
         put.run(laneId, generation, owner, now + leaseMs, payload);
-        putAssociation.run(laneId, generation, workKey, workGeneration);
+        putAssociation.run(laneId, generation, workKey, workGeneration, 0);
         if (workKey !== null) putWork.run(workKey, laneId, workGeneration, owner, now + leaseMs);
         bumpObserved.run(now);
         db.exec('COMMIT');
@@ -268,7 +273,8 @@ export function createSQLiteStateStore(filename) {
           db.exec('ROLLBACK');
           return false;
         }
-        if (Number(update.run(encoded, laneId, generation, owner, now, workKey, workGeneration).changes) !== 1) {
+        if (Number(update.run(encoded, laneId, generation, owner, now, workKey, workGeneration).changes) !== 1 ||
+            Number(bumpCheckpointRevision.run(laneId, generation).changes) !== 1) {
           db.exec('ROLLBACK');
           return false;
         }
@@ -343,13 +349,14 @@ export function createSQLiteStateStore(filename) {
           const payload = plainObject(parsed) ? canonicalValue(parsed) : undefined;
           if (!payload || row.payload.length > 65536 || !validLane(row.lane_id) ||
               !positive(row.generation) || !validOwner(row.owner) || !time(row.lease_until) ||
-              !validAssociation(row.work_key, row.work_generation)) {
+              !validAssociation(row.work_key, row.work_generation) || !time(row.checkpoint_revision)) {
             db.exec('ROLLBACK');
             return snapshotFailure('CORRUPT_STATE');
           }
           lanes.push(Object.freeze({
             laneId: row.lane_id, generation: row.generation, owner: row.owner,
-            leaseUntil: row.lease_until, payload, workKey: row.work_key, workGeneration: row.work_generation
+            leaseUntil: row.lease_until, payload, workKey: row.work_key,
+            workGeneration: row.work_generation, checkpointRevision: row.checkpoint_revision
           }));
         }
         const workClaims = exportWork.all().map(row => Object.freeze({
@@ -406,8 +413,15 @@ export function createSQLiteStateStore(filename) {
           db.exec('ROLLBACK');
           return snapshotFailure('CLOCK_ROLLBACK');
         }
+        const localActiveReservations = exportReservations.all(now);
+        const retainedIncomingReservations = content.reservations.filter(item => item.expires > now);
+        const combinedReservations = new Set([
+          ...localActiveReservations.map(row => row.lane_id),
+          ...retainedIncomingReservations.map(item => item.laneId)
+        ]);
         if (hasActiveLocalLease.get(now, now) ||
-            exportReservations.all(now).some(row => (laneMap.get(row.lane_id)?.leaseUntil ?? 0) > now)) {
+            combinedReservations.size > maxActiveReservations ||
+            localActiveReservations.some(row => (laneMap.get(row.lane_id)?.leaseUntil ?? 0) > now)) {
           db.exec('ROLLBACK');
           return snapshotFailure('ACTIVE_OWNERSHIP_CONFLICT');
         }
@@ -421,7 +435,7 @@ export function createSQLiteStateStore(filename) {
             let localParsed;
             try { localParsed = JSON.parse(row.payload); } catch { localParsed = null; }
             const localCanonical = plainObject(localParsed) ? canonicalValue(localParsed) : undefined;
-            if (!localCanonical) {
+            if (!localCanonical || !time(row.checkpoint_revision)) {
               db.exec('ROLLBACK');
               return snapshotFailure('CORRUPT_STATE');
             }
@@ -432,13 +446,14 @@ export function createSQLiteStateStore(filename) {
               db.exec('ROLLBACK');
               return snapshotFailure('ACTIVE_OWNERSHIP_CONFLICT');
             }
-            if ((row.lease_until === 0 && incoming.leaseUntil > 0) ||
+            if (incoming.checkpointRevision < row.checkpoint_revision ||
+                (row.lease_until === 0 && incoming.leaseUntil > 0) ||
                 (incoming.leaseUntil > 0 && incoming.leaseUntil < row.lease_until)) {
               db.exec('ROLLBACK');
               return snapshotFailure('STALE_GENERATION');
             }
-            if (incomingEncoded !== localEncoded &&
-                !(row.lease_until > 0 && localEncoded === '{}' && incoming.leaseUntil === 0)) {
+            if ((incoming.checkpointRevision === row.checkpoint_revision && incomingEncoded !== localEncoded) ||
+                (row.lease_until === 0 && incoming.checkpointRevision > row.checkpoint_revision)) {
               db.exec('ROLLBACK');
               return snapshotFailure('ACTIVE_OWNERSHIP_CONFLICT');
             }
@@ -465,13 +480,12 @@ export function createSQLiteStateStore(filename) {
         prune.run(now);
         for (const lane of content.lanes) {
           put.run(lane.laneId, lane.generation, lane.owner, lane.leaseUntil, encodedPayloads.get(lane.laneId));
-          putAssociation.run(lane.laneId, lane.generation, lane.workKey, lane.workGeneration);
+          putAssociation.run(lane.laneId, lane.generation, lane.workKey, lane.workGeneration, lane.checkpointRevision);
         }
         for (const claim of content.workClaims)
           putWork.run(claim.workKey, claim.laneId, claim.generation, claim.owner, claim.leaseUntil);
-        for (const reservation of content.reservations) {
-          if (reservation.expires > now) reserve.run(reservation.laneId, reservation.expires);
-        }
+        for (const reservation of retainedIncomingReservations)
+          reserve.run(reservation.laneId, reservation.expires);
         writeFence.run(content.snapshotGeneration, content.exportedAt, now);
         db.exec('COMMIT');
         return Object.freeze({

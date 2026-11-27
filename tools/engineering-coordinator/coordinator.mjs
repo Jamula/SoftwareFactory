@@ -42,23 +42,63 @@ export async function runTick({
         !Number.isSafeInteger(claim.workGeneration) || claim.workGeneration < 1)
       return {lane: item.lane, taskId: item.id, state: 'blocked', reason: 'WORK_RESERVATION_UNKNOWN'};
     let lastObservedTime = now;
+    let elapsedTimerMs = 0;
     let releaseClaim = true;
-    const renewLease = () => {
+    const baseIntervalMs = Math.floor(config.limits.leaseMs / 3);
+    const sampleClock = () => {
       let currentTime;
       try { currentTime = clock(); } catch { return {reason: 'CLOCK_UNAVAILABLE'}; }
       if (!Number.isSafeInteger(currentTime) || currentTime < lastObservedTime) return {reason: 'CLOCK_UNAVAILABLE'};
       lastObservedTime = currentTime;
-      if (currentTime >= executionDeadline) return {reason: 'EXECUTION_TIMEOUT'};
+      return currentTime >= executionDeadline ? {reason: 'EXECUTION_TIMEOUT'} : {time: currentTime};
+    };
+    const renewLease = () => {
+      const observed = sampleClock();
+      if (observed.reason) return observed;
       try {
-        const renewed = store.renew(item.lane, claim.generation, workerId, currentTime, config.limits.leaseMs,
+        const renewed = store.renew(item.lane, claim.generation, workerId, observed.time, config.limits.leaseMs,
           workKey, claim.workGeneration);
-        return renewed && Number.isSafeInteger(currentTime + config.limits.leaseMs) &&
-          Number.isSafeInteger(renewed.leaseUntil) && renewed.leaseUntil >= currentTime + config.limits.leaseMs ?
-          {time: currentTime} : {reason: 'LEASE_LOST'};
+        return renewed && Number.isSafeInteger(observed.time + config.limits.leaseMs) &&
+          Number.isSafeInteger(renewed.leaseUntil) && renewed.leaseUntil >= observed.time + config.limits.leaseMs ?
+          observed : {reason: 'LEASE_LOST'};
       } catch { return {reason: 'LEASE_UNAVAILABLE'}; }
     };
+    const raceWithDeadline = (operation, tickCheck, onAbort) => {
+      const remainingMs = Math.min(executionBudgetMs - elapsedTimerMs, executionDeadline - lastObservedTime);
+      let stepMs = Math.min(baseIntervalMs, remainingMs);
+      let timer;
+      const failure = new Promise(resolve => {
+        const schedule = () => {
+          timer = setInterval(() => {
+            elapsedTimerMs += stepMs;
+            const checked = elapsedTimerMs >= executionBudgetMs ? {reason: 'EXECUTION_TIMEOUT'} : tickCheck();
+            if (checked.reason) {
+              clearInterval(timer);
+              resolve(checked);
+              onAbort?.();
+              return;
+            }
+            const nextStepMs = Math.min(baseIntervalMs, executionBudgetMs - elapsedTimerMs,
+              executionDeadline - checked.time);
+            if (nextStepMs < stepMs) {
+              clearInterval(timer);
+              stepMs = nextStepMs;
+              schedule();
+            }
+          }, stepMs);
+        };
+        schedule();
+      });
+      return Promise.race([
+        Promise.resolve().then(operation).then(value => ({value})),
+        failure
+      ]).finally(() => clearInterval(timer));
+    };
     try {
-      const evidence = await tracker.readTask(item.id);
+      const firstRead = await raceWithDeadline(() => tracker.readTask(item.id), sampleClock);
+      if (firstRead.reason)
+        return {lane: item.lane, taskId: item.id, state: 'blocked', reason: firstRead.reason};
+      const evidence = firstRead.value;
       if (!evidence?.accepted || evidence.task?.id !== item.id)
         return {lane: item.lane, state: 'blocked', reason: 'TASK_READ_FAILED'};
       if (evidence.task.state !== 'approved')
@@ -67,49 +107,24 @@ export async function runTick({
       if (beforeInspection.reason)
         return {lane: item.lane, taskId: item.id, state: 'blocked', reason: beforeInspection.reason};
       const cancellation = new AbortController();
-      const remainingMs = executionDeadline - beforeInspection.time;
-      const baseIntervalMs = Math.floor(config.limits.leaseMs / 3);
-      let stepMs = Math.min(baseIntervalMs, remainingMs);
-      let elapsedHeartbeatMs = 0;
-      let heartbeat;
-      const scheduleHeartbeat = resolve => {
-        heartbeat = setInterval(() => {
-          elapsedHeartbeatMs += stepMs;
-          const renewed = elapsedHeartbeatMs >= remainingMs ? {reason: 'EXECUTION_TIMEOUT'} : renewLease();
-          if (renewed.reason) {
-            clearInterval(heartbeat);
-            releaseClaim = false;
-            resolve(renewed);
-            cancellation.abort();
-            return;
-          }
-          const nextStepMs = Math.min(baseIntervalMs, remainingMs - elapsedHeartbeatMs,
-            executionDeadline - renewed.time);
-          if (nextStepMs < stepMs) {
-            clearInterval(heartbeat);
-            stepMs = nextStepMs;
-            scheduleHeartbeat(resolve);
-          }
-        }, stepMs);
-      };
-      const leaseFailure = new Promise(scheduleHeartbeat);
-      let inspection;
-      try {
-        inspection = await Promise.race([
-          Promise.resolve().then(() => agent.inspect(byId.get(item.id),
-            {mode: 'shadow', projectKey: config.project.key, signal: cancellation.signal}))
-            .then(review => ({review})),
-          leaseFailure
-        ]);
-      } finally {
-        clearInterval(heartbeat);
-      }
+      const inspection = await raceWithDeadline(
+        () => agent.inspect(byId.get(item.id),
+          {mode: 'shadow', projectKey: config.project.key, signal: cancellation.signal}),
+        renewLease,
+        () => {
+          releaseClaim = false;
+          cancellation.abort();
+        }
+      );
       if (inspection.reason)
         return {lane: item.lane, taskId: item.id, state: 'blocked', reason: inspection.reason};
-      const review = inspection.review;
+      const review = inspection.value;
       if (!review?.accepted || review.shadow !== true)
         return {lane: item.lane, state: 'blocked', reason: 'AGENT_REVIEW_FAILED'};
-      const finalEvidence = await tracker.readTask(item.id);
+      const secondRead = await raceWithDeadline(() => tracker.readTask(item.id), sampleClock);
+      if (secondRead.reason)
+        return {lane: item.lane, taskId: item.id, state: 'blocked', reason: secondRead.reason};
+      const finalEvidence = secondRead.value;
       if (!finalEvidence?.accepted || finalEvidence.task?.id !== item.id)
         return {lane: item.lane, state: 'blocked', reason: 'TASK_READ_FAILED'};
       if (finalEvidence.task.state !== 'approved')

@@ -537,6 +537,43 @@ test('enforces timer-bounded deadline when clock stalls and handles pre/post-ins
   assert.equal(postCheckpoints, 0);
   assert.equal(postReleases, 1);
 
+  // Hung first tracker.readTask and hung second tracker.readTask both time out via timer and release cleanly.
+  let hungFirstReleases = 0;
+  let hungFirstInspections = 0;
+  const hungFirstRead = runTick({
+    config: config(), tasks: [tasks()[0]], agent: {inspect: async () => { hungFirstInspections++; }},
+    workerId: 'worker', now: 1000, maxExecutionMs: 500,
+    tracker: {readTask: () => new Promise(() => {})},
+    store: {...backingStore, release: () => { hungFirstReleases++; return true; }}
+  });
+  await Promise.resolve();
+  t.mock.timers.tick(500);
+  assert.equal((await hungFirstRead).completed[0].reason, 'EXECUTION_TIMEOUT');
+  assert.equal(hungFirstInspections, 0);
+  assert.equal(hungFirstReleases, 1);
+
+  let hungSecondReleases = 0;
+  let hungSecondCheckpoints = 0;
+  let readAttempt = 0;
+  const hungSecondRead = runTick({
+    config: config(), tasks: [tasks()[0]], agent, workerId: 'worker', now: 1000, maxExecutionMs: 500,
+    tracker: {readTask: id => ++readAttempt === 1 ?
+      Promise.resolve({accepted: true, task: {id, state: 'approved'}}) :
+      new Promise(() => {})},
+    store: {
+      ...backingStore,
+      checkpoint: () => { hungSecondCheckpoints++; return true; },
+      release: () => { hungSecondReleases++; return true; }
+    }
+  });
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+  t.mock.timers.tick(500);
+  assert.equal((await hungSecondRead).completed[0].reason, 'EXECUTION_TIMEOUT');
+  assert.equal(hungSecondCheckpoints, 0);
+  assert.equal(hungSecondReleases, 1);
+
   for (const invalidMax of [0, -1, 1.5, 10800001]) {
     assert.equal((await runTick({
       config: config(), tasks: tasks(), store: backingStore, tracker, agent,

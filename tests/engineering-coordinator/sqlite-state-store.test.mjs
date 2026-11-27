@@ -608,6 +608,25 @@ test('fences same-generation lease resurrection, checkpoint clobbering, proto pa
       laneId: 'api', generation: 1, owner: 'worker-a', leaseUntil: 0, payload: {findings: ['critical']}
     });
 
+    // Successive claim (generation 2) inherits non-empty payload '{findings:["critical"]}' at checkpointRevision 0;
+    // runner2 imports the in-flight gen-2 snapshot, then after expiry imports runner1's completed gen-2 checkpoint!
+    const gen2Claim = runner1.claim('api', 'worker-b', 6300, 1000, 4, 'example/alpha#10');
+    assert.equal(gen2Claim.generation, 2);
+    assert.deepEqual(gen2Claim.payload, {findings: ['critical']});
+    const gen2InFlight = runner1.exportSnapshot(6400).snapshot;
+    assert.equal(gen2InFlight.lanes[0].checkpointRevision, 0);
+    assert.equal(runner2.importSnapshot(gen2InFlight, 6500).ok, true);
+    assert.equal(runner1.checkpoint('api', gen2Claim.generation, 'worker-b',
+      {findings: ['second-pass']}, 6600, gen2Claim.workKey, gen2Claim.workGeneration), true);
+    assert.equal(runner1.release('api', gen2Claim.generation, 'worker-b',
+      6700, gen2Claim.workKey, gen2Claim.workGeneration), true);
+    const gen2Completed = runner1.exportSnapshot(7400).snapshot;
+    assert.equal(gen2Completed.lanes[0].checkpointRevision, 1);
+    assert.equal(runner2.importSnapshot(gen2Completed, 7500).ok, true);
+    assert.deepEqual(runner2.get('api'), {
+      laneId: 'api', generation: 2, owner: 'worker-b', leaseUntil: 0, payload: {findings: ['second-pass']}
+    });
+
     // Divergent terminal checkpoint, work-association mismatch, pre-renewal regression, and corrupt local row on same generation.
     const a = createSQLiteStateStore(':memory:');
     const b = createSQLiteStateStore(':memory:');
@@ -645,12 +664,37 @@ test('fences same-generation lease resurrection, checkpoint clobbering, proto pa
       assert.equal(preRenewLocal.importSnapshot(snap2, 2700).reason, 'STALE_GENERATION');
     } finally { preRenewLocal.close(); preRenewRemote.close(); }
 
-    // Total active reservations capped at 32 across multiple observeReserved calls.
+    // Total active reservations capped at 32 across observeReserved AND across importSnapshot union with retained local reservations.
     const capStore = createSQLiteStateStore(':memory:');
+    const remoteResStore = createSQLiteStateStore(':memory:');
     try {
       assert.equal(capStore.observeReserved(Array.from({length: 20}, (_, i) => `r-${i}`), 1000, 5000), true);
       assert.equal(capStore.observeReserved(Array.from({length: 20}, (_, i) => `s-${i}`), 1100, 5000), false);
-    } finally { capStore.close(); }
+      assert.equal(remoteResStore.observeReserved(Array.from({length: 20}, (_, i) => `s-${i}`), 1200, 5000), true);
+      const resSnap = remoteResStore.exportSnapshot(1300).snapshot;
+      assert.equal(capStore.importSnapshot(resSnap, 1400).reason, 'ACTIVE_OWNERSHIP_CONFLICT');
+      assert.equal(capStore.observeReserved([], 1500, 1000), true);
+      assert.equal(capStore.exportSnapshot(1600).ok, true);
+    } finally { capStore.close(); remoteResStore.close(); }
+
+    // Migrating a 4-column coordinator_lane_work table adds checkpoint_revision, and post-release revision divergence is rejected.
+    withDb(upgradeFile => {
+      const legacyFourCol = new DatabaseSync(upgradeFile);
+      legacyFourCol.exec("CREATE TABLE coordinator_lanes (lane_id TEXT PRIMARY KEY, generation INTEGER NOT NULL, owner TEXT NOT NULL, lease_until INTEGER NOT NULL, payload TEXT NOT NULL); CREATE TABLE coordinator_lane_work (lane_id TEXT PRIMARY KEY, generation INTEGER NOT NULL, work_key TEXT, work_generation INTEGER); INSERT INTO coordinator_lanes VALUES ('api', 1, 'w', 0, '{}'); INSERT INTO coordinator_lane_work VALUES ('api', 1, NULL, NULL);");
+      legacyFourCol.close();
+      const upgraded = createSQLiteStateStore(upgradeFile);
+      const postReleaseRemote = createSQLiteStateStore(':memory:');
+      try {
+        const prc = postReleaseRemote.claim('api', 'w', 1000, 1000);
+        postReleaseRemote.checkpoint('api', prc.generation, 'w', {done: true}, 1100);
+        postReleaseRemote.release('api', prc.generation, 'w', 1200);
+        const postReleaseSnap = postReleaseRemote.exportSnapshot(1300).snapshot;
+        assert.equal(upgraded.importSnapshot(postReleaseSnap, 1400).reason, 'ACTIVE_OWNERSHIP_CONFLICT');
+      } finally {
+        upgraded.close();
+        postReleaseRemote.close();
+      }
+    });
 
     // Corrupt local lane payload during same-generation import check and over-limit lanes fail closed.
     const db = new DatabaseSync(filename);
@@ -658,20 +702,20 @@ test('fences same-generation lease resurrection, checkpoint clobbering, proto pa
     const corruptLocal = createSQLiteStateStore(filename);
     const runner3 = createSQLiteStateStore(':memory:');
     try {
-      runner3.importSnapshot(completedSnap, 6300);
-      const nextSnap = runner3.exportSnapshot(6400).snapshot;
-      assert.equal(corruptLocal.importSnapshot(nextSnap, 6500).reason, 'CORRUPT_STATE');
+      runner3.importSnapshot(gen2Completed, 7600);
+      const nextSnap = runner3.exportSnapshot(7700).snapshot;
+      assert.equal(corruptLocal.importSnapshot(nextSnap, 7800).reason, 'CORRUPT_STATE');
       db.exec("DELETE FROM coordinator_lanes; DELETE FROM coordinator_lane_work; DELETE FROM coordinator_work_claims;");
       const insertLane = db.prepare("INSERT INTO coordinator_lanes VALUES (?, 1, 'w', 0, '{}')");
-      const insertAssoc = db.prepare('INSERT INTO coordinator_lane_work VALUES (?, 1, NULL, NULL)');
+      const insertAssoc = db.prepare('INSERT INTO coordinator_lane_work VALUES (?, 1, NULL, NULL, 0)');
       for (let i = 0; i < 250; i++) {
         insertLane.run(`lane-${i}`);
         insertAssoc.run(`lane-${i}`);
       }
-      assert.equal(corruptLocal.claim('extra-lane', 'w', 7000, 1000), null);
+      assert.equal(corruptLocal.claim('extra-lane', 'w', 8000, 1000), null);
       insertLane.run('overflow-lane');
       insertAssoc.run('overflow-lane');
-      assert.equal(corruptLocal.exportSnapshot(7100).reason, 'CORRUPT_STATE');
+      assert.equal(corruptLocal.exportSnapshot(8100).reason, 'CORRUPT_STATE');
     } finally {
       runner3.close();
       corruptLocal.close();
