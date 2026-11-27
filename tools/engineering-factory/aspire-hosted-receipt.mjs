@@ -153,7 +153,7 @@ const CSHARP_ID_CHAR_RE = /[A-Za-z0-9_]/;
 const XML_ATTR_PAIR_RE = /^([A-Za-z]+)="([^"]+)"$/;
 const RETIRED_GITHUB_MODELS_RE = /github\.?models/i;
 const EXCLUDED_AGENT_FRAMEWORK_RE = /(?:^|[^A-Za-z0-9])(?:semantickernel|semantic[_-]kernel|autogen)(?:$|[^A-Za-z0-9])/i;
-const CONTROL_CHAR_RE = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/;
+const NON_PRINTABLE_ASCII_SOURCE_RE = /[^\t\n\r\u0020-\u007e]/;
 
 const EVIDENCE_KEYS = [
   'schemaVersion',
@@ -991,7 +991,8 @@ export function verifyMafSourceManifests(manifests) {
   if (!isPlainDataRecord(manifests, MANIFEST_INPUT_KEYS)) return deny('MANIFEST_INPUT_INVALID');
   for (const key of MANIFEST_INPUT_KEYS) {
     const text = manifests[key];
-    if (typeof text !== 'string' || text.length === 0 || text.length > MAX_SOURCE_CHARS || CONTROL_CHAR_RE.test(text)) {
+    if (typeof text !== 'string' || text.length === 0 || text.length > MAX_SOURCE_CHARS ||
+        NON_PRINTABLE_ASCII_SOURCE_RE.test(text)) {
       return deny('MANIFEST_INPUT_INVALID');
     }
   }

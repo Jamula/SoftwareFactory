@@ -504,6 +504,14 @@ test('verifyMafSourceManifests fails closed on malformed inputs, retired GitHub 
     verifyMafSourceManifests({...loadRepoManifests(), appHostSource: 'a\u0000b'}).reason,
     'MANIFEST_INPUT_INVALID'
   );
+  for (const badTerminator of ['\u0085', '\u2028', '\u2029']) {
+    const smuggled = loadRepoManifests();
+    smuggled.localOtlpBootstrapSource = smuggled.localOtlpBootstrapSource.replace(
+      'Uri baseUri = ParseLoopbackEndpoint(rawEndpoint!);',
+      `Uri baseUri = ParseLoopbackEndpoint(rawEndpoint!); // comment${badTerminator}baseUri = new Uri("https://example.com:4318/");`
+    );
+    assert.equal(verifyMafSourceManifests(smuggled).reason, 'MANIFEST_INPUT_INVALID');
+  }
   assert.equal(
     verifyMafSourceManifests({...loadRepoManifests(), appHostSource: 'x'.repeat(262_145)}).reason,
     'MANIFEST_INPUT_INVALID'
