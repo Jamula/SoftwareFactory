@@ -697,8 +697,11 @@ export async function claimWorkQueueLease(options) {
       if (evictIdx < 0) {
         return {abort: true, result: denyMutation('QUEUE_CAPACITY_EXCEEDED')};
       }
+      if (nextArchived.length >= MAX_ARCHIVED_TERMINAL) {
+        return {abort: true, result: denyMutation('ARCHIVE_CAPACITY_EXHAUSTED')};
+      }
       const [evicted] = workingEntries.splice(evictIdx, 1);
-      nextArchived = [...nextArchived, {workId: evicted.workId, status: evicted.status}].slice(-MAX_ARCHIVED_TERMINAL);
+      nextArchived.push({workId: evicted.workId, status: evicted.status});
     }
 
     const activeEntries = workingEntries.filter(item =>
@@ -795,23 +798,30 @@ export async function renewWorkQueueLease(options) {
   }
   if (!boundedTtl(options.leaseTtlMs)) return denyMutation('INVALID_LEASE_TTL');
 
-  return executeCasTransition(options.refStore, maxCasAttempts, state => {
-    const index = state.entries.findIndex(item => item.workId === options.workId);
+  const refStore = options.refStore;
+  const workId = options.workId;
+  const workerId = options.workerId;
+  const generation = options.generation;
+  const leaseTtlMs = options.leaseTtlMs;
+  const renewNowMs = options.nowMs;
+
+  return executeCasTransition(refStore, maxCasAttempts, state => {
+    const index = state.entries.findIndex(item => item.workId === workId);
     if (index < 0) return {abort: true, result: denyMutation('WORK_NOT_FOUND')};
     const entry = state.entries[index];
-    if (entry.generation !== options.generation) return {abort: true, result: denyMutation('STALE_GENERATION')};
-    if (entry.status !== 'leased' || entry.workerId !== options.workerId) {
+    if (entry.generation !== generation) return {abort: true, result: denyMutation('STALE_GENERATION')};
+    if (entry.status !== 'leased' || entry.workerId !== workerId) {
       return {abort: true, result: denyMutation('LEASE_NOT_HELD')};
     }
-    if (options.nowMs < entry.claimedAtMs) return {abort: true, result: denyMutation('CLOCK_SKEW_REJECTED')};
-    if (options.nowMs >= entry.executionDeadlineMs) return {abort: true, result: denyMutation('EXECUTION_TTL_EXCEEDED')};
-    if (options.nowMs >= entry.leaseExpiresAtMs) return {abort: true, result: denyMutation('LEASE_EXPIRED')};
+    if (renewNowMs < entry.claimedAtMs) return {abort: true, result: denyMutation('CLOCK_SKEW_REJECTED')};
+    if (renewNowMs >= entry.executionDeadlineMs) return {abort: true, result: denyMutation('EXECUTION_TTL_EXCEEDED')};
+    if (renewNowMs >= entry.leaseExpiresAtMs) return {abort: true, result: denyMutation('LEASE_EXPIRED')};
 
-    const clampedExpiry = Math.min(entry.executionDeadlineMs, options.nowMs + options.leaseTtlMs);
+    const clampedExpiry = Math.min(entry.executionDeadlineMs, renewNowMs + leaseTtlMs);
     const updated = {
       ...entry,
       ownedPaths: [...entry.ownedPaths],
-      leaseTtlMs: Math.min(options.leaseTtlMs, entry.maxExecutionMs),
+      leaseTtlMs: Math.min(leaseTtlMs, entry.maxExecutionMs),
       leaseExpiresAtMs: Math.max(entry.leaseExpiresAtMs, clampedExpiry)
     };
     const nextEntries = [...state.entries];
@@ -855,28 +865,35 @@ export async function settleWorkQueueLease(options) {
     return denyMutation('INVALID_SETTLE_OPTIONS');
   }
 
-  return executeCasTransition(options.refStore, maxCasAttempts, state => {
-    const index = state.entries.findIndex(item => item.workId === options.workId);
+  const refStore = options.refStore;
+  const workId = options.workId;
+  const workerId = options.workerId;
+  const generation = options.generation;
+  const outcome = options.outcome;
+  const settleNowMs = options.nowMs;
+
+  return executeCasTransition(refStore, maxCasAttempts, state => {
+    const index = state.entries.findIndex(item => item.workId === workId);
     if (index < 0) return {abort: true, result: denyMutation('WORK_NOT_FOUND')};
     const entry = state.entries[index];
-    if (entry.generation !== options.generation) return {abort: true, result: denyMutation('STALE_GENERATION')};
-    if (entry.status !== 'leased' || entry.workerId !== options.workerId) {
+    if (entry.generation !== generation) return {abort: true, result: denyMutation('STALE_GENERATION')};
+    if (entry.status !== 'leased' || entry.workerId !== workerId) {
       return {abort: true, result: denyMutation('LEASE_NOT_HELD')};
     }
-    if (options.nowMs < entry.claimedAtMs) return {abort: true, result: denyMutation('CLOCK_SKEW_REJECTED')};
-    if (options.outcome === 'completed') {
-      if (options.nowMs >= entry.executionDeadlineMs) return {abort: true, result: denyMutation('EXECUTION_TTL_EXCEEDED')};
-      if (options.nowMs >= entry.leaseExpiresAtMs) return {abort: true, result: denyMutation('LEASE_EXPIRED')};
+    if (settleNowMs < entry.claimedAtMs) return {abort: true, result: denyMutation('CLOCK_SKEW_REJECTED')};
+    if (outcome === 'completed') {
+      if (settleNowMs >= entry.executionDeadlineMs) return {abort: true, result: denyMutation('EXECUTION_TTL_EXCEEDED')};
+      if (settleNowMs >= entry.leaseExpiresAtMs) return {abort: true, result: denyMutation('LEASE_EXPIRED')};
     }
 
-    const finalStatus = options.outcome === 'requeued' && entry.attempts >= entry.maxAttempts
+    const finalStatus = outcome === 'requeued' && entry.attempts >= entry.maxAttempts
       ? 'exhausted'
-      : options.outcome;
+      : outcome;
     const updated = {
       ...entry,
       ownedPaths: [...entry.ownedPaths],
       status: finalStatus,
-      leaseExpiresAtMs: Math.min(entry.leaseExpiresAtMs, options.nowMs)
+      leaseExpiresAtMs: Math.min(entry.leaseExpiresAtMs, settleNowMs)
     };
     const nextEntries = [...state.entries];
     nextEntries[index] = updated;
@@ -931,6 +948,8 @@ export async function reconcileWorkQueueRunStates(options) {
     return denyMutation('INVALID_RECONCILE_INPUT');
   }
 
+  const refStore = options.refStore;
+  const reconcileNowMs = options.nowMs;
   const configuredCeiling = options.config !== undefined ? options.config.limits.maxAttempts : 5;
   const observationsByWorkId = new Map();
   for (let i = 0; i < options.observedRuns.length; i++) {
@@ -946,17 +965,24 @@ export async function reconcileWorkQueueRunStates(options) {
         return denyMutation('INVALID_RECONCILE_INPUT');
       }
     }
-    observationsByWorkId.set(obs.workId, obs);
+    observationsByWorkId.set(obs.workId, Object.freeze({
+      workId: obs.workId,
+      runId: obs.runId,
+      runAttempt: obs.runAttempt,
+      leaseGeneration: obs.leaseGeneration,
+      runState: obs.runState,
+      conclusion: obs.conclusion ?? null
+    }));
   }
 
-  return executeCasTransition(options.refStore, maxCasAttempts, (state, oid) => {
+  return executeCasTransition(refStore, maxCasAttempts, (state, oid) => {
     let nextGeneration = state.nextGeneration;
     const nextEntries = [];
     const newReceipts = [];
     const skipped = [];
 
     for (const entry of state.entries) {
-      if (options.nowMs < entry.claimedAtMs) {
+      if (reconcileNowMs < entry.claimedAtMs) {
         return {abort: true, result: denyMutation('CLOCK_SKEW_REJECTED')};
       }
       const retryLimit = Math.min(entry.maxAttempts, configuredCeiling);
@@ -976,8 +1002,8 @@ export async function reconcileWorkQueueRunStates(options) {
             reason: 'STALE_OR_INACTIVE_RUN'
           }));
         } else {
-          const leaseStillActive = isLeaseActive(entry, options.nowMs);
-          const conclusion = obs.conclusion ?? null;
+          const leaseStillActive = isLeaseActive(entry, reconcileNowMs);
+          const conclusion = obs.conclusion;
           const terminalSuccess = obs.runState === 'run_terminal' && conclusion === 'success';
           if (leaseStillActive || !terminalSuccess) {
             const reclaimedGeneration = nextGeneration++;
@@ -990,7 +1016,7 @@ export async function reconcileWorkQueueRunStates(options) {
               maxAttempts: persistedMaxAttempts,
               status: outcome,
               generation: reclaimedGeneration,
-              leaseExpiresAtMs: Math.min(entry.leaseExpiresAtMs, options.nowMs)
+              leaseExpiresAtMs: Math.min(entry.leaseExpiresAtMs, reconcileNowMs)
             });
             newReceipts.push({
               workId: entry.workId,
@@ -1005,7 +1031,7 @@ export async function reconcileWorkQueueRunStates(options) {
               attempts: entry.attempts,
               maxAttempts: retryLimit,
               outcome,
-              reclaimedAtMs: options.nowMs
+              reclaimedAtMs: reconcileNowMs
             });
             continue;
           }
@@ -1013,7 +1039,7 @@ export async function reconcileWorkQueueRunStates(options) {
       }
 
       if (entry.status === 'leased' &&
-          (options.nowMs >= entry.leaseExpiresAtMs || options.nowMs >= entry.executionDeadlineMs)) {
+          (reconcileNowMs >= entry.leaseExpiresAtMs || reconcileNowMs >= entry.executionDeadlineMs)) {
         const reclaimedGeneration = nextGeneration++;
         const outcome = entry.attempts >= retryLimit ? 'exhausted' : 'requeued';
         nextEntries.push({
@@ -1022,7 +1048,7 @@ export async function reconcileWorkQueueRunStates(options) {
           maxAttempts: persistedMaxAttempts,
           status: outcome,
           generation: reclaimedGeneration,
-          leaseExpiresAtMs: Math.min(entry.leaseExpiresAtMs, options.nowMs)
+          leaseExpiresAtMs: Math.min(entry.leaseExpiresAtMs, reconcileNowMs)
         });
         newReceipts.push({
           workId: entry.workId,
@@ -1037,7 +1063,7 @@ export async function reconcileWorkQueueRunStates(options) {
           attempts: entry.attempts,
           maxAttempts: retryLimit,
           outcome,
-          reclaimedAtMs: options.nowMs
+          reclaimedAtMs: reconcileNowMs
         });
         continue;
       }

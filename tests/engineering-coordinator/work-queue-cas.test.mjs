@@ -1124,12 +1124,92 @@ test('retries transient CAS conflicts and fails closed on proxies, store errors,
   assert.equal(snapshotSafeClaim.lease.lane, 'docs');
   assert.equal(snapshotSafeClaim.lease.maxAttempts, 2);
 
+  // Regression: mid-flight mutations during deferred readRef() in renew, settle, and reconcile MUST NOT alter validated requests!
+  let onDeferredRead = null;
+  const deferredStore = {
+    async readRef(ref) {
+      const snap = mutatingBacking.readRef(ref);
+      await Promise.resolve();
+      if (onDeferredRead !== null) onDeferredRead();
+      return snap;
+    },
+    compareAndSwapRef(req) {
+      return mutatingBacking.compareAndSwapRef(req);
+    }
+  };
+
+  // 1) Renewal mid-flight mutation (leaseTtlMs 50000 -> 0, workerId -> 'hijacked')
+  const mutableRenewOpts = {
+    refStore: deferredStore,
+    workId: snapshotSafeClaim.lease.workId,
+    workerId: 'worker-alpha',
+    generation: snapshotSafeClaim.lease.generation,
+    leaseTtlMs: 50000,
+    nowMs: 50000
+  };
+  onDeferredRead = () => {
+    mutableRenewOpts.leaseTtlMs = 0;
+    mutableRenewOpts.workerId = 'hijacked';
+    mutableRenewOpts.generation = 999;
+  };
+  const snapRenewed = await renewWorkQueueLease(mutableRenewOpts);
+  assert.equal(snapRenewed.ok, true);
+  assert.equal(snapRenewed.lease.leaseExpiresAtMs, 100000);
+
+  // 2) Settlement mid-flight mutation (outcome 'requeued' -> 'completed')
+  const mutableSettleOpts = {
+    refStore: deferredStore,
+    workId: snapshotSafeClaim.lease.workId,
+    workerId: 'worker-alpha',
+    generation: snapshotSafeClaim.lease.generation,
+    outcome: 'requeued',
+    nowMs: 55000
+  };
+  onDeferredRead = () => {
+    mutableSettleOpts.outcome = 'completed';
+    mutableSettleOpts.workerId = 'hijacked';
+  };
+  const snapSettled = await settleWorkQueueLease(mutableSettleOpts);
+  assert.equal(snapSettled.ok, true);
+  assert.equal(snapSettled.lease.status, 'requeued');
+
+  // 3) Reconciliation mid-flight mutation (observation 'worker_terminated' -> 'run_terminal'/'success')
+  const reClaimed73 = await claimWorkQueueLease({
+    refStore: mutatingBacking,
+    config: makeConfig(),
+    candidate: makeIssueCandidate({issueNumber: 73, lane: 'docs', ownedPaths: ['docs/SAFE.md'], runId: 1730}),
+    nowMs: 56000
+  });
+  assert.equal(reClaimed73.ok, true);
+  const mutableObs = {
+    workId: reClaimed73.lease.workId,
+    runId: 1730,
+    runAttempt: 1,
+    leaseGeneration: reClaimed73.lease.generation,
+    runState: 'worker_terminated'
+  };
+  const mutableReconcileOpts = {
+    refStore: deferredStore,
+    observedRuns: [mutableObs],
+    nowMs: 57000
+  };
+  onDeferredRead = () => {
+    mutableObs.runState = 'run_terminal';
+    mutableObs.conclusion = 'success';
+    mutableReconcileOpts.nowMs = 0;
+  };
+  const snapReconciled = await reconcileWorkQueueRunStates(mutableReconcileOpts);
+  onDeferredRead = null;
+  assert.equal(snapReconciled.ok, true);
+  assert.equal(snapReconciled.receipts[0].runState, 'worker_terminated');
+  assert.equal(snapReconciled.receipts[0].outcome, 'exhausted');
+
   // Regression: 'neutral' and 'skipped' terminal conclusions are accepted and requeue/exhaust cleanly
   const neutralClaim = await claimWorkQueueLease({
     refStore: mutatingBacking,
     config: makeConfig(),
     candidate: makePrCandidate({pullNumber: 74, headSha: HEAD_A}),
-    nowMs: 11500
+    nowMs: 58000
   });
   assert.equal(neutralClaim.ok, true);
   const neutralReconciled = await reconcileWorkQueueRunStates({
@@ -1142,7 +1222,7 @@ test('retries transient CAS conflicts and fails closed on proxies, store errors,
       runState: 'run_terminal',
       conclusion: 'neutral'
     }],
-    nowMs: 12000
+    nowMs: 58500
   });
   assert.equal(neutralReconciled.ok, true);
   assert.equal(neutralReconciled.receipts[0].conclusion, 'neutral');
@@ -1152,7 +1232,7 @@ test('retries transient CAS conflicts and fails closed on proxies, store errors,
     refStore: mutatingBacking,
     config: makeConfig(),
     candidate: makePrCandidate({pullNumber: 74, headSha: HEAD_A, runId: 2003}),
-    nowMs: 12500
+    nowMs: 59000
   });
   const skippedReconciled = await reconcileWorkQueueRunStates({
     refStore: mutatingBacking,
@@ -1164,7 +1244,7 @@ test('retries transient CAS conflicts and fails closed on proxies, store errors,
       runState: 'run_terminal',
       conclusion: 'skipped'
     }],
-    nowMs: 13000
+    nowMs: 59500
   });
   assert.equal(skippedReconciled.ok, true);
   assert.equal(skippedReconciled.receipts[0].conclusion, 'skipped');
@@ -1468,6 +1548,35 @@ test('retries transient CAS conflicts and fails closed on proxies, store errors,
     ...fullStore.readRef().state,
     archivedTerminal: [{workId: '', status: 'completed'}]
   }), /INVALID_INITIAL_WORK_QUEUE_STATE/);
+
+  // When both entries (250) and archivedTerminal (2,000) are full, fail closed with ARCHIVE_CAPACITY_EXHAUSTED
+  // instead of evicting/forgetting terminal deduplication history!
+  const saturatedArchived = Array.from({length: 2000}, (_, idx) => ({
+    workId: `${REPO_ID}:issue:${idx + 10000}`,
+    status: 'completed'
+  }));
+  const archiveFullStore = createInMemoryWorkQueueRefStore({
+    schemaVersion: 1,
+    protocol: 'v3',
+    sequence: 2250,
+    nextGeneration: 251,
+    entries: fullEntries,
+    archivedTerminal: saturatedArchived,
+    recoveryReceipts: []
+  });
+  assert.equal((await claimWorkQueueLease({
+    refStore: archiveFullStore,
+    config,
+    candidate: makeIssueCandidate({issueNumber: 50000, lane: 'docs', ownedPaths: ['docs/NEW.md']}),
+    nowMs: 5000
+  })).reason, 'ARCHIVE_CAPACITY_EXHAUSTED');
+  assert.equal(archiveFullStore.readRef().state.archivedTerminal.length, 2000);
+  assert.equal((await claimWorkQueueLease({
+    refStore: archiveFullStore,
+    config,
+    candidate: makeIssueCandidate({issueNumber: 10000, lane: 'docs', ownedPaths: ['docs/NEW.md']}),
+    nowMs: 5000
+  })).reason, 'WORK_ALREADY_COMPLETED');
 
   // When all 250 entries are non-terminal ('requeued'), QUEUE_CAPACITY_EXCEEDED is returned!
   const nonTerminalEntries = fullEntries.map(item => ({...item, status: 'requeued'}));

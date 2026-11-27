@@ -951,7 +951,7 @@ test('covers YAML edge cases: quoted keys, block scalars in sequences, empty map
     }).reason, 'INVALID_FRONTMATTER');
   }
 
-  // Branch array merge-pull-request variants and worker work-queue object
+  // Any configured merge-pull-request (unless explicitly false or absent) MUST be rejected!
   const nonMainMergeMd = [
     '---',
     'name: Feature Merge Only',
@@ -970,6 +970,13 @@ test('covers YAML edge cases: quoted keys, block scalars in sequences, empty map
   assert.equal(verifyGhAwWorkflowLock({
     markdownSource: nonMainMergeMd,
     lockYamlSource: lock.replace(sha, nonMainSha)
+  }).reason, 'MAIN_MERGE_FORBIDDEN_IN_GHAW');
+
+  const disabledMergeMd = nonMainMergeMd.replace('  merge-pull-request:\n    branch: [feature-branch]', '  merge-pull-request: false');
+  const disabledMergeSha = computeFrontmatterSha256(disabledMergeMd);
+  assert.equal(verifyGhAwWorkflowLock({
+    markdownSource: disabledMergeMd,
+    lockYamlSource: lock.replace(sha, disabledMergeSha)
   }).valid, true);
 
   for (const mainBranchArr of ['branch: [main]', 'branch: []']) {
@@ -1151,11 +1158,16 @@ test('verifies compiler-shaped multi-job lock (activation -> agent -> detection 
     lockYamlSource: buildCompilerLock({agentIf: '${{ always() }}'})
   }).reason, 'MISSING_DEFAULT_OFF_GUARD');
 
-  // Untrusted checkout refs/repos inside write-capable safe_outputs MUST fail closed!
+  // Untrusted checkout refs/repos (including omitted ref, github.workflow_sha, and unallowlisted 40-hex SHAs) inside write-capable safe_outputs MUST fail closed!
+  const unallowlistedSha = 'd'.repeat(40);
   for (const untrustedWith of [
+    '          persist-credentials: false',
+    '          persist-credentials: false\n          ref: ${{ github.workflow_sha }}',
+    `          persist-credentials: false\n          ref: ${unallowlistedSha}`,
     '          persist-credentials: false\n          ref: ${{ github.event.pull_request.head.sha }}',
     '          persist-credentials: false\n          repository: ${{ github.event.pull_request.head.repo.full_name }}\n          ref: refs/heads/main',
     '          persist-credentials: false\n          repository: attacker/fork\n          ref: refs/heads/main',
+    '          persist-credentials: false\n          repository: 12345\n          ref: refs/heads/main',
     '          persist-credentials: false\n          ref: feature/untrusted-branch'
   ]) {
     assert.equal(verifyGhAwWorkflowLock({
@@ -1164,12 +1176,20 @@ test('verifies compiler-shaped multi-job lock (activation -> agent -> detection 
     }).reason, 'UNTRUSTED_SAFE_OUTPUT_CHECKOUT');
   }
 
-  // On pull_request trigger, write-capable checkout omitting explicit trusted ref MUST fail closed!
+  // Explicitly allowlisted trustedControlPlaneShas passes; malformed trustedControlPlaneShas fails closed!
   assert.equal(verifyGhAwWorkflowLock({
     markdownSource: md,
     lockYamlSource: buildCompilerLock({
-      onTrigger: '  pull_request:',
-      safeCheckoutWith: '          persist-credentials: false'
-    })
-  }).reason, 'UNTRUSTED_SAFE_OUTPUT_CHECKOUT');
+      safeCheckoutWith: `          persist-credentials: false\n          repository: Jamula/SoftwareFactory\n          ref: ${unallowlistedSha}`
+    }),
+    trustedControlPlaneShas: [unallowlistedSha]
+  }).valid, true);
+
+  for (const badShas of [null, ['not-a-sha'], new Array(1)]) {
+    assert.equal(verifyGhAwWorkflowLock({
+      markdownSource: md,
+      lockYamlSource: buildCompilerLock(),
+      trustedControlPlaneShas: badShas
+    }).reason, 'INVALID_LOCK_INPUT');
+  }
 });

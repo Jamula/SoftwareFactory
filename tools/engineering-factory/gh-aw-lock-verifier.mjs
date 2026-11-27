@@ -29,13 +29,23 @@ const ALLOWED_HELPER_READ_SCOPES = new Set(['contents', 'actions', 'metadata']);
 const THREAT_SCAN_JOB_IDS = new Set(['threat-and-policy-scan', 'threat-scan', 'threat_scan', 'policy-scan', 'detection']);
 const ALLOWED_SAFE_OUTPUT_SCOPES = new Set(['contents', 'issues', 'pull-requests', 'discussions']);
 const FORBIDDEN_SAFE_OUTPUT_WRITES = new Set(['contents', 'workflows', 'actions', 'administration', 'packages', 'id-token', 'security-events', 'statuses', 'checks']);
-const PR_HEAD_EVENTS = new Set(['pull_request', 'pull_request_review', 'pull_request_review_comment']);
 const BYPASS_CALL_NAMES = new Set(['always', 'failure', 'cancelled']);
 const MAX_IF_TOKENS = 64;
 const MAX_IF_DEPTH = 16;
 
 const isHex40 = value => typeof value === 'string' && HEX40_RE.test(value);
 const isHex64 = value => typeof value === 'string' && HEX64_RE.test(value);
+
+function isDenseHex40Array(value, maxLen = 64) {
+  if (types.isProxy(value) || !Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype ||
+      value.length > maxLen || Reflect.ownKeys(value).length !== value.length + 1) {
+    return false;
+  }
+  for (let i = 0; i < value.length; i++) {
+    if (!isOwnEnumerableData(value, String(i)) || !isHex40(value[i])) return false;
+  }
+  return true;
+}
 
 const deny = reason => Object.freeze({
   shadow: true,
@@ -743,16 +753,6 @@ function toleratesError(entity) {
   return entity['continue-on-error'] !== undefined && entity['continue-on-error'] !== false;
 }
 
-function targetsMainMerge(mergeConfig) {
-  if (mergeConfig === undefined || mergeConfig === false) return false;
-  if (!isMapObject(mergeConfig)) return true;
-  const branchValue = mergeConfig.branch ?? mergeConfig['target-branch'] ?? mergeConfig.base ?? 'main';
-  if (Array.isArray(branchValue)) {
-    return branchValue.length === 0 || branchValue.some(item => item === 'main' || item === 'refs/heads/main' || item === '*');
-  }
-  return branchValue === 'main' || branchValue === 'refs/heads/main' || branchValue === '*';
-}
-
 function isValidWorkQueueMemoryConfig(memory) {
   if (!isMapObject(memory)) return false;
   const keys = Object.keys(memory);
@@ -806,7 +806,7 @@ function inspectFrontmatterPolicy(frontmatter, isNewerVerified, headers, options
     if (Array.isArray(safeOutputs)) {
       if (safeOutputs.includes('merge-pull-request')) return {ok: false, reason: 'MAIN_MERGE_FORBIDDEN_IN_GHAW'};
     } else if (isMapObject(safeOutputs)) {
-      if (Object.hasOwn(safeOutputs, 'merge-pull-request') && targetsMainMerge(safeOutputs['merge-pull-request'])) {
+      if (Object.hasOwn(safeOutputs, 'merge-pull-request') && safeOutputs['merge-pull-request'] !== false) {
         return {ok: false, reason: 'MAIN_MERGE_FORBIDDEN_IN_GHAW'};
       }
     } else {
@@ -873,7 +873,7 @@ function isHelperReadOnlyPermissions(perms) {
     ALLOWED_HELPER_READ_SCOPES.has(scope) && level === 'read');
 }
 
-function isTrustedControlPlaneCheckout(withMap, hasPrHeadTrigger, releaseCommit) {
+function isTrustedControlPlaneCheckout(withMap, releaseCommit, trustedShas) {
   const repoOpt = withMap.repository;
   if (repoOpt !== undefined) {
     if (typeof repoOpt !== 'string') return false;
@@ -885,16 +885,9 @@ function isTrustedControlPlaneCheckout(withMap, hasPrHeadTrigger, releaseCommit)
       return false;
     }
   }
-  const refOpt = withMap.ref;
-  if (refOpt === undefined) {
-    return !hasPrHeadTrigger;
-  }
-  if (typeof refOpt !== 'string') return false;
-  const trimmedRef = refOpt.trim();
-  return trimmedRef === 'refs/heads/main' ||
-    trimmedRef === 'main' ||
-    trimmedRef === '${{ github.workflow_sha }}' ||
-    isHex40(trimmedRef);
+  if (typeof withMap.ref !== 'string') return false;
+  const trimmedRef = withMap.ref.trim();
+  return trimmedRef === 'refs/heads/main' || trustedShas.has(trimmedRef);
 }
 function normalizeNeeds(needsField) {
   if (typeof needsField === 'string') return [needsField];
@@ -922,9 +915,14 @@ function stepAttemptsMainMerge(step) {
 }
 
 export function verifyGhAwWorkflowLock(input) {
-  if (!isPlainRecord(input, ['markdownSource', 'lockYamlSource'], ['pinnedRelease', 'workQueueProtocol', 'workQueueRef'])) {
+  const optionalKeys = ['pinnedRelease', 'workQueueProtocol', 'workQueueRef', 'trustedControlPlaneShas'];
+  if (!isPlainRecord(input, ['markdownSource', 'lockYamlSource'], optionalKeys)) {
     return deny('INVALID_LOCK_INPUT');
   }
+  if (input.trustedControlPlaneShas !== undefined && !isDenseHex40Array(input.trustedControlPlaneShas)) {
+    return deny('INVALID_LOCK_INPUT');
+  }
+  const trustedShas = new Set(input.trustedControlPlaneShas ?? []);
   const normalizedLock = normalizeText(input.lockYamlSource);
   if (normalizedLock === null || normalizeText(input.markdownSource) === null) {
     return deny('INVALID_LOCK_INPUT');
@@ -985,7 +983,6 @@ export function verifyGhAwWorkflowLock(input) {
     return deny(topPerms.hasWrite ? 'TOP_LEVEL_WRITE_PERMISSION' : 'INVALID_TOP_LEVEL_PERMISSIONS');
   }
 
-  const hasPrHeadTrigger = Object.keys(lockDoc.on).some(ev => PR_HEAD_EVENTS.has(ev));
   const helperJobs = [];
   const evaluationJobIds = [];
   const threatScanJobs = [];
@@ -1058,7 +1055,7 @@ export function verifyGhAwWorkflowLock(input) {
               return deny('PINNED_RELEASE_MISMATCH');
             }
             if (jobHasWriteScope &&
-                !isTrustedControlPlaneCheckout(step.with, hasPrHeadTrigger, releaseCheck.release.commit)) {
+                !isTrustedControlPlaneCheckout(step.with, releaseCheck.release.commit, trustedShas)) {
               return deny('UNTRUSTED_SAFE_OUTPUT_CHECKOUT');
             }
           }
