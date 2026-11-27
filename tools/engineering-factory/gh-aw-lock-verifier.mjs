@@ -19,10 +19,14 @@ const PINNED_USES_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*@
 const KEY_RE = /^[A-Za-z0-9_.-]+$/;
 const FORBIDDEN_OBJECT_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 const SUPPORTED_METADATA_SCHEMAS = new Set(['v1', 'v2', 'v3', 'v4']);
+const ALLOWED_WORK_QUEUE_TOOL_KEYS = new Set(['require-assignment', 'worker', 'issues', 'memory']);
 const THREAT_SCAN_JOB_IDS = new Set(['threat-and-policy-scan', 'threat-scan', 'threat_scan', 'policy-scan']);
 const ALLOWED_SAFE_OUTPUT_SCOPES = new Set(['contents', 'issues', 'pull-requests', 'discussions']);
 const FORBIDDEN_SAFE_OUTPUT_WRITES = new Set(['contents', 'workflows', 'actions', 'administration', 'packages', 'id-token', 'security-events', 'statuses', 'checks']);
 const BYPASS_CALL_NAMES = new Set(['always', 'failure', 'cancelled']);
+
+const isHex40 = value => typeof value === 'string' && HEX40_RE.test(value);
+const isHex64 = value => typeof value === 'string' && HEX64_RE.test(value);
 
 const deny = reason => Object.freeze({
   shadow: true,
@@ -117,10 +121,14 @@ function extractFrontmatterParts(markdownSource) {
   const markdownBody = lines.slice(endIndex + 1).join('\n');
   const normalizedFrontmatter = frontmatterText.trim();
   if (normalizedFrontmatter.length === 0) return null;
-  if (/^imports\s*:/m.test(frontmatterText) || /\{\{#(?:runtime-import|import)\??/.test(markdownBody)) {
+  if (/\{\{#(?:runtime-import|import)\??/.test(markdownBody)) return null;
+  const parsedFrontmatter = parseStrictYaml(frontmatterText);
+  if (parsedFrontmatter !== null) {
+    if (Object.hasOwn(parsedFrontmatter, 'imports')) return null;
+  } else if (/^imports\s*:/m.test(frontmatterText)) {
     return null;
   }
-  const inlinedImports = /^inlined-imports:\s*true\s*$/m.test(frontmatterText);
+  const inlinedImports = parsedFrontmatter !== null && parsedFrontmatter['inlined-imports'] === true;
   const canonical = {'frontmatter-text': normalizedFrontmatter};
   if (inlinedImports) {
     const normalizedBody = markdownBody.trim();
@@ -134,7 +142,7 @@ function extractFrontmatterParts(markdownSource) {
     if (relevant.length > 0) canonical['template-expressions'] = relevant;
   }
   return {
-    innerYaml: frontmatterText,
+    parsedFrontmatter,
     normalizedBody: markdownBody.trim(),
     canonicalJson: marshalCanonicalJson(canonical)
   };
@@ -168,7 +176,7 @@ function resolvePinnedRelease(pinnedRelease) {
   }
   const repository = pinnedRelease.repository === undefined ? 'github/gh-aw' : pinnedRelease.repository;
   const semverMatch = typeof pinnedRelease.version === 'string' ? SEMVER_RE.exec(pinnedRelease.version) : null;
-  if (repository !== 'github/gh-aw' || !semverMatch || !HEX40_RE.test(pinnedRelease.commit)) {
+  if (repository !== 'github/gh-aw' || !semverMatch || !isHex40(pinnedRelease.commit)) {
     return {ok: false, reason: 'PINNED_RELEASE_INVALID'};
   }
   const parsedVersion = [Number(semverMatch[1]), Number(semverMatch[2]), Number(semverMatch[3])];
@@ -480,7 +488,7 @@ function extractLockMetadata(normalizedLock) {
     if (commentBody.startsWith('frontmatter-hash:')) {
       if (legacyHash !== null) return {ok: false, reason: 'INVALID_LOCK_METADATA'};
       const candidate = commentBody.slice('frontmatter-hash:'.length).trim();
-      if (!HEX64_RE.test(candidate)) return {ok: false, reason: 'FRONTMATTER_HASH_MISSING'};
+      if (!isHex64(candidate)) return {ok: false, reason: 'FRONTMATTER_HASH_MISSING'};
       legacyHash = candidate;
       continue;
     }
@@ -732,7 +740,22 @@ function targetsMainMerge(mergeConfig) {
   return branchValue === 'main' || branchValue === 'refs/heads/main' || branchValue === '*';
 }
 
-function inspectFrontmatterPolicy(frontmatter, isNewerVerified, headers) {
+function isValidWorkQueueToolConfig(workQueue) {
+  if (workQueue === true) return true;
+  if (!isMapObject(workQueue)) return false;
+  for (const [key, value] of Object.entries(workQueue)) {
+    if (!ALLOWED_WORK_QUEUE_TOOL_KEYS.has(key)) return false;
+    if ((key === 'require-assignment' || key === 'worker') && typeof value !== 'boolean') return false;
+    if (key === 'issues' && typeof value !== 'boolean' &&
+        (!isMapObject(value) || Object.keys(value).some(k => k !== 'label' || typeof value[k] !== 'string'))) {
+      return false;
+    }
+    if (key === 'memory' && !isMapObject(value)) return false;
+  }
+  return true;
+}
+
+function inspectFrontmatterPolicy(frontmatter, isNewerVerified, headers, options) {
   const safeOutputs = frontmatter['safe-outputs'];
   if (safeOutputs !== undefined) {
     if (Array.isArray(safeOutputs)) {
@@ -746,33 +769,35 @@ function inspectFrontmatterPolicy(frontmatter, isNewerVerified, headers) {
     }
   }
 
-  let workQueue = undefined;
-  if (isMapObject(frontmatter.tools) && Object.hasOwn(frontmatter.tools, 'work-queue')) {
-    workQueue = frontmatter.tools['work-queue'];
-  } else if (Object.hasOwn(frontmatter, 'work-queue')) {
-    workQueue = frontmatter['work-queue'];
+  if (Object.hasOwn(frontmatter, 'work-queue') || Object.hasOwn(frontmatter, 'protocol')) {
+    return {ok: false, reason: 'INVALID_FRONTMATTER'};
+  }
+  if (isMapObject(frontmatter.tools) && Object.hasOwn(frontmatter.tools, 'work-queue') &&
+      !isValidWorkQueueToolConfig(frontmatter.tools['work-queue'])) {
+    return {ok: false, reason: 'INVALID_FRONTMATTER'};
   }
 
-  let protocol = 'v3';
-  if (workQueue !== undefined) {
-    if (!isMapObject(workQueue)) return {ok: false, reason: 'INVALID_FRONTMATTER'};
-    if (workQueue.branch !== undefined && workQueue.branch !== 'work-queue') {
-      return {ok: false, reason: 'INVALID_WORK_QUEUE_BRANCH'};
-    }
-    protocol = workQueue.protocol === undefined ? 'v3' : workQueue.protocol;
-  } else if (frontmatter.protocol !== undefined) {
-    protocol = frontmatter.protocol;
+  const headerProtocol = headers['gh-aw-work-queue-protocol'];
+  const requestedProtocol = options.workQueueProtocol;
+  if (requestedProtocol !== undefined && headerProtocol !== undefined && requestedProtocol !== headerProtocol) {
+    return {ok: false, reason: 'WORK_QUEUE_PROTOCOL_UNSUPPORTED'};
   }
-
+  const protocol = requestedProtocol ?? headerProtocol ?? 'v3';
   if (protocol !== 'v3' && protocol !== 'v4') {
     return {ok: false, reason: 'WORK_QUEUE_PROTOCOL_UNSUPPORTED'};
   }
   if (protocol === 'v4' && !isNewerVerified) {
     return {ok: false, reason: 'WORK_QUEUE_PROTOCOL_UNSUPPORTED'};
   }
-  const headerProtocol = headers['gh-aw-work-queue-protocol'];
-  if (headerProtocol !== undefined && headerProtocol !== protocol) {
-    return {ok: false, reason: 'WORK_QUEUE_PROTOCOL_UNSUPPORTED'};
+
+  const headerRef = headers['gh-aw-work-queue-ref'];
+  const requestedRef = options.workQueueRef;
+  if (requestedRef !== undefined && headerRef !== undefined && requestedRef !== headerRef) {
+    return {ok: false, reason: 'INVALID_WORK_QUEUE_BRANCH'};
+  }
+  const resolvedRef = requestedRef ?? headerRef ?? 'refs/heads/work-queue';
+  if (resolvedRef !== 'refs/heads/work-queue' && resolvedRef !== 'work-queue') {
+    return {ok: false, reason: 'INVALID_WORK_QUEUE_BRANCH'};
   }
   return {ok: true, protocol};
 }
@@ -820,7 +845,7 @@ function stepAttemptsMainMerge(step) {
 }
 
 export function verifyGhAwWorkflowLock(input) {
-  if (!isPlainRecord(input, ['markdownSource', 'lockYamlSource'], ['pinnedRelease'])) {
+  if (!isPlainRecord(input, ['markdownSource', 'lockYamlSource'], ['pinnedRelease', 'workQueueProtocol', 'workQueueRef'])) {
     return deny('INVALID_LOCK_INPUT');
   }
   const normalizedLock = normalizeText(input.lockYamlSource);
@@ -832,9 +857,8 @@ export function verifyGhAwWorkflowLock(input) {
   if (!releaseCheck.ok) return deny(releaseCheck.reason);
 
   const extracted = extractFrontmatterParts(input.markdownSource);
-  if (extracted === null) return deny('INVALID_FRONTMATTER');
-  const frontmatter = parseStrictYaml(extracted.innerYaml);
-  if (frontmatter === null) return deny('INVALID_FRONTMATTER');
+  if (extracted === null || extracted.parsedFrontmatter === null) return deny('INVALID_FRONTMATTER');
+  const frontmatter = extracted.parsedFrontmatter;
 
   const computedSha256 = createHash('sha256').update(extracted.canonicalJson, 'utf8').digest('hex');
   const computedBodySha256 = createHash('sha256').update(extracted.normalizedBody, 'utf8').digest('hex');
@@ -848,10 +872,10 @@ export function verifyGhAwWorkflowLock(input) {
         (metadata.strict !== undefined && typeof metadata.strict !== 'boolean') ||
         (metadata.dry_run !== undefined && typeof metadata.dry_run !== 'boolean') ||
         (metadata.compiler_version !== undefined && typeof metadata.compiler_version !== 'string') ||
-        (metadata.body_hash !== undefined && !HEX64_RE.test(metadata.body_hash))) {
+        (metadata.body_hash !== undefined && !isHex64(metadata.body_hash))) {
       return deny('INVALID_LOCK_METADATA');
     }
-    if (!HEX64_RE.test(metadata.frontmatter_hash ?? '')) return deny('FRONTMATTER_HASH_MISSING');
+    if (!isHex64(metadata.frontmatter_hash)) return deny('FRONTMATTER_HASH_MISSING');
     if (metadata.frontmatter_hash !== computedSha256) return deny('FRONTMATTER_HASH_MISMATCH');
     if (metadata.body_hash !== undefined && metadata.body_hash !== computedBodySha256) {
       return deny('BODY_HASH_MISMATCH');
@@ -870,7 +894,7 @@ export function verifyGhAwWorkflowLock(input) {
     return deny('PINNED_RELEASE_MISMATCH');
   }
 
-  const policyCheck = inspectFrontmatterPolicy(frontmatter, releaseCheck.isNewerVerified, customHeaders);
+  const policyCheck = inspectFrontmatterPolicy(frontmatter, releaseCheck.isNewerVerified, customHeaders, input);
   if (!policyCheck.ok) return deny(policyCheck.reason);
 
   const lockDoc = parseStrictYaml(normalizedLock);

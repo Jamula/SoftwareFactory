@@ -715,6 +715,55 @@ test('reconcileWorkQueueRunStates handles launch_failed, worker_terminated, run_
   assert.equal(clampedReconcile.ok, true);
   assert.equal(clampedReconcile.receipts[0].maxAttempts, 1);
   assert.equal(clampedReconcile.receipts[0].outcome, 'exhausted');
+
+  // Regression: lowering config.limits.maxAttempts from 2 to 1 during attempt 2 must NOT fail with INVALID_NEXT_STATE!
+  const c92Attempt1 = await claimWorkQueueLease({
+    refStore,
+    config,
+    nowMs: 18000,
+    candidate: makeIssueCandidate({issueNumber: 92, lane: 'l4', ownedPaths: ['src/d/92.mjs'], runId: 920})
+  });
+  assert.equal(c92Attempt1.ok, true);
+  assert.equal((await reconcileWorkQueueRunStates({
+    refStore,
+    config,
+    observedRuns: [{
+      workId: c92Attempt1.lease.workId,
+      runId: 920,
+      runAttempt: 1,
+      leaseGeneration: c92Attempt1.lease.generation,
+      runState: 'worker_terminated'
+    }],
+    nowMs: 18500
+  })).receipts[0].outcome, 'requeued');
+
+  const c92Attempt2 = await claimWorkQueueLease({
+    refStore,
+    config,
+    nowMs: 19000,
+    candidate: makeIssueCandidate({issueNumber: 92, lane: 'l4', ownedPaths: ['src/d/92.mjs'], runId: 921, leaseTtlMs: 2000, maxExecutionMs: 10000})
+  });
+  assert.equal(c92Attempt2.ok, true);
+  assert.equal(c92Attempt2.lease.attempts, 2);
+
+  // Now reconcile under strictOneAttemptCfg (maxAttempts = 1 while attempts === 2)
+  const c92LoweredReconcile = await reconcileWorkQueueRunStates({
+    refStore,
+    config: strictOneAttemptCfg,
+    observedRuns: [{
+      workId: c92Attempt2.lease.workId,
+      runId: 921,
+      runAttempt: 1,
+      leaseGeneration: c92Attempt2.lease.generation,
+      runState: 'worker_terminated'
+    }],
+    nowMs: 19500
+  });
+  assert.equal(c92LoweredReconcile.ok, true);
+  assert.equal(c92LoweredReconcile.reason, 'ORPHANS_RECLAIMED');
+  assert.equal(c92LoweredReconcile.receipts[0].attempts, 2);
+  assert.equal(c92LoweredReconcile.receipts[0].maxAttempts, 1);
+  assert.equal(c92LoweredReconcile.receipts[0].outcome, 'exhausted');
 });
 
 test('retries transient CAS conflicts and fails closed on proxies, store errors, cancelled work, and invalid options', async () => {
@@ -905,6 +954,52 @@ test('retries transient CAS conflicts and fails closed on proxies, store errors,
     nowMs: 1000
   })).reason, 'INVALID_QUEUE_STATE');
 
+  // Revoked and throwing-getter Proxy responses from readRef() and compareAndSwapRef() must never invoke traps!
+  let proxyTrapCount = 0;
+  const badTrap = () => {
+    proxyTrapCount++;
+    throw new Error('proxy trap invoked');
+  };
+  const trapHandler = {get: badTrap, getOwnPropertyDescriptor: badTrap, ownKeys: badTrap, getPrototypeOf: badTrap};
+  const revokedSnap = Proxy.revocable({ok: false, reason: 'TRAP'}, trapHandler);
+  revokedSnap.revoke();
+  const proxyReadStore = {
+    readRef: () => new Proxy({ok: false, reason: 'TRAP'}, trapHandler),
+    compareAndSwapRef: () => ({ok: false})
+  };
+  const revokedReadStore = {
+    readRef: () => revokedSnap.proxy,
+    compareAndSwapRef: () => ({ok: false})
+  };
+  const getterReadObj = {};
+  Object.defineProperty(getterReadObj, 'ok', {enumerable: true, get: badTrap});
+  const getterReadStore = {
+    readRef: () => getterReadObj,
+    compareAndSwapRef: () => ({ok: false})
+  };
+  const proxyCasStore = {
+    readRef: ref => backing.readRef(ref),
+    compareAndSwapRef: () => new Proxy({ok: false, reason: 'TRAP'}, trapHandler)
+  };
+  const revokedCasStore = {
+    readRef: ref => backing.readRef(ref),
+    compareAndSwapRef: () => revokedSnap.proxy
+  };
+  const asyncNullCasStore = {
+    readRef: ref => backing.readRef(ref),
+    compareAndSwapRef: async () => null
+  };
+  for (const unsafeStore of [proxyReadStore, revokedReadStore, getterReadStore, proxyCasStore, revokedCasStore, asyncNullCasStore]) {
+    const res = await claimWorkQueueLease({
+      refStore: unsafeStore,
+      config,
+      candidate: makeIssueCandidate({issueNumber: 72, lane: 'docs', ownedPaths: ['docs/PROXY.md']}),
+      nowMs: 11000
+    });
+    assert.equal(res.reason, 'REF_STORE_UNAVAILABLE');
+  }
+  assert.equal(proxyTrapCount, 0);
+
   // Revoked proxy safety across all entrypoints
   const revoked = Proxy.revocable({}, {});
   revoked.revoke();
@@ -912,6 +1007,22 @@ test('retries transient CAS conflicts and fails closed on proxies, store errors,
   assert.equal((await renewWorkQueueLease(revoked.proxy)).reason, 'INVALID_RENEW_OPTIONS');
   assert.equal((await settleWorkQueueLease(revoked.proxy)).reason, 'INVALID_SETTLE_OPTIONS');
   assert.equal((await reconcileWorkQueueRunStates(revoked.proxy)).reason, 'INVALID_RECONCILE_INPUT');
+
+  // Non-string workerId values (arrays, symbols, objects without toString) must fail closed without coercion or throwing!
+  for (const nonStringWorker of [['worker-alpha'], Symbol('worker'), {toString: null, valueOf: null}, 123]) {
+    assert.equal((await claimWorkQueueLease({
+      refStore: backing,
+      config,
+      candidate: makeIssueCandidate({workerId: nonStringWorker, lane: 'docs', ownedPaths: ['docs/W.md']}),
+      nowMs: 11000
+    })).reason, 'INVALID_CANDIDATE');
+    assert.equal((await renewWorkQueueLease({
+      refStore: backing, workId: 'w', workerId: nonStringWorker, generation: 1, leaseTtlMs: 1000, nowMs: 1
+    })).reason, 'INVALID_RENEW_OPTIONS');
+    assert.equal((await settleWorkQueueLease({
+      refStore: backing, workId: 'w', workerId: nonStringWorker, generation: 1, outcome: 'completed', nowMs: 1
+    })).reason, 'INVALID_SETTLE_OPTIONS');
+  }
 
   // Force forbidden & invalid option branches across renew, settle, reconcile, and candidate validation
   assert.equal((await renewWorkQueueLease({
@@ -1046,16 +1157,42 @@ test('retries transient CAS conflicts and fails closed on proxies, store errors,
     nowMs: 11000
   })).reason, 'CUSTOM_WRITE_DENIED');
 
+  const badCasOidStore = {
+    readRef: ref => backing.readRef(ref),
+    compareAndSwapRef: () => ({ok: true, oid: 12345})
+  };
+  assert.equal((await claimWorkQueueLease({
+    refStore: badCasOidStore,
+    config,
+    candidate: makeIssueCandidate({issueNumber: 93, lane: 'docs', ownedPaths: ['docs/Y.md']}),
+    nowMs: 11000
+  })).reason, 'REF_STORE_UNAVAILABLE');
+
+  const badReadOidStore = {
+    readRef: () => ({ok: true, oid: 12345, state: null}),
+    compareAndSwapRef: () => ({ok: false})
+  };
+  assert.equal((await claimWorkQueueLease({
+    refStore: badReadOidStore,
+    config,
+    candidate: makeIssueCandidate({issueNumber: 94, lane: 'docs', ownedPaths: ['docs/Z.md']}),
+    nowMs: 11000
+  })).reason, 'REF_STORE_UNAVAILABLE');
+
   // Validate state entries, receipts, and QUEUE_CAPACITY_EXCEEDED (250 entries)
   const snap = backing.readRef().state;
   const baseEntry = {...activeClaim2.lease, ownedPaths: [...activeClaim2.lease.ownedPaths]};
   for (const badState of [
+    {...snap, entries: [{...baseEntry, workerId: ['worker-beta']}]},
+    {...snap, entries: [{...baseEntry, headSha: [HEAD_A]}]},
     {...snap, entries: [{...baseEntry, leaseExpiresAtMs: baseEntry.executionDeadlineMs + 1}]},
     {...snap, entries: [{...baseEntry, targetType: 'unknown'}]},
     {...snap, entries: [{...baseEntry, targetType: 'issue', issueNumber: 0, pullNumber: null, headSha: null}]},
     {...snap, entries: [{...baseEntry, targetType: 'pull_request', pullNumber: 0}]},
     {...snap, entries: [{...baseEntry, workId: 'mismatch'}]},
     {...snap, entries: [{...baseEntry, traceparent: 'bad'}]},
+    {...snap, entries: [{...baseEntry, traceparent: 123}]},
+    {...snap, entries: [{...baseEntry, lockSha256: 123}]},
     {...snap, entries: [{...baseEntry, lockSha256: 'bad'}]},
     {...snap, entries: [baseEntry, baseEntry]},
     {...snap, recoveryReceipts: [{invalid: true}]},

@@ -24,6 +24,12 @@ const VALID_CONCLUSIONS = new Set([
 const positive = value => Number.isSafeInteger(value) && value > 0;
 const nonnegative = value => Number.isSafeInteger(value) && value >= 0;
 const boundedTtl = value => Number.isSafeInteger(value) && value >= 1 && value <= MAX_LEASE_TTL_MS;
+const isHex40 = value => typeof value === 'string' && HEX40_RE.test(value);
+const isHex64 = value => typeof value === 'string' && HEX64_RE.test(value);
+const isTraceparent = value => typeof value === 'string' && TRACEPARENT_RE.test(value);
+const isRepoName = value => typeof value === 'string' && !value.includes('..') && REPO_RE.test(value);
+const isWorkerId = value => typeof value === 'string' && WORKER_ID_RE.test(value);
+const isLaneId = value => typeof value === 'string' && LANE_ID_RE.test(value);
 
 function isOwnEnumerableData(target, key) {
   const descriptor = Object.getOwnPropertyDescriptor(target, key);
@@ -137,12 +143,12 @@ function isValidQueueEntry(entry) {
     'claimedAtMs', 'leaseTtlMs', 'leaseExpiresAtMs', 'maxExecutionMs', 'executionDeadlineMs'
   ];
   if (!isPlainRecord(entry, required, ['traceparent', 'lockSha256'])) return false;
-  if (!REPO_RE.test(entry.repository) || entry.repository.includes('..') || !positive(entry.repositoryId) ||
-      !LANE_ID_RE.test(entry.lane) || !isValidPathSet(entry.ownedPaths) ||
+  if (!isRepoName(entry.repository) || !positive(entry.repositoryId) ||
+      !isLaneId(entry.lane) || !isValidPathSet(entry.ownedPaths) ||
       !VALID_ENTRY_STATUSES.has(entry.status) || !positive(entry.generation) ||
       !positive(entry.attempts) || !Number.isSafeInteger(entry.maxAttempts) ||
       entry.maxAttempts < 1 || entry.maxAttempts > 5 || entry.attempts > entry.maxAttempts ||
-      !WORKER_ID_RE.test(entry.workerId) || !positive(entry.runId) || !positive(entry.runAttempt) ||
+      !isWorkerId(entry.workerId) || !positive(entry.runId) || !positive(entry.runAttempt) ||
       !nonnegative(entry.claimedAtMs) || !boundedTtl(entry.leaseTtlMs) ||
       !boundedTtl(entry.maxExecutionMs) || entry.maxExecutionMs < entry.leaseTtlMs ||
       !nonnegative(entry.leaseExpiresAtMs) || !nonnegative(entry.executionDeadlineMs) ||
@@ -153,13 +159,13 @@ function isValidQueueEntry(entry) {
   if (entry.targetType === 'issue') {
     if (!positive(entry.issueNumber) || entry.pullNumber !== null || entry.headSha !== null) return false;
   } else if (entry.targetType === 'pull_request') {
-    if (!positive(entry.pullNumber) || !HEX40_RE.test(entry.headSha) || entry.issueNumber !== null) return false;
+    if (!positive(entry.pullNumber) || !isHex40(entry.headSha) || entry.issueNumber !== null) return false;
   } else {
     return false;
   }
   if (entry.workId !== expectedWorkId(entry)) return false;
-  if (entry.traceparent !== undefined && !TRACEPARENT_RE.test(entry.traceparent)) return false;
-  if (entry.lockSha256 !== undefined && !HEX64_RE.test(entry.lockSha256)) return false;
+  if (entry.traceparent !== undefined && !isTraceparent(entry.traceparent)) return false;
+  if (entry.lockSha256 !== undefined && !isHex64(entry.lockSha256)) return false;
   return true;
 }
 
@@ -258,7 +264,7 @@ export function createInMemoryWorkQueueRefStore(initialState = null) {
       if (request.ref !== PROTECTED_WORK_QUEUE_REF) {
         return Object.freeze({ok: false, reason: 'UNPROTECTED_WORK_QUEUE_REF'});
       }
-      if (!HEX40_RE.test(request.expectedOid)) {
+      if (!isHex40(request.expectedOid)) {
         return Object.freeze({ok: false, reason: 'INVALID_CAS_REQUEST'});
       }
       const validated = freezeValidatedState(request.nextState);
@@ -402,13 +408,28 @@ function isValidRefStore(refStore) {
 async function readValidatedSnapshot(refStore) {
   let snapshot;
   try {
-    snapshot = await refStore.readRef(PROTECTED_WORK_QUEUE_REF);
+    const rawSnapshot = refStore.readRef(PROTECTED_WORK_QUEUE_REF);
+    if (rawSnapshot !== null && typeof rawSnapshot === 'object' && types.isProxy(rawSnapshot)) {
+      return {ok: false, reason: 'REF_STORE_UNAVAILABLE'};
+    }
+    snapshot = await rawSnapshot;
   } catch {
     return {ok: false, reason: 'REF_STORE_UNAVAILABLE'};
   }
   if (snapshot === null || typeof snapshot !== 'object' || types.isProxy(snapshot) ||
-      snapshot.ok === false || !HEX40_RE.test(snapshot.oid)) {
-    return {ok: false, reason: snapshot?.reason ?? 'REF_STORE_UNAVAILABLE'};
+      Array.isArray(snapshot) || Object.getPrototypeOf(snapshot) !== Object.prototype ||
+      !isOwnEnumerableData(snapshot, 'ok')) {
+    return {ok: false, reason: 'REF_STORE_UNAVAILABLE'};
+  }
+  if (snapshot.ok === false) {
+    const reason = isOwnEnumerableData(snapshot, 'reason') && typeof snapshot.reason === 'string' && snapshot.reason.length > 0
+      ? snapshot.reason
+      : 'REF_STORE_UNAVAILABLE';
+    return {ok: false, reason};
+  }
+  if (snapshot.ok !== true || !isOwnEnumerableData(snapshot, 'oid') || !isHex40(snapshot.oid) ||
+      !isOwnEnumerableData(snapshot, 'state')) {
+    return {ok: false, reason: 'REF_STORE_UNAVAILABLE'};
   }
   if (snapshot.state === null) {
     if (snapshot.oid !== ZERO_GIT_OID) return {ok: false, reason: 'INVALID_QUEUE_STATE'};
@@ -424,8 +445,8 @@ function validateCandidate(candidate, config, nowMs) {
   const required = ['targetType', 'repository', 'repositoryId', 'lane', 'ownedPaths', 'workerId', 'runId', 'leaseTtlMs'];
   if (!isPlainRecord(candidate, required, optional)) return {ok: false, reason: 'INVALID_CANDIDATE'};
   const runAttempt = candidate.runAttempt === undefined ? 1 : candidate.runAttempt;
-  if (!REPO_RE.test(candidate.repository) || candidate.repository.includes('..') ||
-      !positive(candidate.repositoryId) || !WORKER_ID_RE.test(candidate.workerId) ||
+  if (!isRepoName(candidate.repository) ||
+      !positive(candidate.repositoryId) || !isWorkerId(candidate.workerId) ||
       !positive(candidate.runId) || !positive(runAttempt) || !isValidPathSet(candidate.ownedPaths)) {
     return {ok: false, reason: 'INVALID_CANDIDATE'};
   }
@@ -452,10 +473,10 @@ function validateCandidate(candidate, config, nowMs) {
   if (maxAttempts > config.limits.maxAttempts) {
     return {ok: false, reason: 'RETRY_CEILING_EXCEEDED'};
   }
-  if (candidate.traceparent !== undefined && !TRACEPARENT_RE.test(candidate.traceparent)) {
+  if (candidate.traceparent !== undefined && !isTraceparent(candidate.traceparent)) {
     return {ok: false, reason: 'INVALID_CANDIDATE'};
   }
-  if (candidate.lockSha256 !== undefined && !HEX64_RE.test(candidate.lockSha256)) {
+  if (candidate.lockSha256 !== undefined && !isHex64(candidate.lockSha256)) {
     return {ok: false, reason: 'INVALID_CANDIDATE'};
   }
   if (candidate.targetType === 'issue') {
@@ -474,7 +495,7 @@ function validateCandidate(candidate, config, nowMs) {
     };
   }
   if (candidate.targetType === 'pull_request') {
-    if (!positive(candidate.pullNumber) || !HEX40_RE.test(candidate.headSha) || candidate.issueNumber !== undefined) {
+    if (!positive(candidate.pullNumber) || !isHex40(candidate.headSha) || candidate.issueNumber !== undefined) {
       return {ok: false, reason: 'INVALID_CANDIDATE'};
     }
     return {
@@ -505,20 +526,35 @@ async function executeCasTransition(refStore, maxCasAttempts, transformState) {
 
     let casResult;
     try {
-      casResult = await refStore.compareAndSwapRef({
+      const rawCasResult = refStore.compareAndSwapRef({
         ref: PROTECTED_WORK_QUEUE_REF,
         expectedOid: current.oid,
         nextState: step.nextState,
         force: false
       });
+      if (rawCasResult !== null && typeof rawCasResult === 'object' && types.isProxy(rawCasResult)) {
+        return denyMutation('REF_STORE_UNAVAILABLE');
+      }
+      casResult = await rawCasResult;
     } catch {
       return denyMutation('REF_STORE_UNAVAILABLE');
     }
-    if (casResult && !types.isProxy(casResult) && casResult.ok === true && HEX40_RE.test(casResult.oid)) {
+    if (casResult === null || typeof casResult !== 'object' || types.isProxy(casResult) ||
+        Array.isArray(casResult) || Object.getPrototypeOf(casResult) !== Object.prototype ||
+        !isOwnEnumerableData(casResult, 'ok')) {
+      return denyMutation('REF_STORE_UNAVAILABLE');
+    }
+    if (casResult.ok === true) {
+      if (!isOwnEnumerableData(casResult, 'oid') || !isHex40(casResult.oid)) {
+        return denyMutation('REF_STORE_UNAVAILABLE');
+      }
       return step.onApplied(casResult.oid, casAttempt);
     }
-    if (!casResult || types.isProxy(casResult) || casResult.reason !== 'CAS_CONFLICT') {
-      return denyMutation(typeof casResult?.reason === 'string' ? casResult.reason : 'REF_STORE_UNAVAILABLE');
+    const reason = isOwnEnumerableData(casResult, 'reason') && typeof casResult.reason === 'string' && casResult.reason.length > 0
+      ? casResult.reason
+      : 'REF_STORE_UNAVAILABLE';
+    if (reason !== 'CAS_CONFLICT') {
+      return denyMutation(reason);
     }
   }
   return denyMutation('CAS_CONFLICT_EXHAUSTED');
@@ -645,7 +681,7 @@ export async function renewWorkQueueLease(options) {
   if (options.stop !== undefined && options.stop !== false) return denyMutation('STOPPED');
   const maxCasAttempts = resolveCasAttempts(options.maxCasAttempts);
   if (!isValidRefStore(options.refStore) || typeof options.workId !== 'string' || options.workId.length === 0 ||
-      !WORKER_ID_RE.test(options.workerId) || !positive(options.generation) ||
+      !isWorkerId(options.workerId) || !positive(options.generation) ||
       !nonnegative(options.nowMs) || maxCasAttempts === null) {
     return denyMutation('INVALID_RENEW_OPTIONS');
   }
@@ -704,7 +740,7 @@ export async function settleWorkQueueLease(options) {
   if (options.stop !== undefined && options.stop !== false) return denyMutation('STOPPED');
   const maxCasAttempts = resolveCasAttempts(options.maxCasAttempts);
   if (!isValidRefStore(options.refStore) || typeof options.workId !== 'string' || options.workId.length === 0 ||
-      !WORKER_ID_RE.test(options.workerId) || !positive(options.generation) ||
+      !isWorkerId(options.workerId) || !positive(options.generation) ||
       !['completed', 'cancelled', 'requeued'].includes(options.outcome) ||
       !nonnegative(options.nowMs) || maxCasAttempts === null) {
     return denyMutation('INVALID_SETTLE_OPTIONS');
@@ -811,7 +847,8 @@ export async function reconcileWorkQueueRunStates(options) {
     const skipped = [];
 
     for (const entry of state.entries) {
-      const effectiveMaxAttempts = Math.min(entry.maxAttempts, configuredCeiling);
+      const retryLimit = Math.min(entry.maxAttempts, configuredCeiling);
+      const persistedMaxAttempts = Math.max(entry.attempts, retryLimit);
       const obs = observationsByWorkId.get(entry.workId);
       if (obs !== undefined) {
         const matchesLease = entry.status === 'leased' &&
@@ -834,11 +871,11 @@ export async function reconcileWorkQueueRunStates(options) {
             const reclaimedGeneration = nextGeneration++;
             const outcome = (leaseStillActive && terminalSuccess)
               ? 'completed'
-              : (entry.attempts >= effectiveMaxAttempts ? 'exhausted' : 'requeued');
+              : (entry.attempts >= retryLimit ? 'exhausted' : 'requeued');
             nextEntries.push({
               ...entry,
               ownedPaths: [...entry.ownedPaths],
-              maxAttempts: effectiveMaxAttempts,
+              maxAttempts: persistedMaxAttempts,
               status: outcome,
               generation: reclaimedGeneration,
               leaseExpiresAtMs: Math.min(entry.leaseExpiresAtMs, options.nowMs)
@@ -854,7 +891,7 @@ export async function reconcileWorkQueueRunStates(options) {
               previousGeneration: entry.generation,
               reclaimedGeneration,
               attempts: entry.attempts,
-              maxAttempts: effectiveMaxAttempts,
+              maxAttempts: retryLimit,
               outcome,
               reclaimedAtMs: options.nowMs
             });
@@ -866,11 +903,11 @@ export async function reconcileWorkQueueRunStates(options) {
       if (entry.status === 'leased' &&
           (options.nowMs >= entry.leaseExpiresAtMs || options.nowMs >= entry.executionDeadlineMs)) {
         const reclaimedGeneration = nextGeneration++;
-        const outcome = entry.attempts >= effectiveMaxAttempts ? 'exhausted' : 'requeued';
+        const outcome = entry.attempts >= retryLimit ? 'exhausted' : 'requeued';
         nextEntries.push({
           ...entry,
           ownedPaths: [...entry.ownedPaths],
-          maxAttempts: effectiveMaxAttempts,
+          maxAttempts: persistedMaxAttempts,
           status: outcome,
           generation: reclaimedGeneration,
           leaseExpiresAtMs: Math.min(entry.leaseExpiresAtMs, options.nowMs)
@@ -886,7 +923,7 @@ export async function reconcileWorkQueueRunStates(options) {
           previousGeneration: entry.generation,
           reclaimedGeneration,
           attempts: entry.attempts,
-          maxAttempts: effectiveMaxAttempts,
+          maxAttempts: retryLimit,
           outcome,
           reclaimedAtMs: options.nowMs
         });

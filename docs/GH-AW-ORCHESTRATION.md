@@ -25,7 +25,7 @@ SoftwareFactory standardizes `M01` outer orchestration on **GitHub Agentic Workf
 
 ## 2. Default-Off Orchestrator Workflow (`.github/workflows/factory-orchestrator.*`)
 
-- **`.github/workflows/factory-orchestrator.md`** defines the canonical outer orchestrator specification (`protocol: v3` on branch `work-queue`, read-only permissions, supplemental `max-ai-credits` / `max-daily-ai-credits` soft caps, and scoped `safe-outputs` without `merge-pull-request`).
+- **`.github/workflows/factory-orchestrator.md`** defines the canonical outer orchestrator specification using `tools.work-queue: true` (matching `github/gh-aw` `v1.2.2` `main_workflow_schema.json`, while SoftwareFactory's `protocol: v3` / `refs/heads/work-queue` contract assertions are verified outside the compiler-restricted frontmatter schema), read-only permissions, supplemental `max-ai-credits` / `max-daily-ai-credits` soft caps, and scoped `safe-outputs` without `merge-pull-request`.
 - **`.github/workflows/factory-orchestrator.lock.yml`** triggers **exclusively on `workflow_dispatch`** (with `issue_number` and `mode` inputs) so zero skipped or `action_required` workflow runs are created on pull requests or `merge_group` events while `vars.FACTORY_GHAW_ENABLED` is unset.
 - Job pipeline:
   1. `evaluate` (`permissions: contents: read`, gated by `vars.FACTORY_GHAW_ENABLED == 'true'`, protected `refs/heads/main`, repository ID `1471342715`, and `!endsWith(github.actor, '[bot]')`) verifies its own `.md`/`.lock.yml` SHA-256 integrity via `verifyGhAwWorkflowLock` and executes the read-only synthetic smoke check.

@@ -28,9 +28,7 @@ tools:
       - issues
       - pull_requests
       - actions
-  work-queue:
-    protocol: v3
-    branch: work-queue
+  work-queue: true
 safe-outputs:
   add-comment:
     max: 1

@@ -54,9 +54,7 @@ function buildFixture({
     'permissions:',
     '  contents: read',
     'tools:',
-    '  work-queue:',
-    `    protocol: ${protocol}`,
-    '    branch: work-queue',
+    '  work-queue: true',
     frontmatterExtra,
     '---',
     '',
@@ -185,6 +183,7 @@ test('normalizes CRLF frontmatter to identical SHA-256 and rejects malformed fro
     '---\n   \n---\n',
     '---\nname: unclosed',
     '---\nimports:\n  - shared.md\n---\n# body',
+    '---\nimports:\n  - shared.md\nbad: [unclosed\n---\n# body',
     '---\nname: ok\n---\n{{#runtime-import other.md}}'
   ]) {
     assert.equal(computeFrontmatterSha256(invalid), null);
@@ -200,6 +199,15 @@ test('normalizes CRLF frontmatter to identical SHA-256 and rejects malformed fro
   const inlinedA = '---\nengine: copilot\ninlined-imports: true\n---\nPrompt version A';
   const inlinedB = '---\nengine: copilot\ninlined-imports: true\n---\nPrompt version B';
   assert.notEqual(computeFrontmatterSha256(inlinedA), computeFrontmatterSha256(inlinedB));
+
+  // Regression: YAML inline comment and quoted key spellings of inlined-imports: true must include body-text!
+  const inlinedCommentA = '---\nengine: copilot\ninlined-imports: true # include prompt\n---\nPrompt version A';
+  const inlinedCommentB = '---\nengine: copilot\ninlined-imports: true # include prompt\n---\nPrompt version B';
+  assert.notEqual(computeFrontmatterSha256(inlinedCommentA), computeFrontmatterSha256(inlinedCommentB));
+
+  const inlinedQuotedA = '---\nengine: copilot\n"inlined-imports": true\n---\nPrompt version A';
+  const inlinedQuotedB = '---\nengine: copilot\n"inlined-imports": true\n---\nPrompt version B';
+  assert.notEqual(computeFrontmatterSha256(inlinedQuotedA), computeFrontmatterSha256(inlinedQuotedB));
 
   const base = buildFixture();
   const crlfVerdict = verifyGhAwWorkflowLock({
@@ -291,6 +299,7 @@ test('enforces pinned github/gh-aw release metadata and protocol v3 vs verified 
   assert.equal(v4Verified.valid, true);
   assert.equal(v4Verified.workQueueProtocol, 'v4');
 
+  let commitCoercions = 0;
   for (const badPin of [
     null,
     [],
@@ -300,6 +309,8 @@ test('enforces pinned github/gh-aw release metadata and protocol v3 vs verified 
     {version: 'v0.9.0', commit: newerCommit, verified: true},
     {version: 'v1.1.9', commit: newerCommit, verified: true},
     {version: 'v1.2.2', commit: 'not-a-sha'},
+    {version: 'v1.2.2', commit: Symbol('sha')},
+    {version: 'v1.2.2', commit: {toString() { commitCoercions++; throw new Error('boom'); }}},
     {version: 'v1.2.2', commit: PINNED_GHAW_RELEASE.commit, verified: false}
   ]) {
     assert.equal(verifyGhAwWorkflowLock({
@@ -308,6 +319,7 @@ test('enforces pinned github/gh-aw release metadata and protocol v3 vs verified 
       pinnedRelease: badPin
     }).reason, 'PINNED_RELEASE_INVALID');
   }
+  assert.equal(commitCoercions, 0);
 
   assert.equal(verifyGhAwWorkflowLock({
     markdownSource: v3.markdownSource,
@@ -326,38 +338,56 @@ test('enforces pinned github/gh-aw release metadata and protocol v3 vs verified 
     lockYamlSource: v3.lockYamlSource.replace(PINNED_GHAW_RELEASE.commit, newerCommit)
   }).reason, 'PINNED_RELEASE_MISMATCH');
 
-  const topProtocol = [
-    '---',
-    'name: Direct protocol',
-    'protocol: v5',
-    '---',
-    '# Body'
-  ].join('\n');
-  const topHash = computeFrontmatterSha256(topProtocol);
-  const topBody = computeBodySha256(topProtocol);
-  const topLock = v3.lockYamlSource.replace(v3.sha, topHash).replace(v3.bodySha, topBody);
-  assert.equal(verifyGhAwWorkflowLock({markdownSource: topProtocol, lockYamlSource: topLock}).reason,
-    'WORK_QUEUE_PROTOCOL_UNSUPPORTED');
+  // Reject protocol/branch keys inside tools.work-queue or top-level frontmatter per gh-aw v1.2.2 schema
+  for (const invalidSchemaMd of [
+    '---\nname: Bad wq\ntools:\n  work-queue:\n    protocol: v3\n---\n# Body',
+    '---\nname: Bad wq2\ntools:\n  work-queue:\n    branch: work-queue\n---\n# Body',
+    '---\nname: Bad wq3\ntools:\n  work-queue: false\n---\n# Body',
+    '---\nname: Bad wq4\ntools:\n  work-queue:\n    worker: "yes"\n---\n# Body',
+    '---\nname: Bad wq5\ntools:\n  work-queue:\n    issues:\n      bad: 1\n---\n# Body',
+    '---\nname: Bad wq6\ntools:\n  work-queue:\n    memory: true\n---\n# Body',
+    '---\nname: Direct protocol\nprotocol: v5\n---\n# Body',
+    '---\nname: Direct work-queue\nwork-queue:\n  branch: main\n---\n# Body'
+  ]) {
+    const h = computeFrontmatterSha256(invalidSchemaMd);
+    const b = computeBodySha256(invalidSchemaMd);
+    assert.equal(verifyGhAwWorkflowLock({
+      markdownSource: invalidSchemaMd,
+      lockYamlSource: v3.lockYamlSource.replace(v3.sha, h).replace(v3.bodySha, b)
+    }).reason, 'INVALID_FRONTMATTER');
+  }
 
-  const directWorkQueue = [
-    '---',
-    'name: Direct work-queue',
-    'work-queue:',
-    '  branch: main',
-    '---',
-    '# Body'
-  ].join('\n');
-  const dqHash = computeFrontmatterSha256(directWorkQueue);
-  const dqBody = computeBodySha256(directWorkQueue);
+  // SoftwareFactory protocol and ref options outside compiler-owned frontmatter schema
+  const headerlessProtocolLock = v3.lockYamlSource.replace('# gh-aw-work-queue-protocol: v3\n', '');
   assert.equal(verifyGhAwWorkflowLock({
-    markdownSource: directWorkQueue,
-    lockYamlSource: v3.lockYamlSource.replace(v3.sha, dqHash).replace(v3.bodySha, dqBody)
+    markdownSource: v3.markdownSource,
+    lockYamlSource: headerlessProtocolLock,
+    workQueueProtocol: 'v5'
+  }).reason, 'WORK_QUEUE_PROTOCOL_UNSUPPORTED');
+
+  assert.equal(verifyGhAwWorkflowLock({
+    markdownSource: v3.markdownSource,
+    lockYamlSource: v3.lockYamlSource,
+    workQueueProtocol: 'v4'
+  }).reason, 'WORK_QUEUE_PROTOCOL_UNSUPPORTED');
+
+  assert.equal(verifyGhAwWorkflowLock({
+    markdownSource: v3.markdownSource,
+    lockYamlSource: v3.lockYamlSource,
+    workQueueRef: 'refs/heads/main'
+  }).reason, 'INVALID_WORK_QUEUE_BRANCH');
+
+  assert.equal(verifyGhAwWorkflowLock({
+    markdownSource: v3.markdownSource,
+    lockYamlSource: `# gh-aw-work-queue-ref: refs/heads/work-queue\n${v3.lockYamlSource}`,
+    workQueueRef: 'work-queue'
   }).reason, 'INVALID_WORK_QUEUE_BRANCH');
 
   const headerMismatch = buildFixture({protocol: 'v3'});
   assert.equal(verifyGhAwWorkflowLock({
     markdownSource: headerMismatch.markdownSource,
-    lockYamlSource: headerMismatch.lockYamlSource.replace('# gh-aw-work-queue-protocol: v3', '# gh-aw-work-queue-protocol: v4')
+    lockYamlSource: headerMismatch.lockYamlSource.replace('# gh-aw-work-queue-protocol: v3', '# gh-aw-work-queue-protocol: v4'),
+    workQueueProtocol: 'v3'
   }).reason, 'WORK_QUEUE_PROTOCOL_UNSUPPORTED');
 
   // Verify github/gh-aw step action SHA and repository checkout ref match pinnedRelease.commit
@@ -428,12 +458,24 @@ test('enforces # gh-aw-metadata:, legacy # frontmatter-hash:, body_hash, and str
     `# gh-aw-metadata: {"schema_version":"v99","frontmatter_hash":"${base.sha}"}`,
     `# gh-aw-metadata: {"schema_version":"v4","frontmatter_hash":"${base.sha}","strict":"yes"}`,
     `# gh-aw-metadata: {"schema_version":"v4","frontmatter_hash":"${base.sha}","dry_run":"yes"}`,
-    `# gh-aw-metadata: {"schema_version":"v4","frontmatter_hash":"${base.sha}","body_hash":"short"}`
+    `# gh-aw-metadata: {"schema_version":"v4","frontmatter_hash":"${base.sha}","body_hash":"short"}`,
+    `# gh-aw-metadata: {"schema_version":"v4","frontmatter_hash":"${base.sha}","body_hash":{"toString":null,"valueOf":null}}`
   ]) {
     assert.equal(verifyGhAwWorkflowLock({
       markdownSource: base.markdownSource,
       lockYamlSource: base.lockYamlSource.replace(/^# gh-aw-metadata:.*$/m, badMeta)
     }).reason, 'INVALID_LOCK_METADATA');
+  }
+
+  for (const missingOrNonStringFrontmatterHash of [
+    '# gh-aw-metadata: {"schema_version":"v3"}',
+    '# gh-aw-metadata: {"schema_version":"v4","frontmatter_hash":{"toString":null,"valueOf":null}}',
+    '# gh-aw-metadata: {"schema_version":"v4","frontmatter_hash":12345}'
+  ]) {
+    assert.equal(verifyGhAwWorkflowLock({
+      markdownSource: base.markdownSource,
+      lockYamlSource: base.lockYamlSource.replace(/^# gh-aw-metadata:.*$/m, missingOrNonStringFrontmatterHash)
+    }).reason, 'FRONTMATTER_HASH_MISSING');
   }
 
   assert.equal(verifyGhAwWorkflowLock({
@@ -691,8 +733,12 @@ test('covers YAML edge cases: quoted keys, block scalars in sequences, empty map
     "'description': 'Single''Quote'",
     'tools:',
     '  work-queue:',
-    '    protocol: v3',
-    '    branch: work-queue',
+    '    require-assignment: true',
+    '    worker: true',
+    '    issues:',
+    '      label: sf',
+    '    memory:',
+    '      path: state.json',
     'safe-outputs:',
     '  merge-pull-request: false',
     'empty-section:',
@@ -833,13 +879,13 @@ test('covers YAML edge cases: quoted keys, block scalars in sequences, empty map
     }).reason, 'INVALID_FRONTMATTER');
   }
 
-  // Branch array merge-pull-request variants and default protocol under work-queue
+  // Branch array merge-pull-request variants and worker work-queue object
   const nonMainMergeMd = [
     '---',
     'name: Feature Merge Only',
     'tools:',
     '  work-queue:',
-    '    branch: work-queue',
+    '    worker: true',
     'empty_inline: [   ]',
     'safe-outputs:',
     '  merge-pull-request:',
