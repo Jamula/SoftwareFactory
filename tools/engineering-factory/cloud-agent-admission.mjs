@@ -53,7 +53,7 @@ const BILLING_KEYS = new Set([
 ]);
 const METER_SET = new Set(BILLING_METERS);
 const METER_ITEM_KEYS = new Set(['verified', 'paidOverageEnabled', 'overageHardStopUsdCents']);
-const ACCOUNTING_KEYS = new Set([
+const REQUIRED_ACCOUNTING_KEYS = Object.freeze([
   'accountingSource',
   'isEstimated',
   'observedAtMs',
@@ -62,6 +62,10 @@ const ACCOUNTING_KEYS = new Set([
   'dailyAiCreditsUsed',
   'runAiCreditsRequired',
   'premiumRequestsRequired'
+]);
+const ACCOUNTING_KEYS = new Set([
+  ...REQUIRED_ACCOUNTING_KEYS,
+  'netOfReservationsVerified'
 ]);
 const GH_AW_CAP_KEYS = new Set(['maxAiCredits', 'maxDailyAiCredits']);
 const WORKER_POOL_KEYS = new Set([
@@ -79,7 +83,9 @@ const RESERVATION_KEYS = new Set([
   'lane',
   'paths',
   'leaseGeneration',
-  'expiresAtMs'
+  'expiresAtMs',
+  'reservedAiCredits',
+  'reservedPremiumRequests'
 ]);
 const CANDIDATE_KEYS = new Set([
   'issue',
@@ -245,7 +251,10 @@ function evaluateBillingAndCredits(billing, nowMs) {
     maxQuotaAgeMs = billing.maxQuotaAgeMs;
   }
   const {accounting} = billing;
-  if (!exactObject(accounting, ACCOUNTING_KEYS) ||
+  if (!plainObject(accounting, ACCOUNTING_KEYS) ||
+      !REQUIRED_ACCOUNTING_KEYS.every(k => Object.hasOwn(accounting, k)) ||
+      (Object.hasOwn(accounting, 'netOfReservationsVerified') &&
+        typeof accounting.netOfReservationsVerified !== 'boolean') ||
       accounting.accountingSource !== 'verified' ||
       accounting.isEstimated !== false ||
       !nonneg(accounting.observedAtMs) ||
@@ -335,7 +344,11 @@ function evaluateCandidateAndPool(candidate, workerPool, nowMs, accounting, ghAw
   const activePrs = new Set();
   const activeLanes = new Set();
   const activePaths = [];
+  const netAlreadyDeducted = accounting.netOfReservationsVerified === true;
   let activeReservationCount = 0;
+  let committedAiCredits = 0;
+  let committedPremiumRequests = 0;
+  let invalidActiveCommitments = false;
 
   for (let i = 0; i < workerPool.reservations.length; i++) {
     const r = workerPool.reservations[i];
@@ -345,8 +358,14 @@ function evaluateCandidateAndPool(candidate, workerPool, nowMs, accounting, ghAw
         !positive(r.leaseGeneration) || !nonneg(r.expiresAtMs)) {
       return {error: deny('WORK_RESERVATION_UNKNOWN', 'WORKER_POOL_OR_RESERVATIONS_INVALID')};
     }
+    const hasReservedCredits = Object.hasOwn(r, 'reservedAiCredits');
+    const hasReservedRequests = Object.hasOwn(r, 'reservedPremiumRequests');
     seenIds.add(r.reservationId);
     if (r.expiresAtMs <= nowMs) {
+      if ((hasReservedCredits && !nonneg(r.reservedAiCredits)) ||
+          (hasReservedRequests && !nonneg(r.reservedPremiumRequests))) {
+        return {error: deny('WORK_RESERVATION_UNKNOWN', 'WORKER_POOL_OR_RESERVATIONS_INVALID')};
+      }
       if (r.issue === candidate.issue && candidate.leaseGeneration <= r.leaseGeneration) {
         return {error: deny('STALE_CHECKPOINT', 'STALE_FENCED_GENERATION')};
       }
@@ -356,6 +375,20 @@ function evaluateCandidateAndPool(candidate, workerPool, nowMs, accounting, ghAw
     if (activeIssues.has(r.issue) || (rPr !== null && activePrs.has(rPr)) ||
         activeLanes.has(r.lane) || r.paths.some(p => activePaths.some(ap => pathsOverlap(p, ap)))) {
       return {error: deny('LANE_OR_PATH_RESERVED', 'ACTIVE_RESERVATION_CONFLICT')};
+    }
+    if (netAlreadyDeducted) {
+      if ((hasReservedCredits && !nonneg(r.reservedAiCredits)) ||
+          (hasReservedRequests && !nonneg(r.reservedPremiumRequests))) {
+        invalidActiveCommitments = true;
+      }
+    } else if (!hasReservedCredits || !hasReservedRequests ||
+        !nonneg(r.reservedAiCredits) || !nonneg(r.reservedPremiumRequests) ||
+        !Number.isSafeInteger(committedAiCredits + r.reservedAiCredits) ||
+        !Number.isSafeInteger(committedPremiumRequests + r.reservedPremiumRequests)) {
+      invalidActiveCommitments = true;
+    } else {
+      committedAiCredits += r.reservedAiCredits;
+      committedPremiumRequests += r.reservedPremiumRequests;
     }
     activeReservationCount++;
     activeIssues.add(r.issue);
@@ -387,6 +420,10 @@ function evaluateCandidateAndPool(candidate, workerPool, nowMs, accounting, ghAw
     return {error: deny('LANE_OR_PATH_RESERVED', 'OVERLAPPING_PATH_RESERVATION', actualWorkerMax)};
   }
 
+  if (invalidActiveCommitments) {
+    return {error: deny('BUDGET_UNKNOWN', 'RESERVATION_COMMITMENTS_UNKNOWN', actualWorkerMax)};
+  }
+
   const tierIndex = WORKER_LADDER.indexOf(workerPool.requestedWorkers);
   if (tierIndex === -1) {
     return {error: deny('POLICY_UNKNOWN', 'WORKER_LADDER_INVALID_TIER', actualWorkerMax)};
@@ -408,13 +445,17 @@ function evaluateCandidateAndPool(candidate, workerPool, nowMs, accounting, ghAw
 
   const totalBatchAiCredits = workerPool.requestedWorkers * accounting.runAiCreditsRequired;
   const totalBatchPremiumRequests = workerPool.requestedWorkers * accounting.premiumRequestsRequired;
-  if (accounting.dailyAiCreditsUsed + totalBatchAiCredits > ghAwCaps.maxDailyAiCredits) {
+  const effectiveDailyUsed = accounting.dailyAiCreditsUsed + committedAiCredits;
+  if (!Number.isSafeInteger(effectiveDailyUsed + totalBatchAiCredits) ||
+      effectiveDailyUsed + totalBatchAiCredits > ghAwCaps.maxDailyAiCredits) {
     return {error: deny('CAPACITY_EXHAUSTED', 'GH_AW_DAILY_AI_CREDITS_EXCEEDED', actualWorkerMax)};
   }
-  if (totalBatchAiCredits > accounting.remainingIncludedAiCredits) {
+  if (committedAiCredits > accounting.remainingIncludedAiCredits ||
+      totalBatchAiCredits > accounting.remainingIncludedAiCredits - committedAiCredits) {
     return {error: deny('CAPACITY_EXHAUSTED', 'INCLUDED_AI_CREDITS_EXHAUSTED', actualWorkerMax)};
   }
-  if (totalBatchPremiumRequests > accounting.remainingIncludedPremiumRequests) {
+  if (committedPremiumRequests > accounting.remainingIncludedPremiumRequests ||
+      totalBatchPremiumRequests > accounting.remainingIncludedPremiumRequests - committedPremiumRequests) {
     return {error: deny('CAPACITY_EXHAUSTED', 'INCLUDED_PREMIUM_REQUESTS_EXHAUSTED', actualWorkerMax)};
   }
 
@@ -425,6 +466,10 @@ function evaluateCandidateAndPool(candidate, workerPool, nowMs, accounting, ghAw
     netAvailableWorkers,
     actualWorkerMax,
     workerShortfallFrom12,
+    committedAiCredits,
+    committedPremiumRequests,
+    netRemainingAiCredits: accounting.remainingIncludedAiCredits - committedAiCredits,
+    netRemainingPremiumRequests: accounting.remainingIncludedPremiumRequests - committedPremiumRequests,
     totalBatchAiCredits,
     totalBatchPremiumRequests
   };
@@ -481,6 +526,7 @@ export function evaluateCloudAgentAdmission(input) {
   const runBudgetUsdCents = aiCreditsToUsdCents(accounting.runAiCreditsRequired);
   const totalBatchUsdCents = aiCreditsToUsdCents(poolCheck.totalBatchAiCredits);
   const remainingIncludedUsdCents = aiCreditsToUsdCents(accounting.remainingIncludedAiCredits);
+  const netRemainingIncludedUsdCents = aiCreditsToUsdCents(poolCheck.netRemainingAiCredits);
 
   return Object.freeze({
     shadow: true,
@@ -503,9 +549,14 @@ export function evaluateCloudAgentAdmission(input) {
       runBudgetUsdCents,
       totalBatchAiCredits: poolCheck.totalBatchAiCredits,
       totalBatchUsdCents,
+      reservedAiCredits: poolCheck.committedAiCredits,
+      reservedPremiumRequests: poolCheck.committedPremiumRequests,
       remainingIncludedAiCredits: accounting.remainingIncludedAiCredits,
       remainingIncludedUsdCents,
+      netRemainingIncludedAiCredits: poolCheck.netRemainingAiCredits,
+      netRemainingIncludedUsdCents,
       remainingIncludedPremiumRequests: accounting.remainingIncludedPremiumRequests,
+      netRemainingIncludedPremiumRequests: poolCheck.netRemainingPremiumRequests,
       incrementalBilledUsdCents: 0
     }),
     workers: Object.freeze({

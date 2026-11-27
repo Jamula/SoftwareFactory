@@ -1,16 +1,20 @@
 import {pathToFileURL} from 'node:url';
 import {types} from 'node:util';
 import {smoke,readInventory} from './shadow-runtime.mjs';
-import {reconcileEventTrigger,reconcilePullTrigger} from './event-envelope.mjs';
+import {reconcileEventTrigger,reconcilePullTrigger,resolveTrustedScope} from './event-envelope.mjs';
 import {reconcileIssueTrigger} from './issue-event.mjs';
 import {planLanes} from '../engineering-coordinator/planner.mjs';
+import {validateProjectConfig} from '../engineering-coordinator/project-config.mjs';
 import {DEFAULT_FACTORY_SCOPE,guardedSquashEvidence} from './protected-squash.mjs';
 import {evaluateCloudAgentAdmission} from './cloud-agent-admission.mjs';
 import {verifyM01AutonomousExit} from './pilot-readiness.mjs';
 import {telemetrySummary,createExecutionReceipt} from './telemetry.mjs';
 
 export {telemetrySummary};
+export const DEFAULT_REPOSITORY='Jamula/SoftwareFactory';
 export const DEFAULT_REPOSITORY_ID=1471342715;
+export const DEFAULT_BRANCH='main';
+export const DEFAULT_WORKFLOW_PATH='.github/workflows/shadow-reconcile.yml';
 export const MAX_INPUT_UTF8_BYTES=262_144;
 
 let localReceiptSequence=0;
@@ -32,11 +36,13 @@ const commandSpecs=new Map([
 
 const USAGE_TEXT='Usage: node tools/engineering-factory/run.mjs [--smoke|--inventory|--reconcile-pull|--reconcile-issue|--reconcile-event|--plan-lanes|--evaluate-squash|--verify-admission|--verify-m01-readiness] [--receipt]';
 
+const SCOPE_KEYS=new Set(['repository','repositoryId','branch','workflowPath']);
 const RECONCILE_EVENT_INPUT_KEYS=new Set([
   'scope','repository','repositoryId','branch','workflowPath','snapshot','owner','leaseMs'
 ]);
 const PLAN_INPUT_KEYS=new Set(['config','tasks','active','policy']);
 const SQUASH_INPUT_KEYS=new Set(['intent','evidence','scope']);
+const OPTION_GUARDED_KEYS=['repositoryId','repository','branch','workflowPath','scope','input','request'];
 
 const EVENT_TELEMETRY_REASON_MAP=new Map([
   ['CLAIM_PENDING','LEASE_HELD'],
@@ -101,29 +107,132 @@ function readEnvValue(env,key) {
   return Object.hasOwn(d,'value')?{ok:true,value:d.value}:{ok:false,value:undefined};
 }
 
-function resolveRepositoryBinding(injectedRepositoryId,env,spec) {
-  let optRepoId=null;
-  if(injectedRepositoryId!==undefined) {
-    if(!positiveInt(injectedRepositoryId)) return {ok:false,repositoryId:null,explicit:true};
-    optRepoId=injectedRepositoryId;
+function mergeConsistentString(values) {
+  let chosen=null;
+  for(const v of values) {
+    if(v===undefined) continue;
+    if(typeof v!=='string'||v.length===0||v.length>200) return {ok:false,value:null};
+    if(chosen!==null&&chosen!==v) return {ok:false,value:null};
+    chosen=v;
   }
-  const envExpected=readEnvValue(env,'FACTORY_EXPECTED_REPO_ID');
-  if(!envExpected.ok) return {ok:false,repositoryId:null,explicit:true};
-  let parsedExpected=null;
-  if(envExpected.value!==undefined) {
-    parsedExpected=parsePositiveRepoId(envExpected.value);
-    if(parsedExpected===null||(optRepoId!==null&&optRepoId!==parsedExpected)) {
-      return {ok:false,repositoryId:null,explicit:true};
+  return {ok:true,value:chosen};
+}
+
+function resolveRepositoryBinding(options,env,spec) {
+  let scopeOpt=null;
+  if(options.scope!==undefined) {
+    if(!plainJsonObject(options.scope)||!Object.keys(options.scope).every(k=>SCOPE_KEYS.has(k))) {
+      return {ok:false,repositoryId:null};
+    }
+    scopeOpt=options.scope;
+  }
+  const repoIdCandidates=[];
+  for(const rawId of [options.repositoryId,scopeOpt?.repositoryId]) {
+    if(rawId!==undefined) {
+      if(!positiveInt(rawId)) return {ok:false,repositoryId:null};
+      repoIdCandidates.push(rawId);
     }
   }
-  const repositoryId=optRepoId??parsedExpected??DEFAULT_REPOSITORY_ID;
-  const explicit=optRepoId!==null||parsedExpected!==null;
-  const ghRepoId=readEnvValue(env,'GITHUB_REPOSITORY_ID');
-  if(!ghRepoId.ok) return {ok:false,repositoryId:null,explicit};
-  if((!spec.syntheticOnly||explicit)&&ghRepoId.value!==undefined&&ghRepoId.value!==String(repositoryId)) {
-    return {ok:false,repositoryId:null,explicit};
+  const envExpected=readEnvValue(env,'FACTORY_EXPECTED_REPO_ID');
+  if(!envExpected.ok) return {ok:false,repositoryId:null};
+  if(envExpected.value!==undefined) {
+    const parsedId=parsePositiveRepoId(envExpected.value);
+    if(parsedId===null) return {ok:false,repositoryId:null};
+    repoIdCandidates.push(parsedId);
   }
-  return {ok:true,repositoryId,explicit};
+  if(new Set(repoIdCandidates).size>1) return {ok:false,repositoryId:null};
+  const repositoryId=repoIdCandidates[0]??DEFAULT_REPOSITORY_ID;
+
+  const envRepo=readEnvValue(env,'FACTORY_EXPECTED_REPOSITORY');
+  const envBranch=readEnvValue(env,'FACTORY_EXPECTED_BRANCH');
+  const envWorkflow=readEnvValue(env,'FACTORY_EXPECTED_WORKFLOW_PATH');
+  const ghRepoId=readEnvValue(env,'GITHUB_REPOSITORY_ID');
+  const ghRepo=readEnvValue(env,'GITHUB_REPOSITORY');
+  if(!envRepo.ok||!envBranch.ok||!envWorkflow.ok||!ghRepoId.ok||!ghRepo.ok) {
+    return {ok:false,repositoryId:null};
+  }
+  const mergedRepo=mergeConsistentString([options.repository,scopeOpt?.repository,envRepo.value]);
+  const mergedBranch=mergeConsistentString([options.branch,scopeOpt?.branch,envBranch.value]);
+  const mergedWorkflow=mergeConsistentString([options.workflowPath,scopeOpt?.workflowPath,envWorkflow.value]);
+  if(!mergedRepo.ok||!mergedBranch.ok||!mergedWorkflow.ok) {
+    return {ok:false,repositoryId:null};
+  }
+  if(repositoryId===DEFAULT_REPOSITORY_ID) {
+    if(mergedRepo.value!==null&&mergedRepo.value!==DEFAULT_REPOSITORY) {
+      return {ok:false,repositoryId:null};
+    }
+  } else if(mergedRepo.value!==null&&mergedRepo.value.toLowerCase()===DEFAULT_REPOSITORY.toLowerCase()) {
+    return {ok:false,repositoryId:null};
+  }
+  const repository=repositoryId===DEFAULT_REPOSITORY_ID?DEFAULT_REPOSITORY:mergedRepo.value;
+  const explicit=repoIdCandidates.length>0||mergedRepo.value!==null||
+    mergedBranch.value!==null||mergedWorkflow.value!==null;
+  const inActions=env?.GITHUB_ACTIONS==='true';
+  if(!spec.syntheticOnly||explicit) {
+    if(ghRepoId.value!==undefined&&ghRepoId.value!==String(repositoryId)) {
+      return {ok:false,repositoryId:null};
+    }
+    const hasEffectiveGhRepo=ghRepo.value!==undefined&&(inActions||ghRepo.value!=='');
+    if(hasEffectiveGhRepo&&repository!==null&&ghRepo.value!==repository) {
+      return {ok:false,repositoryId:null};
+    }
+  }
+  return {
+    ok:true,
+    repositoryId,
+    repository,
+    branch:mergedBranch.value,
+    workflowPath:mergedWorkflow.value,
+    explicitScope:mergedRepo.value!==null||mergedBranch.value!==null||mergedWorkflow.value!==null
+  };
+}
+
+function resolveReconcileScope(repoBinding,env,inputObj) {
+  let inputScope=null;
+  if(inputObj!==undefined&&Object.hasOwn(inputObj,'scope')) {
+    if(!plainJsonObject(inputObj.scope)||!Object.keys(inputObj.scope).every(k=>SCOPE_KEYS.has(k))) {
+      return {ok:false,reason:'TRUST_UNKNOWN'};
+    }
+    inputScope=inputObj.scope;
+  }
+  const repoMerge=mergeConsistentString([repoBinding.repository??undefined,inputObj?.repository,inputScope?.repository]);
+  if(!repoMerge.ok) return {ok:false,reason:'PROVENANCE_MISMATCH'};
+  const branchMerge=mergeConsistentString([repoBinding.branch??undefined,inputObj?.branch,inputScope?.branch]);
+  const workflowMerge=mergeConsistentString([repoBinding.workflowPath??undefined,inputObj?.workflowPath,inputScope?.workflowPath]);
+  if(!branchMerge.ok||!workflowMerge.ok) return {ok:false,reason:'TRUST_UNKNOWN'};
+
+  if(repoBinding.repositoryId===DEFAULT_REPOSITORY_ID) {
+    const scopeCandidate={
+      repository:DEFAULT_REPOSITORY,
+      repositoryId:DEFAULT_REPOSITORY_ID,
+      branch:branchMerge.value??DEFAULT_BRANCH,
+      workflowPath:workflowMerge.value??DEFAULT_WORKFLOW_PATH
+    };
+    const verified=resolveTrustedScope(scopeCandidate);
+    if(!verified) return {ok:false,reason:'TRUST_UNKNOWN'};
+    return {
+      ok:true,
+      isDefaultUnscoped:!repoBinding.explicitScope&&inputObj===undefined,
+      scope:scopeCandidate
+    };
+  }
+
+  if(repoMerge.value===null||repoMerge.value.toLowerCase()===DEFAULT_REPOSITORY.toLowerCase()||
+     branchMerge.value===null||workflowMerge.value===null) {
+    return {ok:false,reason:'TRUST_UNKNOWN'};
+  }
+  const ghRepo=readEnvValue(env,'GITHUB_REPOSITORY');
+  if(ghRepo.value!==undefined&&(env?.GITHUB_ACTIONS==='true'||ghRepo.value!=='')&&ghRepo.value!==repoMerge.value) {
+    return {ok:false,reason:'PROVENANCE_MISMATCH'};
+  }
+  const scopeCandidate={
+    repository:repoMerge.value,
+    repositoryId:repoBinding.repositoryId,
+    branch:branchMerge.value,
+    workflowPath:workflowMerge.value
+  };
+  if(!resolveTrustedScope(scopeCandidate)) return {ok:false,reason:'TRUST_UNKNOWN'};
+  return {ok:true,isDefaultUnscoped:false,scope:scopeCandidate};
 }
 
 function parseBoundedInput(injectedInput,env) {
@@ -339,7 +448,7 @@ export async function run(args,options={}) {
     console.error('FACTORY_RUN_FAILED');
     return 1;
   }
-  const hasBadOptionGetter=['repositoryId','input'].some(k=>{
+  const hasBadOptionGetter=OPTION_GUARDED_KEYS.some(k=>{
     const d=Object.getOwnPropertyDescriptor(options,k);
     return d!==undefined&&!Object.hasOwn(d,'value');
   });
@@ -375,7 +484,7 @@ export async function run(args,options={}) {
   const startedAt=wantsReceipt?safeClock(clock):null;
   let effectiveRepositoryId=DEFAULT_REPOSITORY_ID;
   try {
-    if(hasBadOptionGetter) {
+    if(hasBadOptionGetter||(options.request!==undefined&&typeof options.request!=='function')) {
       const blocked={shadow:true,liveDispatch:false,liveMerge:false,state:'blocked',reason:'EVIDENCE_UNKNOWN'};
       await observedResult(observe,spec.stage,parsed.command,async()=>blocked);
       return emitCompletedRun({
@@ -383,7 +492,7 @@ export async function run(args,options={}) {
         result:blocked,payload:blocked,exitCode:1,write,writeReceipt,receiptId,quota,cost,humanTouches,correlation
       });
     }
-    const repoBinding=resolveRepositoryBinding(options.repositoryId,env,spec);
+    const repoBinding=resolveRepositoryBinding(options,env,spec);
     if(!repoBinding.ok) {
       const blocked={shadow:true,liveDispatch:false,liveMerge:false,state:'blocked',reason:'PROVENANCE_MISMATCH'};
       await observedResult(observe,spec.stage,parsed.command,async()=>blocked);
@@ -403,38 +512,90 @@ export async function run(args,options={}) {
       });
     }
     const parsedInput=inputCheck.value;
+    const reconcileRuntimeOpts=scope=>({
+      scope,
+      ...(options.request!==undefined?{request:options.request}:{}),
+      ...(Object.hasOwn(options,'clock')?{clock}:{})
+    });
+    const blockedReconcile=reason=>({
+      shadow:true,evidenceComplete:false,reconciled:false,liveDispatch:false,liveMerge:false,reason
+    });
     const handlers={
       '--smoke':async()=>replay(),
-      '--inventory':async()=>inventory(),
-      '--reconcile-pull':async()=>effectiveRepositoryId===DEFAULT_REPOSITORY_ID
-        ?reconcile(env)
-        :reconcile(env,{repositoryId:effectiveRepositoryId}),
-      '--reconcile-issue':async()=>effectiveRepositoryId===DEFAULT_REPOSITORY_ID
-        ?reconcileIssue(env)
-        :reconcileIssue(env,{repositoryId:effectiveRepositoryId}),
+      '--inventory':async()=>{
+        const blockedInv={shadow:true,liveDispatch:false,liveMerge:false,state:'blocked',reason:'PROVENANCE_MISMATCH'};
+        if(effectiveRepositoryId!==DEFAULT_REPOSITORY_ID) {
+          if(inventory===readInventory) return blockedInv;
+          const inv=await inventory({
+            repositoryId:effectiveRepositoryId,
+            ...(repoBinding.repository!==null?{repository:repoBinding.repository}:{})
+          });
+          if(!plainJsonObject(inv)||inv.repositoryId!==effectiveRepositoryId||
+             (Object.hasOwn(inv,'repository')&&(typeof inv.repository!=='string'||
+              inv.repository.toLowerCase()===DEFAULT_REPOSITORY.toLowerCase()||
+              (repoBinding.repository!==null&&inv.repository!==repoBinding.repository)))) {
+            return blockedInv;
+          }
+          return inv;
+        }
+        const inv=await inventory();
+        if(plainJsonObject(inv)&&((Object.hasOwn(inv,'repositoryId')&&inv.repositoryId!==DEFAULT_REPOSITORY_ID)||
+           (Object.hasOwn(inv,'repository')&&inv.repository!==DEFAULT_REPOSITORY))) {
+          return blockedInv;
+        }
+        return inv;
+      },
+      '--reconcile-pull':async()=>{
+        const scopeCheck=resolveReconcileScope(repoBinding,env,undefined);
+        if(!scopeCheck.ok) return blockedReconcile(scopeCheck.reason);
+        return scopeCheck.isDefaultUnscoped&&options.request===undefined
+          ?reconcile(env)
+          :reconcile(env,reconcileRuntimeOpts(scopeCheck.scope));
+      },
+      '--reconcile-issue':async()=>{
+        const scopeCheck=resolveReconcileScope(repoBinding,env,undefined);
+        if(!scopeCheck.ok) return blockedReconcile(scopeCheck.reason);
+        return scopeCheck.isDefaultUnscoped&&options.request===undefined
+          ?reconcileIssue(env)
+          :reconcileIssue(env,reconcileRuntimeOpts(scopeCheck.scope));
+      },
       '--reconcile-event':async()=>{
         if(parsedInput!==undefined) {
           if(!Object.keys(parsedInput).every(k=>RECONCILE_EVENT_INPUT_KEYS.has(k))) {
-            return {shadow:true,evidenceComplete:false,reconciled:false,liveDispatch:false,liveMerge:false,reason:'EVIDENCE_UNKNOWN'};
+            return blockedReconcile('EVIDENCE_UNKNOWN');
           }
           if(hasMismatchedRepoId(parsedInput,effectiveRepositoryId)||
              hasMismatchedRepoId(parsedInput.scope,effectiveRepositoryId)) {
-            return {shadow:true,evidenceComplete:false,reconciled:false,liveDispatch:false,liveMerge:false,reason:'PROVENANCE_MISMATCH'};
+            return blockedReconcile('PROVENANCE_MISMATCH');
           }
-          const eventOpts=!Object.hasOwn(parsedInput,'repositoryId')&&!Object.hasOwn(parsedInput,'scope')&&effectiveRepositoryId!==DEFAULT_REPOSITORY_ID
-            ?{repositoryId:effectiveRepositoryId,...parsedInput}
-            :parsedInput;
-          return sanitizeEventResult(await reconcileEvent(env,eventOpts));
         }
-        const raw=effectiveRepositoryId===DEFAULT_REPOSITORY_ID
-          ?await reconcileEvent(env)
-          :await reconcileEvent(env,{repositoryId:effectiveRepositoryId});
-        return sanitizeEventResult(raw);
+        const scopeCheck=resolveReconcileScope(repoBinding,env,parsedInput);
+        if(!scopeCheck.ok) return blockedReconcile(scopeCheck.reason);
+        if(scopeCheck.isDefaultUnscoped&&options.request===undefined) {
+          return sanitizeEventResult(await reconcileEvent(env));
+        }
+        const extraOpts={};
+        for(const k of ['snapshot','owner','leaseMs']) {
+          if(parsedInput!==undefined&&Object.hasOwn(parsedInput,k)) extraOpts[k]=parsedInput[k];
+        }
+        return sanitizeEventResult(await reconcileEvent(env,{...reconcileRuntimeOpts(scopeCheck.scope),...extraOpts}));
       },
       '--plan-lanes':async()=>{
+        const blockedPlan=reason=>({shadow:true,liveDispatch:false,ready:[],scheduled:[],reason});
         if(parsedInput===undefined||!Object.keys(parsedInput).every(k=>PLAN_INPUT_KEYS.has(k))||
            !Object.hasOwn(parsedInput,'config')||!Object.hasOwn(parsedInput,'tasks')) {
-          return {shadow:true,liveDispatch:false,scheduled:[],reason:'INVALID_TASKS'};
+          return blockedPlan('INVALID_TASKS');
+        }
+        if(!validateProjectConfig(parsedInput.config)) {
+          return blockedPlan('INVALID_PROJECT_CONFIG');
+        }
+        if(repoBinding.repository===null||
+           (effectiveRepositoryId!==DEFAULT_REPOSITORY_ID&&env?.GITHUB_ACTIONS==='true'&&env?.GITHUB_REPOSITORY!==repoBinding.repository)||
+           parsedInput.config.project.repository!==repoBinding.repository) {
+          return blockedPlan('PROVENANCE_MISMATCH');
+        }
+        if(parsedInput.config.execution.enabled!==true||parsedInput.config.execution.stop!==false) {
+          return blockedPlan('STOPPED');
         }
         return normalizePlanResult(await plan(parsedInput.config,parsedInput.tasks,parsedInput.active,parsedInput.policy));
       },
@@ -464,7 +625,7 @@ export async function run(args,options={}) {
     const result=await observedResult(observe,spec.stage,parsed.command,handlers[parsed.command]);
     const exitCode=parsed.command==='--smoke'
       ?(result.reason==='SHADOW_PLAN'&&Array.isArray(result.ready)&&result.ready.join(',')==='1,2'?0:1)
-      :0;
+      :(parsed.command==='--inventory'&&plainJsonObject(result)&&result.reason==='PROVENANCE_MISMATCH'?1:0);
     const payload=parsed.command==='--smoke'
       ?{mode:'synthetic',...result,liveDispatch:false,liveMerge:false}
       :result;

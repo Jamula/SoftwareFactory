@@ -88,7 +88,9 @@ function makeFixture(overrides = {}) {
           lane: 'lane-a',
           paths: ['tools/engineering-coordinator'],
           leaseGeneration: 1,
-          expiresAtMs: nowMs + 60_000
+          expiresAtMs: nowMs + 60_000,
+          reservedAiCredits: 25,
+          reservedPremiumRequests: 2
         },
         {
           reservationId: 'res-expired-7',
@@ -176,9 +178,14 @@ test('admits valid Cloud Agent, Cloud Automation (private/internal), and pinned 
       runBudgetUsdCents: 25,
       totalBatchAiCredits: 100,
       totalBatchUsdCents: 100,
+      reservedAiCredits: 25,
+      reservedPremiumRequests: 2,
       remainingIncludedAiCredits: 2_000,
       remainingIncludedUsdCents: 2_000,
+      netRemainingIncludedAiCredits: 1_975,
+      netRemainingIncludedUsdCents: 1_975,
       remainingIncludedPremiumRequests: 50,
+      netRemainingIncludedPremiumRequests: 48,
       incrementalBilledUsdCents: 0
     },
     workers: {
@@ -426,7 +433,8 @@ test('enforces non-estimated AI-credit accounting, $0 hard-stop meters across al
     {...validBilling, accounting: {...validAccounting, dailyAiCreditsUsed: -1}},
     {...validBilling, accounting: {...validAccounting, runAiCreditsRequired: 0}},
     {...validBilling, accounting: {...validAccounting, runAiCreditsRequired: 1_000_000_001}},
-    {...validBilling, accounting: {...validAccounting, premiumRequestsRequired: -1}}
+    {...validBilling, accounting: {...validAccounting, premiumRequestsRequired: -1}},
+    {...validBilling, accounting: {...validAccounting, netOfReservationsVerified: 'true'}}
   ]) {
     const res = evaluateCloudAgentAdmission(makeFixture({billingEntitlement: badBilling}));
     assert.equal(res.reason, 'BUDGET_UNKNOWN');
@@ -570,6 +578,172 @@ test('enforces non-estimated AI-credit accounting, $0 hard-stop meters across al
   }));
   assert.equal(batchPremiumExhausted.reason, 'CAPACITY_EXHAUSTED');
   assert.equal(batchPremiumExhausted.admissionCode, 'INCLUDED_PREMIUM_REQUESTS_EXHAUSTED');
+
+  // Active reservations deduct committed AI credits, daily allowance, and premium requests before admission
+  const active60Reservation = {
+    ...base.workerPool.reservations[0],
+    reservedAiCredits: 60,
+    reservedPremiumRequests: 1
+  };
+  const activeDeductDenied = evaluateCloudAgentAdmission(makeFixture({
+    billingEntitlement: {
+      ...validBilling,
+      accounting: {
+        ...validAccounting,
+        remainingIncludedAiCredits: 100,
+        remainingIncludedPremiumRequests: 10,
+        dailyAiCreditsUsed: 0,
+        runAiCreditsRequired: 60,
+        premiumRequestsRequired: 1
+      }
+    },
+    workerPool: {
+      ...base.workerPool,
+      requestedWorkers: 1,
+      verifiedPriorWorkerTier: 0,
+      reservations: [active60Reservation]
+    }
+  }));
+  assert.equal(activeDeductDenied.admitted, false);
+  assert.equal(activeDeductDenied.reason, 'CAPACITY_EXHAUSTED');
+  assert.equal(activeDeductDenied.admissionCode, 'INCLUDED_AI_CREDITS_EXHAUSTED');
+  assertCleanTelemetry(activeDeductDenied, 'blocked', 'QUOTA');
+
+  const activeDailyDenied = evaluateCloudAgentAdmission(makeFixture({
+    billingEntitlement: {
+      ...validBilling,
+      accounting: {
+        ...validAccounting,
+        remainingIncludedAiCredits: 500,
+        dailyAiCreditsUsed: 410,
+        runAiCreditsRequired: 40,
+        premiumRequestsRequired: 1
+      }
+    },
+    workerPool: {
+      ...base.workerPool,
+      requestedWorkers: 1,
+      verifiedPriorWorkerTier: 0,
+      reservations: [active60Reservation]
+    }
+  }));
+  assert.equal(activeDailyDenied.reason, 'CAPACITY_EXHAUSTED');
+  assert.equal(activeDailyDenied.admissionCode, 'GH_AW_DAILY_AI_CREDITS_EXCEEDED');
+
+  const activePremDenied = evaluateCloudAgentAdmission(makeFixture({
+    billingEntitlement: {
+      ...validBilling,
+      accounting: {
+        ...validAccounting,
+        remainingIncludedAiCredits: 500,
+        remainingIncludedPremiumRequests: 3,
+        runAiCreditsRequired: 10,
+        premiumRequestsRequired: 2
+      }
+    },
+    workerPool: {
+      ...base.workerPool,
+      requestedWorkers: 1,
+      verifiedPriorWorkerTier: 0,
+      reservations: [{...active60Reservation, reservedPremiumRequests: 2}]
+    }
+  }));
+  assert.equal(activePremDenied.reason, 'CAPACITY_EXHAUSTED');
+  assert.equal(activePremDenied.admissionCode, 'INCLUDED_PREMIUM_REQUESTS_EXHAUSTED');
+
+  // Explicit netOfReservationsVerified: true accepts pre-deducted balances without double-subtracting
+  const preDeductedOk = evaluateCloudAgentAdmission(makeFixture({
+    billingEntitlement: {
+      ...validBilling,
+      accounting: {
+        ...validAccounting,
+        netOfReservationsVerified: true,
+        remainingIncludedAiCredits: 60,
+        remainingIncludedPremiumRequests: 2,
+        runAiCreditsRequired: 60,
+        premiumRequestsRequired: 2
+      }
+    },
+    workerPool: {
+      ...base.workerPool,
+      requestedWorkers: 1,
+      verifiedPriorWorkerTier: 0,
+      reservations: [{
+        reservationId: 'res-net-1',
+        issue: 101,
+        lane: 'lane-a',
+        paths: ['tools/engineering-coordinator'],
+        leaseGeneration: 1,
+        expiresAtMs: base.nowMs + 60_000,
+        reservedAiCredits: 0,
+        reservedPremiumRequests: 0
+      }]
+    }
+  }));
+  assert.equal(preDeductedOk.admitted, true);
+  assert.equal(preDeductedOk.accounting.reservedAiCredits, 0);
+
+  // Missing, negative, non-integer, or overflowing active commitments fail closed with RESERVATION_COMMITMENTS_UNKNOWN
+  const noCommitmentRes = {...base.workerPool.reservations[0]};
+  delete noCommitmentRes.reservedAiCredits;
+  const noReqRes = {...base.workerPool.reservations[0]};
+  delete noReqRes.reservedPremiumRequests;
+  for (const [acctOverride, badReservations] of [
+    [{}, [noCommitmentRes]],
+    [{}, [noReqRes]],
+    [{}, [{...base.workerPool.reservations[0], reservedAiCredits: -1}]],
+    [{}, [{...base.workerPool.reservations[0], reservedPremiumRequests: 1.5}]],
+    [{netOfReservationsVerified: true}, [{...base.workerPool.reservations[0], reservedAiCredits: -1}]],
+    [{netOfReservationsVerified: true}, [{...base.workerPool.reservations[0], reservedPremiumRequests: -1}]],
+    [{}, [
+      {...base.workerPool.reservations[0], reservedAiCredits: Number.MAX_SAFE_INTEGER, reservedPremiumRequests: 1},
+      {
+        reservationId: 'res-active-2',
+        issue: 102,
+        pr: 202,
+        lane: 'lane-b',
+        paths: ['docs'],
+        leaseGeneration: 1,
+        expiresAtMs: base.nowMs + 60_000,
+        reservedAiCredits: Number.MAX_SAFE_INTEGER,
+        reservedPremiumRequests: 1
+      }
+    ]],
+    [{}, [
+      {...base.workerPool.reservations[0], reservedAiCredits: 1, reservedPremiumRequests: Number.MAX_SAFE_INTEGER},
+      {
+        reservationId: 'res-active-2',
+        issue: 102,
+        pr: 202,
+        lane: 'lane-b',
+        paths: ['docs'],
+        leaseGeneration: 1,
+        expiresAtMs: base.nowMs + 60_000,
+        reservedAiCredits: 1,
+        reservedPremiumRequests: Number.MAX_SAFE_INTEGER
+      }
+    ]]
+  ]) {
+    const res = evaluateCloudAgentAdmission(makeFixture({
+      billingEntitlement: {...validBilling, accounting: {...validAccounting, ...acctOverride}},
+      workerPool: {...base.workerPool, reservations: badReservations}
+    }));
+    assert.equal(res.reason, 'BUDGET_UNKNOWN');
+    assert.equal(res.admissionCode, 'RESERVATION_COMMITMENTS_UNKNOWN');
+    assertCleanTelemetry(res, 'blocked', 'QUOTA');
+  }
+
+  // Expired reservation with malformed commitment values fails closed as invalid reservation
+  for (const badExpired of [
+    {...base.workerPool.reservations[1], reservedAiCredits: -1},
+    {...base.workerPool.reservations[1], reservedPremiumRequests: -1}
+  ]) {
+    const badExpiredCommitment = evaluateCloudAgentAdmission(makeFixture({
+      workerPool: {...base.workerPool, reservations: [badExpired]}
+    }));
+    assert.equal(badExpiredCommitment.reason, 'WORK_RESERVATION_UNKNOWN');
+    assert.equal(badExpiredCommitment.admissionCode, 'WORKER_POOL_OR_RESERVATIONS_INVALID');
+  }
 });
 
 test('enforces 1->12 worker ladder, fenced reservation deduplication, CAS generation fencing, and shortfall reporting', () => {

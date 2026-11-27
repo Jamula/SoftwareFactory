@@ -456,6 +456,41 @@ test('unified subcommands, parameterized repositoryId, and bounded JSON input en
   }),0);
   assert.equal(badPlanOut.at(-1).reason,'INVALID_TASKS');
  }
+ const invalidCfgOut=[];
+ assert.equal(await run(['--plan-lanes'],{
+  env:{},input:{config:null,tasks:[]},
+  plan:()=>assert.fail('must not call plan on invalid config'),
+  write:v=>invalidCfgOut.push(JSON.parse(v))
+ }),0);
+ assert.equal(invalidCfgOut[0].reason,'INVALID_PROJECT_CONFIG');
+ assert.deepEqual(invalidCfgOut[0].ready,[]);
+
+ // --plan-lanes enforces repository match and execution.enabled/stop gates BEFORE calling planLanes
+ for(const [badExec,expectedReason] of [
+  [{...validConfig,project:{...validConfig.project,repository:'Synthetic/FamilyTree'}},'PROVENANCE_MISMATCH'],
+  [{...validConfig,execution:{...validConfig.execution,stop:true}},'STOPPED'],
+  [{...validConfig,execution:{...validConfig.execution,enabled:false}},'STOPPED']
+ ]){
+  const out=[],rcpt=[];
+  assert.equal(await run(['--plan-lanes'],{
+   env:{},input:{config:badExec,tasks:planInput.tasks},
+   plan:()=>assert.fail('must not invoke plan when repository mismatches or execution is stopped'),
+   write:v=>out.push(JSON.parse(v))
+  }),0);
+  assert.equal(out[0].reason,expectedReason);
+  assert.deepEqual(out[0].ready,[]);
+  assert.deepEqual(out[0].scheduled,[]);
+
+  assert.equal(await run(['--plan-lanes','--receipt'],{
+   clock,env:eventEnv,input:{config:badExec,tasks:planInput.tasks},
+   plan:()=>assert.fail('must not invoke plan when repository mismatches or execution is stopped'),
+   write:v=>rcpt.push(JSON.parse(v))
+  }),0);
+  assert.equal(rcpt[0].valid,true);
+  assert.equal(rcpt[0].outcome,'blocked');
+  assert.equal(rcpt[0].reason,expectedReason==='STOPPED'?'POLICY':'SECURITY');
+ }
+
  const customPlanNorm=[];
  assert.equal(await run(['--plan-lanes'],{
   env:{},input:{config:validConfig,tasks:[]},
@@ -654,8 +689,15 @@ test('unified subcommands, parameterized repositoryId, and bounded JSON input en
  assert.equal(m01BlockedReceipt[1].outcome,'blocked');
  assert.equal(m01BlockedReceipt[1].reason,'POLICY');
 
- // 6. Parameterized repositoryId (options.repositoryId and env.FACTORY_EXPECTED_REPO_ID)
+ // 6. Parameterized repositoryId, --inventory guard, consumer --plan-lanes, and end-to-end consumer reconcile
  const consumerRepoId=200036;
+ const consumerRepoName='Synthetic/FamilyTree';
+ const consumerScope={
+  repository:consumerRepoName,
+  repositoryId:consumerRepoId,
+  branch:'main',
+  workflowPath:'.github/workflows/shadow-reconcile.yml'
+ };
  const consumerHostedEnv={
   GITHUB_ACTIONS:'true',
   RUNNER_ENVIRONMENT:'github-hosted',
@@ -675,32 +717,217 @@ test('unified subcommands, parameterized repositoryId, and bounded JSON input en
  assert.equal(consumerReceipts[0].source,'github-hosted');
  assert.equal(consumerReceipts[0].repositoryId,consumerRepoId);
 
- // Custom repositoryId propagates to reconcile-pull, reconcile-issue, reconcile-event, and evaluate-squash
- let seenPullRepo=null,seenIssueRepo=null,seenEventRepo=null;
+ // --inventory fails closed for non-SoftwareFactory repository bindings unless a scoped reader returns matching repositoryId
+ const invBlockedOut=[],invBlockedReceipt=[];
+ assert.equal(await run(['--inventory'],{
+  repositoryId:consumerRepoId,env:{},write:v=>invBlockedOut.push(JSON.parse(v))
+ }),1);
+ assert.equal(invBlockedOut[0].reason,'PROVENANCE_MISMATCH');
+
+ assert.equal(await run(['--inventory','--receipt'],{
+  clock,env:consumerHostedEnv,write:v=>invBlockedReceipt.push(JSON.parse(v))
+ }),1);
+ assert.equal(invBlockedReceipt[0].valid,true);
+ assert.equal(invBlockedReceipt[0].outcome,'blocked');
+ assert.equal(invBlockedReceipt[0].reason,'SECURITY');
+
+ for(const badConsumerInv of [
+  null,
+  {shadow:true,repository:'Jamula/SoftwareFactory',issues:[1],pulls:[]},
+  {shadow:true,repositoryId:1471342715,issues:[1],pulls:[]},
+  {shadow:true,repositoryId:consumerRepoId,repository:'Jamula/SoftwareFactory',issues:[1],pulls:[]},
+  {shadow:true,repositoryId:consumerRepoId,repository:'Other/Repo',issues:[1],pulls:[]}
+ ]){
+  assert.equal(await run(['--inventory'],{
+   repositoryId:consumerRepoId,repository:consumerRepoName,env:{},
+   inventory:async()=>badConsumerInv,write:()=>{}
+  }),1);
+ }
+ const validConsumerInv=[];
+ assert.equal(await run(['--inventory'],{
+  repositoryId:consumerRepoId,repository:consumerRepoName,env:{},
+  inventory:async sc=>({
+   shadow:true,repository:sc.repository,repositoryId:sc.repositoryId,
+   issues:[10],pulls:[11],evidenceComplete:false,liveDispatch:false,liveMerge:false
+  }),
+  write:v=>validConsumerInv.push(JSON.parse(v))
+ }),0);
+ assert.equal(validConsumerInv[0].repositoryId,consumerRepoId);
+ assert.equal(await run(['--inventory'],{
+  env:{},inventory:async()=>({shadow:true,repository:'Other/Repo',issues:[],pulls:[]}),write:()=>{}
+ }),1);
+ assert.equal(await run(['--inventory'],{
+  env:{},inventory:async()=>({shadow:true,repositoryId:consumerRepoId,issues:[],pulls:[]}),write:()=>{}
+ }),1);
+
+ // Consumer --plan-lanes requires explicit trusted repository slug matching GITHUB_REPOSITORY and config.project.repository
+ const consumerPlanConfig={...validConfig,project:{...validConfig.project,repository:consumerRepoName}};
+ const consumerPlanMissingRepo=[];
+ assert.equal(await run(['--plan-lanes'],{
+  repositoryId:consumerRepoId,env:{},input:{config:consumerPlanConfig,tasks:planInput.tasks},
+  write:v=>consumerPlanMissingRepo.push(JSON.parse(v))
+ }),0);
+ assert.equal(consumerPlanMissingRepo[0].reason,'PROVENANCE_MISMATCH');
+
+ const consumerPlanGhMismatch=[];
+ assert.equal(await run(['--plan-lanes'],{
+  repositoryId:consumerRepoId,repository:consumerRepoName,
+  env:{GITHUB_ACTIONS:'true'},
+  input:{config:consumerPlanConfig,tasks:planInput.tasks},
+  write:v=>consumerPlanGhMismatch.push(JSON.parse(v))
+ }),0);
+ assert.equal(consumerPlanGhMismatch[0].reason,'PROVENANCE_MISMATCH');
+
+ const consumerPlanOk=[];
+ assert.equal(await run(['--plan-lanes','--receipt'],{
+  clock,
+  env:{
+   ...consumerHostedEnv,
+   FACTORY_EXPECTED_REPOSITORY:consumerRepoName,
+   GITHUB_REPOSITORY:consumerRepoName
+  },
+  input:{config:consumerPlanConfig,tasks:planInput.tasks},
+  write:v=>consumerPlanOk.push(JSON.parse(v))
+ }),0);
+ assert.equal(consumerPlanOk[0].valid,true);
+ assert.equal(consumerPlanOk[0].repositoryId,consumerRepoId);
+ assert.equal(consumerPlanOk[0].outcome,'eligible');
+
+ // Incomplete consumer scope fails closed with TRUST_UNKNOWN across reconcile commands
+ for(const cmd of ['--reconcile-pull','--reconcile-issue','--reconcile-event']){
+  const incomplete=[];
+  assert.equal(await run([cmd],{
+   repositoryId:consumerRepoId,env:{},
+   write:v=>incomplete.push(JSON.parse(v))
+  }),0);
+  assert.equal(incomplete[0].reason,'TRUST_UNKNOWN');
+ }
+ for(const badScopeInput of [
+  {scope:'not-object'},
+  {branch:'bad..branch'},
+  {repository:'Conflicting/Repo'}
+ ]){
+  const badEvt=[];
+  assert.equal(await run(['--reconcile-event'],{
+   scope:consumerScope,env:{},input:badScopeInput,
+   write:v=>badEvt.push(JSON.parse(v))
+  }),0);
+  assert.equal(['TRUST_UNKNOWN','PROVENANCE_MISMATCH'].includes(badEvt[0].reason),true);
+ }
+ const unconfiguredGhRepoMismatch=[];
+ assert.equal(await run(['--reconcile-event'],{
+  repositoryId:consumerRepoId,
+  env:{GITHUB_REPOSITORY:'Other/Repo'},
+  input:{scope:consumerScope},
+  write:v=>unconfiguredGhRepoMismatch.push(JSON.parse(v))
+ }),0);
+ assert.equal(unconfiguredGhRepoMismatch[0].reason,'PROVENANCE_MISMATCH');
+
+ // End-to-end REAL reconcilePullTrigger, reconcileIssueTrigger, and reconcileEventTrigger for consumer 200036
+ const consumerWorkflowRef=`${consumerRepoName}/.github/workflows/shadow-reconcile.yml@refs/heads/main`;
+ const consumerBaseEnv={
+  GITHUB_ACTIONS:'true',
+  RUNNER_ENVIRONMENT:'github-hosted',
+  GITHUB_REPOSITORY:consumerRepoName,
+  GITHUB_REPOSITORY_ID:String(consumerRepoId),
+  FACTORY_EXPECTED_REPOSITORY:consumerRepoName,
+  FACTORY_EXPECTED_REPO_ID:String(consumerRepoId),
+  FACTORY_EXPECTED_BRANCH:'main',
+  FACTORY_EXPECTED_WORKFLOW_PATH:'.github/workflows/shadow-reconcile.yml',
+  GITHUB_WORKFLOW_REF:consumerWorkflowRef,
+  GITHUB_REF_PROTECTED:'true',
+  GITHUB_WORKFLOW_SHA:workflowSha,
+  GITHUB_SHA:workflowSha,
+  FACTORY_CHECKOUT_SHA:workflowSha,
+  GITHUB_RUN_ID:'770011'
+ };
+ const consumerMockFetch=async url=>{
+  if(url===`https://api.github.com/repos/${consumerRepoName}/pulls/19`) {
+   return new Response(JSON.stringify({
+    number:19,state:'open',draft:false,
+    head:{sha:baseSha,repo:{id:consumerRepoId,full_name:consumerRepoName}},
+    base:{ref:'main',sha:workflowSha,repo:{id:consumerRepoId,full_name:consumerRepoName}}
+   }));
+  }
+  if(url===`https://api.github.com/repos/${consumerRepoName}/issues/23`) {
+   return new Response(JSON.stringify({
+    number:23,state:'open',
+    repository_url:`https://api.github.com/repos/${consumerRepoName}`
+   }));
+  }
+  if(url===`https://api.github.com/repos/${consumerRepoName}`) {
+   return new Response(JSON.stringify({id:consumerRepoId,full_name:consumerRepoName,fork:false}));
+  }
+  if(url===`https://api.github.com/repos/${consumerRepoName}/branches/main`) {
+   return new Response(JSON.stringify({name:'main',protected:true,commit:{sha:workflowSha}}));
+  }
+  throw new Error(`unexpected URL ${url}`);
+ };
+
+ const realPullOut=[],realIssueOut=[],realEventOut=[],realEventReceipt=[];
  assert.equal(await run(['--reconcile-pull'],{
-  repositoryId:consumerRepoId,env:{},
-  reconcile:async(_e,opts)=>{seenPullRepo=opts.repositoryId;return {shadow:true,reconciled:false,reason:'TRUST_UNKNOWN'};},
-  write:()=>{}
+  clock,
+  request:consumerMockFetch,
+  env:{
+   ...consumerBaseEnv,
+   GITHUB_EVENT_NAME:'pull_request_target',
+   FACTORY_PULL_NUMBER:'19',
+   FACTORY_PULL_HEAD:baseSha
+  },
+  write:v=>realPullOut.push(JSON.parse(v))
  }),0);
- assert.equal(seenPullRepo,consumerRepoId);
+ assert.equal(realPullOut[0].reconciled,true);
+ assert.equal(realPullOut[0].reason,'PULL_IDENTITY_MATCHED');
+ assert.equal(realPullOut[0].repositoryId,consumerRepoId);
+
  assert.equal(await run(['--reconcile-issue'],{
-  repositoryId:consumerRepoId,env:{},
-  reconcileIssue:async(_e,opts)=>{seenIssueRepo=opts.repositoryId;return {shadow:true,reconciled:false,reason:'TRUST_UNKNOWN'};},
-  write:()=>{}
+  clock,
+  request:consumerMockFetch,
+  env:{
+   ...consumerBaseEnv,
+   GITHUB_EVENT_NAME:'issues',
+   GITHUB_REF:'refs/heads/main',
+   FACTORY_ISSUE_NUMBER:'23'
+  },
+  write:v=>realIssueOut.push(JSON.parse(v))
  }),0);
- assert.equal(seenIssueRepo,consumerRepoId);
+ assert.equal(realIssueOut[0].reconciled,true);
+ assert.equal(realIssueOut[0].reason,'ISSUE_IDENTITY_MATCHED');
+ assert.equal(realIssueOut[0].repositoryId,consumerRepoId);
+
  assert.equal(await run(['--reconcile-event'],{
-  repositoryId:consumerRepoId,env:{},
-  reconcileEvent:async(_e,opts)=>{seenEventRepo=opts.repositoryId;return {shadow:true,reconciled:false,reason:'TRUST_UNKNOWN'};},
-  write:()=>{}
+  clock,
+  scope:consumerScope,
+  request:consumerMockFetch,
+  input:{owner:'consumer-worker',leaseMs:20000},
+  env:{
+   ...consumerBaseEnv,
+   GITHUB_EVENT_NAME:'issues',
+   GITHUB_REF:'refs/heads/main',
+   FACTORY_ISSUE_NUMBER:'23'
+  },
+  write:v=>realEventOut.push(JSON.parse(v))
  }),0);
- assert.equal(seenEventRepo,consumerRepoId);
- assert.equal(await run(['--reconcile-event'],{
-  repositoryId:consumerRepoId,env:{},input:{owner:'worker'},
-  reconcileEvent:async(_e,opts)=>{seenEventRepo=opts.repositoryId;return {shadow:true,reconciled:false,reason:'TRUST_UNKNOWN'};},
-  write:()=>{}
+ assert.equal(realEventOut[0].reconciled,true);
+ assert.equal(realEventOut[0].reason,'SHADOW_RECONCILED');
+ assert.equal(realEventOut[0].repositoryId,consumerRepoId);
+ assert.equal('snapshot' in realEventOut[0],false);
+
+ assert.equal(await run(['--reconcile-event','--receipt'],{
+  clock,
+  scope:consumerScope,
+  request:consumerMockFetch,
+  env:{
+   ...consumerBaseEnv,
+   GITHUB_EVENT_NAME:'push',
+   GITHUB_REF:'refs/heads/main',
+   FACTORY_MAIN_HEAD:workflowSha
+  },
+  write:v=>realEventReceipt.push(JSON.parse(v))
  }),0);
- assert.equal(seenEventRepo,consumerRepoId);
+ assert.equal(realEventReceipt[0].valid,true);
+ assert.equal(realEventReceipt[0].source,'github-hosted');
+ assert.equal(realEventReceipt[0].repositoryId,consumerRepoId);
 
  const consumerSquashScope=[];
  assert.equal(await run(['--evaluate-squash'],{
@@ -880,23 +1107,41 @@ test('unified subcommands, parameterized repositoryId, and bounded JSON input en
   assert.equal(rcptOut[0].reason,'SECURITY');
  }
 
- // Invalid/mismatched repositoryId & GITHUB_REPOSITORY_ID fail closed with exit code 1
+ // Invalid/mismatched repositoryId, scope, request, & GITHUB_REPOSITORY_ID fail closed with exit code 1
  for(const badRepoOpts of [
   {repositoryId:0,env:{}},
   {repositoryId:-5,env:{}},
   {repositoryId:'200036',env:{}},
+  {scope:'not-object',env:{}},
+  {scope:{unknownKey:1},env:{}},
+  {scope:{repositoryId:0},env:{}},
+  {repository:'',env:{}},
+  {repository:'Synthetic/FamilyTree',env:{}},
+  {repositoryId:200036,repository:'Jamula/SoftwareFactory',env:{}},
+  {repositoryId:200036,repository:'Repo/A',scope:{repository:'Repo/B'},env:{}},
+  {branch:123,env:{}},
+  {workflowPath:'',env:{}},
   {env:'bad-env'},
   {env:[]},
   {env:{FACTORY_EXPECTED_REPO_ID:'0'}},
   {env:{FACTORY_EXPECTED_REPO_ID:'bad'}},
   {repositoryId:200036,env:{FACTORY_EXPECTED_REPO_ID:'1471342715'}},
   {env:{GITHUB_REPOSITORY_ID:'999'}},
-  {repositoryId:200036,env:{GITHUB_REPOSITORY_ID:'1471342715'}}
+  {env:{GITHUB_REPOSITORY:'Other/Repo'}},
+  {repositoryId:200036,env:{GITHUB_REPOSITORY_ID:'1471342715'}},
+  {repositoryId:200036,repository:'Synthetic/FamilyTree',env:{GITHUB_REPOSITORY:'Other/Repo'}}
  ]){
   const out=[];
   assert.equal(await run(['--verify-admission'],{...badRepoOpts,write:v=>out.push(JSON.parse(v))}),1);
   assert.equal(out[0].reason,'PROVENANCE_MISMATCH');
  }
+ const badReqOut=[];
+ assert.equal(await run(['--reconcile-pull'],{request:'not-fn',env:{},write:v=>badReqOut.push(JSON.parse(v))}),1);
+ assert.equal(badReqOut[0].reason,'EVIDENCE_UNKNOWN');
+
+ const defaultBadBranchOut=[];
+ assert.equal(await run(['--reconcile-pull'],{branch:'bad..branch',env:{},write:v=>defaultBadBranchOut.push(JSON.parse(v))}),0);
+ assert.equal(defaultBadBranchOut[0].reason,'TRUST_UNKNOWN');
 
  // 7. Bounded JSON input (<= 262,144 UTF-8 bytes), malformed JSON, proxies, and getters fail closed
  const exactBoundJson=JSON.stringify({pad:'x'.repeat(MAX_INPUT_UTF8_BYTES-20)});
