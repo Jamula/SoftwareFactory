@@ -1415,6 +1415,11 @@ test('verifies compiler-shaped multi-job lock (activation -> agent -> detection 
       '      - name: Execute threat detection with AWF\n',
       `      - uses: actions/github-script@${githubScriptSha}\n        with:\n          script: core.info('tamper');\n      - name: Execute threat detection with AWF\n`
     ),
+    // Linear-time O(N) rejection of malformed threat-detect ' ---' repetitions (CodeQL ReDoS regression)
+    defaultDetectionSteps.replace(
+      '        run: threat-detect --engine copilot',
+      `        run: threat-detect${' ---'.repeat(60)}`
+    ),
     defaultDetectionSteps.replace(
       / {6}- name: Redact secrets in detection logs[\s\S]*?- name: Redact secrets in detection artifacts/,
       '      - name: Redact secrets in detection artifacts'
@@ -1933,12 +1938,18 @@ test('verifies Issue #5 event trigger matrix, 10-minute default-off recovery sch
   assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({
     stepIf: "${{ github.event_name != 'it''s_github.event.pull_request.body' }}"
   })).valid, true);
-  // Sequence string elements (e.g. strategy.matrix.payload array) containing untrusted PR text MUST fail closed!
+  // Sequence string elements (e.g. strategy.matrix.payload array) AND matrix axis named `steps` with `run:` MUST fail closed!
   const matrixSequenceSpoof = buildMatrixYaml().replace(
     '    runs-on: ubuntu-latest',
     '    strategy:\n      matrix:\n        payload: ["${{ github.event.pull_request.title }}"]\n    runs-on: ubuntu-latest'
   );
   assert.equal(verifyEventTriggerMatrix(matrixSequenceSpoof).reason, 'UNTRUSTED_PR_TEXT_INTERPOLATION');
+
+  const matrixStepsAxisRunSpoof = buildMatrixYaml().replace(
+    '    runs-on: ubuntu-latest',
+    '    strategy:\n      matrix:\n        steps:\n          - run: "${{ github.event.pull_request.title }}"\n    runs-on: ubuntu-latest'
+  );
+  assert.equal(verifyEventTriggerMatrix(matrixStepsAxisRunSpoof).reason, 'UNTRUSTED_PR_TEXT_INTERPOLATION');
 
   // Run interpolation, unpinned uses, credentials, untrusted PR checkout, permissions, merge ban, default-off, and concurrency
   assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({
@@ -2028,6 +2039,31 @@ test('verifies Issue #5 event trigger matrix, 10-minute default-off recovery sch
     checkoutWith: '          persist-credentials: false\n          ref: ${{ github.workflow_sha }}',
     stepRun: '          set -euo pipefail\n          test "$GITHUB_REF" = refs/heads/main\n          test "$GITHUB_REF_PROTECTED" = true\n          echo "ok"'
   })).valid, true);
+  // Also accept checkout occurring AFTER an earlier fail-closed preamble step!
+  assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({
+    includeReview: false,
+    evalIf: "${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.ref == 'refs/heads/main' && github.ref_protected == true && !endsWith(github.actor, '[bot]') }}",
+    checkoutWith: '          persist-credentials: false\n          ref: ${{ github.workflow_sha }}'
+  }).replace(
+    `      - uses: actions/checkout@${checkoutSha}\n`,
+    `      - name: Guard ref first\n        run: |\n          set -euo pipefail\n          test "$GITHUB_REF" = refs/heads/main\n          test "$GITHUB_REF_PROTECTED" = true\n      - uses: actions/checkout@${checkoutSha}\n`
+  )).valid, true);
+  // Error-tolerant preamble (continue-on-error: true) OR repository code running BEFORE preamble MUST fail closed!
+  assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({
+    includeReview: false,
+    evalIf: "${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.ref == 'refs/heads/main' && github.ref_protected == true && !endsWith(github.actor, '[bot]') }}",
+    checkoutWith: '          persist-credentials: false\n          ref: ${{ github.workflow_sha }}',
+    stepRun: '          set -euo pipefail\n          test "$GITHUB_REF" = refs/heads/main\n          test "$GITHUB_REF_PROTECTED" = true'
+  }).replace('      - name: Metadata reconcile\n', '      - name: Metadata reconcile\n        continue-on-error: true\n')).reason, 'UNTRUSTED_PR_CHECKOUT');
+  assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({
+    includeReview: false,
+    evalIf: "${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.ref == 'refs/heads/main' && github.ref_protected == true && !endsWith(github.actor, '[bot]') }}",
+    checkoutWith: '          persist-credentials: false\n          ref: ${{ github.workflow_sha }}',
+    stepRun: '          set -euo pipefail\n          test "$GITHUB_REF" = refs/heads/main\n          test "$GITHUB_REF_PROTECTED" = true'
+  }).replace(
+    '      - name: Metadata reconcile\n',
+    '      - name: Run untrusted repo code before preamble\n        run: node tools/engineering-factory/run.mjs --inventory\n      - name: Metadata reconcile\n'
+  )).reason, 'UNTRUSTED_PR_CHECKOUT');
   // Weakened || true preamble, mutated shadow-reconcile optin emitting unconditional enabled=true, or != 'skipped' provenance inheritance MUST fail closed!
   assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({
     includeReview: false,
