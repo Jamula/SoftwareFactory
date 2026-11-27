@@ -177,6 +177,7 @@ const CI_RUN_KEYS = [
   'pullNumber',
   'headSha',
   'state',
+  'candidateEventAt',
   'startedAt',
   'completedAt',
   'traceparent'
@@ -855,7 +856,7 @@ function evaluateIssueCorrelation(issue, linkedPulls, hasDanglingLink) {
   };
 }
 
-function buildCorrelationAndThroughput(issues, pulls, linkGraph, query) {
+function buildCorrelationAndThroughput(issues, pulls, linkGraph, query, hasOtel) {
   const multiPrIssueNumbers = [];
   const multiIssuePullNumbers = [];
   const unlinkedPullNumbers = [];
@@ -890,6 +891,7 @@ function buildCorrelationAndThroughput(issues, pulls, linkGraph, query) {
   };
 
   let acceptedOutcomesInWindow = 0;
+  let otelVerifiedAcceptedOutcomesInWindow = 0;
   let censoredOutcomesInWindow = 0;
   const acceptedInWindowIssues = [];
   const evaluatedByIssue = new Map();
@@ -916,6 +918,9 @@ function buildCorrelationAndThroughput(issues, pulls, linkGraph, query) {
         if (issue.readyAt < query.toMs) censoredOutcomesInWindow++;
       } else if (issue.acceptedAt >= query.fromMs) {
         acceptedOutcomesInWindow++;
+        if (hasOtel && evaluated.otelOutcomeVerified) {
+          otelVerifiedAcceptedOutcomesInWindow++;
+        }
         acceptedInWindowIssues.push({issue, evaluated});
       }
     } else if (evaluated.classification === 'censored-open') {
@@ -977,9 +982,13 @@ function buildCorrelationAndThroughput(issues, pulls, linkGraph, query) {
     throughput: {
       complete: throughputComplete,
       acceptedOutcomesInWindow,
+      otelVerifiedAcceptedOutcomesInWindow,
       censoredOutcomesInWindow,
       unknownOutcomeCount: counts.unknownIssues,
       acceptedOutcomesPerDay: throughputComplete ? acceptedOutcomesInWindow / elapsedDays : null,
+      otelVerifiedAcceptedOutcomesPerDay: throughputComplete && hasOtel
+        ? otelVerifiedAcceptedOutcomesInWindow / elapsedDays
+        : null,
       mergedPullsInWindow,
       mergedPullsActivityOnly: true,
       minimumComparableUnits: MIN_COMPARABLE_ACCEPTED_UNITS
@@ -1075,11 +1084,17 @@ function buildNotProvidedOtel() {
       AUTONOMOUS_OTEL_OBJECTIVES.issueReadyToOutcomeMs,
       'not-provided'
     ),
-    standardAutomatedCiMs: emptyOtelTimingMetric(
-      'standardAutomatedCiMs',
-      AUTONOMOUS_OTEL_OBJECTIVES.standardAutomatedCiMs,
-      'not-provided'
-    ),
+    standardAutomatedCiMs: {
+      ...emptyOtelTimingMetric(
+        'standardAutomatedCiMs',
+        AUTONOMOUS_OTEL_OBJECTIVES.standardAutomatedCiMs,
+        'not-provided'
+      ),
+      breakdown: {
+        queueWaitMs: summarizeDurations([]),
+        firstJobExecutionMs: summarizeDurations([])
+      }
+    },
     routineHumanInterventions: {
       status: 'not-provided',
       objective: AUTONOMOUS_OTEL_OBJECTIVES.routineHumanInterventions.initialMax,
@@ -1227,6 +1242,9 @@ function parseCiRuns(rawCiRuns, query) {
   if (!denseDataArray(rawCiRuns, 5000)) return {ok: false, reason: 'INVALID_CI_RUNS'};
   const seen = new Map();
   const durations = [];
+  const queueDurations = [];
+  const executionDurations = [];
+  const completedPullHeads = new Set();
   const counts = {cohort: 0, completed: 0, censored: 0, unknown: 0};
   const spec = AUTONOMOUS_OTEL_OBJECTIVES.standardAutomatedCiMs;
   let overdueOpenCount = 0;
@@ -1246,6 +1264,7 @@ function parseCiRuns(rawCiRuns, query) {
         !positiveInt(run.pullNumber) ||
         !sha40(run.headSha) ||
         !ciStateSet.has(run.state) ||
+        !validOptTimestamp(run.candidateEventAt, query.observedMs) ||
         !validOptTimestamp(run.startedAt, query.observedMs) ||
         !validOptTimestamp(run.completedAt, query.observedMs)) {
       return {ok: false, reason: 'INVALID_CI_RUN'};
@@ -1259,6 +1278,7 @@ function parseCiRuns(rawCiRuns, query) {
       if (prior.pullNumber !== run.pullNumber ||
           prior.headSha !== run.headSha ||
           prior.state !== run.state ||
+          prior.candidateEventAt !== run.candidateEventAt ||
           prior.startedAt !== run.startedAt ||
           prior.completedAt !== run.completedAt ||
           prior.traceparent !== run.traceparent) {
@@ -1268,32 +1288,44 @@ function parseCiRuns(rawCiRuns, query) {
     }
     seen.set(run.id, run);
 
-    if (run.startedAt === null) {
+    if (run.candidateEventAt === null) {
       counts.unknown++;
       continue;
     }
-    if (run.startedAt < query.fromMs || run.startedAt >= query.toMs) continue;
+    if (run.candidateEventAt < query.fromMs || run.candidateEventAt >= query.toMs) continue;
 
     counts.cohort++;
-    if (run.state === 'unknown') {
+    if (run.state === 'unknown' ||
+        (run.startedAt !== null && run.startedAt < run.candidateEventAt)) {
       counts.unknown++;
     } else if (run.state === 'open') {
       if (run.completedAt !== null) counts.unknown++;
       else {
         counts.censored++;
-        if (query.observedMs - run.startedAt >= spec.initialMs) overdueOpenCount++;
+        if (query.observedMs - run.candidateEventAt >= spec.initialMs) overdueOpenCount++;
       }
-    } else if (run.completedAt === null || run.completedAt < run.startedAt) {
+    } else if (run.startedAt === null || run.completedAt === null || run.completedAt < run.startedAt) {
       counts.unknown++;
     } else if (run.completedAt >= query.toMs) {
       counts.censored++;
     } else {
       counts.completed++;
-      durations.push(run.completedAt - run.startedAt);
+      durations.push(run.completedAt - run.candidateEventAt);
+      queueDurations.push(run.startedAt - run.candidateEventAt);
+      executionDurations.push(run.completedAt - run.startedAt);
+      completedPullHeads.add(`${run.pullNumber}:${run.headSha}`);
     }
   }
 
-  return {ok: true, durations, counts, overdueOpenCount};
+  return {
+    ok: true,
+    durations,
+    queueDurations,
+    executionDurations,
+    completedPullHeads,
+    counts,
+    overdueOpenCount
+  };
 }
 
 function parseInterventions(rawInterventions, acceptedInWindowIssues, otelComplete, query) {
@@ -1356,9 +1388,9 @@ function parseInterventions(rawInterventions, acceptedInWindowIssues, otelComple
   let totalGovernance = 0;
   let maxRoutine = 0;
 
-  for (const {issue} of acceptedInWindowIssues) {
+  for (const {issue, evaluated} of acceptedInWindowIssues) {
     const rec = byIssue.get(issue.number);
-    if (rec !== undefined && rec.verified) {
+    if (evaluated.otelOutcomeVerified && rec !== undefined && rec.verified) {
       knownIssueCount++;
       totalRoutine += rec.routineCount;
       totalGovernance += rec.governanceCount;
@@ -1544,9 +1576,10 @@ function buildAutonomousOtelSection(rawOtel, issues, pulls, linkGraph, correlati
     }
   }
 
+  const pullsByNumber = new Map(pulls.map(p => [p.number, p]));
   const interventionsResult = parseInterventions(
     rawOtel.interventions,
-    otelAcceptedInWindow,
+    correlationResult.acceptedInWindowIssues,
     rawOtel.complete,
     query
   );
@@ -1576,27 +1609,55 @@ function buildAutonomousOtelSection(rawOtel, issues, pulls, linkGraph, correlati
     outcomeOverdue,
     rawOtel.complete
   );
-  const standardAutomatedCiMs = finalizeOtelTimingMetric(
-    'standardAutomatedCiMs',
-    AUTONOMOUS_OTEL_OBJECTIVES.standardAutomatedCiMs,
-    ciResult.durations,
-    ciResult.counts,
-    ciResult.overdueOpenCount,
-    rawOtel.complete
-  );
+  const standardAutomatedCiMs = {
+    ...finalizeOtelTimingMetric(
+      'standardAutomatedCiMs',
+      AUTONOMOUS_OTEL_OBJECTIVES.standardAutomatedCiMs,
+      ciResult.durations,
+      ciResult.counts,
+      ciResult.overdueOpenCount,
+      rawOtel.complete
+    ),
+    breakdown: {
+      queueWaitMs: summarizeDurations(ciResult.queueDurations),
+      firstJobExecutionMs: summarizeDurations(ciResult.executionDurations)
+    }
+  };
 
   const zeroUnknownTimings = readyFirstPrCounts.unknown === 0 &&
     prMainCounts.unknown === 0 &&
     outcomeCounts.unknown === 0 &&
     ciResult.counts.unknown === 0;
   const otelStatus = rawOtel.complete && zeroUnknownTimings ? 'measured' : 'partial';
+
+  const allRequiredPullsCiVerified = otelAcceptedInWindow.every(({issue}) => {
+    const reqPulls = issue.requiredPullNumbers !== null
+      ? issue.requiredPullNumbers.map(num => pullsByNumber.get(num))
+      : linkGraph.pullsByIssue.get(issue.number);
+    return reqPulls.every(p => ciResult.completedPullHeads.has(`${p.number}:${p.mergeSha}`));
+  });
+  const ev = receiptResult.receiptEvidence;
+  const affirmativeReceipts = ev.inWindowReceiptCount >= otelAcceptedInWindow.length &&
+    ev.stageEventCounts.dispatch > 0 &&
+    ev.stageEventCounts.ci > 0 &&
+    ev.stageEventCounts.verifyMain > 0 &&
+    ev.stageEventCounts.acceptance >= otelAcceptedInWindow.length &&
+    ev.uncorrelatedReceiptCount === 0 &&
+    ev.outcomeCounts.failed === 0 &&
+    ev.outcomeCounts.unknown === 0 &&
+    ev.quota.verifiedIncludedCount === ev.inWindowReceiptCount &&
+    ev.cost.verifiedZeroCount === ev.inWindowReceiptCount;
+  const pureOtelPopulation = correlationResult.throughput.otelVerifiedAcceptedOutcomesInWindow ===
+    correlationResult.throughput.acceptedOutcomesInWindow;
+
   const autonomousClaimEligible = rawOtel.provenance === 'verified-autonomous-otel' &&
     otelStatus === 'measured' &&
     correlationResult.throughput.complete &&
+    pureOtelPopulation &&
     otelAcceptedInWindow.length >= MIN_COMPARABLE_ACCEPTED_UNITS &&
-    interventionsResult.summary.zeroRoutineVerified &&
-    receiptResult.receiptEvidence.quota.exhaustedCount === 0 &&
-    receiptResult.receiptEvidence.cost.unknownCount === 0;
+    allRequiredPullsCiVerified &&
+    affirmativeReceipts &&
+    interventionsResult.summary.zeroRoutineVerified;
 
   return {
     ok: true,
@@ -1619,9 +1680,11 @@ const SNAPSHOT_WINDOW_KEYS = ['fromMs', 'toMs', 'observedMs', 'elapsedDays'];
 const SNAPSHOT_THROUGHPUT_KEYS = [
   'complete',
   'acceptedOutcomesInWindow',
+  'otelVerifiedAcceptedOutcomesInWindow',
   'censoredOutcomesInWindow',
   'unknownOutcomeCount',
   'acceptedOutcomesPerDay',
+  'otelVerifiedAcceptedOutcomesPerDay',
   'mergedPullsInWindow',
   'mergedPullsActivityOnly',
   'minimumComparableUnits'
@@ -1666,9 +1729,8 @@ function validBaselineSnapshot(baseline) {
       !exactRecord(baseline.throughput, SNAPSHOT_THROUGHPUT_KEYS) ||
       typeof baseline.throughput.complete !== 'boolean' ||
       !nonnegInt(baseline.throughput.acceptedOutcomesInWindow) ||
-      (baseline.throughput.acceptedOutcomesPerDay !== null &&
-       (!Number.isFinite(baseline.throughput.acceptedOutcomesPerDay) ||
-        baseline.throughput.acceptedOutcomesPerDay < 0)) ||
+      !nonnegInt(baseline.throughput.otelVerifiedAcceptedOutcomesInWindow) ||
+      baseline.throughput.otelVerifiedAcceptedOutcomesInWindow > baseline.throughput.acceptedOutcomesInWindow ||
       !exactRecord(baseline.autonomousOtel, SNAPSHOT_OTEL_KEYS) ||
       (baseline.autonomousOtel.provenance !== null &&
        !otelProvenanceSet.has(baseline.autonomousOtel.provenance)) ||
@@ -1677,7 +1739,18 @@ function validBaselineSnapshot(baseline) {
       typeof baseline.autonomousOtel.routineHumanInterventions.zeroRoutineVerified !== 'boolean') {
     return false;
   }
-  return !baseline.throughput.complete || baseline.throughput.acceptedOutcomesPerDay !== null;
+  const expectedElapsedDays = (baseline.window.toMs - baseline.window.fromMs) / DAY_MS;
+  if (baseline.window.elapsedDays !== expectedElapsedDays) return false;
+  if (!baseline.throughput.complete) {
+    return baseline.throughput.acceptedOutcomesPerDay === null &&
+      baseline.throughput.otelVerifiedAcceptedOutcomesPerDay === null;
+  }
+  const expectedRate = baseline.throughput.acceptedOutcomesInWindow / expectedElapsedDays;
+  const expectedOtelRate = baseline.autonomousOtel.provenance !== null
+    ? baseline.throughput.otelVerifiedAcceptedOutcomesInWindow / expectedElapsedDays
+    : null;
+  return baseline.throughput.acceptedOutcomesPerDay === expectedRate &&
+    baseline.throughput.otelVerifiedAcceptedOutcomesPerDay === expectedOtelRate;
 }
 
 function evaluateBaselineComparison(baseline, currentReport) {
@@ -1695,12 +1768,15 @@ function evaluateBaselineComparison(baseline, currentReport) {
     return {ok: false, reason: 'PROVENANCE_ISOLATION_VIOLATION'};
   }
 
+  const baseOtelOutcomes = baseline.throughput.otelVerifiedAcceptedOutcomesInWindow;
+  const currOtelOutcomes = currentReport.throughput.otelVerifiedAcceptedOutcomesInWindow;
+
   const unavailable = reason => ({
     comparable: false,
     reason,
     autonomousSpeedClaimEligible: false,
-    baselineAcceptedOutcomes: baseline.throughput.acceptedOutcomesInWindow,
-    currentAcceptedOutcomes: currentReport.throughput.acceptedOutcomesInWindow,
+    baselineAcceptedOutcomes: baseOtelOutcomes,
+    currentAcceptedOutcomes: currOtelOutcomes,
     throughputMultiplier: null,
     reachedCheckpoints: [],
     highestCheckpointReached: null
@@ -1722,17 +1798,20 @@ function evaluateBaselineComparison(baseline, currentReport) {
     return {ok: true, comparison: unavailable('WINDOWS_NOT_COMPARABLE')};
   }
 
+  const basePureOtel = baseOtelOutcomes === baseline.throughput.acceptedOutcomesInWindow;
+  const currPureOtel = currOtelOutcomes === currentReport.throughput.acceptedOutcomesInWindow;
   if (!baseline.throughput.complete ||
       !currentReport.throughput.complete ||
-      baseline.throughput.acceptedOutcomesInWindow < MIN_COMPARABLE_ACCEPTED_UNITS ||
-      currentReport.throughput.acceptedOutcomesInWindow < MIN_COMPARABLE_ACCEPTED_UNITS ||
+      !basePureOtel ||
+      !currPureOtel ||
+      baseOtelOutcomes < MIN_COMPARABLE_ACCEPTED_UNITS ||
+      currOtelOutcomes < MIN_COMPARABLE_ACCEPTED_UNITS ||
       !baseline.autonomousOtel.routineHumanInterventions.zeroRoutineVerified ||
       !currentReport.autonomousOtel.routineHumanInterventions.zeroRoutineVerified) {
     return {ok: true, comparison: unavailable('INSUFFICIENT_COMPARABLE_EVIDENCE')};
   }
 
-  const multiplier = currentReport.throughput.acceptedOutcomesPerDay /
-    baseline.throughput.acceptedOutcomesPerDay;
+  const multiplier = currOtelOutcomes / baseOtelOutcomes;
   const reachedCheckpoints = THROUGHPUT_CHECKPOINTS.filter(cp => multiplier >= cp);
   const highestCheckpointReached = reachedCheckpoints.length > 0
     ? reachedCheckpoints[reachedCheckpoints.length - 1]
@@ -1746,8 +1825,8 @@ function evaluateBaselineComparison(baseline, currentReport) {
       autonomousSpeedClaimEligible: currProv === 'verified-autonomous-otel' &&
         baseline.autonomousOtel.autonomousClaimEligible === true &&
         currentReport.autonomousOtel.autonomousClaimEligible === true,
-      baselineAcceptedOutcomes: baseline.throughput.acceptedOutcomesInWindow,
-      currentAcceptedOutcomes: currentReport.throughput.acceptedOutcomesInWindow,
+      baselineAcceptedOutcomes: baseOtelOutcomes,
+      currentAcceptedOutcomes: currOtelOutcomes,
       throughputMultiplier: multiplier,
       reachedCheckpoints,
       highestCheckpointReached
@@ -1807,14 +1886,14 @@ export function buildHistoricalAndOtelEvidenceReport(input) {
     linkGraph,
     query
   );
+  const rawOtel = ownOption(input, 'otel', null);
   const correlationResult = buildCorrelationAndThroughput(
     parsedIssues.list,
     parsedPulls.list,
     linkGraph,
-    query
+    query,
+    rawOtel !== null
   );
-
-  const rawOtel = ownOption(input, 'otel', null);
   const otelResult = buildAutonomousOtelSection(
     rawOtel,
     parsedIssues.list,

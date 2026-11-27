@@ -104,6 +104,7 @@ function makeCiRun(id, pullNumber, patch = {}) {
     pullNumber,
     headSha: SHA_A,
     state: 'completed',
+    candidateEventAt: 1_248_000,
     startedAt: 1_250_000,
     completedAt: 1_278_000,
     traceparent: TRACEPARENT_1,
@@ -266,8 +267,9 @@ test('T01 & T04: strictly separates historical proxies from all 5 verified auton
       evidenceKind: ALLOWED_EXPLICIT_LINK_KINDS[i % ALLOWED_EXPLICIT_LINK_KINDS.length]
     }));
     ciRuns.push(makeCiRun(`ci-${i}`, 100 + i, {
-      startedAt: prCreatedAt + 1_000,
-      completedAt: prCreatedAt + 29_000 // 28s (<75s initial, <=30s stretch)
+      candidateEventAt: prCreatedAt + 1_000,
+      startedAt: prCreatedAt + 3_000, // 2s runner queue wait
+      completedAt: prCreatedAt + 29_000 // 28s total (<75s initial, <=30s stretch), 26s execution
     }));
     interventions.push(makeIntervention(i, {
       verified: true,
@@ -283,16 +285,14 @@ test('T01 & T04: strictly separates historical proxies from all 5 verified auton
     makeHostedReceipt('gh-1-review', 'review'),
     makeHostedReceipt('gh-1-merge', 'merge-shadow'),
     makeHostedReceipt('gh-1-main', 'verify-main'),
-    makeHostedReceipt('gh-1-accept', 'acceptance'),
+    ...Array.from({length: 5}, (_, idx) => makeHostedReceipt(`gh-${idx + 1}-accept`, 'acceptance')),
     makeHostedReceipt('gh-1-blocked-lease', 'evaluate', {
       outcome: 'blocked',
-      reason: 'LEASE',
-      correlation: {traceId: null, spanId: null}
+      reason: 'LEASE'
     }),
     makeHostedReceipt('gh-1-blocked-lease-2', 'evaluate', {
       outcome: 'blocked',
-      reason: 'LEASE',
-      correlation: {traceId: null, spanId: null}
+      reason: 'LEASE'
     }),
     makeHostedReceipt('gh-prior-window', 'dispatch', {observedMs: 500_000})
   ];
@@ -335,6 +335,8 @@ test('T01 & T04: strictly separates historical proxies from all 5 verified auton
   assert.equal(report.autonomousOtel.issueReadyToOutcomeMs.slo.p50MeetsStretch, true);
 
   assert.equal(report.autonomousOtel.standardAutomatedCiMs.p50Ms, 28_000);
+  assert.equal(report.autonomousOtel.standardAutomatedCiMs.breakdown.queueWaitMs.p50Ms, 2_000);
+  assert.equal(report.autonomousOtel.standardAutomatedCiMs.breakdown.firstJobExecutionMs.p50Ms, 26_000);
   assert.equal(report.autonomousOtel.standardAutomatedCiMs.slo.p50MeetsInitial, true);
   assert.equal(report.autonomousOtel.standardAutomatedCiMs.slo.p50MeetsStretch, true);
 
@@ -345,9 +347,9 @@ test('T01 & T04: strictly separates historical proxies from all 5 verified auton
   assert.equal(report.autonomousOtel.routineHumanInterventions.sloMet, true);
 
   const ev = report.autonomousOtel.receiptEvidence;
-  assert.equal(ev.inWindowReceiptCount, 9);
-  assert.equal(ev.correlatedReceiptCount, 7);
-  assert.equal(ev.uncorrelatedReceiptCount, 2);
+  assert.equal(ev.inWindowReceiptCount, 13);
+  assert.equal(ev.correlatedReceiptCount, 13);
+  assert.equal(ev.uncorrelatedReceiptCount, 0);
   assert.equal(ev.verifiedTraceparentCount, 1);
   assert.deepEqual(ev.stageEventCounts, {
     reconcile: 1,
@@ -356,10 +358,79 @@ test('T01 & T04: strictly separates historical proxies from all 5 verified auton
     review: 1,
     mergeShadow: 1,
     verifyMain: 1,
-    acceptance: 1
+    acceptance: 5
   });
   assert.deepEqual(ev.blockedByReason, {LEASE: 2});
-  assert.equal(ev.stageRows.length, 7);
+  assert.equal(ev.stageRows.length, 11);
+
+  // Missing receipts, missing CI runs, uncorrelated receipts, unknown quota, or unknown cost block autonomous claims
+  for (const otelOverride of [
+    {receipts: []},
+    {ciRuns: []},
+    {ciRuns: ciRuns.slice(0, 4)},
+    {
+      receipts: [
+        ...receipts.slice(0, 11),
+        makeHostedReceipt('gh-uncorrelated', 'dispatch', {correlation: {traceId: null, spanId: null}})
+      ]
+    },
+    {
+      receipts: [
+        ...receipts.slice(0, 11),
+        makeHostedReceipt('gh-unknown-quota', 'dispatch', {quota: {verified: false}})
+      ]
+    },
+    {
+      receipts: [
+        ...receipts.slice(0, 11),
+        makeHostedReceipt('gh-unknown-cost', 'dispatch', {cost: {verified: false}})
+      ]
+    }
+  ]) {
+    const blockedClaim = buildHistoricalAndOtelEvidenceReport({
+      query: baseQuery(),
+      authorizedRepositories: baseAuth(),
+      issues,
+      pulls,
+      links,
+      otel: {
+        provenance: 'verified-autonomous-otel',
+        complete: true,
+        receipts,
+        ciRuns,
+        interventions,
+        ...otelOverride
+      }
+    });
+    assert.equal(blockedClaim.valid, true);
+    assert.equal(blockedClaim.autonomousOtel.autonomousClaimEligible, false);
+  }
+
+  // Queue wait before first job start is included in standardAutomatedCiMs and cannot disguise a 10m queue delay
+  const queuedCiReport = buildHistoricalAndOtelEvidenceReport({
+    query: baseQuery(),
+    authorizedRepositories: baseAuth(),
+    issues,
+    pulls,
+    links,
+    otel: {
+      provenance: 'verified-autonomous-otel',
+      complete: true,
+      receipts,
+      ciRuns: ciRuns.map((run, idx) => ({
+        ...run,
+        candidateEventAt: 2_000_000 + idx * 100,
+        startedAt: 2_600_000 + idx * 100, // 10m queued
+        completedAt: 2_628_000 + idx * 100 // 28s job execution, 628s total
+      })),
+      interventions
+    }
+  });
+  assert.equal(queuedCiReport.autonomousOtel.standardAutomatedCiMs.p50Ms, 628_000);
+  assert.equal(queuedCiReport.autonomousOtel.standardAutomatedCiMs.slo.p50MeetsInitial, false);
+  assert.equal(queuedCiReport.autonomousOtel.standardAutomatedCiMs.slo.p50MeetsStretch, false);
+  assert.equal(queuedCiReport.autonomousOtel.standardAutomatedCiMs.breakdown.queueWaitMs.p50Ms, 600_000);
+  assert.equal(queuedCiReport.autonomousOtel.standardAutomatedCiMs.breakdown.firstJobExecutionMs.p50Ms, 28_000);
 });
 
 test('T02: handles reopened issues, partial PRs, many-to-many linkage, title-similarity rejection, unlinked PRs, censored work, and null missing timestamps (never 0)', () => {
@@ -523,13 +594,31 @@ test('T02: handles reopened issues, partial PRs, many-to-many linkage, title-sim
 
   const ciRuns = [
     // Exact 75_000ms boundary MISSES strict `< 75s` initial objective!
-    makeCiRun('ci-boundary-miss', 201, {startedAt: 2_160_000, completedAt: 2_235_000}),
+    makeCiRun('ci-boundary-miss', 201, {
+      candidateEventAt: 2_160_000,
+      startedAt: 2_165_000,
+      completedAt: 2_235_000
+    }),
     // Identical duplicate CI run deduplicated
-    makeCiRun('ci-boundary-miss', 201, {startedAt: 2_160_000, completedAt: 2_235_000}),
+    makeCiRun('ci-boundary-miss', 201, {
+      candidateEventAt: 2_160_000,
+      startedAt: 2_165_000,
+      completedAt: 2_235_000
+    }),
     // Missing completedAt -> null / unknown, never 0
-    makeCiRun('ci-missing-end', 202, {startedAt: 2_410_000, completedAt: null}),
+    makeCiRun('ci-missing-end', 202, {
+      candidateEventAt: 2_405_000,
+      startedAt: 2_410_000,
+      completedAt: null
+    }),
     // Open overdue CI run -> censored + overdueOpenCount
-    makeCiRun('ci-open', 206, {state: 'open', startedAt: 6_210_000, completedAt: null, traceparent: null})
+    makeCiRun('ci-open', 206, {
+      state: 'open',
+      candidateEventAt: 6_205_000,
+      startedAt: 6_210_000,
+      completedAt: null,
+      traceparent: null
+    })
   ];
 
   const report = buildHistoricalAndOtelEvidenceReport({
@@ -825,7 +914,28 @@ test('T03: repeatable baseline comparison evaluates 2x-25x checkpoints and block
     const issues = [];
     const pulls = [];
     const links = [];
+    const ciRuns = [];
     const interventions = [];
+    const receiptSource = provenance === 'verified-autonomous-otel' ? 'github-hosted' : 'synthetic';
+    const makeWindowReceipt = (id, stage) => createExecutionReceipt({
+      source: receiptSource,
+      repositoryId: SF_ID,
+      receiptId: id,
+      observedMs: fromMs + 5_000,
+      stage,
+      durationMs: 100,
+      outcome: 'eligible',
+      reason: 'NONE',
+      quota: {verified: true, includedOnly: true, available: true},
+      cost: {verified: true, currency: 'USD', amountMicros: 0},
+      humanTouches: {verified: true, count: 0},
+      correlation: {traceId: TRACE_1, spanId: SPAN_1}
+    });
+    const receipts = [
+      makeWindowReceipt(`r-${fromMs}-dispatch`, 'dispatch'),
+      makeWindowReceipt(`r-${fromMs}-ci`, 'ci'),
+      makeWindowReceipt(`r-${fromMs}-main`, 'verify-main')
+    ];
     for (let i = 1; i <= count; i++) {
       const createdAt = fromMs + i * 1000;
       const readyAt = createdAt + 1000;
@@ -849,6 +959,13 @@ test('T03: repeatable baseline comparison evaluates 2x-25x checkpoints and block
         mainVerifiedAt
       }));
       links.push(makeLink(i, 1000 + i));
+      ciRuns.push(makeCiRun(`ci-${fromMs}-${i}`, 1000 + i, {
+        cohort,
+        candidateEventAt: prCreatedAt + 1_000,
+        startedAt: prCreatedAt + 2_000,
+        completedAt: prCreatedAt + 25_000
+      }));
+      receipts.push(makeWindowReceipt(`r-${fromMs}-accept-${i}`, 'acceptance'));
       interventions.push(makeIntervention(i, {cohort}));
     }
     return {
@@ -866,26 +983,8 @@ test('T03: repeatable baseline comparison evaluates 2x-25x checkpoints and block
       otel: {
         provenance,
         complete: true,
-        receipts: [
-          createExecutionReceipt({
-            source: provenance === 'verified-autonomous-otel' ? 'github-hosted' : 'synthetic',
-            repositoryId: SF_ID,
-            receiptId: `r-${fromMs}`,
-            observedMs: fromMs + 5_000,
-            stage: 'acceptance',
-            durationMs: 100,
-            outcome: 'eligible',
-            reason: 'NONE',
-            quota: {verified: true, includedOnly: true, available: true},
-            cost: {verified: true, currency: 'USD', amountMicros: 0},
-            humanTouches: {verified: true, count: 0}
-          })
-        ],
-        ciRuns: [makeCiRun(`ci-${fromMs}`, 1001, {
-          cohort,
-          startedAt: fromMs + 70_000,
-          completedAt: fromMs + 95_000
-        })],
+        receipts,
+        ciRuns,
         interventions
       }
     };
@@ -895,6 +994,7 @@ test('T03: repeatable baseline comparison evaluates 2x-25x checkpoints and block
     buildWindowCohort(1_000_000, 87_400_000, 5)
   );
   assert.equal(baselineReport.valid, true);
+  assert.equal(baselineReport.autonomousOtel.autonomousClaimEligible, true);
 
   // 25 accepted outcomes vs 5 baseline = 5x checkpoint reached!
   const currentInput = buildWindowCohort(87_400_000, 173_800_000, 25);
@@ -905,6 +1005,55 @@ test('T03: repeatable baseline comparison evaluates 2x-25x checkpoints and block
   assert.deepEqual(compared.baselineComparison.reachedCheckpoints, [2, 5]);
   assert.equal(compared.baselineComparison.highestCheckpointReached, 5);
   assert.equal(compared.baselineComparison.autonomousSpeedClaimEligible, true);
+
+  // Mixed OTel + non-OTel accepted population cannot manufacture a 5x autonomous speedup or claim eligibility
+  const mixedInput = buildWindowCohort(87_400_000, 173_800_000, 25);
+  for (let i = 5; i < 25; i++) {
+    mixedInput.issues[i] = {...mixedInput.issues[i], otelVerified: false};
+  }
+  mixedInput.otel.interventions = mixedInput.otel.interventions.slice(0, 5);
+  const mixedCompared = buildHistoricalAndOtelEvidenceReport({
+    ...mixedInput,
+    baseline: baselineReport
+  });
+  assert.equal(mixedCompared.valid, true);
+  assert.equal(mixedCompared.throughput.acceptedOutcomesInWindow, 25);
+  assert.equal(mixedCompared.throughput.otelVerifiedAcceptedOutcomesInWindow, 5);
+  assert.equal(mixedCompared.autonomousOtel.autonomousClaimEligible, false);
+  assert.equal(mixedCompared.autonomousOtel.routineHumanInterventions.status, 'partial');
+  assert.equal(mixedCompared.autonomousOtel.routineHumanInterventions.missingIssueCount, 20);
+  assert.equal(mixedCompared.baselineComparison.comparable, false);
+  assert.equal(mixedCompared.baselineComparison.reason, 'INSUFFICIENT_COMPARABLE_EVIDENCE');
+  assert.equal(mixedCompared.baselineComparison.throughputMultiplier, null);
+
+  // Tampered baseline with inconsistent acceptedOutcomesPerDay (e.g. 0) or elapsedDays fails closed
+  for (const tamperedBaseline of [
+    {
+      ...baselineReport,
+      throughput: {...baselineReport.throughput, acceptedOutcomesPerDay: 0}
+    },
+    {
+      ...baselineReport,
+      throughput: {...baselineReport.throughput, otelVerifiedAcceptedOutcomesPerDay: 0}
+    },
+    {
+      ...baselineReport,
+      window: {...baselineReport.window, elapsedDays: 999}
+    },
+    {
+      ...baselineReport,
+      throughput: {
+        ...baselineReport.throughput,
+        complete: false,
+        acceptedOutcomesPerDay: 5
+      }
+    }
+  ]) {
+    assert.equal(
+      buildHistoricalAndOtelEvidenceReport({...currentInput, baseline: tamperedBaseline}).reason,
+      'INVALID_BASELINE_REPORT'
+    );
+  }
 
   // Below 2x multiplier reaches zero checkpoints (highestCheckpointReached === null)
   const modest = buildHistoricalAndOtelEvidenceReport({
@@ -1439,10 +1588,12 @@ test('covers fail-closed validation and edge branches across query, historical s
         })
       ],
       ciRuns: [
-        makeCiRun('ci-null-start', 301, {startedAt: null, completedAt: null}),
-        makeCiRun('ci-unknown-state', 301, {state: 'unknown', startedAt: 2_210_000, completedAt: null}),
-        makeCiRun('ci-open-bad', 301, {state: 'open', startedAt: 2_210_000, completedAt: 2_220_000}),
-        makeCiRun('ci-after-cutoff', 301, {startedAt: 87_380_000, completedAt: 87_420_000})
+        makeCiRun('ci-null-candidate', 301, {candidateEventAt: null, startedAt: 2_210_000, completedAt: 2_230_000}),
+        makeCiRun('ci-start-before-candidate', 301, {candidateEventAt: 2_220_000, startedAt: 2_210_000, completedAt: 2_230_000}),
+        makeCiRun('ci-null-start', 301, {candidateEventAt: 2_210_000, startedAt: null, completedAt: null}),
+        makeCiRun('ci-unknown-state', 301, {state: 'unknown', candidateEventAt: 2_210_000, startedAt: 2_212_000, completedAt: null}),
+        makeCiRun('ci-open-bad', 301, {state: 'open', candidateEventAt: 2_210_000, startedAt: 2_212_000, completedAt: 2_220_000}),
+        makeCiRun('ci-after-cutoff', 301, {candidateEventAt: 87_380_000, startedAt: 87_385_000, completedAt: 87_420_000})
       ],
       interventions: []
     }
