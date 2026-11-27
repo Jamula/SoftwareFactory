@@ -135,6 +135,8 @@ const token = s => typeof s === 'string' && /^[A-Za-z0-9._:-]{1,96}$/.test(s);
 
 const GOVERNED_PREFIX_ANCHORS = [
   ...EXACT_PROTECTED_CONTROL_PLANE_PATHS,
+  'tools/engineering-factory/optimistic-improver.mjs',
+  'tools/engineering-factory/ai-credit-scorecard.mjs',
   '.github/workflows',
   '.github/rulesets'
 ];
@@ -839,6 +841,14 @@ export function queryCausalAuditTrail(chains, filter) {
       return invalidAuditQueryResult('INVALID_AUDIT_CHAIN_ENTRY', parsedFilter.repositoryId);
     }
 
+    if (entry.stages.eventDelivery.repositoryId !== parsedFilter.repositoryId) {
+      if (!isDeepPlainData(entry)) {
+        return invalidAuditQueryResult('INVALID_AUDIT_CHAIN_ENTRY', parsedFilter.repositoryId);
+      }
+      isolatedOutCount++;
+      continue;
+    }
+
     const hasIssueNumber = hasOwnEnumerableData(entry, 'issueNumber');
     const hasPullNumber = hasOwnEnumerableData(entry, 'pullNumber');
     const hasViolations = hasOwnEnumerableData(entry, 'violations');
@@ -849,14 +859,6 @@ export function queryCausalAuditTrail(chains, filter) {
           !entry.violations.every(code => knownViolationSet.has(code)) ||
           new Set(entry.violations).size !== entry.violations.length))) {
       return invalidAuditQueryResult('INVALID_AUDIT_CHAIN_ENTRY', parsedFilter.repositoryId);
-    }
-
-    if (entry.stages.eventDelivery.repositoryId !== parsedFilter.repositoryId) {
-      if (!isDeepPlainData(entry)) {
-        return invalidAuditQueryResult('INVALID_AUDIT_CHAIN_ENTRY', parsedFilter.repositoryId);
-      }
-      isolatedOutCount++;
-      continue;
     }
 
     const issueNumber = hasIssueNumber ? entry.issueNumber : null;

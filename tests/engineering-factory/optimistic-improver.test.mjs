@@ -268,7 +268,33 @@ test('proposeOptimisticImprovements generates isolated non-overlapping proposals
   assert.equal(broadDirectoryProposal.valid, true);
   assert.equal(broadDirectoryProposal.proposals[0].requiresHumanApproval, true);
 
-  // Proposal targeting security-named path also sets requiresHumanApproval: true
+  // Proposal targeting security-named path or optimistic-improver.mjs itself also sets requiresHumanApproval: true
+  const improverSelfProposal = proposeOptimisticImprovements({
+    scorecard: {...scorecard, bottlenecks: []},
+    knowledgeLanes: [
+      {
+        laneId: 'sf-improver-self',
+        repositoryId: SF_REPO_ID,
+        scope: 'factory-velocity',
+        ownedPaths: ['tools/engineering-factory/optimistic-improver.mjs']
+      }
+    ],
+    failureTaxonomy: [],
+    feedbackItems: [
+      {
+        id: 'improver-tune',
+        repositoryId: SF_REPO_ID,
+        laneId: 'sf-improver-self',
+        source: 'operator',
+        metricName: 'proposalEvalMs',
+        baselineValue: 20,
+        targetValue: 10,
+        targetPaths: ['tools/engineering-factory/optimistic-improver.mjs']
+      }
+    ]
+  });
+  assert.equal(improverSelfProposal.proposals[0].requiresHumanApproval, true);
+
   const secPathProposal = proposeOptimisticImprovements({
     scorecard: {...scorecard, bottlenecks: []},
     knowledgeLanes: [
@@ -992,12 +1018,16 @@ test('queryCausalAuditTrail enforces repository isolation, deterministic orderin
     }
   }
 
-  // Consumer repo query isolates FAMILYTREE_REPO_ID only (and forked/shared commitSha or broken other-repo stage cannot DoS consumer query)
+  // Consumer repo query isolates FAMILYTREE_REPO_ID only (and forked/shared commitSha or JSON-safe semantic errors in other repos cannot DoS consumer query)
   const sfForkSharingCommit = buildAuditChain({
     traceSeed: '9',
     commitSeed: 'b',
     squashSeed: 'd',
-    repositoryId: SF_REPO_ID
+    repositoryId: SF_REPO_ID,
+    extra: {
+      issueNumber: 0,
+      violations: ['UNKNOWN_FOREIGN_CODE']
+    }
   });
   const allFt = queryCausalAuditTrail([...index, sfForkSharingCommit], {repositoryId: FAMILYTREE_REPO_ID});
   assert.equal(allFt.valid, true);
@@ -1412,6 +1442,23 @@ test('buildAutomaticRevertCandidateSpec emits bounded revert PR specs on rollbac
       repositoryId: SF_REPO_ID,
       laneId: 'sf-budget',
       targetPaths: ['tools/engineering-factory/budget.mjs'],
+      targetRevertCommitSha: revertSha
+    }],
+    [rollbackVerdict, {
+      proposalId: 'gov-optimistic-improver',
+      repositoryId: SF_REPO_ID,
+      laneId: 'sf-improver',
+      ownedPaths: ['tools/engineering-factory/optimistic-improver.mjs'],
+      targetPaths: ['tools/engineering-factory/optimistic-improver.mjs'],
+      targetRevertCommitSha: revertSha,
+      requiresHumanApproval: false
+    }],
+    [rollbackVerdict, {
+      proposalId: 'gov-scorecard',
+      repositoryId: SF_REPO_ID,
+      laneId: 'sf-scorecard',
+      ownedPaths: ['tools/engineering-factory/ai-credit-scorecard.mjs'],
+      targetPaths: ['tools/engineering-factory/ai-credit-scorecard.mjs'],
       targetRevertCommitSha: revertSha
     }],
     [rollbackVerdict, {
