@@ -283,9 +283,9 @@ function makeHealthyCandidate() {
         {
           component: 'engineering-factory.main-health-audit',
           head: CAND_SHA,
-          lines: 198,
+          lines: 200,
           lineTotal: 200,
-          branches: 190,
+          branches: 196,
           branchTotal: 200
         }
       ]
@@ -714,6 +714,156 @@ test('fails closed on fork PR skipped runtime checks, summary-only review findin
   approvalCountUnmet.ruleset.requiredApprovingReviewCount = 1;
   assert.equal(auditProtectedMainAndCandidateGates(approvalCountUnmet).reason, 'REVIEW_APPROVAL_COUNT_UNMET');
 
+  // requiredApprovingReviewCount >= 2 must reject single approval or duplicate reviewer and accept distinct independent approvals
+  const twoApprovalsRequiredOneGiven = makeFullHealthyInput();
+  twoApprovalsRequiredOneGiven.ruleset.requiredApprovingReviewCount = 2;
+  twoApprovalsRequiredOneGiven.candidate.review = {
+    reviewId: 910,
+    head: CAND_SHA,
+    reviewer: 'independent-human',
+    author: 'cyrusjamula',
+    agent: 'copilot-swe-agent[bot]',
+    state: 'APPROVED',
+    independent: true,
+    summaryDisposition: 'clear',
+    unresolvedSummaryFindings: 0,
+    blockingReviewCount: 0
+  };
+  assert.equal(
+    auditProtectedMainAndCandidateGates(twoApprovalsRequiredOneGiven).reason,
+    'REVIEW_APPROVAL_COUNT_UNMET'
+  );
+
+  const duplicateApprover = cloneJson(twoApprovalsRequiredOneGiven);
+  duplicateApprover.candidate.additionalReviews = [
+    {
+      reviewId: 911,
+      head: CAND_SHA,
+      reviewer: 'Independent-Human',
+      state: 'APPROVED',
+      independent: true
+    }
+  ];
+  assert.equal(auditProtectedMainAndCandidateGates(duplicateApprover).reason, 'REVIEW_APPROVAL_COUNT_UNMET');
+
+  const twoDistinctApprovals = cloneJson(twoApprovalsRequiredOneGiven);
+  twoDistinctApprovals.candidate.trustedReviewers.push('second-independent');
+  twoDistinctApprovals.candidate.additionalReviews = [
+    {
+      reviewId: 912,
+      head: CAND_SHA,
+      reviewer: 'second-independent',
+      state: 'APPROVED',
+      independent: true
+    }
+  ];
+  assert.equal(auditProtectedMainAndCandidateGates(twoDistinctApprovals).eligible, true);
+
+  const extraObjectionCancelsApproval = cloneJson(twoDistinctApprovals);
+  extraObjectionCancelsApproval.candidate.additionalReviews.push({
+    reviewId: 913,
+    head: CAND_SHA,
+    reviewer: 'second-independent',
+    state: 'CHANGES_REQUESTED',
+    independent: true
+  });
+  const objRes = auditProtectedMainAndCandidateGates(extraObjectionCancelsApproval);
+  assert.equal(objRes.reason, 'BLOCKING_OR_INCOMPLETE_REVIEW');
+  assert.equal(objRes.failureReasons.includes('REVIEW_APPROVAL_COUNT_UNMET'), true);
+
+  const extraDismissed = cloneJson(twoDistinctApprovals);
+  extraDismissed.candidate.additionalReviews[0].state = 'DISMISSED';
+  assert.equal(auditProtectedMainAndCandidateGates(extraDismissed).reason, 'BLOCKING_OR_INCOMPLETE_REVIEW');
+
+  const extraPending = cloneJson(twoDistinctApprovals);
+  extraPending.candidate.additionalReviews[0].state = 'PENDING';
+  assert.equal(auditProtectedMainAndCandidateGates(extraPending).reason, 'BLOCKING_OR_INCOMPLETE_REVIEW');
+
+  const extraStale = cloneJson(twoDistinctApprovals);
+  extraStale.candidate.additionalReviews[0].head = PEER_SHA;
+  assert.equal(auditProtectedMainAndCandidateGates(extraStale).reason, 'STALE_REVIEW_HEAD');
+
+  const extraUntrusted = cloneJson(twoDistinctApprovals);
+  extraUntrusted.candidate.additionalReviews[0].reviewer = 'untrusted-person';
+  assert.equal(auditProtectedMainAndCandidateGates(extraUntrusted).reason, 'INDEPENDENT_REVIEW_REQUIRED');
+
+  const extraNotIndependent = cloneJson(twoDistinctApprovals);
+  extraNotIndependent.candidate.additionalReviews[0].independent = false;
+  assert.equal(auditProtectedMainAndCandidateGates(extraNotIndependent).reason, 'INDEPENDENT_REVIEW_REQUIRED');
+
+  const extraCommentOnly = cloneJson(twoDistinctApprovals);
+  extraCommentOnly.candidate.additionalReviews[0].state = 'COMMENTED';
+  assert.equal(auditProtectedMainAndCandidateGates(extraCommentOnly).reason, 'REVIEW_NOT_APPROVED');
+
+  // Additional configured ruleset status checks must be enforced with exact integrationId across main, pullChecks, and mergeGroup
+  const withExtraStatusRule = makeFullHealthyInput();
+  withExtraStatusRule.ruleset.requiredStatusChecks.push({
+    context: 'mandatory-security-audit',
+    integrationId: 77777
+  });
+  assert.equal(auditProtectedMainAndCandidateGates(withExtraStatusRule).reason, 'MAIN_REQUIRED_JOB_MISSING');
+
+  withExtraStatusRule.main.workflowRuns.push({
+    workflow: 'Mandatory security audit',
+    runName: 'Mandatory security audit',
+    runId: 288,
+    event: 'push',
+    headSha: MAIN_SHA,
+    status: 'completed',
+    conclusion: 'success',
+    jobs: [
+      {
+        name: 'mandatory-security-audit',
+        jobId: 2888,
+        appId: 77777,
+        headSha: MAIN_SHA,
+        status: 'completed',
+        conclusion: 'success'
+      }
+    ]
+  });
+  assert.equal(
+    auditProtectedMainAndCandidateGates(withExtraStatusRule).reason,
+    'CANDIDATE_PULL_CHECKS_FAILED'
+  );
+
+  withExtraStatusRule.candidate.pullChecks.push({
+    name: 'mandatory-security-audit',
+    jobId: 6888,
+    appId: 77777,
+    headSha: CAND_SHA,
+    event: 'pull_request',
+    status: 'completed',
+    conclusion: 'success'
+  });
+  assert.equal(
+    auditProtectedMainAndCandidateGates(withExtraStatusRule).reason,
+    'MERGE_GROUP_CHECKS_FAILED'
+  );
+
+  const wrongExtraAppIdMg = cloneJson(withExtraStatusRule);
+  wrongExtraAppIdMg.candidate.mergeGroup.checks.push({
+    name: 'mandatory-security-audit',
+    jobId: 7888,
+    appId: GITHUB_ACTIONS_APP_ID,
+    headSha: MG_SHA,
+    event: 'merge_group',
+    status: 'completed',
+    conclusion: 'success'
+  });
+  assert.equal(auditProtectedMainAndCandidateGates(wrongExtraAppIdMg).reason, 'UNTRUSTED_CHECK_APP');
+
+  withExtraStatusRule.candidate.mergeGroup.checks.push({
+    name: 'mandatory-security-audit',
+    jobId: 7889,
+    appId: 77777,
+    headSha: MG_SHA,
+    event: 'merge_group',
+    status: 'completed',
+    conclusion: 'success'
+  });
+  assert.equal(auditProtectedMainAndCandidateGates(withExtraStatusRule).eligible, true);
+
   // merge_group SHA mismatches, event mismatches, untrusted apps, and check failures
   for (const mutate of [
     mg => { mg.base = PEER_SHA; },
@@ -853,6 +1003,30 @@ test('enforces >=98% line and >=95% branch coverage on every JS and .NET 10 C# c
   const badCandDotnet = makeFullHealthyInput();
   badCandDotnet.candidate.dotnetCoverage = null;
   assert.equal(auditProtectedMainAndCandidateGates(badCandDotnet).reason, 'CANDIDATE_DOTNET_COVERAGE_INVALID');
+
+  // Unrounded coverage drop checks against protected main (maxCoverageDrop: 0)
+  const jsLineDrop = makeFullHealthyInput();
+  jsLineDrop.candidate.jsCoverage.components[0].lines = 198;
+  assert.equal(auditProtectedMainAndCandidateGates(jsLineDrop).reason, 'JS_COVERAGE_REGRESSION');
+
+  const jsBranchDrop = makeFullHealthyInput();
+  jsBranchDrop.candidate.jsCoverage.components[0].branches = 192;
+  assert.equal(auditProtectedMainAndCandidateGates(jsBranchDrop).reason, 'JS_COVERAGE_REGRESSION');
+
+  const dotnetLineDrop = makeFullHealthyInput();
+  dotnetLineDrop.candidate.dotnetCoverage.components[0].lines = 1736;
+  assert.equal(auditProtectedMainAndCandidateGates(dotnetLineDrop).reason, 'DOTNET_COVERAGE_REGRESSION');
+
+  const dotnetBranchDrop = makeFullHealthyInput();
+  dotnetBranchDrop.candidate.dotnetCoverage.components[0].branches = 785;
+  assert.equal(auditProtectedMainAndCandidateGates(dotnetBranchDrop).reason, 'DOTNET_COVERAGE_REGRESSION');
+
+  const unverifiedMainBaseCov = makeFullHealthyInput();
+  unverifiedMainBaseCov.main.jsCoverage.head = PEER_SHA;
+  unverifiedMainBaseCov.main.dotnetCoverage.head = PEER_SHA;
+  const unverifiedRes = auditProtectedMainAndCandidateGates(unverifiedMainBaseCov);
+  assert.equal(unverifiedRes.candidateHealthy, false);
+  assert.equal(unverifiedRes.failureReasons.includes('MAIN_BASE_COVERAGE_UNVERIFIED'), true);
 });
 
 test('enforces ruleset completeness, scope matching, and strict types.isProxy / plain-object own-data-descriptor validation without invoking traps or getters', () => {
@@ -993,6 +1167,24 @@ test('enforces ruleset completeness, scope matching, and strict types.isProxy / 
     (() => {
       const c = makeFullHealthyInput();
       c.candidate.mergeGroup.checks = new Array(2);
+      return c;
+    })(),
+    (() => {
+      const c = makeFullHealthyInput();
+      c.candidate.additionalReviews = 'bad';
+      return c;
+    })(),
+    (() => {
+      const c = makeFullHealthyInput();
+      c.candidate.additionalReviews = [
+        {
+          reviewId: c.candidate.review.reviewId,
+          head: CAND_SHA,
+          reviewer: 'independent-human',
+          state: 'APPROVED',
+          independent: true
+        }
+      ];
       return c;
     })()
   ]) {
