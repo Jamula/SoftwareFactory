@@ -75,7 +75,14 @@ function makeHealthyMainInput() {
       mergeQueueMergeMethod: 'SQUASH',
       mergeQueueGrouping: 'ALLGREEN',
       bypassActorsCount: 0,
-      secretScanningRequired: true
+      secretScanningRequired: true,
+      codeScanningTools: [
+        {
+          tool: 'CodeQL',
+          securityAlertsThreshold: 'medium_or_higher',
+          alertsThreshold: 'errors_and_warnings'
+        }
+      ]
     },
     main: {
       head: MAIN_SHA,
@@ -384,6 +391,13 @@ test('verifies healthy protected main alone and full protected main + candidate 
   const humanApproved = makeFullHealthyInput();
   humanApproved.ruleset.requiredApprovingReviewCount = 1;
   humanApproved.ruleset.copilotCodeReviewOnPush = false;
+  humanApproved.ruleset.codeScanningTools = [
+    {
+      tool: 'CodeQL',
+      securityAlertsThreshold: 'all',
+      alertsThreshold: 'all'
+    }
+  ];
   humanApproved.candidate.review = {
     reviewId: 902,
     head: CAND_SHA,
@@ -394,9 +408,17 @@ test('verifies healthy protected main alone and full protected main + candidate 
     independent: true,
     summaryDisposition: 'clear',
     unresolvedSummaryFindings: 0,
-    blockingReviewCount: 0
+    blockingReviewCount: 0,
+    summaryBody: 'LGTM — verified exact-head checks and coverage receipts.'
   };
   assert.equal(auditProtectedMainAndCandidateGates(humanApproved).eligible, true);
+
+  const humanSummaryActionable = cloneJson(humanApproved);
+  humanSummaryActionable.candidate.review.summaryDisposition = 'actionable';
+  assert.equal(
+    auditProtectedMainAndCandidateGates(humanSummaryActionable).reason,
+    'SUMMARY_REVIEW_FINDINGS_OPEN'
+  );
 
   const copilotShortLogin = makeFullHealthyInput();
   copilotShortLogin.candidate.trustedReviewers = ['copilot-pull-request-reviewer'];
@@ -871,6 +893,7 @@ test('fails closed on fork PR skipped runtime checks, summary-only review findin
     mg => { mg.head = CAND_SHA; },
     mg => { mg.headRef = 'refs/heads/wrong-queue'; },
     mg => { mg.headRef = 'gh-readonly-queue/main/pr-145-short'; },
+    mg => { mg.headRef = `gh-readonly-queue/main/pr-145-${PEER_SHA}`; },
     mg => { mg.memberHeads = [PEER_SHA]; },
     mg => { mg.memberHeads = [MAIN_SHA, CAND_SHA]; },
     mg => { mg.memberHeads = [MG_SHA, CAND_SHA]; },
@@ -951,7 +974,10 @@ test('enforces >=98% line and >=95% branch coverage on every JS and .NET 10 C# c
   };
   const branchlessRes = auditProtectedMainAndCandidateGates(branchlessOk);
   assert.equal(branchlessRes.eligible, true);
-  assert.equal(branchlessRes.coverageSummary.candidateJs.branchPct, 100);
+  assert.equal(branchlessRes.coverageSummary.candidateJs.branches, 0);
+  assert.equal(branchlessRes.coverageSummary.candidateJs.branchTotal, 0);
+  assert.equal(branchlessRes.coverageSummary.candidateJs.branchPct, null);
+  assert.equal(branchlessRes.coverageSummary.candidateJs.branchPercent, 'N/A');
 
   const branchlessUntrusted = cloneJson(branchlessOk);
   branchlessUntrusted.candidate.jsCoverage.branchless[0].reviewedBy = 'outside-reviewer';
@@ -1060,7 +1086,35 @@ test('enforces ruleset completeness, scope matching, and strict types.isProxy / 
     {allowedMergeMethods: ['squash', 'merge']},
     {mergeQueueMergeMethod: 'MERGE'},
     {mergeQueueGrouping: 'SOLO'},
-    {requiredStatusChecks: [{context: 'build-test', integrationId: GITHUB_ACTIONS_APP_ID}]}
+    {requiredStatusChecks: [{context: 'build-test', integrationId: GITHUB_ACTIONS_APP_ID}]},
+    {codeScanningTools: []},
+    {
+      codeScanningTools: [
+        {
+          tool: 'OtherScanner',
+          securityAlertsThreshold: 'medium_or_higher',
+          alertsThreshold: 'errors_and_warnings'
+        }
+      ]
+    },
+    {
+      codeScanningTools: [
+        {
+          tool: 'CodeQL',
+          securityAlertsThreshold: 'high_or_higher',
+          alertsThreshold: 'errors_and_warnings'
+        }
+      ]
+    },
+    {
+      codeScanningTools: [
+        {
+          tool: 'CodeQL',
+          securityAlertsThreshold: 'medium_or_higher',
+          alertsThreshold: 'errors'
+        }
+      ]
+    }
   ]) {
     const weakRules = makeHealthyMainInput();
     weakRules.ruleset = {...weakRules.ruleset, ...patch};
@@ -1096,6 +1150,18 @@ test('enforces ruleset completeness, scope matching, and strict types.isProxy / 
       }
     },
     {...makeHealthyMainInput(), ruleset: {...makeHealthyMainInput().ruleset, allowedMergeMethods: ['']}},
+    {...makeHealthyMainInput(), ruleset: {...makeHealthyMainInput().ruleset, codeScanningTools: 'bad'}},
+    {...makeHealthyMainInput(), ruleset: {...makeHealthyMainInput().ruleset, codeScanningTools: [null]}},
+    {
+      ...makeHealthyMainInput(),
+      ruleset: {
+        ...makeHealthyMainInput().ruleset,
+        codeScanningTools: [
+          {tool: 'CodeQL', securityAlertsThreshold: 'medium_or_higher', alertsThreshold: 'errors_and_warnings'},
+          {tool: 'CodeQL', securityAlertsThreshold: 'medium_or_higher', alertsThreshold: 'errors_and_warnings'}
+        ]
+      }
+    },
     {...makeHealthyMainInput(), main: null},
     {...makeHealthyMainInput(), main: {...makeHealthyMainInput().main, workflowRuns: []}},
     (() => {
@@ -1147,6 +1213,16 @@ test('enforces ruleset completeness, scope matching, and strict types.isProxy / 
     (() => {
       const c = makeFullHealthyInput();
       c.candidate.review = {...c.candidate.review, summaryBody: 123};
+      return c;
+    })(),
+    (() => {
+      const c = makeFullHealthyInput();
+      c.candidate.review = {...c.candidate.review, summaryBody: 'bad\u0000null'};
+      return c;
+    })(),
+    (() => {
+      const c = makeFullHealthyInput();
+      c.candidate.review = {...c.candidate.review, summaryBody: 'x'.repeat(65537)};
       return c;
     })(),
     (() => {

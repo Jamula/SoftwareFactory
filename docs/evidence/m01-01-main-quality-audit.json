@@ -119,7 +119,8 @@
       "mergeQueueMergeMethod": "SQUASH",
       "mergeQueueGrouping": "ALLGREEN",
       "bypassActorsCount": 0,
-      "secretScanningRequired": true
+      "secretScanningRequired": true,
+      "codeScanningTools": []
     },
     "main": {
       "head": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
@@ -480,7 +481,8 @@
     "candidateHealthy": null,
     "reason": "MAIN_WORKFLOW_FAILED",
     "failureReasons": [
-      "MAIN_WORKFLOW_FAILED"
+      "MAIN_WORKFLOW_FAILED",
+      "RULESET_INCOMPLETE"
     ],
     "repository": "Jamula/SoftwareFactory",
     "repositoryId": 1471342715,

@@ -178,7 +178,7 @@ function addReason(list, reason) {
 
 function formatCoverageSummary(componentCount, lines, lineTotal, branches, branchTotal, sdkVersion) {
   const linePct = Math.round((lines * 10000) / lineTotal) / 100;
-  const branchPct = branchTotal === 0 ? 100 : Math.round((branches * 10000) / branchTotal) / 100;
+  const branchPct = branchTotal === 0 ? null : Math.round((branches * 10000) / branchTotal) / 100;
   const base = {
     componentCount,
     lines,
@@ -188,7 +188,7 @@ function formatCoverageSummary(componentCount, lines, lineTotal, branches, branc
     branches,
     branchTotal,
     branchPct,
-    branchPercent: `${branchPct.toFixed(2)}%`
+    branchPercent: branchPct === null ? 'N/A' : `${branchPct.toFixed(2)}%`
   };
   if (sdkVersion !== null) base.sdkVersion = sdkVersion;
   return Object.freeze(base);
@@ -231,7 +231,8 @@ const RULESET_KEYS = [
   'mergeQueueMergeMethod',
   'mergeQueueGrouping',
   'bypassActorsCount',
-  'secretScanningRequired'
+  'secretScanningRequired',
+  'codeScanningTools'
 ];
 
 const defaultRequiredCheckMap = new Map(
@@ -251,7 +252,8 @@ function auditRuleset(ruleset) {
       typeof ruleset.mergeQueueMergeMethod !== 'string' ||
       typeof ruleset.mergeQueueGrouping !== 'string' ||
       !Number.isSafeInteger(ruleset.bypassActorsCount) ||
-      typeof ruleset.secretScanningRequired !== 'boolean') {
+      typeof ruleset.secretScanningRequired !== 'boolean' ||
+      !isDenseArray(ruleset.codeScanningTools, 16)) {
     return {
       structuralError: true,
       ok: false,
@@ -292,6 +294,33 @@ function auditRuleset(ruleset) {
       };
     }
   }
+  const scannerMap = new Map();
+  for (let i = 0; i < ruleset.codeScanningTools.length; i++) {
+    const scanner = ruleset.codeScanningTools[i];
+    if (!exactPlainObject(scanner, ['tool', 'securityAlertsThreshold', 'alertsThreshold'], []) ||
+        !isSafeText(scanner.tool, 80) ||
+        !isSafeText(scanner.securityAlertsThreshold, 40) ||
+        !isSafeText(scanner.alertsThreshold, 40) ||
+        scannerMap.has(scanner.tool)) {
+      return {
+        structuralError: true,
+        ok: false,
+        reason: 'INVALID_INPUT',
+        lineMin: 98,
+        requiredApprovals: 0,
+        requiredCheckMap: defaultRequiredCheckMap
+      };
+    }
+    scannerMap.set(scanner.tool, scanner);
+  }
+
+  const codeqlRule = scannerMap.get('CodeQL');
+  const codeqlProtected =
+    codeqlRule !== undefined &&
+    (codeqlRule.securityAlertsThreshold === 'medium_or_higher' ||
+      codeqlRule.securityAlertsThreshold === 'all') &&
+    (codeqlRule.alertsThreshold === 'errors_and_warnings' ||
+      codeqlRule.alertsThreshold === 'all');
 
   if (!Number.isFinite(ruleset.minimumCoverage) ||
       ruleset.minimumCoverage < 98 ||
@@ -300,6 +329,7 @@ function auditRuleset(ruleset) {
       ruleset.strictRequiredStatusChecks !== true ||
       ruleset.requiredReviewThreadResolution !== true ||
       ruleset.secretScanningRequired !== true ||
+      !codeqlProtected ||
       ruleset.bypassActorsCount !== 0 ||
       ruleset.requiredApprovingReviewCount < 0 ||
       (ruleset.requiredApprovingReviewCount === 0 && ruleset.copilotCodeReviewOnPush !== true) ||
@@ -747,7 +777,8 @@ function auditCandidateSection(candidate, mainHead, mainAudit, lineMin, required
     return {structuralError: true};
   }
   const hasSummaryBody = Object.hasOwn(rv, 'summaryBody');
-  if (hasSummaryBody && typeof rv.summaryBody !== 'string') {
+  if (hasSummaryBody &&
+      (typeof rv.summaryBody !== 'string' || rv.summaryBody.length > 65536 || rv.summaryBody.includes('\u0000'))) {
     return {structuralError: true};
   }
 
@@ -912,7 +943,7 @@ function auditCandidateSection(candidate, mainHead, mainAudit, lineMin, required
   }
 
   let bodyDispositionClear = true;
-  if (hasSummaryBody) {
+  if (hasSummaryBody && isCopilotBot) {
     const classified = classifyReviewSummary(rv.reviewId, rv.summaryBody);
     bodyDispositionClear = classified.summaryDisposition === 'clear' && classified.findings.length === 0;
   }
@@ -920,11 +951,11 @@ function auditCandidateSection(candidate, mainHead, mainAudit, lineMin, required
     addReason(reasons, 'SUMMARY_REVIEW_FINDINGS_OPEN');
   }
 
-  const queueRefPattern = new RegExp(`^gh-readonly-queue/main/pr-${candidate.prNumber}-[0-9a-f]{40}$`);
+  const expectedQueueRef = `gh-readonly-queue/main/pr-${candidate.prNumber}-${mainHead}`;
   if (mg.base !== mainHead ||
       mg.head === mainHead ||
       mg.head === candidate.head ||
-      !queueRefPattern.test(mg.headRef) ||
+      mg.headRef !== expectedQueueRef ||
       !memberSet.has(candidate.head) ||
       mg.memberHeads.some(m => m === mainHead || m === mg.head)) {
     addReason(reasons, 'MERGE_GROUP_SHA_MISMATCH');
@@ -1019,10 +1050,10 @@ export function auditProtectedMainAndCandidateGates(input) {
   }
 
   const failureReasons = [];
-  if (!rules.ok) addReason(failureReasons, rules.reason);
   for (let i = 0; i < mainAudit.reasons.length; i++) {
     addReason(failureReasons, mainAudit.reasons[i]);
   }
+  if (!rules.ok) addReason(failureReasons, rules.reason);
   if (candAudit !== null) {
     for (let i = 0; i < candAudit.reasons.length; i++) {
       addReason(failureReasons, candAudit.reasons[i]);
