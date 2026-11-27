@@ -181,16 +181,30 @@ const OUTCOME_BINDING_KEYS = [
 ];
 
 const GUARDRAIL_KEYS = [
-  'coverageHead',
   'minLinePercent',
   'minBranchPercent',
+  'expectedComponents',
+  'mainCoverage',
+  'pullReceipts',
+  'reworkRounds',
+  'reopenedCount',
+  'failedMainCount',
+  'unauthorizedWriteCount',
+  'duplicateDispatchCount',
+  'budgetViolationCount'
+];
+
+const MAIN_COVERAGE_KEYS = ['headSha', 'components'];
+const PULL_RECEIPT_KEYS = ['pullNumber', 'headSha', 'independentReviewVerified', 'components'];
+const COMPONENT_COVERAGE_KEYS = [
+  'component',
+  'headSha',
   'coveredLines',
   'totalLines',
   'coveredBranches',
-  'totalBranches',
-  'independentReviewVerified',
-  'reworkRounds',
-  'reopenedCount',
+  'totalBranches'
+];
+const SAFETY_VIOLATION_KEYS = [
   'failedMainCount',
   'unauthorizedWriteCount',
   'duplicateDispatchCount',
@@ -292,6 +306,7 @@ const positiveInt = n => Number.isSafeInteger(n) && n > 0;
 const nonnegInt = n => Number.isSafeInteger(n) && n >= 0;
 const boundedCount = (n, max = 1000) => nonnegInt(n) && n <= max;
 const validCohort = s => typeof s === 'string' && /^[a-z0-9][a-z0-9-]{0,63}$/.test(s);
+const validComponentName = s => typeof s === 'string' && /^[a-z0-9][a-z0-9._-]{0,79}$/.test(s);
 const validIdToken = s => typeof s === 'string' && /^[A-Za-z0-9._:-]{1,96}$/.test(s);
 const sha40 = s => typeof s === 'string' && /^[0-9a-f]{40}$/.test(s);
 const traceHex = s => typeof s === 'string' && /^(?!0{32}$)[0-9a-f]{32}$/.test(s);
@@ -1101,6 +1116,8 @@ function emptyGuardrailSummary(status) {
     coverageHead: null,
     minLinePercent: null,
     minBranchPercent: null,
+    componentCount: null,
+    failingComponentCount: null,
     coveredLines: null,
     totalLines: null,
     coveredBranches: null,
@@ -1313,7 +1330,7 @@ function parseCiRuns(rawCiRuns, query) {
   const durations = [];
   const queueDurations = [];
   const executionDurations = [];
-  const completedPullHeadTraces = new Map();
+  const completedPullHeadRuns = new Map();
   const counts = {cohort: 0, completed: 0, censored: 0, unknown: 0};
   const spec = AUTONOMOUS_OTEL_OBJECTIVES.standardAutomatedCiMs;
   let overdueOpenCount = 0;
@@ -1387,12 +1404,16 @@ function parseCiRuns(rawCiRuns, query) {
       queueDurations.push(run.startedAt - run.candidateEventAt);
       executionDurations.push(run.completedAt - run.startedAt);
       const headKey = `${run.pullNumber}:${run.headSha}`;
-      let traceSet = completedPullHeadTraces.get(headKey);
-      if (traceSet === undefined) {
-        traceSet = new Set();
-        completedPullHeadTraces.set(headKey, traceSet);
+      let headRuns = completedPullHeadRuns.get(headKey);
+      if (headRuns === undefined) {
+        headRuns = [];
+        completedPullHeadRuns.set(headKey, headRuns);
       }
-      if (parsedTrace !== null) traceSet.add(parsedTrace.traceId);
+      headRuns.push({
+        traceId: parsedTrace !== null ? parsedTrace.traceId : null,
+        candidateEventAt: run.candidateEventAt,
+        completedAt: run.completedAt
+      });
     }
   }
 
@@ -1401,7 +1422,7 @@ function parseCiRuns(rawCiRuns, query) {
     durations,
     queueDurations,
     executionDurations,
-    completedPullHeadTraces,
+    completedPullHeadRuns,
     counts,
     overdueOpenCount
   };
@@ -1410,7 +1431,7 @@ function parseCiRuns(rawCiRuns, query) {
 function parseOutcomeBindings(
   rawBindings,
   inWindowReceiptsById,
-  completedPullHeadTraces,
+  completedPullHeadRuns,
   otelAcceptedInWindow,
   pullsByNumber,
   linkGraph
@@ -1440,6 +1461,7 @@ function parseOutcomeBindings(
       ['verify-main', binding.verifyMainReceiptId],
       ['acceptance', binding.acceptanceReceiptId]
     ];
+    const resolvedReceipts = [];
     for (const [expectedStage, receiptId] of stagePairs) {
       const receipt = inWindowReceiptsById.get(receiptId);
       if (receipt === undefined ||
@@ -1450,22 +1472,38 @@ function parseOutcomeBindings(
           receipt.cost.state !== 'verified-zero') {
         return {ok: false, reason: 'INVALID_OUTCOME_BINDING'};
       }
+      resolvedReceipts.push(receipt);
+    }
+    const [dispatchRec, ciRec, mainRec, acceptRec] = resolvedReceipts;
+    if (dispatchRec.observedMs > ciRec.observedMs ||
+        ciRec.observedMs > mainRec.observedMs ||
+        mainRec.observedMs > acceptRec.observedMs) {
+      return {ok: false, reason: 'INVALID_OUTCOME_BINDING'};
     }
     seenAcceptanceReceipts.add(binding.acceptanceReceiptId);
-    byIssue.set(binding.issueNumber, binding);
+    byIssue.set(binding.issueNumber, {binding, dispatchRec, acceptRec});
   }
 
   let verifiedCount = 0;
   for (const {issue} of otelAcceptedInWindow) {
-    const binding = byIssue.get(issue.number);
-    if (binding === undefined) continue;
+    const entry = byIssue.get(issue.number);
+    if (entry === undefined) continue;
+    const {binding, dispatchRec, acceptRec} = entry;
+    if (dispatchRec.observedMs < issue.readyAt || acceptRec.observedMs > issue.acceptedAt) {
+      continue;
+    }
     const reqPulls = issue.requiredPullNumbers !== null
       ? issue.requiredPullNumbers.map(num => pullsByNumber.get(num))
       : linkGraph.pullsByIssue.get(issue.number);
-    const ciLineageVerified = reqPulls.every(p =>
-      p.headSha !== null &&
-      completedPullHeadTraces.get(`${p.number}:${p.headSha}`)?.has(binding.traceId) === true
-    );
+    const ciLineageVerified = reqPulls.every(p => {
+      if (p.headSha === null) return false;
+      const runs = completedPullHeadRuns.get(`${p.number}:${p.headSha}`) ?? [];
+      return runs.some(r =>
+        r.traceId === binding.traceId &&
+        r.candidateEventAt >= p.createdAt &&
+        r.completedAt <= p.mergedAt
+      );
+    });
     if (ciLineageVerified) verifiedCount++;
   }
 
@@ -1478,7 +1516,58 @@ function parseOutcomeBindings(
   };
 }
 
-function parseGuardrails(rawGuardrails, correlationResult, query) {
+function evaluateComponentInventory(components, expectedHeadSha, expectedSet, minLinePct, minBranchPct) {
+  if (!denseDataArray(components, 250) || components.length !== expectedSet.size) return null;
+  const seen = new Set();
+  let coveredLines = 0;
+  let totalLines = 0;
+  let coveredBranches = 0;
+  let totalBranches = 0;
+  let failingComponentCount = 0;
+
+  for (const row of components) {
+    if (!exactRecord(row, COMPONENT_COVERAGE_KEYS) ||
+        !expectedSet.has(row.component) ||
+        seen.has(row.component) ||
+        row.headSha !== expectedHeadSha ||
+        !positiveInt(row.totalLines) ||
+        row.totalLines > MAX_SOURCE_ELEMENTS ||
+        !nonnegInt(row.coveredLines) ||
+        row.coveredLines > row.totalLines ||
+        !positiveInt(row.totalBranches) ||
+        row.totalBranches > MAX_SOURCE_ELEMENTS ||
+        !nonnegInt(row.coveredBranches) ||
+        row.coveredBranches > row.totalBranches) {
+      return null;
+    }
+    seen.add(row.component);
+    coveredLines += row.coveredLines;
+    totalLines += row.totalLines;
+    coveredBranches += row.coveredBranches;
+    totalBranches += row.totalBranches;
+    if (row.coveredLines * 100 < minLinePct * row.totalLines ||
+        row.coveredBranches * 100 < minBranchPct * row.totalBranches) {
+      failingComponentCount++;
+    }
+  }
+  return {
+    componentCount: seen.size,
+    failingComponentCount,
+    coveredLines,
+    totalLines,
+    coveredBranches,
+    totalBranches
+  };
+}
+
+function parseGuardrails(
+  rawGuardrails,
+  otelAcceptedInWindow,
+  pullsByNumber,
+  linkGraph,
+  correlationResult,
+  query
+) {
   if (rawGuardrails === null) {
     return {ok: true, summary: emptyGuardrailSummary('unknown')};
   }
@@ -1488,22 +1577,19 @@ function parseGuardrails(rawGuardrails, correlationResult, query) {
   const floorLine = query.repositoryId === SOFTWARE_FACTORY_REPOSITORY_ID ? 98 : 95;
   const floorBranch = query.repositoryId === SOFTWARE_FACTORY_REPOSITORY_ID ? 95 : 90;
   if (!exactRecord(rawGuardrails, GUARDRAIL_KEYS) ||
-      !sha40(rawGuardrails.coverageHead) ||
       !positiveInt(rawGuardrails.minLinePercent) ||
       rawGuardrails.minLinePercent < floorLine ||
       rawGuardrails.minLinePercent > 100 ||
       !positiveInt(rawGuardrails.minBranchPercent) ||
       rawGuardrails.minBranchPercent < floorBranch ||
       rawGuardrails.minBranchPercent > 100 ||
-      !positiveInt(rawGuardrails.totalLines) ||
-      rawGuardrails.totalLines > MAX_SOURCE_ELEMENTS ||
-      !nonnegInt(rawGuardrails.coveredLines) ||
-      rawGuardrails.coveredLines > rawGuardrails.totalLines ||
-      !positiveInt(rawGuardrails.totalBranches) ||
-      rawGuardrails.totalBranches > MAX_SOURCE_ELEMENTS ||
-      !nonnegInt(rawGuardrails.coveredBranches) ||
-      rawGuardrails.coveredBranches > rawGuardrails.totalBranches ||
-      typeof rawGuardrails.independentReviewVerified !== 'boolean' ||
+      !denseDataArray(rawGuardrails.expectedComponents, 250) ||
+      rawGuardrails.expectedComponents.length === 0 ||
+      !rawGuardrails.expectedComponents.every(validComponentName) ||
+      new Set(rawGuardrails.expectedComponents).size !== rawGuardrails.expectedComponents.length ||
+      !exactRecord(rawGuardrails.mainCoverage, MAIN_COVERAGE_KEYS) ||
+      !sha40(rawGuardrails.mainCoverage.headSha) ||
+      !denseDataArray(rawGuardrails.pullReceipts, 500) ||
       !boundedCount(rawGuardrails.reworkRounds, 1000000) ||
       !boundedCount(rawGuardrails.reopenedCount, 1000000) ||
       !boundedCount(rawGuardrails.failedMainCount, 1000000) ||
@@ -1512,6 +1598,41 @@ function parseGuardrails(rawGuardrails, correlationResult, query) {
       !boundedCount(rawGuardrails.budgetViolationCount, 1000000)) {
     return {ok: false, reason: 'INVALID_GUARDRAIL_EVIDENCE'};
   }
+
+  const expectedSet = new Set(rawGuardrails.expectedComponents);
+  const mainEval = evaluateComponentInventory(
+    rawGuardrails.mainCoverage.components,
+    rawGuardrails.mainCoverage.headSha,
+    expectedSet,
+    rawGuardrails.minLinePercent,
+    rawGuardrails.minBranchPercent
+  );
+  if (mainEval === null) return {ok: false, reason: 'INVALID_GUARDRAIL_EVIDENCE'};
+
+  const pullReceiptsByNum = new Map();
+  for (const prRec of rawGuardrails.pullReceipts) {
+    if (!exactRecord(prRec, PULL_RECEIPT_KEYS) ||
+        !positiveInt(prRec.pullNumber) ||
+        !sha40(prRec.headSha) ||
+        typeof prRec.independentReviewVerified !== 'boolean' ||
+        pullReceiptsByNum.has(prRec.pullNumber)) {
+      return {ok: false, reason: 'INVALID_GUARDRAIL_EVIDENCE'};
+    }
+    const prEval = evaluateComponentInventory(
+      prRec.components,
+      prRec.headSha,
+      expectedSet,
+      rawGuardrails.minLinePercent,
+      rawGuardrails.minBranchPercent
+    );
+    if (prEval === null) return {ok: false, reason: 'INVALID_GUARDRAIL_EVIDENCE'};
+    pullReceiptsByNum.set(prRec.pullNumber, {
+      headSha: prRec.headSha,
+      independentReviewVerified: prRec.independentReviewVerified,
+      failingComponentCount: prEval.failingComponentCount
+    });
+  }
+
   const actualReopened = correlationResult.acceptedInWindowIssues.reduce(
     (sum, {issue}) => sum + issue.reopenedCount,
     0
@@ -1519,27 +1640,57 @@ function parseGuardrails(rawGuardrails, correlationResult, query) {
   if (rawGuardrails.reopenedCount !== actualReopened) {
     return {ok: false, reason: 'INVALID_GUARDRAIL_EVIDENCE'};
   }
-  const linePass = rawGuardrails.coveredLines * 100 >=
-    rawGuardrails.minLinePercent * rawGuardrails.totalLines;
-  const branchPass = rawGuardrails.coveredBranches * 100 >=
-    rawGuardrails.minBranchPercent * rawGuardrails.totalBranches;
+
+  const requiredPulls = new Map();
+  let maxMainVerifiedAt = -1;
+  for (const {issue} of otelAcceptedInWindow) {
+    const req = issue.requiredPullNumbers !== null
+      ? issue.requiredPullNumbers.map(num => pullsByNumber.get(num))
+      : linkGraph.pullsByIssue.get(issue.number);
+    for (const p of req) {
+      requiredPulls.set(p.number, p);
+      if (p.mainVerifiedAt > maxMainVerifiedAt) maxMainVerifiedAt = p.mainVerifiedAt;
+    }
+  }
+  const latestMainShas = new Set();
+  for (const p of requiredPulls.values()) {
+    if (p.mainVerifiedAt === maxMainVerifiedAt) latestMainShas.add(p.mainVerifiedSha);
+  }
+
+  const mainHeadBound = requiredPulls.size > 0 &&
+    latestMainShas.has(rawGuardrails.mainCoverage.headSha);
+  const allPullsReviewedAndCovered = requiredPulls.size > 0 &&
+    Array.from(requiredPulls.values()).every(p => {
+      const rec = pullReceiptsByNum.get(p.number);
+      return rec !== undefined &&
+        p.headSha !== null &&
+        rec.headSha === p.headSha &&
+        rec.independentReviewVerified &&
+        rec.failingComponentCount === 0;
+    });
   const safetyPass = rawGuardrails.failedMainCount === 0 &&
     rawGuardrails.unauthorizedWriteCount === 0 &&
     rawGuardrails.duplicateDispatchCount === 0 &&
     rawGuardrails.budgetViolationCount === 0;
-  const passed = linePass && branchPass && rawGuardrails.independentReviewVerified && safetyPass;
+  const passed = mainHeadBound &&
+    mainEval.failingComponentCount === 0 &&
+    allPullsReviewedAndCovered &&
+    safetyPass;
+
   return {
     ok: true,
     summary: {
       status: passed ? 'passed' : 'failed',
-      coverageHead: rawGuardrails.coverageHead,
+      coverageHead: rawGuardrails.mainCoverage.headSha,
       minLinePercent: rawGuardrails.minLinePercent,
       minBranchPercent: rawGuardrails.minBranchPercent,
-      coveredLines: rawGuardrails.coveredLines,
-      totalLines: rawGuardrails.totalLines,
-      coveredBranches: rawGuardrails.coveredBranches,
-      totalBranches: rawGuardrails.totalBranches,
-      independentReviewVerified: rawGuardrails.independentReviewVerified,
+      componentCount: mainEval.componentCount,
+      failingComponentCount: mainEval.failingComponentCount,
+      coveredLines: mainEval.coveredLines,
+      totalLines: mainEval.totalLines,
+      coveredBranches: mainEval.coveredBranches,
+      totalBranches: mainEval.totalBranches,
+      independentReviewVerified: allPullsReviewedAndCovered,
       reworkRounds: rawGuardrails.reworkRounds,
       reopenedCount: rawGuardrails.reopenedCount,
       safetyViolations: {
@@ -1805,7 +1956,7 @@ function buildAutonomousOtelSection(rawOtel, issues, pulls, linkGraph, correlati
   const outcomeBindingResult = parseOutcomeBindings(
     rawOutcomeBindings,
     receiptResult.inWindowReceiptsById,
-    ciResult.completedPullHeadTraces,
+    ciResult.completedPullHeadRuns,
     otelAcceptedInWindow,
     pullsByNumber,
     linkGraph
@@ -1815,7 +1966,14 @@ function buildAutonomousOtelSection(rawOtel, issues, pulls, linkGraph, correlati
     outcomeBindingResult.verifiedOutcomeBindingCount;
 
   const rawGuardrails = ownOption(rawOtel, 'guardrails', null);
-  const guardrailResult = parseGuardrails(rawGuardrails, correlationResult, query);
+  const guardrailResult = parseGuardrails(
+    rawGuardrails,
+    otelAcceptedInWindow,
+    pullsByNumber,
+    linkGraph,
+    correlationResult,
+    query
+  );
   if (!guardrailResult.ok) return guardrailResult;
 
   const interventionsResult = parseInterventions(
@@ -1958,6 +2116,8 @@ const SNAPSHOT_GUARDRAIL_KEYS = [
   'coverageHead',
   'minLinePercent',
   'minBranchPercent',
+  'componentCount',
+  'failingComponentCount',
   'coveredLines',
   'totalLines',
   'coveredBranches',
@@ -1971,12 +2131,15 @@ const SNAPSHOT_GUARDRAIL_KEYS = [
 function validPassedGuardrailSnapshot(guard, repositoryId) {
   const floorLine = repositoryId === SOFTWARE_FACTORY_REPOSITORY_ID ? 98 : 95;
   const floorBranch = repositoryId === SOFTWARE_FACTORY_REPOSITORY_ID ? 95 : 90;
-  return positiveInt(guard.minLinePercent) &&
+  return sha40(guard.coverageHead) &&
+    positiveInt(guard.minLinePercent) &&
     guard.minLinePercent >= floorLine &&
     guard.minLinePercent <= 100 &&
     positiveInt(guard.minBranchPercent) &&
     guard.minBranchPercent >= floorBranch &&
     guard.minBranchPercent <= 100 &&
+    positiveInt(guard.componentCount) &&
+    guard.failingComponentCount === 0 &&
     positiveInt(guard.totalLines) &&
     guard.totalLines <= MAX_SOURCE_ELEMENTS &&
     nonnegInt(guard.coveredLines) &&
@@ -1989,7 +2152,12 @@ function validPassedGuardrailSnapshot(guard, repositoryId) {
     guard.coveredBranches * 100 >= guard.minBranchPercent * guard.totalBranches &&
     guard.independentReviewVerified === true &&
     boundedCount(guard.reworkRounds, 1000000) &&
-    boundedCount(guard.reopenedCount, 1000000);
+    boundedCount(guard.reopenedCount, 1000000) &&
+    exactRecord(guard.safetyViolations, SAFETY_VIOLATION_KEYS) &&
+    guard.safetyViolations.failedMainCount === 0 &&
+    guard.safetyViolations.unauthorizedWriteCount === 0 &&
+    guard.safetyViolations.duplicateDispatchCount === 0 &&
+    guard.safetyViolations.budgetViolationCount === 0;
 }
 
 function validBaselineSnapshot(baseline) {
@@ -2120,11 +2288,12 @@ function evaluateBaselineComparison(baseline, currentReport) {
       baseGuard.minLinePercent !== currGuard.minLinePercent ||
       baseGuard.minBranchPercent !== currGuard.minBranchPercent ||
       coverageRegressed() ||
+      countOrRateIncreased(currGuard.reworkRounds, baseGuard.reworkRounds) ||
+      countOrRateIncreased(currGuard.reopenedCount, baseGuard.reopenedCount) ||
       countOrRateIncreased(
         currGuard.reworkRounds + currGuard.reopenedCount,
         baseGuard.reworkRounds + baseGuard.reopenedCount
       ) ||
-      countOrRateIncreased(currGuard.reopenedCount, baseGuard.reopenedCount) ||
       countOrRateIncreased(currInterTotal, baseInterTotal)) {
     return {ok: true, comparison: unavailable('GUARDRAIL_UNVERIFIED_OR_REGRESSED')};
   }
