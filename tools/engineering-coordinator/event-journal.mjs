@@ -1,11 +1,41 @@
 import {DatabaseSync} from 'node:sqlite';
+import {types} from 'node:util';
 
+const journalHandles = new WeakMap();
 const eventKinds = new Set(['issue', 'pull', 'review', 'check', 'main', 'manual']);
+const snapshotEntryKeys = [
+  'repositoryId', 'deliveryId', 'kind', 'subject', 'head',
+  'owner', 'generation', 'expires', 'completed', 'retryAfter'
+];
+const snapshotTopKeys = new Set(['schemaVersion', 'shadow', 'entries', 'exported', 'reason']);
 const isTime = value => Number.isSafeInteger(value) && value >= 0;
 const isRepo = value => isTime(value) && value > 0;
 const isToken = value => typeof value === 'string' && /^[a-zA-Z0-9-]{1,80}$/.test(value);
 const isHead = value => typeof value === 'string' && /^[a-f0-9]{40}$/.test(value);
+const isPlain = value => value !== null && typeof value === 'object' &&
+  !types.isProxy(value) && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype;
+const hasOwnValues = (value, keys) => isPlain(value) &&
+  keys.every(key => Object.hasOwn(Object.getOwnPropertyDescriptor(value, key) ?? {}, 'value'));
+const isDenseArray = value => !types.isProxy(value) && Array.isArray(value) &&
+  Object.getPrototypeOf(value) === Array.prototype && value.length <= 10000 &&
+  Reflect.ownKeys(value).length === value.length + 1 &&
+  Array.from({length: value.length}, (_, i) =>
+    Object.hasOwn(Object.getOwnPropertyDescriptor(value, i) ?? {}, 'value')).every(Boolean);
 const rejected = reason => ({queued: false, reason});
+
+function validSnapshotEntry(entry) {
+  if (!hasOwnValues(entry, snapshotEntryKeys) || Reflect.ownKeys(entry).length !== snapshotEntryKeys.length) {
+    return false;
+  }
+  const {repositoryId, deliveryId, kind, subject, head, owner, generation, expires, completed, retryAfter} = entry;
+  if (!isRepo(repositoryId) || !isToken(deliveryId) || !eventKinds.has(kind) ||
+      !isTime(subject) || !isHead(head) || typeof completed !== 'boolean' ||
+      !isTime(generation) || !isTime(expires)) return false;
+  if (generation === 0) return owner === null && expires === 0 && !completed && retryAfter === null;
+  if (!isToken(owner)) return false;
+  if (completed) return expires === 0 && retryAfter === null;
+  return retryAfter === null || isRepo(retryAfter);
+}
 
 /**
  * Stores sanitized shadow reconciliation hints. Delivery order never establishes PR
@@ -79,8 +109,42 @@ export function openEventJournal(filename) {
       WHERE repository_id = ? AND delivery_id = ? AND owner = ?
         AND generation = ? AND completed = 0 AND expires > ?
     `);
+    const selectSnapshot = db.prepare(`
+      SELECT e.repository_id AS repositoryId, e.delivery_id AS deliveryId, e.kind, e.subject, e.head,
+             e.owner, e.generation, e.expires, e.completed, d.retry_after AS retryAfter
+      FROM coordinator_events AS e
+      LEFT JOIN coordinator_event_deferrals AS d ON d.event_id = e.id
+      WHERE (? IS NULL OR e.repository_id = ?)
+      ORDER BY e.id ASC
+    `);
+    const existingFull = db.prepare(`
+      SELECT id, kind, subject, head, generation, completed
+      FROM coordinator_events WHERE repository_id = ? AND delivery_id = ?
+    `);
+    const repoCount = db.prepare(`
+      SELECT count(*) AS total FROM coordinator_events WHERE repository_id = ?
+    `);
+    const insertImported = db.prepare(`
+      INSERT INTO coordinator_events
+        (repository_id, delivery_id, kind, subject, head, owner, generation, expires, completed)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    const completeImported = db.prepare(`
+      UPDATE coordinator_events SET owner = ?, generation = ?, expires = 0, completed = 1 WHERE id = ?
+    `);
+    const advanceImported = db.prepare(`
+      UPDATE coordinator_events SET owner = ?, generation = ?, expires = ? WHERE id = ?
+    `);
+    const upsertDeferral = db.prepare(`
+      INSERT INTO coordinator_event_deferrals (event_id, retry_after) VALUES (?, ?)
+      ON CONFLICT(event_id) DO UPDATE SET retry_after = excluded.retry_after
+      WHERE excluded.retry_after > coordinator_event_deferrals.retry_after
+    `);
+    const clearDeferral = db.prepare(`
+      DELETE FROM coordinator_event_deferrals WHERE event_id = ?
+    `);
 
-    return Object.freeze({
+    const journal = Object.freeze({
       enqueue(event) {
         try {
           const {repositoryId, deliveryId, kind, subject, head} = event;
@@ -124,6 +188,84 @@ export function openEventJournal(filename) {
       },
       close() { db.close(); }
     });
+
+    journalHandles.set(journal, {
+      exportSnapshot(repositoryId) {
+        try {
+          const entries = selectSnapshot.all(repositoryId, repositoryId).map(row => Object.freeze({
+            repositoryId: row.repositoryId,
+            deliveryId: row.deliveryId,
+            kind: row.kind,
+            subject: row.subject,
+            head: row.head,
+            owner: row.owner,
+            generation: row.generation,
+            expires: row.expires,
+            completed: row.completed === 1,
+            retryAfter: row.retryAfter
+          }));
+          return Object.freeze({
+            shadow: true,
+            exported: true,
+            reason: 'SNAPSHOT_EXPORTED',
+            schemaVersion: 1,
+            entries: Object.freeze(entries)
+          });
+        } catch {
+          return {shadow: true, exported: false, reason: 'JOURNAL_UNAVAILABLE'};
+        }
+      },
+      importSnapshot(entries) {
+        try {
+          db.exec('BEGIN IMMEDIATE');
+          let importedCount = 0;
+          let duplicateCount = 0;
+          for (const entry of entries) {
+            const prior = existingFull.get(entry.repositoryId, entry.deliveryId);
+            if (prior) {
+              if (prior.kind !== entry.kind || prior.subject !== entry.subject || prior.head !== entry.head) {
+                db.exec('ROLLBACK');
+                return {shadow: true, imported: false, reason: 'DELIVERY_CONFLICT'};
+              }
+              duplicateCount++;
+              if (prior.completed === 0) {
+                if (entry.completed) {
+                  completeImported.run(entry.owner, Math.max(prior.generation, entry.generation), prior.id);
+                  clearDeferral.run(prior.id);
+                } else {
+                  if (entry.generation > prior.generation) {
+                    advanceImported.run(entry.owner, entry.generation, entry.expires, prior.id);
+                  }
+                  if (entry.retryAfter !== null) {
+                    upsertDeferral.run(prior.id, entry.retryAfter);
+                  }
+                }
+              }
+              continue;
+            }
+            if (repoCount.get(entry.repositoryId).total >= 10000) {
+              db.exec('ROLLBACK');
+              return {shadow: true, imported: false, reason: 'JOURNAL_FULL'};
+            }
+            const inserted = insertImported.run(
+              entry.repositoryId, entry.deliveryId, entry.kind, entry.subject, entry.head,
+              entry.owner, entry.generation, entry.expires, entry.completed ? 1 : 0
+            );
+            if (entry.retryAfter !== null) {
+              upsertDeferral.run(Number(inserted.lastInsertRowid), entry.retryAfter);
+            }
+            importedCount++;
+          }
+          db.exec('COMMIT');
+          return {shadow: true, imported: true, reason: 'SNAPSHOT_IMPORTED', importedCount, duplicateCount};
+        } catch {
+          try { db.exec('ROLLBACK'); } catch {}
+          return {shadow: true, imported: false, reason: 'JOURNAL_UNAVAILABLE'};
+        }
+      }
+    });
+
+    return journal;
   } catch (error) {
     db.close();
     throw error;
@@ -158,4 +300,42 @@ export async function reconcileJournalOnce({journal, repositoryId, owner, leaseM
     if(journal.complete(ticket,finished)!==true)return result('CLAIM_LOST');
     return result(evidence.head===ticket.head?'SHADOW_RECONCILED':'SHADOW_HEAD_SUPERSEDED');
   } catch {return result('RECONCILIATION_UNAVAILABLE');}
+}
+
+export function exportJournalSnapshot(journal, options = {}) {
+  const denied = reason => ({shadow: true, exported: false, reason});
+  if (!isPlain(options)) return denied('INVALID_SCOPE');
+  const keys = Reflect.ownKeys(options);
+  if (keys.some(key => key !== 'repositoryId' ||
+      !Object.hasOwn(Object.getOwnPropertyDescriptor(options, key) ?? {}, 'value'))) {
+    return denied('INVALID_SCOPE');
+  }
+  const repositoryId = options.repositoryId ?? null;
+  if (repositoryId !== null && !isRepo(repositoryId)) return denied('INVALID_SCOPE');
+  const handle = journalHandles.get(journal);
+  if (!handle) return denied('JOURNAL_UNAVAILABLE');
+  return handle.exportSnapshot(repositoryId);
+}
+
+export function importJournalSnapshot(journal, snapshot) {
+  const denied = reason => ({shadow: true, imported: false, reason});
+  const handle = journalHandles.get(journal);
+  if (!handle) return denied('JOURNAL_UNAVAILABLE');
+  if (!hasOwnValues(snapshot, ['schemaVersion', 'shadow', 'entries'])) return denied('INVALID_SNAPSHOT');
+  const keys = Reflect.ownKeys(snapshot);
+  if (keys.some(key => !snapshotTopKeys.has(key) ||
+      !Object.hasOwn(Object.getOwnPropertyDescriptor(snapshot, key) ?? {}, 'value'))) {
+    return denied('INVALID_SNAPSHOT');
+  }
+  if (snapshot.schemaVersion !== 1 || snapshot.shadow !== true || !isDenseArray(snapshot.entries)) {
+    return denied('INVALID_SNAPSHOT');
+  }
+  const seen = new Set();
+  for (const entry of snapshot.entries) {
+    if (!validSnapshotEntry(entry)) return denied('INVALID_SNAPSHOT');
+    const key = `${entry.repositoryId}:${entry.deliveryId}`;
+    if (seen.has(key)) return denied('INVALID_SNAPSHOT');
+    seen.add(key);
+  }
+  return handle.importSnapshot(snapshot.entries);
 }

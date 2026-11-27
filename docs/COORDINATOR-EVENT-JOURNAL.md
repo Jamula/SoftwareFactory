@@ -6,6 +6,19 @@ Use the journal only behind a trusted event adapter, with an owner-controlled lo
 
 A claim is atomic and exclusive per repository. Other repositories can continue concurrently. An expired claim can be recovered with a new generation. Use a consistent trusted clock across local workers. Acknowledgement requires the current owner, generation, and unexpired lease. A successful acknowledgement leaves a receipt for duplicate detection. At 10,000 deliveries for a repository the journal rejects new entries and keeps prior receipts. Retention and rotation need a policy before sustained use.
 
-This API is local and shadow-only. A trusted-ingress and reconciliation loop must wire it in before the journal handles real deliveries.
+This API is shadow-only (`liveDispatch: false`, `liveMerge: false`). Ephemeral GitHub Actions runner disks are not authoritative cross-run lease stores on their own; hosted production execution still requires an independently reviewed, cost-verified durable backing store (#6).
 
-The injected `reconcileJournalOnce` shadow helper consumes one claim at a time, reads normalized fresh metadata, checks lease time and repository/kind/subject, and completes only the current fenced claim. A freshly observed moved head supersedes the old hint without granting any action. Failed evidence leaves the claim unacknowledged for recovery. A real trusted read adapter, transport freshness proof, clock and bounded scheduler still need wiring; the boolean fresh assertion is a synthetic fixture contract, not authentication.
+## Deterministic cross-run snapshots (`exportJournalSnapshot` / `importJournalSnapshot`)
+
+`exportJournalSnapshot(journal, {repositoryId})` exports an insertion-ordered, frozen `schemaVersion: 1` snapshot of sanitized journal entries (`repositoryId`, `deliveryId`, `kind`, `subject`, `head`, `owner`, `generation`, `expires`, `completed`, `retryAfter`). Optional `repositoryId` scoping exports only one repository's entries while rejecting malformed scope objects, non-positive IDs, getters, and proxies.
+
+`importJournalSnapshot(journal, snapshot)` validates the entire snapshot atomically before applying `BEGIN IMMEDIATE ... COMMIT`:
+- Rejects proxies, accessors, sparse or >10,000-entry arrays, unknown fields, duplicate `(repositoryId, deliveryId)` pairs inside the snapshot, unclaimed entries with owners/leases/completion/deferrals, completed entries with active leases or deferrals, and entries that would exceed the 10,000-entry per-repository cap (`JOURNAL_FULL`).
+- Rejects any incoming entry whose `(kind, subject, head)` conflicts with an existing `(repositoryId, deliveryId)` receipt (`DELIVERY_CONFLICT`), rolling back the transaction with zero partial mutation.
+- Preserves monotonic fencing and completion when replaying into a populated journal: completed receipts never reopen, higher generations advance lower uncompleted claims without regressing newer generations, and `retryAfter` merges monotonically.
+
+## Scoped fresh-read reconciliation (`reconcileJournalOnce` and `reconcileEventTrigger`)
+
+The `reconcileJournalOnce` shadow helper consumes one claim at a time, reads normalized fresh metadata, checks lease time and repository/kind/subject, and completes only the current fenced claim. A freshly observed moved head supersedes the old hint (`SHADOW_HEAD_SUPERSEDED`) without granting any action. Failed or unknown evidence leaves the claim unacknowledged (or durably deferred via `deferUnknown`) for recovery.
+
+`createScopedJournalReader` and `reconcileEventTrigger` in `tools/engineering-factory/event-envelope.mjs` connect trusted GitHub event normalization (`pull`, `issue`, `manual`, `review`, `check`, and `main`) to `event-journal.mjs` using bounded unauthenticated public GitHub REST reads and optional cross-run snapshot import/export. All outputs remain read-only shadow receipts (`evidenceComplete: false`, `liveDispatch: false`, `liveMerge: false`).
