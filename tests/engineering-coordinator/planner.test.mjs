@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {planLanes} from '../../tools/engineering-coordinator/planner.mjs';
+import {diagnosePlan, pathsOverlap, planLanes} from '../../tools/engineering-coordinator/planner.mjs';
 
 const config = () => ({schemaVersion: 1,
   project: {key: 'alpha', repository: 'example/alpha', defaultBranch: 'main'},
@@ -173,4 +173,111 @@ test('fails closed on incomplete or malformed scheduling-policy evidence', () =>
     policy([ready(1), ready(2, -1)]), policy([ready(1), ready(2, 10001)])
   ]) assert.deepEqual(planLanes(config(), tasks, [], supplied),
     {shadow: true, scheduled: [], reason: 'SCHEDULING_POLICY_UNKNOWN'});
+});
+
+test('pathsOverlap enforces relative path validity and directory boundaries', () => {
+  assert.equal(pathsOverlap('src/api', 'src/api'), true);
+  assert.equal(pathsOverlap('src/api', 'src/api/routes.mjs'), true);
+  assert.equal(pathsOverlap('src/api/routes.mjs', 'src/api'), true);
+  assert.equal(pathsOverlap('src/api', 'src/api-v2'), false);
+  for (const invalid of ['', '/src/api', '../src/api', 'src\\api', 'src/./api', null]) {
+    assert.equal(pathsOverlap(invalid, 'src/api'), false);
+    assert.equal(pathsOverlap('src/api', invalid), false);
+  }
+});
+
+test('breaks equal critical-path depth ties by transitive unfinished descendant fan-out including diamond DAGs', () => {
+  const settings = config();
+  settings.limits.maxConcurrentLanes = 1;
+  const tasks = [
+    {...task(1, 'api'), priority: 0},
+    {...task(2, 'web'), priority: 0},
+    task(3, 'api', 'approved', ['src/api/3'], [1]),
+    task(4, 'web', 'approved', ['src/web/4'], [2]),
+    task(5, 'web', 'approved', ['src/web/5'], [2]),
+    task(6, 'api', 'accepted', ['src/api/6'], [1])
+  ];
+  assert.deepEqual(planLanes(settings, tasks).scheduled.map(item => item.id), [2]);
+  assert.deepEqual(planLanes(settings, tasks, [], policy([
+    ready(1), ready(2), ready(3), ready(4), ready(5)
+  ])).scheduled.map(item => item.id), [2]);
+
+  // Diamond DAG: 1 -> (2, 3) -> 4 counts task 4 once (unfinishedDescendants = 3, depth = 2).
+  const diamond = [
+    task(1, 'api'),
+    task(2, 'api', 'approved', ['src/api/2'], [1]),
+    task(3, 'web', 'approved', ['src/web/3'], [1]),
+    task(4, 'web', 'approved', ['src/web/4'], [2, 3])
+  ];
+  const diagnosed = diagnosePlan(config(), diamond);
+  assert.equal(diagnosed.diagnostics.tasks[0].criticalPathDepth, 2);
+  assert.equal(diagnosed.diagnostics.tasks[0].unfinishedDescendants, 3);
+  assert.deepEqual(diagnosed.diagnostics.criticalPath, {maxUnfinishedDepth: 2, maxUnfinishedDescendants: 3});
+});
+
+test('diagnosePlan exposes deterministic critical-path, aging, path-overlap, lane-reservation, and utilization diagnostics', () => {
+  const settings = config();
+  settings.lanes.push(
+    {id: 'docs', owners: ['docs'], prompt: 'agent.md'},
+    {id: 'ops', owners: ['ops'], prompt: 'agent.md'}
+  );
+  settings.limits.maxConcurrentLanes = 2;
+  const inventory = [
+    {...task(1, 'api', 'active', ['src/api/shared']), priority: 0},
+    {...task(2, 'api', 'approved', ['src/api/shared/routes']), priority: 0},
+    {...task(3, 'api', 'approved', ['src/api/independent']), priority: 1},
+    {...task(4, 'web', 'approved', ['src/web/app']), priority: 3},
+    {...task(5, 'docs', 'approved', ['docs/guide']), priority: 4},
+    {...task(6, 'ops', 'approved', ['ops/runbook'], [4, 9]), priority: 1},
+    {...task(7, 'docs', 'approved', ['docs/high-risk']), priority: 0},
+    {...task(8, 'ops', 'blocked', ['ops/blocked']), priority: 0},
+    {...task(9, 'ops', 'accepted', ['ops/done']), priority: 0}
+  ];
+  const schedulePolicy = policy([
+    ready(2, 8000, 'low'),
+    ready(3, 9000, 'low'),
+    ready(4, 7000, 'medium'),
+    ready(5, 9000, 'low'),
+    ready(6, 9000, 'low'),
+    ready(7, 0, 'high')
+  ], 10000);
+
+  const report = diagnosePlan(settings, inventory, [], schedulePolicy);
+  assert.equal(report.reason, 'SHADOW_PLAN');
+  assert.deepEqual(report.scheduled, [{id: 4, lane: 'web', paths: ['src/web/app']}]);
+  assert.deepEqual(report.diagnostics.utilization, {
+    configuredLanes: 4,
+    maxConcurrentLanes: 2,
+    reservedLanes: 1,
+    scheduledLanes: 1,
+    availableLanes: 0
+  });
+  const byTask = new Map(report.diagnostics.tasks.map(row => [row.id, row]));
+  assert.deepEqual(byTask.get(1), {
+    id: 1, lane: 'api', state: 'active', outcome: 'active', reason: 'ACTIVE_RESERVATION',
+    basePriority: 0, effectivePriority: 0, agingBoost: 0, waitMs: null, risk: null,
+    criticalPathDepth: 0, unfinishedDescendants: 0, unacceptedDependencies: [],
+    overlappingPaths: [], conflictingTaskIds: []
+  });
+  assert.equal(byTask.get(2).reason, 'PATH_OVERLAP');
+  assert.deepEqual(byTask.get(2).overlappingPaths, ['src/api/shared/routes']);
+  assert.deepEqual(byTask.get(2).conflictingTaskIds, [1]);
+  assert.equal(byTask.get(3).reason, 'LANE_RESERVED');
+  assert.deepEqual(byTask.get(3).overlappingPaths, []);
+  assert.deepEqual(byTask.get(3).conflictingTaskIds, [1]);
+  assert.equal(byTask.get(4).reason, 'SCHEDULED');
+  assert.equal(byTask.get(4).effectivePriority, 0);
+  assert.equal(byTask.get(4).agingBoost, 3);
+  assert.equal(byTask.get(4).waitMs, 3000);
+  assert.equal(byTask.get(4).risk, 'medium');
+  assert.equal(byTask.get(5).reason, 'CAPACITY_FULL');
+  assert.equal(byTask.get(6).reason, 'DEPENDENCY_UNACCEPTED');
+  assert.deepEqual(byTask.get(6).unacceptedDependencies, [4]);
+  assert.equal(byTask.get(7).reason, 'RISK_ABOVE_CEILING');
+  assert.equal(byTask.get(8).reason, 'TASK_BLOCKED');
+  assert.equal(byTask.get(9).reason, 'ALREADY_ACCEPTED');
+
+  assert.deepEqual(diagnosePlan({}, []), {
+    shadow: true, scheduled: [], reason: 'INVALID_PROJECT_CONFIG', diagnostics: null
+  });
 });

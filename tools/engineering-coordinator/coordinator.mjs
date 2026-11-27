@@ -1,20 +1,28 @@
 import {planLanes} from './planner.mjs';
 
 const failed = reason => ({shadow: true, completed: [], reason});
+const maxExecutionCeilingMs = 10800000;
 
-export async function runTick({config, tasks, active = [], store, tracker, agent, workerId, now, clock}) {
+export async function runTick({
+  config, tasks, active = [], store, tracker, agent, workerId, now, clock, maxExecutionMs, policy
+}) {
   if (!config || config.execution?.enabled !== true || config.execution.stop !== false ||
       config.execution.mode !== 'shadow') return failed('STOPPED');
   if (!store || typeof store.claim !== 'function' || typeof store.checkpoint !== 'function' ||
       typeof store.renew !== 'function' || typeof store.release !== 'function' ||
       typeof store.observeReserved !== 'function' || !tracker || typeof tracker.readTask !== 'function' ||
       !agent || typeof agent.inspect !== 'function' || typeof workerId !== 'string' ||
-      !Number.isSafeInteger(now) || now < 0 || typeof clock !== 'function') return failed('INVALID_RUNTIME');
-  const plan = planLanes(config, tasks, active);
+      !Number.isSafeInteger(now) || now < 0 || typeof clock !== 'function' ||
+      (maxExecutionMs !== undefined && (!Number.isSafeInteger(maxExecutionMs) ||
+        maxExecutionMs < 1 || maxExecutionMs > maxExecutionCeilingMs))) return failed('INVALID_RUNTIME');
+  const plan = planLanes(config, tasks, active, policy);
   if (plan.reason === 'INVALID_PROJECT_CONFIG' || plan.reason === 'INVALID_INVENTORY' ||
       plan.reason === 'INVALID_TASK' || plan.reason === 'DEPENDENCY_UNKNOWN' ||
-      plan.reason === 'DEPENDENCY_CYCLE' || plan.reason === 'INVALID_ACTIVE_LANE' ||
-      plan.reason === 'ACTIVE_PATH_CONFLICT') return failed(plan.reason);
+      plan.reason === 'SCHEDULING_POLICY_UNKNOWN' || plan.reason === 'DEPENDENCY_CYCLE' ||
+      plan.reason === 'INVALID_ACTIVE_LANE' || plan.reason === 'ACTIVE_PATH_CONFLICT') return failed(plan.reason);
+  const executionBudgetMs = maxExecutionMs ?? config.limits.leaseMs * 3;
+  if (!Number.isSafeInteger(now + executionBudgetMs)) return failed('INVALID_RUNTIME');
+  const executionDeadline = now + executionBudgetMs;
   const byId = new Map(tasks.map(task => [task.id, task]));
   const reserved = [...new Set([...active.map(item => item.lane),
     ...tasks.filter(task => task.state === 'active').map(task => task.lane)])];
@@ -40,6 +48,7 @@ export async function runTick({config, tasks, active = [], store, tracker, agent
       try { currentTime = clock(); } catch { return {reason: 'CLOCK_UNAVAILABLE'}; }
       if (!Number.isSafeInteger(currentTime) || currentTime < lastObservedTime) return {reason: 'CLOCK_UNAVAILABLE'};
       lastObservedTime = currentTime;
+      if (currentTime >= executionDeadline) return {reason: 'EXECUTION_TIMEOUT'};
       try {
         const renewed = store.renew(item.lane, claim.generation, workerId, currentTime, config.limits.leaseMs,
           workKey, claim.workGeneration);
@@ -58,18 +67,32 @@ export async function runTick({config, tasks, active = [], store, tracker, agent
       if (beforeInspection.reason)
         return {lane: item.lane, taskId: item.id, state: 'blocked', reason: beforeInspection.reason};
       const cancellation = new AbortController();
+      const remainingMs = executionDeadline - beforeInspection.time;
+      const baseIntervalMs = Math.floor(config.limits.leaseMs / 3);
+      let stepMs = Math.min(baseIntervalMs, remainingMs);
+      let elapsedHeartbeatMs = 0;
       let heartbeat;
-      const leaseFailure = new Promise(resolve => {
+      const scheduleHeartbeat = resolve => {
         heartbeat = setInterval(() => {
-          const renewed = renewLease();
+          elapsedHeartbeatMs += stepMs;
+          const renewed = elapsedHeartbeatMs >= remainingMs ? {reason: 'EXECUTION_TIMEOUT'} : renewLease();
           if (renewed.reason) {
             clearInterval(heartbeat);
             releaseClaim = false;
             resolve(renewed);
             cancellation.abort();
+            return;
           }
-        }, Math.floor(config.limits.leaseMs / 3));
-      });
+          const nextStepMs = Math.min(baseIntervalMs, remainingMs - elapsedHeartbeatMs,
+            executionDeadline - renewed.time);
+          if (nextStepMs < stepMs) {
+            clearInterval(heartbeat);
+            stepMs = nextStepMs;
+            scheduleHeartbeat(resolve);
+          }
+        }, stepMs);
+      };
+      const leaseFailure = new Promise(scheduleHeartbeat);
       let inspection;
       try {
         inspection = await Promise.race([
