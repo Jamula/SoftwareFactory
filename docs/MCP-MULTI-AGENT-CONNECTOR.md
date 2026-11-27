@@ -20,7 +20,7 @@ This document defines SoftwareFactory's versioned, read-only, deterministic **MC
 
 ## JSON-RPC `2.0` MCP Protocol Surface
 
-`handleMcpConnectorRequest(rawOrObject, context)` handles standard JSON-RPC `2.0` envelopes, optional validated `_meta` request metadata (`initialize`, `ping`, `tools/list`, `tools/call`, and notifications), and notifications (`id === undefined` returns `null`):
+`handleMcpConnectorRequest(rawOrObject, context)` handles standard JSON-RPC `2.0` envelopes, optional validated `_meta` request metadata (`initialize`, `ping`, `tools/list`, and `tools/call`), and notifications (`id === undefined` always returns `null` without unsolicited error responses, even when notification `params` are invalid):
 
 | Method | Purpose | Response Contract |
 | --- | --- | --- |
@@ -41,7 +41,7 @@ This document defines SoftwareFactory's versioned, read-only, deterministic **MC
    - Stamps `externalMergeAuthorityOnly: true`, `liveMerge: false`, and `allowDirectMergeOrPolicyWrite: false` on every response.
 3. **`get_bounded_work_item_context`**:
    - Validates W3C Trace Context `traceparent` (`00-<32 lowercase hex>-<16 lowercase hex>-<2 lowercase hex>`, rejecting all-zero `traceId` or `parentId` with `INVALID_TRACEPARENT`).
-   - Rejects (`secretHandling: "reject"`, default) or redacts (`secretHandling: "strip"`) secret-like tokens (`ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`, `github_pat_`, `sk-`, `sk-ant-`, and case-insensitive HTTP `Bearer ` schemes such as `Bearer`, `BEARER`, `bEaReR`) without false-positiving hyphenated English terms such as `task-1` or `risk-class`.
+   - Rejects (`secretHandling: "reject"`, default) or redacts (`secretHandling: "strip"`) secret-like tokens (`ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`, `github_pat_`, `sk-`, `sk-ant-`, and case-insensitive HTTP `Bearer ` schemes such as `Bearer`, `BEARER`, `bEaReR`) in text fields without false-positiving hyphenated English terms such as `task-1` or `risk-class`, and unconditionally rejects secret-bearing `ownedPaths` or `additionalForbiddenPaths` in both `"reject"` and `"strip"` modes (`SECRET_TOKEN_REJECTED`).
    - Rejects any `ownedPaths` overlapping `FORBIDDEN_CONTROL_PLANE_PATHS` or `.lock.yml` (`FORBIDDEN_CONTROL_PLANE_PATH`), returning bounded `{ ownedPaths, forbiddenControlPlanePaths, maxRepairIterations }`.
 4. **`validate_provider_isolation`**:
    - Executes `validateMultiAgentConnectorConfig(arguments)` for `github-copilot`, `openai-codex`, or `anthropic-claude` adapters.

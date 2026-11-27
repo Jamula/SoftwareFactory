@@ -563,12 +563,13 @@ test('handleMcpConnectorRequest enforces byte bounds, JSON-RPC 2.0 envelopes, no
     method: 'notifications/cancelled',
     params: { _meta: { progressToken: 'tok-notify', count: 1 } }
   }), null);
-  assert.equal(handleMcpConnectorRequest({ jsonrpc: '2.0', method: 'notifications/initialized', params: [] }).error.code, -32600);
+  assert.equal(handleMcpConnectorRequest({ jsonrpc: '2.0', method: 'notifications/initialized', params: [] }), null);
+  assert.equal(handleMcpConnectorRequest('{"jsonrpc":"2.0","method":"notifications/initialized","params":[]}'), null);
   assert.equal(handleMcpConnectorRequest({
     jsonrpc: '2.0',
     method: 'notifications/initialized',
     params: { _meta: 'invalid' }
-  }).error.code, -32600);
+  }), null);
 
   assert.equal(handleMcpConnectorRequest({ jsonrpc: '2.0', id: 2, method: 'ping', params: [] }).error.code, -32602);
   for (const invalidCtx of [
@@ -1393,6 +1394,40 @@ test('tools/call get_bounded_work_item_context validates W3C traceparent, secret
   );
   for (const leaked of ['secretJwtValue', 'topSecretHeader', 'oauthSecret1', 'userSecret2', 'refreshSecret3']) {
     assert.equal(JSON.stringify(strippedRes).includes(leaked), false);
+  }
+
+  for (const secretHandling of ['reject', 'strip']) {
+    for (const secretPathArgs of [
+      {
+        ownedPaths: ['docs/ghp_SyntheticConnectorCanary1234567890'],
+        secretHandling
+      },
+      {
+        ownedPaths: ['docs/MCP-MULTI-AGENT-CONNECTOR.md'],
+        additionalForbiddenPaths: ['config/sk-ant-SyntheticCanary987654321'],
+        secretHandling
+      }
+    ]) {
+      const secretPathRes = handleMcpConnectorRequest({
+        jsonrpc: '2.0',
+        id: `wi-sec-path-${secretHandling}`,
+        method: 'tools/call',
+        params: {
+          name: 'get_bounded_work_item_context',
+          arguments: {
+            repositoryId: FACTORY_REPO_ID,
+            issueNumber: 136,
+            traceparent: VALID_TRACEPARENT,
+            summary: 'Clean summary',
+            ...secretPathArgs
+          }
+        }
+      });
+      assert.equal(secretPathRes.result.isError, true);
+      assert.equal(secretPathRes.result.structuredContent.reason, 'SECRET_TOKEN_REJECTED');
+      assert.equal(JSON.stringify(secretPathRes).includes('SyntheticConnectorCanary1234567890'), false);
+      assert.equal(JSON.stringify(secretPathRes).includes('SyntheticCanary987654321'), false);
+    }
   }
 
   for (const forbiddenOwned of [

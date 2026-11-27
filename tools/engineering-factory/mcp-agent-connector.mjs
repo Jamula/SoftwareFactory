@@ -1043,6 +1043,9 @@ function handleGetBoundedWorkItemContext(args, context) {
   if (!isDenseArray(extraForbidden, 32) || !extraForbidden.every(isRepoPath)) {
     return deniedWorkItem('INVALID_WORK_ITEM_ARGUMENTS');
   }
+  if (args.ownedPaths.some(containsSecretToken) || extraForbidden.some(containsSecretToken)) {
+    return deniedWorkItem('SECRET_TOKEN_REJECTED');
+  }
 
   if (context.authorizedRepositories !== undefined) {
     const auth = parseAuthorizedRepositories(context.authorizedRepositories);
@@ -1164,10 +1167,7 @@ export function handleMcpConnectorRequest(rawOrObject, context = {}) {
   }
 
   if (!hasId) {
-    return envelope.params === undefined ||
-      (isPlainObject(envelope.params) && isValidMcpMeta(envelope.params._meta))
-      ? null
-      : jsonRpcError(null, -32600, 'INVALID_REQUEST', 'INVALID_NOTIFICATION_PARAMS');
+    return null;
   }
 
   if (envelope.params !== undefined && !isPlainObject(envelope.params)) {
