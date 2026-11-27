@@ -9,7 +9,7 @@ This document defines SoftwareFactory's versioned, read-only, deterministic **MC
 ## Architectural Boundaries
 
 1. **External deterministic merge authority (`externalMergeAuthorityOnly: true`):**
-   - No AI model, MCP tool, `.NET` `AIAgent`, Codex action, or Claude session can merge a pull request, issue a synthetic approval, or edit protected control-plane files (`FORBIDDEN_CONTROL_PLANE_PATHS`, including `.github/workflows`, `.lock.yml`, `.github/rulesets`, `config/policy`, `core.mjs`, `protected-squash.mjs`, `coverage-evidence.mjs`, and `platform-merge-gates.mjs`).
+   - No AI model, MCP tool, `.NET` `AIAgent`, Codex action, or Claude session can merge a pull request, issue a synthetic approval, or edit protected control-plane files (`FORBIDDEN_CONTROL_PLANE_PATHS`, including `.github/workflows`, `.lock.yml`, `.github/rulesets`, `.github/softwarefactory-policy.json`, `config/policy`, `core.mjs`, `protected-squash.mjs`, `coverage-evidence.mjs`, `platform-merge-gates.mjs`, `review-history.mjs`, `review-batch.mjs`, `budget.mjs`, and `mcp-agent-connector.mjs`).
    - All merge-eligibility decisions remain outside every agent loop in `tools/engineering-factory/core.mjs` (`evaluate`) and `tools/engineering-factory/protected-squash.mjs` (`guardedSquashEvidence`) feeding **GitHub Native Squash Merge Queue**.
 2. **Read-only stateless JSON-RPC `2.0` surface:**
    - Payloads are capped at `65,536` UTF-8 bytes (`MAX_MCP_REQUEST_BYTES`), rejecting oversized envelopes (`-32600`) and malformed JSON (`-32700`) before evaluation.
@@ -20,7 +20,7 @@ This document defines SoftwareFactory's versioned, read-only, deterministic **MC
 
 ## JSON-RPC `2.0` MCP Protocol Surface
 
-`handleMcpConnectorRequest(rawOrObject, context)` handles standard JSON-RPC `2.0` envelopes and notifications (`id === undefined` returns `null`):
+`handleMcpConnectorRequest(rawOrObject, context)` handles standard JSON-RPC `2.0` envelopes, optional validated `_meta` request metadata (`initialize`, `ping`, `tools/list`, `tools/call`, and notifications), and notifications (`id === undefined` returns `null`):
 
 | Method | Purpose | Response Contract |
 | --- | --- | --- |
@@ -32,16 +32,16 @@ This document defines SoftwareFactory's versioned, read-only, deterministic **MC
 ### Read-Only Tools (`tools/call`)
 
 1. **`get_repo_knowledge_map`**:
-   - Validates `repositoryId` (and optional `repository` / `revision`) against `context.authorizedRepositories`. Cross-repository queries, missing authorization contexts, or `Jamula/SoftwareFactory` repository-ID mismatches (`1471342715`) fail closed (`UNAUTHORIZED_REPOSITORY`, `CROSS_REPO_ACCESS_DENIED`, `REPOSITORY_IDENTITY_MISMATCH`).
+   - Validates `repositoryId` (and optional `repository` / `revision`) against `context.authorizedRepositories`. Cross-repository queries, missing authorization contexts, `defaultBranch` conflicts between enrollment and `projectConfig` (`BRANCH_METADATA_CONFLICT`), or `Jamula/SoftwareFactory` repository-ID mismatches (`1471342715`) fail closed (`UNAUTHORIZED_REPOSITORY`, `CROSS_REPO_ACCESS_DENIED`, `REPOSITORY_IDENTITY_MISMATCH`).
    - Requires an explicit safe-integer freshness clock from `args.nowMs` or `context.nowMs` (never substituting `generatedAtMs`), failing closed with `FRESHNESS_TIMESTAMP_REQUIRED` if omitted or `CLOCK_MISMATCH` if caller and trusted context disagree.
    - Enforces `98%` line / `95%` branch coverage floors on `Jamula/SoftwareFactory` and `95%` line / `90%` branch (or stricter consumer policy, such as `97%/92%`) on enrolled consumers (`COVERAGE_FLOOR_VIOLATION` on any attempt to lower floors).
-   - Returns sanitized lane ownership, component boundaries (via `softwareFactoryCatalog` or `validateProjectConfig` + `validateKnowledgeMap`), and immutable `architectureInvariants`.
+   - Returns sanitized lane ownership, component boundaries (via `softwareFactoryCatalog` with `tests/engineering-factory/mcp-agent-connector.test.mjs` included in the test inventory, or `validateProjectConfig` + `validateKnowledgeMap`), and immutable `architectureInvariants`.
 2. **`evaluate_gate_status`**:
    - Enforces the enrolled repository's `coverageThresholds` (including stricter consumer gates such as `97%/92%`, plus `98%/95%` on `Jamula/SoftwareFactory` and `95%/90%` baseline) against `args.policy` (`mode: "candidate"`) and `args.evidence.policy` (`mode: "protected-squash"`) before delegating to `evaluate` (`core.mjs`) or `guardedSquashEvidence` (`protected-squash.mjs`).
    - Stamps `externalMergeAuthorityOnly: true`, `liveMerge: false`, and `allowDirectMergeOrPolicyWrite: false` on every response.
 3. **`get_bounded_work_item_context`**:
    - Validates W3C Trace Context `traceparent` (`00-<32 lowercase hex>-<16 lowercase hex>-<2 lowercase hex>`, rejecting all-zero `traceId` or `parentId` with `INVALID_TRACEPARENT`).
-   - Rejects (`secretHandling: "reject"`, default) or redacts (`secretHandling: "strip"`) secret-like tokens (`ghp_`, `ghs_`, `github_pat_`, `sk-`, `sk-ant-`, and case-insensitive HTTP `Bearer ` schemes such as `Bearer`, `BEARER`, `bEaReR`) without false-positiving hyphenated English terms such as `task-1` or `risk-class`.
+   - Rejects (`secretHandling: "reject"`, default) or redacts (`secretHandling: "strip"`) secret-like tokens (`ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`, `github_pat_`, `sk-`, `sk-ant-`, and case-insensitive HTTP `Bearer ` schemes such as `Bearer`, `BEARER`, `bEaReR`) without false-positiving hyphenated English terms such as `task-1` or `risk-class`.
    - Rejects any `ownedPaths` overlapping `FORBIDDEN_CONTROL_PLANE_PATHS` or `.lock.yml` (`FORBIDDEN_CONTROL_PLANE_PATH`), returning bounded `{ ownedPaths, forbiddenControlPlanePaths, maxRepairIterations }`.
 4. **`validate_provider_isolation`**:
    - Executes `validateMultiAgentConnectorConfig(arguments)` for `github-copilot`, `openai-codex`, or `anthropic-claude` adapters.

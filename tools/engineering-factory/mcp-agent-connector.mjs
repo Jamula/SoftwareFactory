@@ -6,7 +6,10 @@ import {
   validateKnowledgeMap,
   validateProjectConfig
 } from '../engineering-coordinator/project-config.mjs';
-import { softwareFactoryCatalog } from './contract-routing.mjs';
+import {
+  defaultSoftwareFactoryTestInventory,
+  softwareFactoryCatalog
+} from './contract-routing.mjs';
 import { evaluate as evaluateCandidate } from './core.mjs';
 import {
   DEFAULT_FACTORY_SCOPE,
@@ -51,12 +54,19 @@ export const CONNECTOR_ROLES = Object.freeze([
 export const FORBIDDEN_CONTROL_PLANE_PATHS = Object.freeze([
   '.github/workflows',
   '.github/rulesets',
+  '.github/softwarefactory-policy.json',
   'config/policy',
   'tools/engineering-factory/core.mjs',
   'tools/engineering-factory/protected-squash.mjs',
   'tools/engineering-factory/coverage-evidence.mjs',
-  'tools/engineering-factory/platform-merge-gates.mjs'
+  'tools/engineering-factory/platform-merge-gates.mjs',
+  'tools/engineering-factory/review-history.mjs',
+  'tools/engineering-factory/review-batch.mjs',
+  'tools/engineering-factory/budget.mjs',
+  'tools/engineering-factory/mcp-agent-connector.mjs'
 ]);
+
+const MCP_CONNECTOR_TEST_SUITE = 'tests/engineering-factory/mcp-agent-connector.test.mjs';
 
 const READ_ONLY_TOOL_ANNOTATIONS = Object.freeze({
   readOnlyHint: true,
@@ -76,7 +86,12 @@ export const MCP_CONNECTOR_TOOLS = Object.freeze([
         repositoryId: Object.freeze({ type: 'integer', minimum: 1 }),
         repository: Object.freeze({ type: 'string', minLength: 3, maxLength: 160 }),
         revision: Object.freeze({ type: 'string', pattern: '^[0-9a-f]{40}$' }),
-        nowMs: Object.freeze({ type: 'integer', minimum: 0 })
+        nowMs: Object.freeze({ type: 'integer', minimum: 0 }),
+        testInventory: Object.freeze({
+          type: 'array',
+          maxItems: 120,
+          items: Object.freeze({ type: 'string', minLength: 1, maxLength: 240 })
+        })
       })
     }),
     annotations: READ_ONLY_TOOL_ANNOTATIONS
@@ -202,7 +217,7 @@ const ALLOWED_CONTEXT_KEYS = new Set(['authorizedRepositories', 'killSwitch', 's
 const ZERO_TRACE_ID = '0'.repeat(32);
 const ZERO_PARENT_ID = '0'.repeat(16);
 const SECRET_TOKEN_PATTERN =
-  /(?<![A-Za-z0-9])(?:ghp_[A-Za-z0-9_]*|ghs_[A-Za-z0-9_]*|github_pat_[A-Za-z0-9_]*|sk-ant-[A-Za-z0-9_-]*|sk-[A-Za-z0-9_-]*|[Bb][Ee][Aa][Rr][Ee][Rr][ \t]+\S*)/g;
+  /(?<![A-Za-z0-9])(?:gh[pousr]_[A-Za-z0-9_]*|github_pat_[A-Za-z0-9_]*|sk-ant-[A-Za-z0-9_-]*|sk-[A-Za-z0-9_-]*|[Bb][Ee][Aa][Rr][Ee][Rr][ \t]+\S*)/g;
 
 const ownData = (obj, key) => {
   const desc = Object.getOwnPropertyDescriptor(obj, key);
@@ -311,6 +326,37 @@ const stripSecretTokens = text => {
     return '[REDACTED]';
   });
   return { sanitized, stripped };
+};
+
+const containsSecretInValue = value => {
+  if (typeof value === 'string') {
+    return containsSecretToken(value);
+  }
+  if (Array.isArray(value)) {
+    return value.some(containsSecretInValue);
+  }
+  if (value !== null && typeof value === 'object') {
+    return Object.keys(value).some(key => containsSecretInValue(value[key]));
+  }
+  return false;
+};
+
+const isValidMcpMeta = meta => {
+  if (meta === undefined) {
+    return true;
+  }
+  if (!isPlainObject(meta) || Object.keys(meta).length > 32 || containsSecretInValue(meta)) {
+    return false;
+  }
+  if (meta.progressToken !== undefined &&
+      !Number.isSafeInteger(meta.progressToken) &&
+      !(typeof meta.progressToken === 'string' &&
+        meta.progressToken.length > 0 &&
+        meta.progressToken.length <= 128 &&
+        !/[\u0000-\u001f\u007f]/.test(meta.progressToken))) {
+    return false;
+  }
+  return true;
 };
 
 const configDenied = reason => Object.freeze({
@@ -637,12 +683,15 @@ function parseAuthorizedRepositories(authorizedRepositories) {
   return { ok: true, byId };
 }
 
-function buildSanitizedKnowledgeMap(entry, revision, nowMs) {
+function buildSanitizedKnowledgeMap(entry, revision, nowMs, requestedTestInventory) {
   if (entry.projectConfig !== undefined) {
     if (!validateProjectConfig(entry.projectConfig) ||
         entry.projectConfig.project.repository !== entry.repository ||
         entry.projectConfig.knowledgeMap === undefined) {
       return { ok: false, reason: 'INVALID_PROJECT_CONFIG' };
+    }
+    if (entry.projectConfig.project.defaultBranch !== entry.defaultBranch) {
+      return { ok: false, reason: 'BRANCH_METADATA_CONFLICT' };
     }
     const check = validateKnowledgeMap(entry.projectConfig.knowledgeMap, {
       repository: entry.repository,
@@ -672,7 +721,22 @@ function buildSanitizedKnowledgeMap(entry, revision, nowMs) {
   }
 
   if (entry.repositoryId === DEFAULT_FACTORY_SCOPE.repositoryId) {
-    const catalog = softwareFactoryCatalog(revision);
+    let effectiveInventory;
+    if (requestedTestInventory !== undefined) {
+      if (!requestedTestInventory.includes(MCP_CONNECTOR_TEST_SUITE)) {
+        return { ok: false, reason: 'TEST_INVENTORY_UNALIGNED' };
+      }
+      effectiveInventory = requestedTestInventory;
+    } else {
+      effectiveInventory = [...new Set([
+        ...defaultSoftwareFactoryTestInventory(),
+        MCP_CONNECTOR_TEST_SUITE
+      ])];
+    }
+    const catalog = softwareFactoryCatalog(revision, effectiveInventory);
+    if (catalog.state === 'blocked') {
+      return { ok: false, reason: catalog.reason };
+    }
     const laneMap = new Map();
     for (const comp of catalog.components) {
       if (!laneMap.has(comp.owner)) {
@@ -718,11 +782,14 @@ function buildSanitizedKnowledgeMap(entry, revision, nowMs) {
 }
 
 function handleGetRepoKnowledgeMap(args, context) {
-  if (!hasAllowedKeys(args, ['repositoryId'], ['repository', 'revision', 'nowMs']) ||
+  if (!hasAllowedKeys(args, ['repositoryId'], ['repository', 'revision', 'nowMs', 'testInventory']) ||
       !isPositiveInt(args.repositoryId) ||
       (args.repository !== undefined && !isRepoName(args.repository)) ||
       (args.revision !== undefined && !isSha40(args.revision)) ||
-      (args.nowMs !== undefined && !isNonNegativeInt(args.nowMs))) {
+      (args.nowMs !== undefined && !isNonNegativeInt(args.nowMs)) ||
+      (args.testInventory !== undefined &&
+        (!isDenseArray(args.testInventory, 120) ||
+         !args.testInventory.every(item => typeof item === 'string')))) {
     return toolCallOutcome({
       shadow: true,
       readOnly: true,
@@ -790,7 +857,7 @@ function handleGetRepoKnowledgeMap(args, context) {
       reason: 'REVISION_REQUIRED'
     }, true);
   }
-  const mapped = buildSanitizedKnowledgeMap(entry, revision, effectiveNowMs);
+  const mapped = buildSanitizedKnowledgeMap(entry, revision, effectiveNowMs, args.testInventory);
   if (!mapped.ok) {
     return toolCallOutcome({
       shadow: true,
@@ -1097,13 +1164,17 @@ export function handleMcpConnectorRequest(rawOrObject, context = {}) {
   }
 
   if (!hasId) {
-    return envelope.params === undefined || isPlainObject(envelope.params)
+    return envelope.params === undefined ||
+      (isPlainObject(envelope.params) && isValidMcpMeta(envelope.params._meta))
       ? null
       : jsonRpcError(null, -32600, 'INVALID_REQUEST', 'INVALID_NOTIFICATION_PARAMS');
   }
 
   if (envelope.params !== undefined && !isPlainObject(envelope.params)) {
     return jsonRpcError(responseId, -32602, 'INVALID_PARAMS', 'PARAMS_MUST_BE_OBJECT');
+  }
+  if (envelope.params !== undefined && !isValidMcpMeta(envelope.params._meta)) {
+    return jsonRpcError(responseId, -32602, 'INVALID_PARAMS', 'INVALID_MCP_META');
   }
 
   if (!isPlainObject(context) ||
@@ -1117,7 +1188,7 @@ export function handleMcpConnectorRequest(rawOrObject, context = {}) {
 
   if (envelope.method === 'initialize') {
     if (envelope.params !== undefined &&
-        (!hasAllowedKeys(envelope.params, [], ['protocolVersion', 'capabilities', 'clientInfo']) ||
+        (!hasAllowedKeys(envelope.params, [], ['_meta', 'protocolVersion', 'capabilities', 'clientInfo']) ||
          (envelope.params.protocolVersion !== undefined &&
           (typeof envelope.params.protocolVersion !== 'string' ||
            envelope.params.protocolVersion.length === 0 ||
@@ -1137,14 +1208,17 @@ export function handleMcpConnectorRequest(rawOrObject, context = {}) {
   }
 
   if (envelope.method === 'ping') {
-    if (envelope.params !== undefined && Object.keys(envelope.params).length > 0) {
+    if (envelope.params !== undefined && !hasAllowedKeys(envelope.params, [], ['_meta'])) {
       return jsonRpcError(responseId, -32602, 'INVALID_PARAMS', 'INVALID_PING_PARAMS');
     }
     return jsonRpcResult(responseId, Object.freeze({}));
   }
 
   if (envelope.method === 'tools/list') {
-    if (envelope.params !== undefined && !hasAllowedKeys(envelope.params, [], ['cursor'])) {
+    if (envelope.params !== undefined &&
+        (!hasAllowedKeys(envelope.params, [], ['_meta', 'cursor']) ||
+         (envelope.params.cursor !== undefined &&
+          (typeof envelope.params.cursor !== 'string' || envelope.params.cursor.length > 256)))) {
       return jsonRpcError(responseId, -32602, 'INVALID_PARAMS', 'INVALID_TOOLS_LIST_PARAMS');
     }
     return jsonRpcResult(responseId, Object.freeze({

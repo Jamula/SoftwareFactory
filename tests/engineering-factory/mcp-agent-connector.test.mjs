@@ -2,6 +2,9 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import test from 'node:test';
 import {
+  defaultSoftwareFactoryTestInventory
+} from '../../tools/engineering-factory/contract-routing.mjs';
+import {
   CONNECTOR_PROTOCOL_VERSION,
   CONNECTOR_ROLES,
   FORBIDDEN_CONTROL_PLANE_PATHS,
@@ -554,8 +557,18 @@ test('handleMcpConnectorRequest enforces byte bounds, JSON-RPC 2.0 envelopes, no
   }
 
   assert.equal(handleMcpConnectorRequest({ jsonrpc: '2.0', method: 'notifications/initialized' }), null);
-  assert.equal(handleMcpConnectorRequest({ jsonrpc: '2.0', id: undefined, method: 'notifications/cancelled', params: {} }), null);
+  assert.equal(handleMcpConnectorRequest({
+    jsonrpc: '2.0',
+    id: undefined,
+    method: 'notifications/cancelled',
+    params: { _meta: { progressToken: 'tok-notify', count: 1 } }
+  }), null);
   assert.equal(handleMcpConnectorRequest({ jsonrpc: '2.0', method: 'notifications/initialized', params: [] }).error.code, -32600);
+  assert.equal(handleMcpConnectorRequest({
+    jsonrpc: '2.0',
+    method: 'notifications/initialized',
+    params: { _meta: 'invalid' }
+  }).error.code, -32600);
 
   assert.equal(handleMcpConnectorRequest({ jsonrpc: '2.0', id: 2, method: 'ping', params: [] }).error.code, -32602);
   for (const invalidCtx of [
@@ -579,7 +592,12 @@ test('handleMcpConnectorRequest enforces byte bounds, JSON-RPC 2.0 envelopes, no
     jsonrpc: '2.0',
     id: 'init-1',
     method: 'initialize',
-    params: { protocolVersion: MCP_PROTOCOL_VERSION, capabilities: {}, clientInfo: { name: 'dotnet-maf', version: '1.28.0' } }
+    params: {
+      _meta: { progressToken: 'tok-1', traceFlag: true },
+      protocolVersion: MCP_PROTOCOL_VERSION,
+      capabilities: {},
+      clientInfo: { name: 'dotnet-maf', version: '1.28.0' }
+    }
   });
   const initRes = handleMcpConnectorRequest(initRaw);
   assert.deepEqual(initRes, {
@@ -599,14 +617,34 @@ test('handleMcpConnectorRequest enforces byte bounds, JSON-RPC 2.0 envelopes, no
     params: { protocolVersion: '' }
   }).error.code, -32602);
 
-  assert.deepEqual(handleMcpConnectorRequest({ jsonrpc: '2.0', id: 4, method: 'ping', params: {} }), {
+  assert.deepEqual(handleMcpConnectorRequest({
+    jsonrpc: '2.0',
+    id: 4,
+    method: 'ping',
+    params: { _meta: { progressToken: 'tok-1' } }
+  }), {
     jsonrpc: '2.0',
     id: 4,
     result: {}
   });
+  assert.deepEqual(handleMcpConnectorRequest({
+    jsonrpc: '2.0',
+    id: 40,
+    method: 'ping',
+    params: { _meta: { progressToken: 42 } }
+  }), {
+    jsonrpc: '2.0',
+    id: 40,
+    result: {}
+  });
   assert.equal(handleMcpConnectorRequest({ jsonrpc: '2.0', id: 4, method: 'ping', params: { a: 1 } }).error.code, -32602);
 
-  const listRes = handleMcpConnectorRequest({ jsonrpc: '2.0', id: 5, method: 'tools/list', params: {} });
+  const listRes = handleMcpConnectorRequest({
+    jsonrpc: '2.0',
+    id: 5,
+    method: 'tools/list',
+    params: { _meta: { progressToken: 'tok-1' }, cursor: 'page-1' }
+  });
   assert.equal(listRes.result.tools.length, 4);
   assert.equal(handleMcpConnectorRequest({
     jsonrpc: '2.0',
@@ -614,6 +652,29 @@ test('handleMcpConnectorRequest enforces byte bounds, JSON-RPC 2.0 envelopes, no
     method: 'tools/list',
     params: { bad: 1 }
   }).error.code, -32602);
+  assert.equal(handleMcpConnectorRequest({
+    jsonrpc: '2.0',
+    id: 5,
+    method: 'tools/list',
+    params: { cursor: 123 }
+  }).error.code, -32602);
+
+  for (const badMeta of [
+    [],
+    { progressToken: '' },
+    { progressToken: 1.5 },
+    { nestedArr: ['gho_secretInMetaArray'] },
+    { nestedObj: { token: 'ghu_secretInMetaObj' } }
+  ]) {
+    const metaErr = handleMcpConnectorRequest({
+      jsonrpc: '2.0',
+      id: 'meta-bad',
+      method: 'ping',
+      params: { _meta: badMeta }
+    });
+    assert.equal(metaErr.error.code, -32602);
+    assert.equal(metaErr.error.data.reason, 'INVALID_MCP_META');
+  }
 
   assert.equal(handleMcpConnectorRequest({ jsonrpc: '2.0', id: 6, method: 'resources/write' }).error.code, -32601);
   assert.equal(handleMcpConnectorRequest({ jsonrpc: '2.0', id: 7, method: 'tools/call', params: { name: 123 } }).error.code, -32602);
@@ -656,7 +717,72 @@ test('tools/call get_repo_knowledge_map enforces authorizedRepositories, explici
   assert.equal(sfMap.architectureInvariants.externalMergeAuthorityOnly, true);
   assert.equal(sfMap.architectureInvariants.allowDirectMergeOrPolicyWrite, false);
   assert.ok(sfMap.lanes.some(lane => lane.id === 'factory-lane'));
-  assert.ok(sfMap.components.some(comp => comp.id === 'engineering-factory'));
+  const sfFactoryComp = sfMap.components.find(comp => comp.id === 'engineering-factory');
+  assert.ok(sfFactoryComp);
+  assert.ok(sfFactoryComp.tests.includes('tests/engineering-factory/mcp-agent-connector.test.mjs'));
+
+  const explicitInventory = [
+    ...new Set([
+      ...defaultSoftwareFactoryTestInventory(),
+      'tests/engineering-factory/mcp-agent-connector.test.mjs'
+    ])
+  ];
+  const sfExplicitInvRes = handleMcpConnectorRequest({
+    jsonrpc: '2.0',
+    id: 'km-sf-inv-ok',
+    method: 'tools/call',
+    params: {
+      name: 'get_repo_knowledge_map',
+      arguments: {
+        repositoryId: FACTORY_REPO_ID,
+        nowMs: NOW_MS,
+        testInventory: explicitInventory
+      }
+    }
+  }, authorizedContext());
+  assert.equal(sfExplicitInvRes.result.isError, false);
+
+  assert.equal(handleMcpConnectorRequest({
+    jsonrpc: '2.0',
+    id: 'km-sf-inv-missing-connector',
+    method: 'tools/call',
+    params: {
+      name: 'get_repo_knowledge_map',
+      arguments: {
+        repositoryId: FACTORY_REPO_ID,
+        nowMs: NOW_MS,
+        testInventory: defaultSoftwareFactoryTestInventory()
+      }
+    }
+  }, authorizedContext()).result.structuredContent.reason, 'TEST_INVENTORY_UNALIGNED');
+
+  assert.equal(handleMcpConnectorRequest({
+    jsonrpc: '2.0',
+    id: 'km-sf-inv-missing-baseline',
+    method: 'tools/call',
+    params: {
+      name: 'get_repo_knowledge_map',
+      arguments: {
+        repositoryId: FACTORY_REPO_ID,
+        nowMs: NOW_MS,
+        testInventory: ['tests/engineering-factory/mcp-agent-connector.test.mjs']
+      }
+    }
+  }, authorizedContext()).result.structuredContent.reason, 'TEST_INVENTORY_UNALIGNED');
+
+  assert.equal(handleMcpConnectorRequest({
+    jsonrpc: '2.0',
+    id: 'km-sf-inv-bad-type',
+    method: 'tools/call',
+    params: {
+      name: 'get_repo_knowledge_map',
+      arguments: {
+        repositoryId: FACTORY_REPO_ID,
+        nowMs: NOW_MS,
+        testInventory: [123]
+      }
+    }
+  }, authorizedContext()).result.structuredContent.reason, 'INVALID_KNOWLEDGE_MAP_ARGUMENTS');
 
   const consumerRes = handleMcpConnectorRequest({
     jsonrpc: '2.0',
@@ -810,6 +936,43 @@ test('tools/call get_repo_knowledge_map enforces authorizedRepositories, explici
   }, {
     authorizedRepositories: [{ repositoryId: 10, repository: 'Synthetic/One', projectConfig: {} }]
   }).result.structuredContent.reason, 'INVALID_PROJECT_CONFIG');
+
+  const trunkConfig = consumerProjectConfig();
+  trunkConfig.project.defaultBranch = 'trunk';
+  for (const conflictingEnrollment of [
+    { repositoryId: CONSUMER_REPO_ID, repository: 'Synthetic/Spellbook', revision: HEAD_SHA, projectConfig: trunkConfig },
+    {
+      repositoryId: CONSUMER_REPO_ID,
+      repository: 'Synthetic/Spellbook',
+      defaultBranch: 'main',
+      revision: HEAD_SHA,
+      projectConfig: trunkConfig
+    }
+  ]) {
+    assert.equal(handleMcpConnectorRequest({
+      jsonrpc: '2.0',
+      id: 'km-branch-conflict',
+      method: 'tools/call',
+      params: { name: 'get_repo_knowledge_map', arguments: { repositoryId: CONSUMER_REPO_ID, nowMs: NOW_MS } }
+    }, { authorizedRepositories: [conflictingEnrollment] }).result.structuredContent.reason, 'BRANCH_METADATA_CONFLICT');
+  }
+
+  const alignedTrunkRes = handleMcpConnectorRequest({
+    jsonrpc: '2.0',
+    id: 'km-branch-trunk-ok',
+    method: 'tools/call',
+    params: { name: 'get_repo_knowledge_map', arguments: { repositoryId: CONSUMER_REPO_ID, nowMs: NOW_MS } }
+  }, {
+    authorizedRepositories: [{
+      repositoryId: CONSUMER_REPO_ID,
+      repository: 'Synthetic/Spellbook',
+      defaultBranch: 'trunk',
+      revision: HEAD_SHA,
+      projectConfig: trunkConfig
+    }]
+  });
+  assert.equal(alignedTrunkRes.result.isError, false);
+  assert.equal(alignedTrunkRes.result.structuredContent.defaultBranch, 'trunk');
 
   assert.equal(handleMcpConnectorRequest({
     jsonrpc: '2.0',
@@ -1149,7 +1312,7 @@ test('tools/call get_bounded_work_item_context validates W3C traceparent, secret
         summary: 'Implement task-1 and risk-class MCP multi-agent connector',
         notes: ['Preserve deterministic disk-cache and external merge gates'],
         ownedPaths: [
-          'tools/engineering-factory/mcp-agent-connector.mjs',
+          'src/features/connector-client.mjs',
           'tests/engineering-factory/mcp-agent-connector.test.mjs',
           'docs/MCP-MULTI-AGENT-CONNECTOR.md'
         ],
@@ -1162,11 +1325,17 @@ test('tools/call get_bounded_work_item_context validates W3C traceparent, secret
   assert.equal(workItem.maxRepairIterations, 2);
   assert.equal(workItem.secretsStripped, false);
   assert.ok(workItem.forbiddenControlPlanePaths.includes('tools/engineering-factory/core.mjs'));
+  assert.ok(workItem.forbiddenControlPlanePaths.includes('.github/softwarefactory-policy.json'));
+  assert.ok(workItem.forbiddenControlPlanePaths.includes('tools/engineering-factory/review-history.mjs'));
+  assert.ok(workItem.forbiddenControlPlanePaths.includes('tools/engineering-factory/review-batch.mjs'));
   assert.ok(workItem.forbiddenControlPlanePaths.includes('apphost.cs'));
 
   for (const secretSample of [
     'token ghp_abc123XYZ',
+    'oauth gho_abc123XYZ',
+    'user token ghu_abc123XYZ',
     'server token ghs_abc123XYZ',
+    'refresh token ghr_abc123XYZ',
     'fine grained github_pat_11AABBCC',
     'openai key sk-proj-998877',
     'anthropic key sk-ant-api03-998877',
@@ -1204,9 +1373,9 @@ test('tools/call get_bounded_work_item_context validates W3C traceparent, secret
         repositoryId: FACTORY_REPO_ID,
         issueNumber: 136,
         traceparent: VALID_TRACEPARENT,
-        summary: 'Summary with BEARER topSecretHeader and GHP_NON_PREFIX',
+        summary: 'Summary with BEARER topSecretHeader and gho_oauthSecret1 and GHP_NON_PREFIX',
         notes: [
-          'Auth header bEaReR secretJwtValue and key sk-ant-999',
+          'Auth header bEaReR secretJwtValue and ghu_userSecret2 and ghr_refreshSecret3 and key sk-ant-999',
           'No secret in second note'
         ],
         ownedPaths: ['docs/MCP-MULTI-AGENT-CONNECTOR.md'],
@@ -1217,15 +1386,24 @@ test('tools/call get_bounded_work_item_context validates W3C traceparent, secret
   });
   assert.equal(strippedRes.result.isError, false);
   assert.equal(strippedRes.result.structuredContent.secretsStripped, true);
-  assert.equal(strippedRes.result.structuredContent.summary, 'Summary with [REDACTED] and GHP_NON_PREFIX');
-  assert.equal(strippedRes.result.structuredContent.notes[0], 'Auth header [REDACTED] and key [REDACTED]');
-  assert.equal(JSON.stringify(strippedRes).includes('secretJwtValue'), false);
-  assert.equal(JSON.stringify(strippedRes).includes('topSecretHeader'), false);
+  assert.equal(strippedRes.result.structuredContent.summary, 'Summary with [REDACTED] and [REDACTED] and GHP_NON_PREFIX');
+  assert.equal(
+    strippedRes.result.structuredContent.notes[0],
+    'Auth header [REDACTED] and [REDACTED] and [REDACTED] and key [REDACTED]'
+  );
+  for (const leaked of ['secretJwtValue', 'topSecretHeader', 'oauthSecret1', 'userSecret2', 'refreshSecret3']) {
+    assert.equal(JSON.stringify(strippedRes).includes(leaked), false);
+  }
 
   for (const forbiddenOwned of [
     ['.github/workflows/ci.yml'],
     ['.github/agentic.lock.yml'],
+    ['.github/softwarefactory-policy.json'],
     ['tools/engineering-factory/core.mjs'],
+    ['tools/engineering-factory/review-history.mjs'],
+    ['tools/engineering-factory/review-batch.mjs'],
+    ['tools/engineering-factory/budget.mjs'],
+    ['tools/engineering-factory/mcp-agent-connector.mjs'],
     ['tools/engineering-factory']
   ]) {
     assert.equal(handleMcpConnectorRequest({
