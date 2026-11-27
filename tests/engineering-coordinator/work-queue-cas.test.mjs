@@ -632,6 +632,53 @@ test('enforces bounded execution TTL (1..3_600_000 ms), clamps renewals, fences 
   assert.equal(activeAfterRace.length, 1);
   assert.equal(activeAfterRace[0].workerId, 'worker-B');
 
+  // Regression: when config.limits.maxAttempts is lowered from 2 to 1 after attempt 1 is claimed,
+  // claiming another item after attempt 1 expires marks the expired item 'exhausted' (not 'requeued')
+  // so terminal compaction can archive it instead of stranding a non-claimable slot!
+  const loweredCeilingStore = createInMemoryWorkQueueRefStore();
+  const initialClaim = await claimWorkQueueLease({
+    refStore: loweredCeilingStore,
+    config: makeConfig({limits: {maxAttempts: 2}}),
+    candidate: makeIssueCandidate({
+      issueNumber: 250,
+      lane: 'factory',
+      ownedPaths: ['tools/engineering-factory/lowered-ceiling.mjs'],
+      workerId: 'worker-1',
+      runId: 5101,
+      leaseTtlMs: 100,
+      maxExecutionMs: 500,
+      maxAttempts: 2
+    }),
+    nowMs: 0
+  });
+  assert.equal(initialClaim.ok, true);
+  assert.equal(initialClaim.lease.attempts, 1);
+  assert.equal(initialClaim.lease.maxAttempts, 2);
+
+  const loweredConfig = makeConfig({limits: {maxAttempts: 1}});
+  const nextClaimAfterExpiry = await claimWorkQueueLease({
+    refStore: loweredCeilingStore,
+    config: loweredConfig,
+    candidate: makeIssueCandidate({
+      issueNumber: 251,
+      lane: 'factory',
+      ownedPaths: ['tools/engineering-factory/lowered-ceiling.mjs'],
+      workerId: 'worker-2',
+      runId: 5102,
+      leaseTtlMs: 100,
+      maxExecutionMs: 500,
+      maxAttempts: 1
+    }),
+    nowMs: 100
+  });
+  assert.equal(nextClaimAfterExpiry.ok, true);
+  const loweredState = loweredCeilingStore.readRef().state;
+  const fencedExpired = loweredState.entries.find(e => e.workId === initialClaim.lease.workId);
+  assert.equal(fencedExpired.status, 'exhausted');
+  assert.equal(fencedExpired.maxAttempts, 1);
+  assert.equal(loweredState.recoveryReceipts.at(-1).outcome, 'exhausted');
+  assert.equal(loweredState.recoveryReceipts.at(-1).maxAttempts, 1);
+
   // Invalid config and config-level stop on renewWorkQueueLease fail closed
   assert.equal((await renewWorkQueueLease({
     refStore: raceStore,

@@ -768,10 +768,15 @@ function astHasUnsafeStatusOverride(node, negated = false) {
   return false;
 }
 
-function declaresNonEmptyOutput(job, outputName) {
-  return isMapObject(job.outputs) &&
-    typeof job.outputs[outputName] === 'string' &&
-    job.outputs[outputName].trim().length > 0;
+const STEP_OUTPUT_REF_RE = /^\$\{\{\s*steps\.([A-Za-z_][A-Za-z0-9_-]*)\.outputs\.[A-Za-z_][A-Za-z0-9_-]*\s*\}\}$/;
+const VERIFIED_SCAN_OUTPUT_KEYS = Object.freeze(['scan_verified', 'detection_success', 'detection_conclusion']);
+
+function declaresVerifiedStepOutput(job, outputName, unconditionalStepIds) {
+  if (!isMapObject(job.outputs) || typeof job.outputs[outputName] !== 'string') {
+    return false;
+  }
+  const match = STEP_OUTPUT_REF_RE.exec(job.outputs[outputName].trim());
+  return match !== null && unconditionalStepIds.has(match[1]);
 }
 
 function isValidIssuesLabel(label) {
@@ -1041,6 +1046,7 @@ export function verifyGhAwWorkflowLock(input) {
       }
     }
 
+    const unconditionalStepIds = new Set();
     let jobHasWriteScope = false;
     if (isSafeOutput) {
       if (!isMapObject(job.permissions)) return deny('EXCESSIVE_SAFE_OUTPUT_PERMISSION');
@@ -1058,7 +1064,7 @@ export function verifyGhAwWorkflowLock(input) {
     } else {
       const jobPerms = isReadOnlyPermissions(job.permissions);
       if (!jobPerms.ok) return deny('AGENT_JOB_WRITE_PERMISSION');
-      if (isThreatScan) threatScanJobs.push({jobId, job});
+      if (isThreatScan) threatScanJobs.push({jobId, job, unconditionalStepIds});
       else evaluationJobIds.push({jobId, job});
     }
 
@@ -1070,8 +1076,7 @@ export function verifyGhAwWorkflowLock(input) {
         if (!isSafeOutput && toleratesError(step)) return deny('MISSING_THREAT_SCAN_GATE');
         if (isThreatScan && step.if !== undefined) {
           const stepAst = parseIfExpression(step.if);
-          if (stepAst === null || astHasUnsafeStatusOverride(stepAst) ||
-              !collectMandatoryConjuncts(stepAst).some(isAlwaysZeroArgCall)) {
+          if (stepAst === null || !isAlwaysZeroArgCall(stepAst)) {
             return deny('MISSING_THREAT_SCAN_GATE');
           }
         }
@@ -1104,10 +1109,24 @@ export function verifyGhAwWorkflowLock(input) {
           }
           if (isThreatScan && step.if === undefined && step.run.trim().length > 0) {
             hasUnconditionalThreatScanRunStep = true;
+            if (typeof step.id === 'string' && /^[A-Za-z_][A-Za-z0-9_-]*$/.test(step.id)) {
+              unconditionalStepIds.add(step.id);
+            }
           }
         }
       }
-      if (isThreatScan && !hasUnconditionalThreatScanRunStep) return deny('MISSING_THREAT_SCAN_GATE');
+      if (isThreatScan) {
+        if (!hasUnconditionalThreatScanRunStep) return deny('MISSING_THREAT_SCAN_GATE');
+        if (job.outputs !== undefined) {
+          if (!isMapObject(job.outputs)) return deny('MISSING_THREAT_SCAN_GATE');
+          for (const verifiedKey of VERIFIED_SCAN_OUTPUT_KEYS) {
+            if (Object.hasOwn(job.outputs, verifiedKey) &&
+                !declaresVerifiedStepOutput(job, verifiedKey, unconditionalStepIds)) {
+              return deny('MISSING_THREAT_SCAN_GATE');
+            }
+          }
+        }
+      }
     }
   }
 
@@ -1133,7 +1152,7 @@ export function verifyGhAwWorkflowLock(input) {
   }
 
   if (threatScanJobs.length === 0) return deny('MISSING_THREAT_SCAN_GATE');
-  const threatScanById = new Map(threatScanJobs.map(entry => [entry.jobId, entry.job]));
+  const threatScanById = new Map(threatScanJobs.map(entry => [entry.jobId, entry]));
   for (const {job} of threatScanJobs) {
     const needs = normalizeNeeds(job.needs);
     if (needs === null || !evaluationJobIds.every(evalJob => needs.includes(evalJob.jobId))) {
@@ -1187,12 +1206,15 @@ export function verifyGhAwWorkflowLock(input) {
       const hasResultSuccess = safeConjuncts.some(c =>
         isIdentCompareLiteral(c, '==', `needs.${scanId}.result`, 'success'));
       if (!hasWriteScope) return hasResultSuccess;
-      const scanJob = threatScanById.get(scanId);
-      const verifiedByScanOutput = declaresNonEmptyOutput(scanJob, 'scan_verified') &&
+      const scanEntry = threatScanById.get(scanId);
+      const verifiedByScanOutput =
+        declaresVerifiedStepOutput(scanEntry.job, 'scan_verified', scanEntry.unconditionalStepIds) &&
         safeConjuncts.some(c => isIdentCompareLiteral(c, '==', `needs.${scanId}.outputs.scan_verified`, 'true'));
-      const verifiedByDetectionSuccess = declaresNonEmptyOutput(scanJob, 'detection_success') &&
+      const verifiedByDetectionSuccess =
+        declaresVerifiedStepOutput(scanEntry.job, 'detection_success', scanEntry.unconditionalStepIds) &&
         safeConjuncts.some(c => isIdentCompareLiteral(c, '==', `needs.${scanId}.outputs.detection_success`, 'true'));
-      const verifiedByDetectionConclusion = declaresNonEmptyOutput(scanJob, 'detection_conclusion') &&
+      const verifiedByDetectionConclusion =
+        declaresVerifiedStepOutput(scanEntry.job, 'detection_conclusion', scanEntry.unconditionalStepIds) &&
         safeConjuncts.some(c => isIdentCompareLiteral(c, '==', `needs.${scanId}.outputs.detection_conclusion`, 'success'));
       return hasResultSuccess && (verifiedByScanOutput || verifiedByDetectionSuccess || verifiedByDetectionConclusion);
     });

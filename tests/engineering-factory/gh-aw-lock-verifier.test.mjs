@@ -41,7 +41,7 @@ function buildFixture({
   runBody = '          echo "shadow ok"',
   threatNeeds = '[evaluate]',
   threatIf = "${{ vars.FACTORY_GHAW_ENABLED == 'true' && needs.evaluate.result == 'success' && !endsWith(github.actor, '[bot]') }}",
-  threatOutputs = '    outputs:\n      scan_verified: ${{ steps.scan.outputs.scan_verified }}',
+  threatOutputs = '    outputs:\n      scan_verified: ${{ steps.policy_scan.outputs.scan_verified }}',
   safeNeeds = '[evaluate, threat-and-policy-scan]',
   safeIf = '${{ false }}',
   safePerms = '      issues: write',
@@ -103,8 +103,8 @@ function buildFixture({
     threatOutputs,
     '    steps:',
     '      - name: Scan',
-    '        id: scan',
-    '        run: echo "scan_verified=true"',
+    '        id: policy_scan',
+    '        run: echo "scan_verified=true" >> "$GITHUB_OUTPUT"',
     '  safe-outputs-comment:',
     `    needs: ${safeNeeds}`,
     `    if: ${safeIf}`,
@@ -640,12 +640,35 @@ test('enforces SHA-pinned uses, persist-credentials:false, no ${{}} in run, perm
     lockYamlSource: missingScanOutputDecl.lockYamlSource
   }).reason, 'MISSING_THREAT_SCAN_GATE');
 
-  // Step-level if: on threat-and-policy-scan step (e.g. if: ${{ false }}) MUST fail closed!
-  const skippableScanStep = buildFixture();
-  assert.equal(verifyGhAwWorkflowLock({
-    markdownSource: skippableScanStep.markdownSource,
-    lockYamlSource: skippableScanStep.lockYamlSource.replace('      - name: Scan\n', '      - name: Scan\n        if: ${{ false }}\n')
-  }).reason, 'MISSING_THREAT_SCAN_GATE');
+  // Step-level if: on threat-and-policy-scan step (e.g. if: ${{ false }} or if: ${{ always() && false }}) MUST fail closed!
+  for (const skippableStepIf of ['${{ false }}', '${{ always() && false }}']) {
+    const skippableScanStep = buildFixture();
+    assert.equal(verifyGhAwWorkflowLock({
+      markdownSource: skippableScanStep.markdownSource,
+      lockYamlSource: skippableScanStep.lockYamlSource.replace(
+        '      - name: Scan\n',
+        `      - name: Scan\n        if: ${skippableStepIf}\n`
+      )
+    }).reason, 'MISSING_THREAT_SCAN_GATE');
+  }
+
+  // Hardcoded literal scan_verified: 'true', boolean true, scalar outputs, or binding to a conditional/missing step MUST fail closed!
+  for (const invalidOutputs of [
+    "    outputs:\n      scan_verified: 'true'",
+    "    outputs:\n      scan_verified: '${{ true }}'",
+    '    outputs:\n      scan_verified: true',
+    '    outputs:\n      scan_verified: ${{ steps.missing_step.outputs.scan_verified }}',
+    '    outputs: invalid_scalar'
+  ]) {
+    const badOut = buildFixture({
+      threatOutputs: invalidOutputs,
+      safeIf: "${{ needs.evaluate.result == 'success' && needs.threat-and-policy-scan.result == 'success' && needs.threat-and-policy-scan.outputs.scan_verified == 'true' }}"
+    });
+    assert.equal(verifyGhAwWorkflowLock({
+      markdownSource: badOut.markdownSource,
+      lockYamlSource: badOut.lockYamlSource
+    }).reason, 'MISSING_THREAT_SCAN_GATE');
+  }
 
   // Frontmatter missing or weakening mandatory guards MUST fail closed!
   const missingFmIf = buildFixture({frontmatterIf: null});
@@ -667,7 +690,7 @@ test('enforces SHA-pinned uses, persist-credentials:false, no ${{}} in run, perm
   assert.equal(verifyGhAwWorkflowLock({
     markdownSource: noRunStepScan.markdownSource,
     lockYamlSource: noRunStepScan.lockYamlSource.replace(
-      '      - name: Scan\n        id: scan\n        run: echo "scan_verified=true"',
+      '      - name: Scan\n        id: policy_scan\n        run: echo "scan_verified=true" >> "$GITHUB_OUTPUT"',
       `      - uses: actions/setup-node@${setupNodeSha}`
     )
   }).reason, 'MISSING_THREAT_SCAN_GATE');
@@ -1220,6 +1243,22 @@ test('verifies compiler-shaped multi-job lock (activation -> agent -> detection 
     markdownSource: md,
     lockYamlSource: buildCompilerLock({
       detectionHousekeeping: '      - name: Bad conditional step\n        if: vars.SKIP == \'true\'\n        run: echo "skip"'
+    })
+  }).reason, 'MISSING_THREAT_SCAN_GATE');
+
+  // always() && false on a detection step OR binding detection_success to an if: always() step MUST fail closed!
+  assert.equal(verifyGhAwWorkflowLock({
+    markdownSource: md,
+    lockYamlSource: buildCompilerLock({
+      detectionHousekeeping: '      - name: Skipped via always() && false\n        if: always() && false\n        run: echo "skip"'
+    })
+  }).reason, 'MISSING_THREAT_SCAN_GATE');
+
+  assert.equal(verifyGhAwWorkflowLock({
+    markdownSource: md,
+    lockYamlSource: buildCompilerLock({
+      detectionHousekeeping: '      - name: Conditional step with id\n        id: cond_step\n        if: always()\n        run: echo "cond"',
+      detectionOutputs: '    outputs:\n      detection_success: ${{ steps.cond_step.outputs.success }}'
     })
   }).reason, 'MISSING_THREAT_SCAN_GATE');
 

@@ -692,26 +692,19 @@ export async function claimWorkQueueLease(options) {
 
     let workingEntries = [...state.entries];
     let nextArchived = [...archivedList];
-    if (existing === null && workingEntries.length >= MAX_ENTRIES) {
-      const evictIdx = workingEntries.findIndex(item => TERMINAL_ENTRY_STATUSES.has(item.status));
-      if (evictIdx < 0) {
-        return {abort: true, result: denyMutation('QUEUE_CAPACITY_EXCEEDED')};
-      }
-      if (nextArchived.length >= MAX_ARCHIVED_TERMINAL) {
-        return {abort: true, result: denyMutation('ARCHIVE_CAPACITY_EXHAUSTED')};
-      }
-      const [evicted] = workingEntries.splice(evictIdx, 1);
-      nextArchived.push({workId: evicted.workId, status: evicted.status});
-    }
 
-    // Atomically fence any expired leased entries before evaluating and assigning new ownership,
-    // preventing in-flight renewals with earlier timestamps from reactivating reassigned lanes/paths.
+    // Atomically fence any expired leased entries before evaluating capacity and assigning new ownership,
+    // preventing in-flight renewals with earlier timestamps from reactivating reassigned lanes/paths,
+    // and marking entries whose attempts meet a lowered configMaxAttempts ceiling as 'exhausted' so
+    // terminal compaction can archive them rather than stranding a queue slot.
     let nextGenCursor = state.nextGeneration;
     const expiryReceipts = [];
     workingEntries = workingEntries.map(item => {
       if (item.workId !== snapCandidate.workId && item.status === 'leased' && !isLeaseActive(item, claimNowMs)) {
         const fencedGeneration = nextGenCursor++;
-        const fencedOutcome = item.attempts >= item.maxAttempts ? 'exhausted' : 'requeued';
+        const effectiveLimit = Math.min(item.maxAttempts, configMaxAttempts);
+        const boundedMaxAttempts = Math.max(item.attempts, effectiveLimit);
+        const fencedOutcome = item.attempts >= effectiveLimit ? 'exhausted' : 'requeued';
         expiryReceipts.push({
           workId: item.workId,
           repositoryId: item.repositoryId,
@@ -723,7 +716,7 @@ export async function claimWorkQueueLease(options) {
           previousGeneration: item.generation,
           reclaimedGeneration: fencedGeneration,
           attempts: item.attempts,
-          maxAttempts: item.maxAttempts,
+          maxAttempts: effectiveLimit,
           outcome: fencedOutcome,
           reclaimedAtMs: claimNowMs
         });
@@ -732,11 +725,24 @@ export async function claimWorkQueueLease(options) {
           ownedPaths: [...item.ownedPaths],
           status: fencedOutcome,
           generation: fencedGeneration,
+          maxAttempts: boundedMaxAttempts,
           leaseExpiresAtMs: Math.min(item.leaseExpiresAtMs, claimNowMs)
         };
       }
       return item;
     });
+
+    if (existing === null && workingEntries.length >= MAX_ENTRIES) {
+      const evictIdx = workingEntries.findIndex(item => TERMINAL_ENTRY_STATUSES.has(item.status));
+      if (evictIdx < 0) {
+        return {abort: true, result: denyMutation('QUEUE_CAPACITY_EXCEEDED')};
+      }
+      if (nextArchived.length >= MAX_ARCHIVED_TERMINAL) {
+        return {abort: true, result: denyMutation('ARCHIVE_CAPACITY_EXHAUSTED')};
+      }
+      const [evicted] = workingEntries.splice(evictIdx, 1);
+      nextArchived.push({workId: evicted.workId, status: evicted.status});
+    }
 
     const activeEntries = workingEntries.filter(item =>
       item.workId !== snapCandidate.workId && isLeaseActive(item, claimNowMs));
