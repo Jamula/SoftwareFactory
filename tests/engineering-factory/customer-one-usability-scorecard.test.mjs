@@ -786,9 +786,63 @@ test('compares matched baseline windows and blocks cross-class, mismatched, stal
       ...baseline,
       usability: {
         ...baseline.usability,
+        overallSloStatus: 'failed',
+        allSlosMet: false,
         metrics: {
           ...baseline.usability.metrics,
-          initialPlanMs: {...baseline.usability.metrics.initialPlanMs, sloStatus: 'unknown'}
+          initialPlanMs: {
+            ...baseline.usability.metrics.initialPlanMs,
+            sloStatus: 'failed',
+            sloMet: false,
+            violationCount: 1
+          }
+        }
+      }
+    },
+    {
+      ...failedBaseline,
+      usability: {
+        ...failedBaseline.usability,
+        metrics: {
+          ...failedBaseline.usability.metrics,
+          attributableSpendUsdCents: {
+            ...failedBaseline.usability.metrics.attributableSpendUsdCents,
+            total: 20
+          }
+        }
+      }
+    },
+    {
+      ...failedBaseline,
+      usability: {
+        ...failedBaseline.usability,
+        metrics: {
+          ...failedBaseline.usability.metrics,
+          attributableSpendUsdCents: {
+            ...failedBaseline.usability.metrics.attributableSpendUsdCents,
+            total: 20,
+            confirmedTotal: 20
+          }
+        }
+      }
+    },
+    {
+      ...baseline,
+      usability: {
+        ...baseline.usability,
+        metrics: {
+          ...baseline.usability.metrics,
+          initialPlanMs: {...baseline.usability.metrics.initialPlanMs, total: 100}
+        }
+      }
+    },
+    {
+      ...baseline,
+      usability: {
+        ...baseline.usability,
+        metrics: {
+          ...baseline.usability.metrics,
+          generatedFilesCount: {...baseline.usability.metrics.generatedFilesCount, sloStatus: 'passed'}
         }
       }
     },

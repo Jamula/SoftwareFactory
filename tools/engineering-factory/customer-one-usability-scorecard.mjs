@@ -174,6 +174,31 @@ const PORTFOLIO_KEYS = [
   'byLane'
 ];
 
+const USABILITY_KEYS = [
+  'provisionalTargets',
+  'overallSloStatus',
+  'allSlosMet',
+  'explicitCredentialEntries',
+  'byScenario',
+  'metrics'
+];
+
+const METRIC_ENTRY_KEYS = [
+  'status',
+  'knownCount',
+  'missingCount',
+  'min',
+  'p50',
+  'p95',
+  'max',
+  'total',
+  'confirmedTotal',
+  'targetMax',
+  'violationCount',
+  'sloStatus',
+  'sloMet'
+];
+
 const evidenceClassSet = new Set(CUSTOMER_ONE_EVIDENCE_CLASSES);
 const milestoneSet = new Set(PORTFOLIO_MILESTONES);
 const scenarioKindSet = new Set(ONBOARDING_SCENARIO_KINDS);
@@ -620,40 +645,60 @@ function sameNullableArray(a, b) {
   return sameArray(a, b);
 }
 
-const DELTA_METRIC_FIELDS = Object.freeze([
-  Object.freeze(['initialPlanMs', 'p50']),
-  Object.freeze(['basicIntegrationMs', 'p50']),
-  Object.freeze(['mandatoryUserSettingsCount', 'max']),
-  Object.freeze(['generatedFilesCount', 'p50']),
-  Object.freeze(['manualInterventionsCount', 'total']),
-  Object.freeze(['additionalMandatoryServicesCount', 'total']),
-  Object.freeze(['localSoftwareRequiredCount', 'total']),
-  Object.freeze(['providerCapacityBlocksCount', 'total']),
-  Object.freeze(['attributableSpendUsdCents', 'total'])
-]);
-
-function validCompleteUsabilitySnapshot(usability) {
-  if (!isPlainObject(usability) ||
-      !hasOwnEnumerableData(usability, 'overallSloStatus') ||
-      !hasOwnEnumerableData(usability, 'metrics') ||
-      !exactRecord(usability.metrics, CUSTOMER_ONE_METRIC_KEYS)) {
+function validCompleteMetricEntry(entry, spec, observationCount) {
+  if (!exactRecord(entry, METRIC_ENTRY_KEYS) ||
+      entry.status !== 'measured' ||
+      entry.knownCount !== observationCount ||
+      entry.missingCount !== 0 ||
+      entry.targetMax !== spec.targetMax ||
+      !nonnegInt(entry.min) || !nonnegInt(entry.p50) ||
+      !nonnegInt(entry.p95) || !nonnegInt(entry.max) ||
+      entry.min > entry.p50 || entry.p50 > entry.p95 || entry.p95 > entry.max) {
     return false;
   }
-  const metricsValid = METRIC_SPECS.every(spec => {
-    const entry = usability.metrics[spec.key];
-    if (!isPlainObject(entry) || !hasOwnEnumerableData(entry, 'sloStatus')) return false;
-    return spec.targetMax === null
-      ? entry.sloStatus === 'informational'
-      : (entry.sloStatus === 'passed' || entry.sloStatus === 'failed');
-  }) && DELTA_METRIC_FIELDS.every(([key, field]) => {
-    const entry = usability.metrics[key];
-    return hasOwnEnumerableData(entry, field) && nonnegInt(entry[field]);
-  });
-  if (!metricsValid) return false;
+  if (!spec.includeTotal) {
+    if (entry.total !== null || entry.confirmedTotal !== null) return false;
+  } else {
+    const totalBig = nonnegInt(entry.total) ? BigInt(entry.total) : -1n;
+    const countBig = BigInt(observationCount);
+    if (totalBig < 0n ||
+        entry.confirmedTotal !== entry.total ||
+        totalBig < BigInt(entry.min) * countBig ||
+        totalBig > BigInt(entry.max) * countBig) {
+      return false;
+    }
+  }
+  if (spec.targetMax === null) {
+    return entry.sloStatus === 'informational' &&
+      entry.sloMet === null &&
+      entry.violationCount === null;
+  }
+  if (entry.max > spec.targetMax) {
+    return entry.sloStatus === 'failed' &&
+      entry.sloMet === false &&
+      positiveInt(entry.violationCount) &&
+      entry.violationCount <= observationCount;
+  }
+  return entry.sloStatus === 'passed' &&
+    entry.sloMet === true &&
+    entry.violationCount === 0;
+}
+
+function validCompleteUsabilitySnapshot(usability, observationCount) {
+  if (!exactRecord(usability, USABILITY_KEYS) ||
+      !exactRecord(usability.metrics, CUSTOMER_ONE_METRIC_KEYS) ||
+      !METRIC_SPECS.every(spec => validCompleteMetricEntry(
+        usability.metrics[spec.key],
+        spec,
+        observationCount
+      ))) {
+    return false;
+  }
   const anyFailed = METRIC_SPECS.some(
     spec => spec.targetMax !== null && usability.metrics[spec.key].sloStatus === 'failed'
   );
-  return usability.overallSloStatus === (anyFailed ? 'failed' : 'passed');
+  return usability.overallSloStatus === (anyFailed ? 'failed' : 'passed') &&
+    usability.allSlosMet === !anyFailed;
 }
 
 function validBaselineFreshnessAndPortfolio(s) {
@@ -713,7 +758,7 @@ function validBaselineSnapshot(s) {
   }
   if (s.historicalProxySummary !== null) return false;
   if (s.sourceComplete && s.observationCount > 0 && !s.stale && s.dataCompletenessPct === 100) {
-    return validCompleteUsabilitySnapshot(s.usability);
+    return validCompleteUsabilitySnapshot(s.usability, s.observationCount);
   }
   return isPlainObject(s.usability);
 }
