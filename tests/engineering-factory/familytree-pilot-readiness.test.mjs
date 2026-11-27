@@ -980,6 +980,7 @@ test('proveFamilyTreeShadowDenials rejects invalid suite shapes, broken scenario
     { ...suite, denials: { ...d, wrongRepositoryId: { ...cand, repositoryId: 0 } } },
     { ...suite, denials: { ...d, wrongRepositorySlug: cand } },
     { ...suite, denials: { ...d, wrongRepositorySlug: { ...cand, snapshot: { ...snap, repository: 'invalid' } } } },
+    { ...suite, denials: { ...d, wrongRepositorySlug: { ...cand, snapshot: { ...snap, repository: 'acme/foreign-repo' } } } },
     { ...suite, denials: { ...d, wrongRepositorySlug: { ...cand, snapshot: { ...snap, repository: 'EXAMPLE/FAMILY-TREE' } } } },
     { ...suite, denials: { ...d, missingAiCreditQuota: cand } },
     {
@@ -1078,6 +1079,15 @@ test('proveFamilyTreeShadowDenials rejects invalid suite shapes, broken scenario
       rollbackReceipt: { ...suite.rollbackReceipt, queuedLiveMutations: 1 }
     }).reason,
     'TARGET_ROLLBACK_INCOMPLETE'
+  );
+
+  // Non-synthetic peer consumer package is rejected even if rollback contract passes
+  assert.equal(
+    proveFamilyTreeShadowDenials({
+      ...suite,
+      peerPackages: [nonSyntheticPkg]
+    }).reason,
+    'FAMILYTREE_PROFILE_CONSTRAINTS_INVALID'
   );
 });
 

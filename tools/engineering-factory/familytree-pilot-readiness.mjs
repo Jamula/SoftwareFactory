@@ -399,6 +399,7 @@ const isWrongRepositorySlugCandidate = (baseCand, cand) =>
   singleMutation(baseCand, cand, 'snapshot') &&
   singleMutation(baseCand.snapshot, cand.snapshot, 'repository') &&
   repoSlug(cand.snapshot.repository) &&
+  isSyntheticExampleRepo(cand.snapshot.repository) &&
   identity(cand.snapshot.repository) !== identity(baseCand.snapshot.repository);
 
 const isMissingAiCreditCandidate = (baseCand, cand) =>
@@ -559,6 +560,10 @@ export function proveFamilyTreeShadowDenials(suite) {
   );
   if (!rollbackCheck.valid) {
     return denySuite(rollbackCheck.reason);
+  }
+
+  if (!suite.peerPackages.every(peer => isSyntheticExampleRepo(peer.policy.repository))) {
+    return denySuite('FAMILYTREE_PROFILE_CONSTRAINTS_INVALID');
   }
 
   return Object.freeze({
