@@ -675,6 +675,8 @@ test('handleMcpConnectorRequest enforces byte bounds, JSON-RPC 2.0 envelopes, no
     { GH_TOKEN: 'opaque-meta-gh-val' },
     { GH_ENTERPRISE_TOKEN: 'opaque-meta-ghe-val' },
     { GITHUB_ENTERPRISE_TOKEN: 'opaque-meta-ghent-val' },
+    { APIKey: 'opaque-meta-acronym-key' },
+    { APIKEY: 'opaque-meta-compact-key' },
     { authorization: 'opaque-auth-header-placeholder' },
     { access_token: 'opaque-snake-access' },
     { api_key: 'opaque-snake-key' }
@@ -1752,7 +1754,10 @@ test('subscription entitlement metadata and credential-bearing env/config keys f
     copilotConfig({ env: { GITHUB_TOKEN: 'opaque-val-9' } }),
     copilotConfig({ env: { GH_TOKEN: 'opaque-val-10' } }),
     copilotConfig({ env: { GH_ENTERPRISE_TOKEN: 'opaque-val-11' } }),
-    copilotConfig({ env: { GITHUB_ENTERPRISE_TOKEN: 'opaque-val-12' } })
+    copilotConfig({ env: { GITHUB_ENTERPRISE_TOKEN: 'opaque-val-12' } }),
+    copilotConfig({ env: { APIKEY: 'opaque-val-13' } }),
+    claudeConfig({ APIKey: 'opaque-val-14' }),
+    claudeConfig({ CLIENTSECRET: 'opaque-val-15' })
   ]) {
     const res = validateMultiAgentConnectorConfig(rejectedCfg);
     assert.equal(res.valid, false);
@@ -2025,24 +2030,26 @@ test('evaluateCrossModelReviewEligibility enforces cross-model independence, pro
   const sameProviderCrossModel = evaluateCrossModelReviewEligibility({
     authorProvider: 'github-copilot',
     authorModelFamily: 'gpt-5.4',
-    authorConfig: copilotConfig(),
+    authorConfig: copilotConfig({ headSha: HEAD_SHA }),
     reviewerProvider: 'github-copilot',
     reviewerModelFamily: 'claude-sonnet-4.5',
-    reviewerConfig: copilotConfig({ role: 'independent-reviewer' }),
+    reviewerConfig: copilotConfig({ role: 'independent-reviewer', headSha: HEAD_SHA }),
+    headSha: HEAD_SHA,
     externalMergeGateAuthoritative: true
   });
   assert.equal(sameProviderCrossModel.eligible, true);
   assert.equal(sameProviderCrossModel.crossProvider, false);
   assert.equal(sameProviderCrossModel.crossModelFamily, true);
-  assert.equal(sameProviderCrossModel.headSha, null);
+  assert.equal(sameProviderCrossModel.headSha, HEAD_SHA);
 
   const crossProviderSameModel = evaluateCrossModelReviewEligibility({
     authorProvider: 'openai-codex',
     authorModelFamily: 'gpt-5.4',
-    authorConfig: codexConfig({ role: 'worker' }),
+    authorConfig: codexConfig({ role: 'worker', headSha: HEAD_SHA }),
     reviewerProvider: 'github-copilot',
     reviewerModelFamily: 'gpt-5.4',
-    reviewerConfig: copilotConfig({ role: 'independent-reviewer' }),
+    reviewerConfig: copilotConfig({ role: 'independent-reviewer', headSha: HEAD_SHA }),
+    headSha: HEAD_SHA,
     externalMergeGateAuthoritative: true
   });
   assert.equal(crossProviderSameModel.eligible, true);
@@ -2050,25 +2057,56 @@ test('evaluateCrossModelReviewEligibility enforces cross-model independence, pro
   assert.equal(crossProviderSameModel.crossModelFamily, false);
   assert.equal(crossProviderSameModel.rollbackState.budgetVerified, true);
 
+  for (const missingHeadCase of [
+    {
+      authorConfig: copilotConfig(),
+      reviewerConfig: copilotConfig({ role: 'independent-reviewer' })
+    },
+    {
+      headSha: HEAD_SHA,
+      authorConfig: copilotConfig(),
+      reviewerConfig: copilotConfig({ role: 'independent-reviewer' })
+    },
+    {
+      headSha: HEAD_SHA,
+      authorConfig: copilotConfig({ headSha: HEAD_SHA }),
+      reviewerConfig: copilotConfig({ role: 'independent-reviewer' })
+    }
+  ]) {
+    const missingHeadRes = evaluateCrossModelReviewEligibility({
+      authorProvider: 'github-copilot',
+      authorModelFamily: 'gpt-5.4',
+      reviewerProvider: 'github-copilot',
+      reviewerModelFamily: 'claude-sonnet-4.5',
+      externalMergeGateAuthoritative: true,
+      ...missingHeadCase
+    });
+    assert.equal(missingHeadRes.eligible, false);
+    assert.equal(missingHeadRes.reason, 'CANDIDATE_HEAD_SHA_REQUIRED');
+  }
+
   const specialistFallback = evaluateCrossModelReviewEligibility({
     mode: 'specialist-fallback',
     authorProvider: 'openai-codex',
     authorModelFamily: 'codex-1',
-    authorConfig: codexConfig({ role: 'worker', oauthEntitlementVerified: true }),
+    authorConfig: codexConfig({ role: 'worker', oauthEntitlementVerified: true, headSha: HEAD_SHA }),
     reviewerProvider: 'anthropic-claude',
     reviewerModelFamily: 'claude-sonnet-4.5',
     reviewerConfig: claudeConfig({
       role: 'specialist',
       includedQuotaVerified: false,
       authorizedSpendCapUsdCents: 300,
-      observedSpendUsdCents: 50
+      observedSpendUsdCents: 50,
+      headSha: HEAD_SHA
     }),
+    headSha: HEAD_SHA,
     verifiedCopilotBudget: copilotConfig(),
     externalMergeGateAuthoritative: true
   });
   assert.equal(specialistFallback.eligible, true);
   assert.equal(specialistFallback.mode, 'specialist-fallback');
   assert.equal(specialistFallback.reason, 'SPECIALIST_FALLBACK_ELIGIBLE');
+  assert.equal(specialistFallback.headSha, HEAD_SHA);
   assert.equal(specialistFallback.rollbackState.budgetVerified, true);
 
   const externalOnlyNoCopilotBudget = evaluateCrossModelReviewEligibility({

@@ -200,12 +200,10 @@ export const MCP_CONNECTOR_TOOLS = Object.freeze([
 ]);
 
 const FORBIDDEN_OBJECT_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
-const NORMALIZED_SECRET_KEY_PATTERN = new RegExp(
-  '^(?:.*_)?(?:' +
-  'authorization|auth_header|password|passwd|passphrase|secret|credentials?|' +
-  '(?:api|private|access|secret|signing|encryption|client|service)_key|' +
-  'token' +
-  ')$'
+const COMPACT_SECRET_KEY_PATTERN = new RegExp(
+  '(?:authorization|authheader|password|passwd|passphrase|secret|credentials?|' +
+  '(?:api|private|access|secret|signing|encryption|client|service)key|' +
+  'token)$'
 );
 const ALLOWED_CONFIG_KEYS = new Set([
   'providerFamily',
@@ -371,11 +369,8 @@ const isForbiddenSecretKeyName = key => {
   if (key === 'progressToken') {
     return false;
   }
-  const normalized = key
-    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
-    .replace(/[-\s.]+/g, '_')
-    .toLowerCase();
-  return NORMALIZED_SECRET_KEY_PATTERN.test(normalized);
+  const compact = key.replace(/[^A-Za-z0-9]/g, '').toLowerCase();
+  return COMPACT_SECRET_KEY_PATTERN.test(compact);
 };
 
 function inspectBoundedPlainTree(value, budget = { remaining: 5000 }, depth = 0) {
@@ -1753,12 +1748,19 @@ export function evaluateCrossModelReviewEligibility(input) {
     );
   }
 
-  const suppliedHeads = [input.headSha, input.authorConfig.headSha, input.reviewerConfig.headSha]
-    .filter(sha => sha !== undefined);
+  const allHeads = [input.headSha, input.authorConfig.headSha, input.reviewerConfig.headSha];
+  const suppliedHeads = allHeads.filter(sha => sha !== undefined);
   if (new Set(suppliedHeads).size > 1) {
     return crossModelDenied(
       'CROSS_MODEL_HEAD_MISMATCH',
       createCopilotOnlyRollbackState('CROSS_MODEL_HEAD_MISMATCH', verifiedCopilotSource),
+      { mode, authorValidation, reviewerValidation }
+    );
+  }
+  if (mode === 'independent-review' && allHeads.some(sha => sha === undefined)) {
+    return crossModelDenied(
+      'CANDIDATE_HEAD_SHA_REQUIRED',
+      createCopilotOnlyRollbackState('CANDIDATE_HEAD_SHA_REQUIRED', verifiedCopilotSource),
       { mode, authorValidation, reviewerValidation }
     );
   }
