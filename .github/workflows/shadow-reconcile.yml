@@ -22,12 +22,12 @@ on:
     types: [completed]
 permissions:
   contents: read
-concurrency:
-  group: factory-shadow-reconcile
-  cancel-in-progress: false
 jobs:
   inventory:
-    if: ${{ github.repository == 'Jamula/SoftwareFactory' && vars.FACTORY_SHADOW_ENABLED == 'true' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
+    if: ${{ github.repository == 'Jamula/SoftwareFactory' && github.repository_id == '1471342715' && github.ref == 'refs/heads/main' && github.ref_protected == true && vars.FACTORY_SHADOW_ENABLED == 'true' && (github.event_name != 'workflow_run' || github.event.workflow_run.head_repository.id == 1471342715) }}
+    concurrency:
+      group: factory-shadow-reconcile
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -38,11 +38,14 @@ jobs:
           FACTORY_SHADOW_ENABLED: ${{ vars.FACTORY_SHADOW_ENABLED }}
           FACTORY_PULL_EVENT_SHADOW_ENABLED: ${{ vars.FACTORY_PULL_EVENT_SHADOW_ENABLED }}
           FACTORY_ISSUE_EVENT_SHADOW_ENABLED: ${{ vars.FACTORY_ISSUE_EVENT_SHADOW_ENABLED }}
+          FACTORY_CHECK_EVENT_SHADOW_ENABLED: ${{ vars.FACTORY_CHECK_EVENT_SHADOW_ENABLED }}
+          FACTORY_MAIN_EVENT_SHADOW_ENABLED: ${{ vars.FACTORY_MAIN_EVENT_SHADOW_ENABLED }}
           FACTORY_ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue_number || '' }}
+          FACTORY_WORKFLOW_RUN_ID: ${{ github.event.workflow_run.id || '' }}
         run: |
           # GitHub expression comparisons are case-insensitive. Verify the actual
-          # protected ref before enabling any checkout or execution.
-          if [[ "$FACTORY_SHADOW_ENABLED" == true && "$GITHUB_REPOSITORY" == Jamula/SoftwareFactory && "$GITHUB_REF" == refs/heads/main && "$GITHUB_REF_PROTECTED" == true ]]; then
+          # repository identity and protected ref before enabling any checkout or execution.
+          if [[ "$FACTORY_SHADOW_ENABLED" == true && "$GITHUB_REPOSITORY" == Jamula/SoftwareFactory && "$GITHUB_REPOSITORY_ID" == 1471342715 && "$GITHUB_REF" == refs/heads/main && "$GITHUB_REF_PROTECTED" == true ]]; then
             echo "enabled=true" >> "$GITHUB_OUTPUT"
             if [[ "$GITHUB_EVENT_NAME" == pull_request_target && "$FACTORY_PULL_EVENT_SHADOW_ENABLED" == true ]]; then
               echo "pull_enabled=true" >> "$GITHUB_OUTPUT"
@@ -53,6 +56,12 @@ jobs:
             if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch && "$FACTORY_ISSUE_EVENT_SHADOW_ENABLED" == true && -n "$FACTORY_ISSUE_NUMBER" ]]; then
               echo "issue_enabled=true" >> "$GITHUB_OUTPUT"
             fi
+            if [[ "$GITHUB_EVENT_NAME" == workflow_run && "$FACTORY_CHECK_EVENT_SHADOW_ENABLED" == true && -n "$FACTORY_WORKFLOW_RUN_ID" ]]; then
+              echo "check_enabled=true" >> "$GITHUB_OUTPUT"
+            fi
+            if [[ "$GITHUB_EVENT_NAME" == push && "$FACTORY_MAIN_EVENT_SHADOW_ENABLED" == true ]]; then
+              echo "main_enabled=true" >> "$GITHUB_OUTPUT"
+            fi
           else
             echo "enabled=false" >> "$GITHUB_OUTPUT"
           fi
@@ -60,7 +69,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: steps.optin.outputs.enabled == 'true'
         with:
-          ref: ${{ (steps.optin.outputs.pull_enabled == 'true' || steps.optin.outputs.issue_enabled == 'true') && github.workflow_sha || 'refs/heads/main' }}
+          ref: ${{ (steps.optin.outputs.pull_enabled == 'true' || steps.optin.outputs.issue_enabled == 'true' || steps.optin.outputs.check_enabled == 'true' || steps.optin.outputs.main_enabled == 'true') && github.workflow_sha || 'refs/heads/main' }}
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         if: steps.optin.outputs.enabled == 'true'
@@ -91,3 +100,22 @@ jobs:
           FACTORY_CHECKOUT_SHA="$(git rev-parse HEAD)"
           export FACTORY_CHECKOUT_SHA
           node tools/engineering-factory/run.mjs --reconcile-issue
+      - name: Reconcile the completed workflow run against public metadata
+        if: steps.optin.outputs.check_enabled == 'true'
+        env:
+          FACTORY_WORKFLOW_RUN_ID: ${{ github.event.workflow_run.id }}
+          FACTORY_CHECK_HEAD: ${{ github.event.workflow_run.head_sha }}
+        shell: bash
+        run: |
+          FACTORY_CHECKOUT_SHA="$(git rev-parse HEAD)"
+          export FACTORY_CHECKOUT_SHA
+          node --input-type=module -e 'import {reconcileEventTrigger} from "./tools/engineering-factory/event-envelope.mjs"; const r = await reconcileEventTrigger(process.env); delete r.snapshot; console.log(JSON.stringify(r));'
+      - name: Reconcile the protected main push against public metadata
+        if: steps.optin.outputs.main_enabled == 'true'
+        env:
+          FACTORY_MAIN_HEAD: ${{ github.sha }}
+        shell: bash
+        run: |
+          FACTORY_CHECKOUT_SHA="$(git rev-parse HEAD)"
+          export FACTORY_CHECKOUT_SHA
+          node --input-type=module -e 'import {reconcileEventTrigger} from "./tools/engineering-factory/event-envelope.mjs"; const r = await reconcileEventTrigger(process.env); delete r.snapshot; console.log(JSON.stringify(r));'

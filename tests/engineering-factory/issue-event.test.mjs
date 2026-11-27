@@ -108,16 +108,41 @@ test('rejects stale, failed and incomplete authoritative issue reads', async () 
  deny(await reconcileIssueTrigger(baseEnv,{clock:()=>times.shift(),readIdentity:async()=>identity}),'STALE_EVENT');
 });
 
-test('supports a protected-main manual reconcile with an explicit issue number', async () => {
+test('supports a protected-main manual reconcile with an explicit issue number and custom scope', async () => {
  const result = await reconcileIssueTrigger({...baseEnv,GITHUB_EVENT_NAME:'workflow_dispatch'}, {
   clock:()=>100,readIdentity:async()=>identity
  });
  assert.equal(result.reconciled,true);
  assert.equal(result.reason,'ISSUE_IDENTITY_MATCHED');
  assert.equal(result.number,42);
+
+ assert.equal((await readIssueIdentity(42, () => assert.fail('unexpected'), null)).reason, 'TRUST_UNKNOWN');
+ deny(await reconcileIssueTrigger(null, {}), 'TRUST_UNKNOWN');
+ deny(await reconcileIssueTrigger(baseEnv, null), 'TRUST_UNKNOWN');
+ deny(await reconcileIssueTrigger({...baseEnv, get GITHUB_EVENT_NAME() { throw Error('getter'); }}, {}), 'TRUST_UNKNOWN');
+ deny(await reconcileIssueTrigger(baseEnv, {get clock() { throw Error('getter'); }}), 'TRUST_UNKNOWN');
+
+ const scopedEnv = {
+  ...baseEnv,
+  GITHUB_REPOSITORY_ID: '3030',
+  GITHUB_REF: 'refs/heads/trunk',
+  GITHUB_WORKFLOW_REF: 'Jamula/Spellbook/.github/workflows/shadow-reconcile.yml@refs/heads/trunk'
+ };
+ const scopedResult = await reconcileIssueTrigger(scopedEnv, {
+  clock: () => 200,
+  scope: {repository: 'Jamula/Spellbook', repositoryId: 3030, branch: 'trunk'},
+  request: async url => {
+   assert.equal(url, 'https://api.github.com/repos/Jamula/Spellbook/issues/42');
+   return new Response(JSON.stringify({
+    number: 42, state: 'open', repository_url: 'https://api.github.com/repos/Jamula/Spellbook'
+   }));
+  }
+ });
+ assert.equal(scopedResult.reconciled, true);
+ assert.equal(scopedResult.repositoryId, 3030);
 });
 
-test('Linux workflow Bash guard rejects case variants and unprotected refs before checkout', {skip:process.platform==='win32'},()=>{
+test('Linux workflow Bash guard rejects case variants, mismatched repo IDs and unprotected refs before checkout', {skip:process.platform==='win32'},()=>{
  const workflow=readFileSync(new URL('../../.github/workflows/shadow-reconcile.yml',import.meta.url),'utf8');
  const start=workflow.indexOf('        run: |',workflow.indexOf('id: optin'));
  const end=workflow.indexOf('      # Never check out',start);
@@ -125,11 +150,22 @@ test('Linux workflow Bash guard rejects case variants and unprotected refs befor
  const guard=workflow.slice(start,end).split('\n').slice(1).map(line=>line.replace(/^          /,'')).join('\n');
  const dir=mkdtempSync(join(tmpdir(),'issue-optin-'));const output=join(dir,'outputs');
  try{
-  const env={...process.env,GITHUB_REPOSITORY:'Jamula/SoftwareFactory',GITHUB_REF:'refs/heads/main',GITHUB_REF_PROTECTED:'true',GITHUB_EVENT_NAME:'workflow_dispatch',FACTORY_SHADOW_ENABLED:'true',FACTORY_ISSUE_EVENT_SHADOW_ENABLED:'true',FACTORY_PULL_EVENT_SHADOW_ENABLED:'true',FACTORY_ISSUE_NUMBER:'42',GITHUB_OUTPUT:output};
-  for(const overrides of [{GITHUB_REF:'refs/heads/Main'},{GITHUB_REF:'refs/heads/other'},{GITHUB_REF_PROTECTED:'false'},{GITHUB_REF_PROTECTED:''},{GITHUB_REPOSITORY:'jamula/SoftwareFactory'},{FACTORY_SHADOW_ENABLED:'TRUE'},{}]){
+  const env={...process.env,GITHUB_REPOSITORY:'Jamula/SoftwareFactory',GITHUB_REPOSITORY_ID:'1471342715',GITHUB_REF:'refs/heads/main',GITHUB_REF_PROTECTED:'true',GITHUB_EVENT_NAME:'workflow_dispatch',FACTORY_SHADOW_ENABLED:'true',FACTORY_ISSUE_EVENT_SHADOW_ENABLED:'true',FACTORY_PULL_EVENT_SHADOW_ENABLED:'true',FACTORY_CHECK_EVENT_SHADOW_ENABLED:'true',FACTORY_MAIN_EVENT_SHADOW_ENABLED:'true',FACTORY_ISSUE_NUMBER:'42',FACTORY_WORKFLOW_RUN_ID:'501',GITHUB_OUTPUT:output};
+  for(const overrides of [{GITHUB_REF:'refs/heads/Main'},{GITHUB_REF:'refs/heads/other'},{GITHUB_REF_PROTECTED:'false'},{GITHUB_REF_PROTECTED:''},{GITHUB_REPOSITORY:'jamula/SoftwareFactory'},{GITHUB_REPOSITORY_ID:'999'},{FACTORY_SHADOW_ENABLED:'TRUE'},{}]){
    rmSync(output,{force:true});execFileSync('bash',['--noprofile','--norc','-c',guard],{env:{...env,...overrides}});
    const result=readFileSync(output,'utf8');
    if(Object.keys(overrides).length){assert.equal(result,'enabled=false\n');}else{assert.equal(result,'enabled=true\nissue_enabled=true\n');}
+  }
+  for(const [eventCase,expected] of [
+   [{GITHUB_EVENT_NAME:'pull_request_target'},'enabled=true\npull_enabled=true\n'],
+   [{GITHUB_EVENT_NAME:'issues'},'enabled=true\nissue_enabled=true\n'],
+   [{GITHUB_EVENT_NAME:'workflow_run'},'enabled=true\ncheck_enabled=true\n'],
+   [{GITHUB_EVENT_NAME:'workflow_run',FACTORY_CHECK_EVENT_SHADOW_ENABLED:'TRUE'},'enabled=true\n'],
+   [{GITHUB_EVENT_NAME:'push'},'enabled=true\nmain_enabled=true\n'],
+   [{GITHUB_EVENT_NAME:'push',FACTORY_MAIN_EVENT_SHADOW_ENABLED:'false'},'enabled=true\n']
+  ]){
+   rmSync(output,{force:true});execFileSync('bash',['--noprofile','--norc','-c',guard],{env:{...env,...eventCase}});
+   assert.equal(readFileSync(output,'utf8'),expected);
   }
  }finally{rmSync(dir,{recursive:true,force:true});}
 });
