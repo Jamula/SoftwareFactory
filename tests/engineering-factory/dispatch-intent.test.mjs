@@ -31,9 +31,10 @@ test('hosted worker dispatch intent enforces environment, hard-stop receipt, wor
   const res=hostedWorkerDispatchIntent({...hosted,capacity:12,requestedWorkers:tier});
   assert.deepEqual(res,{shadow:true,liveDispatch:false,reason:'DRY_RUN_ONLY',key:'1:2:'+e.head+':3',repositoryId:1,issue:2,protectedEnvironment:'factory-copilot-pilot',requestedWorkers:tier,executionTtlMs:300000,receiptId:'hsr-7-001'});
  }
+ const proxyHosted = new Proxy(hosted, {});
  for(const [change,reason] of [
   [null,'EVIDENCE_UNKNOWN'],
-  [new Proxy(hosted,{}),'EVIDENCE_UNKNOWN'],
+  [proxyHosted,'EVIDENCE_UNKNOWN'],
   [{stop:true},'STOPPED'],
   [{repositoryId:0},'SCOPE_OR_LEASE_UNKNOWN'],
   [{approvedRepositoryId:9},'SCOPE_OR_LEASE_UNKNOWN'],
@@ -62,10 +63,9 @@ test('hosted worker dispatch intent enforces environment, hard-stop receipt, wor
   [{executionTtlMs:3600001},'EXECUTION_TTL_INVALID'],
   [{alreadyDispatched:true},'DUPLICATE_OR_UNKNOWN']
  ]){
-  const out=hostedWorkerDispatchIntent(change===null?null:change instanceof Object&&typesCheck(change)?change:{...hosted,...change});
+  const input = (change === null || change === proxyHosted) ? change : {...hosted, ...change};
+  const out = hostedWorkerDispatchIntent(input);
   assert.equal(out.liveDispatch,false);
   assert.equal(out.reason,reason);
  }
 });
-
-function typesCheck(v){return v===hosted||Object.keys(v).length===Object.keys(hosted).length;}

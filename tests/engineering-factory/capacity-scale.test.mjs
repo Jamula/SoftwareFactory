@@ -108,9 +108,10 @@ test('evaluates hosted 1->2->4->8->10->12 ladder with actual max workers and sho
 });
 
 test('hosted worker ladder blocks fail-closed on missing environment, overage enabled, unknown quota, or invalid hard-stop receipt',()=>{
+  const proxyHosted = new Proxy(hostedFixture(), {});
   const blockedCases=[
     [null,'STOPPED'],
-    [new Proxy(hostedFixture(),{}),'STOPPED'],
+    [proxyHosted,'STOPPED'],
     [{stop:true},'STOPPED'],
     [{environmentVerified:false},'ENVIRONMENT_UNVERIFIED'],
     [{protectedEnvironment:'INVALID_ENV'},'ENVIRONMENT_UNVERIFIED'],
@@ -135,9 +136,9 @@ test('hosted worker ladder blocks fail-closed on missing environment, overage en
     [{observedPeak:0},'EXPERIMENT_EVIDENCE_UNKNOWN'],
     [{extraCost:1},'SAFETY_OR_COST_UNKNOWN']
   ];
-  for(const [change,reason] of blockedCases){
-    const input=change===null||change instanceof Object&&Object.keys(change).length===Object.keys(hostedFixture()).length?change:{...hostedFixture(),...change};
-    const out=evaluateHostedWorkerLadder(input);
+  for (const [change, reason] of blockedCases) {
+    const input = (change === null || change === proxyHosted) ? change : {...hostedFixture(), ...change};
+    const out = evaluateHostedWorkerLadder(input);
     assert.deepEqual(out,{
       shadow:true,
       liveDispatch:false,
