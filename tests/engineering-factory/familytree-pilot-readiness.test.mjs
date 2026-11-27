@@ -805,12 +805,30 @@ test('proveFamilyTreeShadowDenials rejects invalid suite shapes, broken scenario
     credentialId: 'cred-higher-cap',
     maxConcurrency: 2
   });
-  for (const invalidProfilePkg of [nonSyntheticPkg, multiLanePkg, higherCapPkg]) {
+  for (const invalidProfilePkg of [multiLanePkg, higherCapPkg]) {
     assert.equal(
       proveFamilyTreeShadowDenials({ ...suite, onboardingPackage: invalidProfilePkg }).reason,
       'FAMILYTREE_PROFILE_CONSTRAINTS_INVALID'
     );
   }
+  assert.equal(
+    proveFamilyTreeShadowDenials({ ...suite, onboardingPackage: nonSyntheticPkg }).reason,
+    'SHADOW_REPLAY_INCOMPLETE'
+  );
+  const nonSyntheticWrongRepoReplayPkg = {
+    ...familyTreePkg,
+    replaySuite: {
+      ...familyTreePkg.replaySuite,
+      wrongRepository: {
+        ...familyTreePkg.replaySuite.wrongRepository,
+        repository: 'acme/foreign-repository'
+      }
+    }
+  };
+  assert.equal(
+    proveFamilyTreeShadowDenials({ ...suite, onboardingPackage: nonSyntheticWrongRepoReplayPkg }).reason,
+    'SHADOW_REPLAY_INCOMPLETE'
+  );
 
   const sf = suite.softwareFactoryBaseline;
   for (const badSf of [
@@ -1175,13 +1193,13 @@ test('proveFamilyTreeShadowDenials rejects invalid suite shapes, broken scenario
     'TARGET_ROLLBACK_INCOMPLETE'
   );
 
-  // Non-synthetic peer consumer package is rejected even if rollback contract passes
+  // Non-synthetic peer consumer package is rejected via strict replaySuite synthetic slug check
   assert.equal(
     proveFamilyTreeShadowDenials({
       ...suite,
       peerPackages: [nonSyntheticPkg]
     }).reason,
-    'FAMILYTREE_PROFILE_CONSTRAINTS_INVALID'
+    'INVALID_PACKAGE_SET'
   );
 
   // Malformed nested replaySuite in onboardingPackage or peerPackages fails closed without traps or stalls

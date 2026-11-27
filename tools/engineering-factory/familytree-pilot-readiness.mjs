@@ -254,6 +254,7 @@ const strictSnapshotShape = s =>
   exact(s, SNAPSHOT_KEYS) &&
   text(s.policySource) &&
   repoSlug(s.repository) &&
+  isSyntheticExampleRepo(s.repository) &&
   posInt(s.issue) &&
   posInt(s.pr) &&
   sha40(s.head) &&
@@ -495,7 +496,6 @@ const isWrongRepositoryIdCandidate = (baseCand, cand) =>
 const isWrongRepositorySlugCandidate = (baseCand, cand) =>
   singleMutation(baseCand, cand, 'snapshot') &&
   singleMutation(baseCand.snapshot, cand.snapshot, 'repository') &&
-  isSyntheticExampleRepo(cand.snapshot.repository) &&
   identity(cand.snapshot.repository) !== identity(baseCand.snapshot.repository);
 
 const isMissingAiCreditCandidate = (baseCand, cand) =>
@@ -545,8 +545,7 @@ export function proveFamilyTreeShadowDenials(suite) {
     return denySuite(onboarding.reason);
   }
 
-  if (!isSyntheticExampleRepo(suite.onboardingPackage.policy.repository) ||
-      suite.onboardingPackage.policy.maxActive !== 1 ||
+  if (suite.onboardingPackage.policy.maxActive !== 1 ||
       suite.onboardingPackage.localGates.maxConcurrency !== 1) {
     return denySuite('FAMILYTREE_PROFILE_CONSTRAINTS_INVALID');
   }
@@ -653,10 +652,6 @@ export function proveFamilyTreeShadowDenials(suite) {
   );
   if (!rollbackCheck.valid) {
     return denySuite(rollbackCheck.reason);
-  }
-
-  if (!suite.peerPackages.every(peer => isSyntheticExampleRepo(peer.policy.repository))) {
-    return denySuite('FAMILYTREE_PROFILE_CONSTRAINTS_INVALID');
   }
 
   return Object.freeze({
