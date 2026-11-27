@@ -1053,7 +1053,61 @@ test('enforces fail-closed timeline, provenance, scope, freshness, human-touch, 
     evaluatePullMergeLatencySample(baseDraftSample({
       eligibilityTimestamps: [1_040_000]
     })).reason,
+    'ELIGIBILITY_BEFORE_PUBLICATION'
+  );
+  assert.equal(
+    evaluatePullMergeLatencySample(baseDraftSample({
+      eligibilityTimestamps: [1_190_000, 1_185_000]
+    })).reason,
     'INVALID_TIMELINE_ORDER'
+  );
+  assert.equal(
+    evaluatePullMergeLatencySample(baseDraftSample({
+      publicationEvents: [
+        {type: 'published', at: 1_045_000},
+        {type: 'redrafted', at: 1_100_000},
+        {type: 'published', at: 1_160_000}
+      ],
+      eligibilityTimestamps: [1_120_000]
+    })).reason,
+    'ELIGIBILITY_WHILE_DRAFT'
+  );
+  assert.equal(
+    evaluatePullMergeLatencySample(baseDraftSample({
+      publicationEvents: [
+        {type: 'published', at: 1_045_000},
+        {type: 'redrafted', at: 1_100_000},
+        {type: 'published', at: 1_160_000}
+      ],
+      eligibilityTimestamps: [1_080_000],
+      enqueuedAt: null,
+      stages: {...baseDraftSample().stages, eligibilityToEnqueueMs: null}
+    })).reason,
+    'ELIGIBILITY_WHILE_DRAFT'
+  );
+  assert.equal(
+    evaluatePullMergeLatencySample(baseDraftSample({
+      publicationEvents: [
+        {type: 'published', at: 1_045_000},
+        {type: 'redrafted', at: 1_100_000},
+        {type: 'published', at: 1_160_000}
+      ],
+      eligibilityTimestamps: [1_080_000, 1_190_000],
+      enqueuedAt: 1_130_000
+    })).reason,
+    'INVALID_ENQUEUE_TIMESTAMP'
+  );
+  assert.equal(
+    evaluatePullMergeLatencySample(baseDraftSample({
+      publicationEvents: [
+        {type: 'published', at: 1_045_000},
+        {type: 'redrafted', at: 1_100_000},
+        {type: 'published', at: 1_160_000}
+      ],
+      eligibilityTimestamps: [1_080_000, 1_190_000],
+      enqueuedAt: 1_170_000
+    })).reason,
+    'INVALID_ENQUEUE_TIMESTAMP'
   );
   assert.equal(
     evaluatePullMergeLatencySample(baseDraftSample({enqueuedAt: 1_179_000})).reason,

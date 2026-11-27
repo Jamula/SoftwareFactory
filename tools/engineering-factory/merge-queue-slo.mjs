@@ -249,6 +249,23 @@ function parsePublicationEvents(events, createdAsDraft, createdAt, ceilingAt, me
   return {ok: true, firstPublishedAt, redraftCount, republishCount, currentlyDraft};
 }
 
+function isPublishedAtTimestamp(at, createdAsDraft, events) {
+  let published = !createdAsDraft;
+  for (let i = 0; i < events.length && events[i].at <= at; i++) {
+    published = events[i].type === 'published';
+  }
+  return published;
+}
+
+function hasRedraftBetween(fromAt, toAt, events) {
+  for (let i = 0; i < events.length; i++) {
+    if (events[i].type === 'redrafted' && events[i].at >= fromAt && events[i].at <= toAt) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function parseHeadCommits(commits, createdAt, ceilingAt) {
   if (!isDenseDataArray(commits, 128) || commits.length === 0) {
     return {ok: false, reason: 'HEAD_HISTORY_UNKNOWN'};
@@ -488,30 +505,43 @@ export function evaluatePullMergeLatencySample(sample) {
 
   let firstEligibleAt = null;
   let reeligibilityCount = 0;
-  if (!isDenseDataArray(sample.eligibilityTimestamps, 64)) {
-    return invalidSample('ELIGIBILITY_EVIDENCE_UNKNOWN');
-  }
+  const eligOrderCheck = parseMonotonicTimestamps(
+    sample.eligibilityTimestamps,
+    sample.createdAt,
+    ceilingAt,
+    64,
+    'ELIGIBILITY_EVIDENCE_UNKNOWN'
+  );
+  if (!eligOrderCheck.ok) return invalidSample(eligOrderCheck.reason);
   if (sample.eligibilityTimestamps.length > 0) {
-    if (pub.firstPublishedAt === null) {
+    if (pub.firstPublishedAt === null || sample.eligibilityTimestamps[0] < pub.firstPublishedAt) {
       return invalidSample('ELIGIBILITY_BEFORE_PUBLICATION');
     }
-    const eligCheck = parseMonotonicTimestamps(
-      sample.eligibilityTimestamps,
-      pub.firstPublishedAt,
-      ceilingAt,
-      64,
-      'ELIGIBILITY_EVIDENCE_UNKNOWN'
-    );
-    if (!eligCheck.ok) return invalidSample(eligCheck.reason);
+    for (const eligAt of sample.eligibilityTimestamps) {
+      if (!isPublishedAtTimestamp(eligAt, sample.createdAsDraft, sample.publicationEvents)) {
+        return invalidSample('ELIGIBILITY_WHILE_DRAFT');
+      }
+    }
+    const lastEligibleAt = sample.eligibilityTimestamps.at(-1);
+    if (sample.mergedAt !== null &&
+        hasRedraftBetween(lastEligibleAt, sample.mergedAt, sample.publicationEvents)) {
+      return invalidSample('ELIGIBILITY_WHILE_DRAFT');
+    }
     firstEligibleAt = sample.eligibilityTimestamps[0];
     reeligibilityCount = sample.eligibilityTimestamps.length - 1;
   }
 
   const enqueuedAt = Object.hasOwn(sample, 'enqueuedAt') ? sample.enqueuedAt : null;
-  if (enqueuedAt !== null &&
-      (firstEligibleAt === null || !isNonNegSafeInt(enqueuedAt) ||
-       enqueuedAt < firstEligibleAt || enqueuedAt > ceilingAt)) {
-    return invalidSample('INVALID_ENQUEUE_TIMESTAMP');
+  if (enqueuedAt !== null) {
+    if (firstEligibleAt === null || !isNonNegSafeInt(enqueuedAt) ||
+        enqueuedAt < firstEligibleAt || enqueuedAt > ceilingAt ||
+        !isPublishedAtTimestamp(enqueuedAt, sample.createdAsDraft, sample.publicationEvents)) {
+      return invalidSample('INVALID_ENQUEUE_TIMESTAMP');
+    }
+    const latestEligBeforeEnqueue = sample.eligibilityTimestamps.findLast(at => at <= enqueuedAt);
+    if (hasRedraftBetween(latestEligBeforeEnqueue, enqueuedAt, sample.publicationEvents)) {
+      return invalidSample('INVALID_ENQUEUE_TIMESTAMP');
+    }
   }
 
   const retryCheck = parseMonotonicTimestamps(
