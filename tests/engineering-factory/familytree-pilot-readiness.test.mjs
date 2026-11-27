@@ -380,7 +380,11 @@ test('evaluateFamilyTreeShadowCandidate enforces config, schema, stop, repoId, d
     ...baseCand,
     snapshot: {
       ...baseCand.snapshot,
-      dependencies: [{ issue: 1, accepted: true }]
+      dependencies: [{ issue: 1, accepted: true }],
+      checks: [
+        ...baseCand.snapshot.checks,
+        { name: 'optional-lint', head, appId: 12345, status: 'in_progress', conclusion: null }
+      ]
     }
   };
   assert.equal(evaluateFamilyTreeShadowCandidate(baseConfig, withDep).eligible, true);
@@ -483,6 +487,56 @@ test('evaluateFamilyTreeShadowCandidate enforces config, schema, stop, repoId, d
     { ...baseCand, snapshot: { ...baseCand.snapshot, dependencies: [{}] } },
     { ...baseCand, snapshot: { ...baseCand.snapshot, checks: 'bad' } },
     { ...baseCand, snapshot: { ...baseCand.snapshot, checks: [{}] } },
+    {
+      ...baseCand,
+      snapshot: {
+        ...baseCand.snapshot,
+        checks: [
+          ...baseCand.snapshot.checks,
+          { name: 'extra-check', head: revokedCand.proxy, appId: 12345, status: 'completed', conclusion: 'success' }
+        ]
+      }
+    },
+    {
+      ...baseCand,
+      snapshot: {
+        ...baseCand.snapshot,
+        checks: [
+          ...baseCand.snapshot.checks,
+          { name: '', head, appId: 12345, status: 'completed', conclusion: 'success' }
+        ]
+      }
+    },
+    {
+      ...baseCand,
+      snapshot: {
+        ...baseCand.snapshot,
+        checks: [
+          ...baseCand.snapshot.checks,
+          { name: 'extra-check', head, appId: 0, status: 'completed', conclusion: 'success' }
+        ]
+      }
+    },
+    {
+      ...baseCand,
+      snapshot: {
+        ...baseCand.snapshot,
+        checks: [
+          ...baseCand.snapshot.checks,
+          { name: 'extra-check', head, appId: 12345, status: '', conclusion: 'success' }
+        ]
+      }
+    },
+    {
+      ...baseCand,
+      snapshot: {
+        ...baseCand.snapshot,
+        checks: [
+          ...baseCand.snapshot.checks,
+          { name: 'extra-check', head, appId: 12345, status: 'completed', conclusion: revokedCand.proxy }
+        ]
+      }
+    },
     { ...baseCand, snapshot: { ...baseCand.snapshot, reviews: 'bad' } },
     { ...baseCand, snapshot: { ...baseCand.snapshot, reviews: [{}] } }
   ]) {

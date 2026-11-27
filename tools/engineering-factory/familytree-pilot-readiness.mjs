@@ -178,6 +178,14 @@ const validReviewShape = r =>
   exact(r, ['reviewer', 'head', 'state']) ||
   exact(r, ['reviewer', 'head', 'state', 'summaryDisposition']);
 
+const validCheckShape = c =>
+  exact(c, ['name', 'head', 'appId', 'status', 'conclusion']) &&
+  text(c.name) &&
+  sha40(c.head) &&
+  posInt(c.appId) &&
+  text(c.status) &&
+  (c.conclusion === null || text(c.conclusion));
+
 const strictPolicyEnvelope = p =>
   exact(p, [
     'version', 'repository', 'defaultBranch', 'mergeMethod', 'mode',
@@ -200,7 +208,7 @@ const strictSnapshotShape = s =>
   dense(s.dependencies) &&
   s.dependencies.every(d => exact(d, ['issue', 'accepted'])) &&
   dense(s.checks) &&
-  s.checks.every(c => exact(c, ['name', 'head', 'appId', 'status', 'conclusion'])) &&
+  s.checks.every(validCheckShape) &&
   dense(s.reviews) &&
   s.reviews.every(validReviewShape);
 
