@@ -1253,8 +1253,9 @@ const ENGINEERING_WAVE_KEYS = [
   'postMergeMainFailures', 'incrementalSpendMicros'
 ];
 const UNATTENDED_OUTCOME_KEYS = [
-  'issue', 'pr', 'provenanceKind', 'agentActor', 'm01CohortMember',
-  'parallelBatchGroup', 'reviewRepairVerified', 'headSha', 'squashMergeSha',
+  'repositoryId', 'repository', 'issue', 'pr', 'provenanceKind', 'agentActor',
+  'm01CohortMember', 'parallelBatchGroup', 'reviewRepairVerified',
+  'parentMainSha', 'headSha', 'squashMergeSha',
   'assignedAtMs', 'mergedAtMs', 'mergeQueueDurationMs', 'ownedPaths',
   'coveredLines', 'totalLines', 'coveredBranches', 'totalBranches',
   'checksPassed', 'securityClear', 'independentReview', 'unresolvedFindings',
@@ -1368,12 +1369,14 @@ function parseEngineeringWaves(waves) {
 
 function validUnattendedOutcomeShape(o) {
   return exactRecord(o, UNATTENDED_OUTCOME_KEYS) &&
+    positiveInt(o.repositoryId) && isRepoSlug(o.repository) &&
     positiveInt(o.issue, 1000000) && positiveInt(o.pr, 1000000) &&
     typeof o.provenanceKind === 'string' && typeof o.agentActor === 'string' &&
     typeof o.m01CohortMember === 'boolean' &&
     (o.parallelBatchGroup === null || cohortSlug(o.parallelBatchGroup)) &&
     typeof o.reviewRepairVerified === 'boolean' &&
-    hex40(o.headSha) && hex40(o.squashMergeSha) && o.headSha !== o.squashMergeSha &&
+    hex40(o.parentMainSha) && hex40(o.headSha) && hex40(o.squashMergeSha) &&
+    o.headSha !== o.squashMergeSha && o.parentMainSha !== o.squashMergeSha &&
     positiveInt(o.assignedAtMs) && positiveInt(o.mergedAtMs) && o.mergedAtMs > o.assignedAtMs &&
     positiveInt(o.mergeQueueDurationMs, DAY_MS) &&
     validUniquePathList(o.ownedPaths) && !hasInternalPathOverlap(o.ownedPaths) &&
@@ -1389,7 +1392,26 @@ function validUnattendedOutcomeShape(o) {
     (o.incrementalSpendMicros === null || nonnegInt(o.incrementalSpendMicros, 1000000000));
 }
 
-function parseUnattendedOutcomes(outcomes, wavePrNumbers, policy) {
+function hasConcurrentExecutionWindowPair(windows) {
+  for (let i = 0; i < windows.length; i++) {
+    for (let j = i + 1; j < windows.length; j++) {
+      if (windows[i].assignedAtMs < windows[j].mergedAtMs &&
+          windows[j].assignedAtMs < windows[i].mergedAtMs) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function parseUnattendedOutcomes(
+  outcomes,
+  wavePrNumbers,
+  policy,
+  expectedRepoId,
+  expectedRepo,
+  mergedTrainCandidateByPr
+) {
   const seenIssues = new Set();
   const seenPrs = new Set();
   const seenSquash = new Set();
@@ -1397,7 +1419,7 @@ function parseUnattendedOutcomes(outcomes, wavePrNumbers, policy) {
   const leadDurations = [];
   const mqDurations = [];
   let m01MemberCount = 0;
-  let reviewRepairCount = 0;
+  let m01ReviewRepairCount = 0;
   let totalReworkIterations = 0;
   let earliestAssignedMs = Infinity;
   let latestMergedMs = 0;
@@ -1413,11 +1435,21 @@ function parseUnattendedOutcomes(outcomes, wavePrNumbers, policy) {
         (o.reviewRepairVerified && o.reworkIterations === 0)) {
       return {ok: false, reason: 'OUTCOME_SCHEMA_INVALID'};
     }
+    if (o.repositoryId !== expectedRepoId || o.repository !== expectedRepo) {
+      return {ok: false, reason: 'CROSS_REPO_OUTCOME_MISMATCH'};
+    }
     if (o.provenanceKind !== 'unattended-copilot-issue-outcome' || wavePrNumbers.has(o.pr)) {
       return {ok: false, reason: 'PROVENANCE_CONFLATION_REJECTED'};
     }
     if (o.agentActor !== UNATTENDED_COPILOT_ACTOR) {
       return {ok: false, reason: 'UNVERIFIED_UNATTENDED_ACTOR'};
+    }
+    const mergedCand = mergedTrainCandidateByPr.get(o.pr);
+    if (!mergedCand ||
+        mergedCand.head !== o.headSha ||
+        mergedCand.expectedBase !== o.parentMainSha ||
+        mergedCand.simulatedSquashSha !== o.squashMergeSha) {
+      return {ok: false, reason: 'UNVERIFIED_MAIN_ANCESTRY'};
     }
     if (o.incrementalSpendMicros !== 0) {
       return {ok: false, reason: 'SPEND_UNKNOWN_OR_EXCEEDED'};
@@ -1442,21 +1474,25 @@ function parseUnattendedOutcomes(outcomes, wavePrNumbers, policy) {
     if (o.parallelBatchGroup !== null) {
       let group = parallelGroups.get(o.parallelBatchGroup);
       if (!group) {
-        group = {count: 0, paths: []};
+        group = {paths: [], m01Windows: []};
         parallelGroups.set(o.parallelBatchGroup, group);
       }
       if (hasAnyPathOverlap(o.ownedPaths, group.paths)) {
         return {ok: false, reason: 'PARALLEL_LANE_PATH_OVERLAP'};
       }
-      group.count += 1;
       group.paths.push(...o.ownedPaths);
+      if (o.m01CohortMember) {
+        group.m01Windows.push({assignedAtMs: o.assignedAtMs, mergedAtMs: o.mergedAtMs});
+      }
     }
 
     seenIssues.add(o.issue);
     seenPrs.add(o.pr);
     seenSquash.add(o.squashMergeSha);
-    if (o.m01CohortMember) m01MemberCount += 1;
-    if (o.reviewRepairVerified) reviewRepairCount += 1;
+    if (o.m01CohortMember) {
+      m01MemberCount += 1;
+      if (o.reviewRepairVerified) m01ReviewRepairCount += 1;
+    }
     totalReworkIterations += o.reworkIterations;
     leadDurations.push(o.mergedAtMs - o.assignedAtMs);
     mqDurations.push(o.mergeQueueDurationMs);
@@ -1473,8 +1509,10 @@ function parseUnattendedOutcomes(outcomes, wavePrNumbers, policy) {
   const sortedLead = [...leadDurations].sort((a, b) => a - b);
   const sortedMq = [...mqDurations].sort((a, b) => a - b);
   const m01AnchorSatisfied = m01MemberCount >= SHARED_M01_ANCHOR_TARGET_OUTCOMES;
-  const parallelBatchVerified = [...parallelGroups.values()].some(g => g.count >= 2);
-  const reviewRepairLoopVerified = reviewRepairCount >= 1;
+  const parallelBatchVerified = [...parallelGroups.values()].some(g =>
+    hasConcurrentExecutionWindowPair(g.m01Windows)
+  );
+  const reviewRepairLoopVerified = m01ReviewRepairCount >= 1;
 
   return {
     ok: true,
@@ -1547,16 +1585,23 @@ export function evaluateSharedFiveOutcomeM02Cohort(input) {
       targetRepo.train.isolatedCandidates.length > 0) {
     return sharedCohortDenied('INTEGRATION_TRAIN_UNHEALTHY');
   }
+  if (targetRepo.repository !== input.repository) {
+    return sharedCohortDenied('REPOSITORY_IDENTITY_MISMATCH');
+  }
   if (targetRepo.train.finalMainSha !== input.headSha) {
     return sharedCohortDenied('HEAD_SHA_MISMATCH');
+  }
+  const enrolledRepo = input.portfolioInput.repositories.find(r => r.repositoryId === input.repositoryId);
+  if (input.policy.minLinePercent < enrolledRepo.minLinePercent ||
+      input.policy.minBranchPercent < enrolledRepo.minBranchPercent) {
+    return sharedCohortDenied('POLICY_BELOW_MINIMUM');
   }
 
   const benchmarkEval = evaluateDotnetConsolidationBenchmark(input.benchmarkInput);
   if (!benchmarkEval.valid) return sharedCohortDenied(benchmarkEval.reason);
   if (benchmarkEval.workload !== input.headSha) return sharedCohortDenied('HEAD_SHA_MISMATCH');
   if (benchmarkEval.dotnetMafCandidate === null) return sharedCohortDenied('MAF_CANDIDATE_REQUIRED');
-  if (benchmarkEval.reason === 'MAF_ARCHITECTURE_OR_SAFETY_UNVERIFIED' ||
-      benchmarkEval.reason === 'REVIEW_OR_ROLLBACK_UNREADY') {
+  if (benchmarkEval.reason === 'MAF_ARCHITECTURE_OR_SAFETY_UNVERIFIED') {
     return sharedCohortDenied(benchmarkEval.reason);
   }
   if (!meetsCoverageFloor(
@@ -1569,15 +1614,31 @@ export function evaluateSharedFiveOutcomeM02Cohort(input) {
   )) {
     return sharedCohortDenied('MAF_COVERAGE_BELOW_POLICY');
   }
+  const rawCand = input.benchmarkInput.dotnetMafCandidate;
+  if (!rawCand.securityReviewed || !rawCand.independentReview || !rawCand.rollbackReady) {
+    return sharedCohortDenied('REVIEW_OR_ROLLBACK_UNREADY');
+  }
 
   const wavesParsed = parseEngineeringWaves(input.engineeringWaves);
   if (!wavesParsed.ok) return sharedCohortDenied(wavesParsed.reason);
-  if (wavesParsed.finalMainSha !== input.headSha) return sharedCohortDenied('HEAD_SHA_MISMATCH');
+  const expectedWavesEndSha = input.unattendedOutcomes.length === 0
+    ? input.headSha
+    : targetRepo.train.initialMainSha;
+  if (wavesParsed.finalMainSha !== expectedWavesEndSha) {
+    return sharedCohortDenied('HEAD_SHA_MISMATCH');
+  }
+
+  const mergedTrainCandidateByPr = new Map(
+    enrolledRepo.train.candidates.map(c => [c.pr, c])
+  );
 
   const outcomesParsed = parseUnattendedOutcomes(
     input.unattendedOutcomes,
     wavesParsed.wavePrNumbers,
-    input.policy
+    input.policy,
+    input.repositoryId,
+    input.repository,
+    mergedTrainCandidateByPr
   );
   if (!outcomesParsed.ok) return sharedCohortDenied(outcomesParsed.reason);
 

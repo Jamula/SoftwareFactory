@@ -1486,7 +1486,11 @@ test('verifies committed m02-04-maf-throughput-cohort.json receipt across Waves 
   assert.equal(replayedShared.unattendedCohortSummary.remainingRequiredCount, 5);
 });
 
-const makeUnattendedOutcome = (idx, overrides = {}) => ({
+const WAVE_END_SHA = sha('9');
+
+const makeUnattendedOutcome = (idx, total = 5, overrides = {}) => ({
+  repositoryId: SOFTWARE_FACTORY_REPOSITORY_ID,
+  repository: SOFTWARE_FACTORY_REPOSITORY,
   issue: 200 + idx,
   pr: 300 + idx,
   provenanceKind: 'unattended-copilot-issue-outcome',
@@ -1494,8 +1498,9 @@ const makeUnattendedOutcome = (idx, overrides = {}) => ({
   m01CohortMember: idx <= 3,
   parallelBatchGroup: idx <= 2 ? 'm01-parallel-pair' : null,
   reviewRepairVerified: idx === 3,
+  parentMainSha: idx === 1 ? WAVE_END_SHA : String(idx - 1).padStart(40, '8'),
   headSha: String(idx).padStart(40, '7'),
-  squashMergeSha: String(idx).padStart(40, '8'),
+  squashMergeSha: idx === total ? WORKLOAD_SHA : String(idx).padStart(40, '8'),
   assignedAtMs: 1795900000000 + idx * 60000,
   mergedAtMs: 1795901800000 + idx * 60000,
   mergeQueueDurationMs: 180000 + idx * 5000,
@@ -1518,18 +1523,49 @@ const makeUnattendedOutcome = (idx, overrides = {}) => ({
   ...overrides
 });
 
+const buildTrainCandidatesFromOutcomes = outcomes =>
+  outcomes.map((o, idx) => makeTrainCandidate(o.pr, {
+    head: o.headSha,
+    observedHead: o.headSha,
+    expectedBase: o.parentMainSha,
+    simulatedSquashSha: idx === outcomes.length - 1 ? WORKLOAD_SHA : o.squashMergeSha,
+    ownedPaths: [`tools/train-slot-${idx}.mjs`],
+    coveredLines: Math.max(990, o.coveredLines),
+    totalLines: o.totalLines,
+    coveredBranches: Math.max(970, o.coveredBranches),
+    totalBranches: o.totalBranches,
+    reviewState: 'APPROVED'
+  }));
+
 const makeSharedCohortInput = (overrides = {}) => {
+  const unattendedOutcomes = overrides.unattendedOutcomes ??
+    [1, 2, 3, 4, 5].map(idx => makeUnattendedOutcome(idx, 5));
+  const waveFinalSha = unattendedOutcomes.length === 0 ? WORKLOAD_SHA : WAVE_END_SHA;
+  const trainInitialSha = unattendedOutcomes.length === 0 ? MAIN_SHA : WAVE_END_SHA;
+  const defaultCandidates = unattendedOutcomes.length === 0
+    ? [makeTrainCandidate(168, {simulatedSquashSha: WORKLOAD_SHA, reviewState: 'COMMENTED_CLEAR'})]
+    : buildTrainCandidatesFromOutcomes(unattendedOutcomes);
   const portfolioInput = {
     stop: false,
     budget: baseBudget({active: 0, maxActive: 4}),
     repositories: [
       factoryRepo({
-        candidates: [
-          makeTrainCandidate(168, {
-            simulatedSquashSha: WORKLOAD_SHA,
-            reviewState: 'COMMENTED_CLEAR'
-          })
-        ]
+        candidates: defaultCandidates,
+        overrides: {
+          train: {
+            defaultBranch: 'main',
+            mainSha: trainInitialSha,
+            mainHealthy: true,
+            mergeQueue: {
+              mode: 'native-merge-queue',
+              supported: true,
+              ownerApproved: true,
+              costVerified: true,
+              incrementalSpendMicros: 0
+            },
+            candidates: defaultCandidates
+          }
+        }
       })
     ],
     workItems: [makeWorkItem(SOFTWARE_FACTORY_REPOSITORY_ID, 16, 1)]
@@ -1549,7 +1585,7 @@ const makeSharedCohortInput = (overrides = {}) => {
         waveId: 'wave-4',
         provenanceKind: 'session-orchestrated-merge-queue-wave',
         initialMainSha: MAIN_SHA,
-        finalMainSha: WORKLOAD_SHA,
+        finalMainSha: waveFinalSha,
         windowStartMs: 1795800000000,
         windowEndMs: 1795803600000,
         prNumbers: [166, 167, 168, 169],
@@ -1558,7 +1594,7 @@ const makeSharedCohortInput = (overrides = {}) => {
         incrementalSpendMicros: 0
       }
     ],
-    unattendedOutcomes: [1, 2, 3, 4, 5].map(idx => makeUnattendedOutcome(idx)),
+    unattendedOutcomes,
     ...overrides
   };
 };
@@ -1583,16 +1619,38 @@ test('evaluates shared 5-outcome M02 cohort completion, composition requirements
   assert.equal(eligible.unattendedCohortSummary.reworkRateBps, 2000);
 
   // Enrolled Spellbook (97/90) and FamilyTree (95/90) policies work cleanly
+  const sbOutcomes = [1, 2, 3, 4, 5].map(idx => makeUnattendedOutcome(idx, 5, {
+    repositoryId: 200004,
+    repository: 'example/spellbook',
+    coveredLines: 975,
+    coveredBranches: 910
+  }));
+  const sbCandidates = buildTrainCandidatesFromOutcomes(sbOutcomes);
   const sbCohort = evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({
     repositoryId: 200004,
     repository: 'example/spellbook',
     policy: {minLinePercent: 97, minBranchPercent: 90},
+    unattendedOutcomes: sbOutcomes,
     portfolioInput: {
       stop: false,
       budget: baseBudget({active: 0, maxActive: 4}),
       repositories: [
         spellbookRepo({
-          candidates: [makeTrainCandidate(77, {simulatedSquashSha: WORKLOAD_SHA, coveredLines: 975, coveredBranches: 910})]
+          overrides: {
+            train: {
+              defaultBranch: 'main',
+              mainSha: WAVE_END_SHA,
+              mainHealthy: true,
+              mergeQueue: {
+                mode: 'native-merge-queue',
+                supported: true,
+                ownerApproved: true,
+                costVerified: true,
+                incrementalSpendMicros: 0
+              },
+              candidates: sbCandidates
+            }
+          }
         })
       ],
       workItems: []
@@ -1601,16 +1659,38 @@ test('evaluates shared 5-outcome M02 cohort completion, composition requirements
   assert.equal(sbCohort.valid, true);
   assert.equal(sbCohort.cohortComplete, true);
 
+  const ftOutcomes = [1, 2, 3, 4, 5].map(idx => makeUnattendedOutcome(idx, 5, {
+    repositoryId: 200003,
+    repository: 'example/family-tree',
+    coveredLines: 955,
+    coveredBranches: 905
+  }));
+  const ftCandidates = buildTrainCandidatesFromOutcomes(ftOutcomes);
   const ftCohort = evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({
     repositoryId: 200003,
     repository: 'example/family-tree',
     policy: {minLinePercent: 95, minBranchPercent: 90},
+    unattendedOutcomes: ftOutcomes,
     portfolioInput: {
       stop: false,
       budget: baseBudget({active: 0, maxActive: 4}),
       repositories: [
         familyTreeRepo({
-          candidates: [makeTrainCandidate(78, {simulatedSquashSha: WORKLOAD_SHA, coveredLines: 955, coveredBranches: 905})]
+          overrides: {
+            train: {
+              defaultBranch: 'main',
+              mainSha: WAVE_END_SHA,
+              mainHealthy: true,
+              mergeQueue: {
+                mode: 'native-merge-queue',
+                supported: true,
+                ownerApproved: true,
+                costVerified: true,
+                incrementalSpendMicros: 0
+              },
+              candidates: ftCandidates
+            }
+          }
         })
       ],
       workItems: []
@@ -1619,11 +1699,64 @@ test('evaluates shared 5-outcome M02 cohort completion, composition requirements
   assert.equal(ftCohort.valid, true);
   assert.equal(ftCohort.cohortComplete, true);
 
+  // Spoofed consumer repository slug with matching repositoryId is rejected
+  assert.equal(
+    evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({
+      repositoryId: 200003,
+      repository: 'example/spoofed-consumer',
+      policy: {minLinePercent: 95, minBranchPercent: 90},
+      unattendedOutcomes: ftOutcomes,
+      portfolioInput: {
+        stop: false,
+        budget: baseBudget({active: 0, maxActive: 4}),
+        repositories: [
+          familyTreeRepo({
+            overrides: {
+              train: {
+                defaultBranch: 'main',
+                mainSha: WAVE_END_SHA,
+                mainHealthy: true,
+                mergeQueue: {
+                  mode: 'native-merge-queue',
+                  supported: true,
+                  ownerApproved: true,
+                  costVerified: true,
+                  incrementalSpendMicros: 0
+                },
+                candidates: ftCandidates
+              }
+            }
+          })
+        ],
+        workItems: []
+      }
+    })).reason,
+    'REPOSITORY_IDENTITY_MISMATCH'
+  );
+
   // Incomplete composition at 5 outcomes stays open without claiming completion
   for (const outcomes of [
-    [1, 2, 3, 4, 5].map(idx => makeUnattendedOutcome(idx, {m01CohortMember: idx <= 2})),
-    [1, 2, 3, 4, 5].map(idx => makeUnattendedOutcome(idx, {parallelBatchGroup: null})),
-    [1, 2, 3, 4, 5].map(idx => makeUnattendedOutcome(idx, {reviewRepairVerified: false, reworkIterations: 0}))
+    [1, 2, 3, 4, 5].map(idx => makeUnattendedOutcome(idx, 5, {m01CohortMember: idx <= 2})),
+    [1, 2, 3, 4, 5].map(idx => makeUnattendedOutcome(idx, 5, {parallelBatchGroup: null})),
+    // Parallel pair supplied only by non-M01 members (idx 4, 5) does not satisfy #10 anchor requirement
+    [1, 2, 3, 4, 5].map(idx => makeUnattendedOutcome(idx, 5, {
+      parallelBatchGroup: idx >= 4 ? 'non-m01-pair' : null
+    })),
+    // Review-repair supplied only by non-M01 member (idx 4) does not satisfy #10 anchor requirement
+    [1, 2, 3, 4, 5].map(idx => makeUnattendedOutcome(idx, 5, {
+      reviewRepairVerified: idx === 4,
+      reworkIterations: idx === 4 ? 1 : 0
+    })),
+    // Serialized non-overlapping windows in both time orders do not satisfy concurrent execution
+    [1, 2, 3, 4, 5].map(idx => makeUnattendedOutcome(idx, 5, {
+      assignedAtMs: 1795900000000 + idx * 3600000,
+      mergedAtMs: 1795901800000 + idx * 3600000
+    })),
+    [1, 2, 3, 4, 5].map(idx => makeUnattendedOutcome(idx, 5, {
+      assignedAtMs: 1795930000000 - idx * 3600000,
+      mergedAtMs: 1795931800000 - idx * 3600000
+    })),
+    [1, 2, 3, 4, 5].map(idx => makeUnattendedOutcome(idx, 5, {reviewRepairVerified: false, reworkIterations: 0}))
   ]) {
     const inc = evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({unattendedOutcomes: outcomes}));
     assert.equal(inc.valid, true);
@@ -1636,13 +1769,13 @@ test('evaluates shared 5-outcome M02 cohort completion, composition requirements
   // Provenance conflation: smuggling a session-orchestrated wave PR (#168) or wrong provenanceKind is rejected
   assert.equal(
     evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({
-      unattendedOutcomes: [makeUnattendedOutcome(1, {pr: 168})]
+      unattendedOutcomes: [makeUnattendedOutcome(1, 1, {pr: 168})]
     })).reason,
     'PROVENANCE_CONFLATION_REJECTED'
   );
   assert.equal(
     evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({
-      unattendedOutcomes: [makeUnattendedOutcome(1, {provenanceKind: 'manual-pr'})]
+      unattendedOutcomes: [makeUnattendedOutcome(1, 1, {provenanceKind: 'manual-pr'})]
     })).reason,
     'PROVENANCE_CONFLATION_REJECTED'
   );
@@ -1653,16 +1786,48 @@ test('evaluates shared 5-outcome M02 cohort completion, composition requirements
     'PROVENANCE_CONFLATION_REJECTED'
   );
 
+  // Cross-repository outcome mismatch and unverified protected-main Squash Merge Queue ancestry
+  assert.equal(
+    evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({
+      unattendedOutcomes: [makeUnattendedOutcome(1, 1, {repositoryId: 999999})]
+    })).reason,
+    'CROSS_REPO_OUTCOME_MISMATCH'
+  );
+  assert.equal(
+    evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({
+      unattendedOutcomes: [makeUnattendedOutcome(1, 1, {repository: 'example/other'})]
+    })).reason,
+    'CROSS_REPO_OUTCOME_MISMATCH'
+  );
+  const baseWithFive = makeSharedCohortInput();
+  for (const outcomePatch of [
+    {pr: 999},
+    {headSha: sha('6')},
+    {parentMainSha: sha('5')},
+    {squashMergeSha: sha('4')}
+  ]) {
+    const mutatedOutcomes = baseWithFive.unattendedOutcomes.map((o, i) =>
+      i === 0 ? {...o, ...outcomePatch} : o
+    );
+    assert.equal(
+      evaluateSharedFiveOutcomeM02Cohort({
+        ...baseWithFive,
+        unattendedOutcomes: mutatedOutcomes
+      }).reason,
+      'UNVERIFIED_MAIN_ANCESTRY'
+    );
+  }
+
   // Actor, spend, repair cap, human intervention, gate, coverage, and parallel overlap regressions
   assert.equal(
     evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({
-      unattendedOutcomes: [makeUnattendedOutcome(1, {agentActor: 'cyrusjamula'})]
+      unattendedOutcomes: [makeUnattendedOutcome(1, 1, {agentActor: 'cyrusjamula'})]
     })).reason,
     'UNVERIFIED_UNATTENDED_ACTOR'
   );
   assert.equal(
     evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({
-      unattendedOutcomes: [makeUnattendedOutcome(1, {incrementalSpendMicros: null})]
+      unattendedOutcomes: [makeUnattendedOutcome(1, 1, {incrementalSpendMicros: null})]
     })).reason,
     'SPEND_UNKNOWN_OR_EXCEEDED'
   );
@@ -1682,33 +1847,33 @@ test('evaluates shared 5-outcome M02 cohort completion, composition requirements
   );
   assert.equal(
     evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({
-      unattendedOutcomes: [makeUnattendedOutcome(1, {reworkIterations: 6})]
+      unattendedOutcomes: [makeUnattendedOutcome(1, 1, {reworkIterations: 6})]
     })).reason,
     'REPAIR_BUDGET_EXCEEDED'
   );
   assert.equal(
     evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({
-      unattendedOutcomes: [makeUnattendedOutcome(1, {routineHumanInterventions: 1})]
+      unattendedOutcomes: [makeUnattendedOutcome(1, 1, {routineHumanInterventions: 1})]
     })).reason,
     'ROUTINE_HUMAN_INTERVENTION_DETECTED'
   );
   assert.equal(
     evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({
-      unattendedOutcomes: [makeUnattendedOutcome(1, {unauthorizedWrites: 1})]
+      unattendedOutcomes: [makeUnattendedOutcome(1, 1, {unauthorizedWrites: 1})]
     })).reason,
     'QUALITY_OR_SAFETY_GATE_FAILED'
   );
   assert.equal(
     evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({
-      unattendedOutcomes: [makeUnattendedOutcome(1, {coveredLines: 970})]
+      unattendedOutcomes: [makeUnattendedOutcome(1, 1, {coveredLines: 970})]
     })).reason,
     'COVERAGE_BELOW_POLICY'
   );
   assert.equal(
     evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({
       unattendedOutcomes: [
-        makeUnattendedOutcome(1, {parallelBatchGroup: 'grp-1', ownedPaths: ['tools/shared']}),
-        makeUnattendedOutcome(2, {parallelBatchGroup: 'grp-1', ownedPaths: ['tools/shared/file.mjs']})
+        makeUnattendedOutcome(1, 2, {parallelBatchGroup: 'grp-1', ownedPaths: ['tools/shared']}),
+        makeUnattendedOutcome(2, 2, {parallelBatchGroup: 'grp-1', ownedPaths: ['tools/shared/file.mjs']})
       ]
     })).reason,
     'PARALLEL_LANE_PATH_OVERLAP'
@@ -1731,6 +1896,43 @@ test('evaluates shared 5-outcome M02 cohort completion, composition requirements
   );
   assert.equal(
     evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({policy: {minLinePercent: 97, minBranchPercent: 95}})).reason,
+    'POLICY_BELOW_MINIMUM'
+  );
+  // Stricter enrolled repository policy (e.g. FamilyHub 100/100) cannot be weakened by cohort policy
+  assert.equal(
+    evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({
+      repositoryId: 200005,
+      repository: 'example/family-hub',
+      policy: {minLinePercent: 98, minBranchPercent: 100},
+      portfolioInput: {
+        stop: false,
+        budget: baseBudget({active: 0, maxActive: 4}),
+        repositories: [
+          familyHubRepo({
+            candidates: [makeTrainCandidate(79, {simulatedSquashSha: WORKLOAD_SHA, coveredLines: 1000, coveredBranches: 1000})]
+          })
+        ],
+        workItems: []
+      }
+    })).reason,
+    'POLICY_BELOW_MINIMUM'
+  );
+  assert.equal(
+    evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({
+      repositoryId: 200005,
+      repository: 'example/family-hub',
+      policy: {minLinePercent: 100, minBranchPercent: 99},
+      portfolioInput: {
+        stop: false,
+        budget: baseBudget({active: 0, maxActive: 4}),
+        repositories: [
+          familyHubRepo({
+            candidates: [makeTrainCandidate(79, {simulatedSquashSha: WORKLOAD_SHA, coveredLines: 1000, coveredBranches: 1000})]
+          })
+        ],
+        workItems: []
+      }
+    })).reason,
     'POLICY_BELOW_MINIMUM'
   );
   assert.equal(
@@ -1797,12 +1999,21 @@ test('evaluates shared 5-outcome M02 cohort completion, composition requirements
     })).reason,
     'MAF_ARCHITECTURE_OR_SAFETY_UNVERIFIED'
   );
-  assert.equal(
-    evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({
-      benchmarkInput: benchmarkInput({dotnetMafCandidate: {...dotnetMafCandidateProfile(), securityReviewed: false}})
-    })).reason,
-    'REVIEW_OR_ROLLBACK_UNREADY'
-  );
+  // Review/rollback flags are checked even when CANDIDATE_COVERAGE_REGRESSION occurred first in benchmarkEval
+  for (const revFlag of ['securityReviewed', 'independentReview', 'rollbackReady']) {
+    assert.equal(
+      evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({
+        benchmarkInput: benchmarkInput({
+          dotnetMafCandidate: {
+            ...dotnetMafCandidateProfile(),
+            coveredLines: 985,
+            [revFlag]: false
+          }
+        })
+      })).reason,
+      'REVIEW_OR_ROLLBACK_UNREADY'
+    );
+  }
   assert.equal(
     evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({
       benchmarkInput: benchmarkInput({dotnetMafCandidate: {...dotnetMafCandidateProfile(), coveredLines: 970}})
@@ -1834,7 +2045,7 @@ test('evaluates shared 5-outcome M02 cohort completion, composition requirements
     evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({
       engineeringWaves: [
         makeSharedCohortInput().engineeringWaves[0],
-        {...makeSharedCohortInput().engineeringWaves[0], waveId: 'wave-dup-pr', initialMainSha: WORKLOAD_SHA, finalMainSha: SQUASH_1}
+        {...makeSharedCohortInput().engineeringWaves[0], waveId: 'wave-dup-pr', initialMainSha: WAVE_END_SHA, finalMainSha: SQUASH_1}
       ]
     })).reason,
     'ENGINEERING_WAVE_UNKNOWN'
@@ -1847,13 +2058,13 @@ test('evaluates shared 5-outcome M02 cohort completion, composition requirements
   );
   assert.equal(
     evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({
-      unattendedOutcomes: [makeUnattendedOutcome(1, {reviewRepairVerified: true, reworkIterations: 0})]
+      unattendedOutcomes: [makeUnattendedOutcome(1, 1, {reviewRepairVerified: true, reworkIterations: 0})]
     })).reason,
     'OUTCOME_SCHEMA_INVALID'
   );
   assert.equal(
     evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({
-      unattendedOutcomes: [makeUnattendedOutcome(1, {incrementalSpendMicros: -1})]
+      unattendedOutcomes: [makeUnattendedOutcome(1, 1, {incrementalSpendMicros: -1})]
     })).reason,
     'OUTCOME_SCHEMA_INVALID'
   );
