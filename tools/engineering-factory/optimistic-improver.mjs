@@ -47,6 +47,11 @@ export const KNOWN_ROLLBACK_REASONS = Object.freeze([
   'AI_CREDIT_COST_REGRESSION'
 ]);
 
+export const KAIZEN_EVIDENCE_MODES = Object.freeze([
+  'pre-cohort-synthetic',
+  'live-autonomous-cohort'
+]);
+
 const proposalScopeSet = new Set(PROPOSAL_SCOPES);
 const governedDomainSet = new Set(GOVERNED_CONTRACT_DOMAINS);
 const contractDomainSet = new Set(['standard', ...GOVERNED_CONTRACT_DOMAINS]);
@@ -1251,5 +1256,305 @@ export function buildAutomaticRevertCandidateSpec(cohortVerdict, candidateMeta) 
     directMainMutation: false,
     autoPolicyMutation: false,
     gatePipelineRequired: REQUIRED_GATE_PIPELINE
+  });
+}
+
+const kaizenEvidenceModeSet = new Set(KAIZEN_EVIDENCE_MODES);
+const KAIZEN_READOUT_REQUIRED_KEYS = [
+  'repositoryId',
+  'evaluatedHeadSha',
+  'evidenceMode',
+  'liveAutonomousOutcomesCount',
+  'auditChains',
+  'proposalInput',
+  'cohortInput'
+];
+const KAIZEN_READOUT_OPTIONAL_KEYS = ['shippedCandidate'];
+const CIRCUIT_BREAKER_LINEAGE_BINDING_KEYS = [
+  'authorIdentity',
+  'implementationAgentIdentity',
+  'reviewerIdentity',
+  'mainHealthy'
+];
+const hex40NonZero = s => hex40(s) && !/^0{40}$/.test(s);
+
+function invalidKaizenReadout(reason, repositoryId = null) {
+  return Object.freeze({
+    valid: false,
+    shadow: true,
+    readOnly: true,
+    liveMutation: false,
+    directMainMutation: false,
+    autoPolicyMutation: false,
+    reason,
+    repositoryId,
+    evaluatedHeadSha: null,
+    evidenceMode: null,
+    syntheticReplayOnly: true,
+    liveAutonomousOutcomesCount: 0,
+    liveCohortVerified: false,
+    issue137ReadyToClose: false,
+    readoutStatus: 'BLOCKED',
+    gatePipelineRequired: REQUIRED_GATE_PIPELINE,
+    provenanceSummary: null,
+    proposalSummary: null,
+    cohortVerdict: null,
+    revertCandidateSpec: null
+  });
+}
+
+function canonicalJson(value) {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  const keys = Object.keys(value).sort();
+  return `{${keys.map(key => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(',')}}`;
+}
+
+export function evaluateKaizenCohortReadout(input) {
+  if (!exactRecord(input, KAIZEN_READOUT_REQUIRED_KEYS, KAIZEN_READOUT_OPTIONAL_KEYS) ||
+      !positiveInt(input.repositoryId) ||
+      !nonnegInt(input.liveAutonomousOutcomesCount)) {
+    return invalidKaizenReadout('INVALID_KAIZEN_READOUT_INPUT');
+  }
+  const {repositoryId, evaluatedHeadSha, evidenceMode, liveAutonomousOutcomesCount} = input;
+
+  if (!hex40NonZero(evaluatedHeadSha)) {
+    return invalidKaizenReadout('INVALID_EVALUATED_HEAD_SHA', repositoryId);
+  }
+  if (!kaizenEvidenceModeSet.has(evidenceMode)) {
+    return invalidKaizenReadout('INVALID_EVIDENCE_MODE', repositoryId);
+  }
+  if (evidenceMode === 'pre-cohort-synthetic' &&
+      liveAutonomousOutcomesCount >= MIN_COHORT_ACCEPTED_OUTCOMES) {
+    return invalidKaizenReadout('INCONSISTENT_EVIDENCE_MODE', repositoryId);
+  }
+  if (evidenceMode === 'live-autonomous-cohort' &&
+      liveAutonomousOutcomesCount < MIN_COHORT_ACCEPTED_OUTCOMES) {
+    return invalidKaizenReadout('UNVERIFIED_LIVE_COHORT_CLAIM', repositoryId);
+  }
+
+  const auditTrail = queryCausalAuditTrail(input.auditChains, {repositoryId});
+  if (!auditTrail.valid) {
+    return invalidKaizenReadout(auditTrail.reason, repositoryId);
+  }
+  if (auditTrail.totalRepositoryChains === 0) {
+    return invalidKaizenReadout('EMPTY_PROVENANCE_AUDIT_TRAIL', repositoryId);
+  }
+
+  let totalRunAiCredits = 0;
+  let humanApprovedProtectedChains = 0;
+  let copilotAgentChainsCount = 0;
+  const rawChainBySquashSha = new Map();
+
+  for (const entry of input.auditChains) {
+    if (entry.stages.eventDelivery.repositoryId !== repositoryId) continue;
+    if (!hasOwnEnumerableData(entry, 'circuitBreaker')) {
+      return invalidKaizenReadout('MISSING_CIRCUIT_BREAKER_EVIDENCE', repositoryId);
+    }
+    const cbInput = entry.circuitBreaker;
+    if (CIRCUIT_BREAKER_LINEAGE_BINDING_KEYS.some(key => !hasOwnEnumerableData(cbInput, key))) {
+      return invalidKaizenReadout('INCOMPLETE_CIRCUIT_BREAKER_BINDING', repositoryId);
+    }
+    const cb = evaluateAntiRogueCircuitBreaker(cbInput);
+    if (cb.violations.includes('PROTECTED_CONTROL_PLANE_TOUCH')) {
+      return invalidKaizenReadout('PROTECTED_FILE_SELF_MODIFICATION_DETECTED', repositoryId);
+    }
+    if (cb.violations.includes('AI_CREDIT_ANOMALY')) {
+      return invalidKaizenReadout('UNAPPROVED_SPEND_OR_CREDIT_ANOMALY', repositoryId);
+    }
+    if (cb.violations.length > 0) {
+      return invalidKaizenReadout('ANTI_ROGUE_VIOLATION_DETECTED', repositoryId);
+    }
+    totalRunAiCredits += cbInput.runAiCredits;
+    if (cb.protectedTouchedPaths.length > 0) {
+      humanApprovedProtectedChains++;
+    }
+    if (entry.stages.independentReview.implementationAgentIdentity.toLowerCase() ===
+        'copilot-swe-agent[bot]') {
+      copilotAgentChainsCount++;
+    }
+    rawChainBySquashSha.set(entry.stages.mergeQueueSquash.squashCommitSha, entry);
+  }
+
+  const headRecord = auditTrail.records.find(rec => rec.squashCommitSha === evaluatedHeadSha);
+  if (!headRecord) {
+    return invalidKaizenReadout('UNVERIFIED_EVALUATED_HEAD_SHA', repositoryId);
+  }
+  const latestCompletedAtMs = auditTrail.records[auditTrail.records.length - 1].completedAtMs;
+  if (headRecord.completedAtMs < latestCompletedAtMs) {
+    return invalidKaizenReadout('STALE_EVALUATED_HEAD_SHA', repositoryId);
+  }
+  if (copilotAgentChainsCount < liveAutonomousOutcomesCount) {
+    return invalidKaizenReadout('INSUFFICIENT_VERIFIED_AGENT_PROVENANCE', repositoryId);
+  }
+
+  const proposalResult = proposeOptimisticImprovements(input.proposalInput);
+  if (!proposalResult.valid) {
+    return invalidKaizenReadout(proposalResult.reason, repositoryId);
+  }
+  if (input.proposalInput.scorecard.repositoryId !== repositoryId) {
+    return invalidKaizenReadout('SCORECARD_REPOSITORY_MISMATCH', repositoryId);
+  }
+  const repositoryProposals = proposalResult.proposals.filter(
+    proposal => proposal.repositoryId === repositoryId
+  );
+  if (repositoryProposals.length === 0) {
+    return invalidKaizenReadout('NO_CANDIDATE_PROPOSALS', repositoryId);
+  }
+  const humanApprovalRequiredCount = proposalResult.proposals.filter(
+    proposal => proposal.requiresHumanApproval
+  ).length;
+
+  const cohortVerdict = verifyCohortImprovementOrRollback(input.cohortInput);
+  if (!cohortVerdict.valid) {
+    return invalidKaizenReadout(cohortVerdict.reason, repositoryId);
+  }
+  const {beforeCohort, afterCohort} = input.cohortInput;
+  if (beforeCohort.repositoryId !== repositoryId) {
+    return invalidKaizenReadout('COHORT_REPOSITORY_MISMATCH', repositoryId);
+  }
+  if (beforeCohort.incrementalBilledUsdCents > 0) {
+    return invalidKaizenReadout('UNAPPROVED_SPEND_OR_CREDIT_ANOMALY', repositoryId);
+  }
+  if (evidenceMode === 'live-autonomous-cohort') {
+    if (cohortVerdict.status === 'INSUFFICIENT_COHORT') {
+      return invalidKaizenReadout('INSUFFICIENT_LIVE_COHORT_OUTCOMES', repositoryId);
+    }
+    if (liveAutonomousOutcomesCount !== afterCohort.acceptedOutcomes) {
+      return invalidKaizenReadout('LIVE_OUTCOME_COUNT_MISMATCH', repositoryId);
+    }
+    const afterWindowAgentChainsCount = auditTrail.records.filter(rec => {
+      const raw = rawChainBySquashSha.get(rec.squashCommitSha);
+      return rec.completedAtMs >= afterCohort.windowStartMs &&
+        rec.completedAtMs <= afterCohort.windowEndMs &&
+        raw.stages.independentReview.implementationAgentIdentity.toLowerCase() ===
+          'copilot-swe-agent[bot]';
+    }).length;
+    if (afterWindowAgentChainsCount < liveAutonomousOutcomesCount) {
+      return invalidKaizenReadout('INSUFFICIENT_VERIFIED_AGENT_PROVENANCE', repositoryId);
+    }
+  }
+
+  const hasShippedCandidate = hasOwnEnumerableData(input, 'shippedCandidate');
+  let revertCandidateSpec = null;
+
+  if (!hasShippedCandidate) {
+    if (cohortVerdict.rollbackRequired) {
+      return invalidKaizenReadout('MISSING_REVERT_CANDIDATE_META', repositoryId);
+    }
+  } else {
+    const initialCheck = buildAutomaticRevertCandidateSpec(cohortVerdict, input.shippedCandidate);
+    if (cohortVerdict.rollbackRequired
+      ? !initialCheck.valid
+      : initialCheck.reason !== 'ROLLBACK_NOT_REQUIRED') {
+      return invalidKaizenReadout(initialCheck.reason, repositoryId);
+    }
+
+    const candidateMeta = input.shippedCandidate;
+    const targetSha = hasOwnEnumerableData(candidateMeta, 'targetRevertCommitSha')
+      ? candidateMeta.targetRevertCommitSha
+      : candidateMeta.squashCommitSha;
+    const matchingAuditRecord = auditTrail.records.find(rec => rec.squashCommitSha === targetSha);
+    if (!matchingAuditRecord) {
+      return invalidKaizenReadout('UNVERIFIED_CANDIDATE_PROVENANCE', repositoryId);
+    }
+
+    const hasInlineProvenance = hasOwnEnumerableData(candidateMeta, 'provenanceChain');
+    const matchedRawEntry = rawChainBySquashSha.get(targetSha);
+    const expectedProvenancePayload = {
+      stages: matchedRawEntry.stages,
+      ...(hasOwnEnumerableData(matchedRawEntry, 'coveragePolicy')
+        ? {coveragePolicy: matchedRawEntry.coveragePolicy}
+        : {})
+    };
+    if (matchingAuditRecord.laneId !== candidateMeta.laneId ||
+        !samePathSet(candidateMeta.targetPaths, matchingAuditRecord.touchedPaths) ||
+        (hasOwnEnumerableData(candidateMeta, 'ownedPaths') &&
+          !samePathSet(candidateMeta.ownedPaths, matchingAuditRecord.ownedPaths)) ||
+        (hasOwnEnumerableData(candidateMeta, 'pullNumber') &&
+          candidateMeta.pullNumber !== matchingAuditRecord.pullNumber) ||
+        (hasOwnEnumerableData(candidateMeta, 'issueNumber') &&
+          candidateMeta.issueNumber !== matchingAuditRecord.issueNumber) ||
+        (hasInlineProvenance &&
+          canonicalJson(candidateMeta.provenanceChain) !==
+            canonicalJson(expectedProvenancePayload))) {
+      return invalidKaizenReadout('CANDIDATE_PROVENANCE_MISMATCH', repositoryId);
+    }
+
+    const matchingProposal = repositoryProposals.find(
+      proposal => proposal.proposalId === candidateMeta.proposalId
+    );
+    if (matchingProposal) {
+      if (matchingProposal.laneId !== candidateMeta.laneId ||
+          !samePathSet(matchingProposal.targetPaths, candidateMeta.targetPaths) ||
+          (hasOwnEnumerableData(candidateMeta, 'scope') &&
+            matchingProposal.scope !== candidateMeta.scope) ||
+          (matchingProposal.requiresHumanApproval &&
+            hasOwnEnumerableData(candidateMeta, 'requiresHumanApproval') &&
+            candidateMeta.requiresHumanApproval === false)) {
+        return invalidKaizenReadout('CANDIDATE_PROPOSAL_MISMATCH', repositoryId);
+      }
+    }
+
+    if (cohortVerdict.rollbackRequired) {
+      const enrichedMeta = {
+        ...candidateMeta,
+        ...(hasInlineProvenance ? {} : {provenanceChain: expectedProvenancePayload}),
+        ...(matchingProposal && matchingProposal.requiresHumanApproval
+          ? {requiresHumanApproval: true}
+          : {})
+      };
+      revertCandidateSpec = buildAutomaticRevertCandidateSpec(cohortVerdict, enrichedMeta);
+    }
+  }
+
+  const syntheticReplayOnly = evidenceMode === 'pre-cohort-synthetic';
+  const unapprovedSpendUsdCents = afterCohort.incrementalBilledUsdCents;
+  const zeroUnapprovedSpend = unapprovedSpendUsdCents === 0;
+  const liveCohortVerified =
+    !syntheticReplayOnly && cohortVerdict.status === 'VERIFIED_IMPROVEMENT';
+
+  return Object.freeze({
+    valid: true,
+    shadow: true,
+    readOnly: true,
+    liveMutation: false,
+    directMainMutation: false,
+    autoPolicyMutation: false,
+    reason: 'KAIZEN_COHORT_EVALUATED',
+    repositoryId,
+    evaluatedHeadSha,
+    evidenceMode,
+    syntheticReplayOnly,
+    liveAutonomousOutcomesCount,
+    liveCohortVerified,
+    issue137ReadyToClose: liveCohortVerified,
+    readoutStatus: cohortVerdict.status,
+    gatePipelineRequired: REQUIRED_GATE_PIPELINE,
+    provenanceSummary: Object.freeze({
+      totalRepositoryChains: auditTrail.totalRepositoryChains,
+      verifiedNineLinkChains: auditTrail.totalRepositoryChains,
+      isolatedOutCount: auditTrail.isolatedOutCount,
+      provenanceCompletenessPct: 100,
+      protectedSelfModifications: 0,
+      humanApprovedProtectedChains,
+      killSwitchTrips: 0,
+      unapprovedSpendUsdCents,
+      zeroUnapprovedSpend,
+      totalRunAiCredits,
+      copilotAgentChainsCount,
+      records: auditTrail.records
+    }),
+    proposalSummary: Object.freeze({
+      totalProposals: proposalResult.proposals.length,
+      repositoryProposalsCount: repositoryProposals.length,
+      humanApprovalRequiredCount,
+      standardCandidateCount: proposalResult.proposals.length - humanApprovalRequiredCount,
+      deferredCount: proposalResult.deferredByOverlap.length,
+      proposals: proposalResult.proposals,
+      deferredByOverlap: proposalResult.deferredByOverlap
+    }),
+    cohortVerdict,
+    revertCandidateSpec
   });
 }

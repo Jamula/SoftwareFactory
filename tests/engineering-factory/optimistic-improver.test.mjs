@@ -1,13 +1,16 @@
+import {readFileSync} from 'node:fs';
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {buildAiCreditAndAutonomyScorecard} from '../../tools/engineering-factory/ai-credit-scorecard.mjs';
 import {
   GOVERNED_CONTRACT_DOMAINS,
+  KAIZEN_EVIDENCE_MODES,
   KNOWN_ROLLBACK_REASONS,
   MIN_COHORT_ACCEPTED_OUTCOMES,
   PROPOSAL_SCOPES,
   REQUIRED_GATE_PIPELINE,
   buildAutomaticRevertCandidateSpec,
+  evaluateKaizenCohortReadout,
   proposeOptimisticImprovements,
   queryCausalAuditTrail,
   verifyCohortImprovementOrRollback
@@ -1747,3 +1750,905 @@ test('buildAutomaticRevertCandidateSpec refuses non-rollback verdicts and fails 
     );
   }
 });
+
+function buildBoundAuditChain({
+  traceSeed = 'a',
+  commitSeed = '1',
+  squashSeed = '2',
+  deliveryId = 'delivery-bound-1',
+  repositoryId = SF_REPO_ID,
+  startedAtMs = 210_000,
+  completedAtMs = 220_000,
+  laneId = null,
+  ownedPaths = null,
+  touchedPaths = null,
+  agentIdentity = 'copilot-swe-agent[bot]',
+  issueNumber = 137,
+  pullNumber = 141,
+  cbOverrides = {}
+} = {}) {
+  const isConsumer = repositoryId !== SF_REPO_ID;
+  const effectiveLane = laneId ?? (isConsumer ? 'ft-product-lane' : 'sf-velocity-lane');
+  const effectiveOwned = ownedPaths ?? (
+    isConsumer ? ['src/tree/pedigree.ts'] : ['tools/engineering-factory/stage-latency.mjs']
+  );
+  const effectiveTouched = touchedPaths ?? effectiveOwned;
+  const reviewer = isConsumer ? 'senior-maintainer' : 'copilot-pull-request-reviewer[bot]';
+  const base = buildAuditChain({
+    traceSeed,
+    commitSeed,
+    squashSeed,
+    deliveryId,
+    repositoryId,
+    startedAtMs,
+    completedAtMs
+  });
+  base.stages.casLease.laneId = effectiveLane;
+  base.stages.casLease.ownedPaths = effectiveOwned;
+  base.stages.candidateCommit.touchedPaths = effectiveTouched;
+  base.stages.independentReview.implementationAgentIdentity = agentIdentity;
+  return {
+    ...base,
+    ...(issueNumber !== null ? {issueNumber} : {}),
+    ...(pullNumber !== null ? {pullNumber} : {}),
+    violations: [],
+    circuitBreaker: {
+      repositoryId,
+      ownedPaths: effectiveOwned,
+      touchedPaths: effectiveTouched,
+      attempt: 1,
+      maxRetries: 2,
+      runAiCredits: 18,
+      maxRunAiCredits: 50,
+      burnRateBps: 500,
+      maxBurnSpikeBps: 2500,
+      incrementalBilledUsdCents: 0,
+      safeOutputsThreatDetected: false,
+      humanOwnerSignOffVerified: false,
+      authorIdentity: 'cyrusjamula',
+      implementationAgentIdentity: agentIdentity,
+      reviewerIdentity: reviewer,
+      mainHealthy: true,
+      accountingVerified: true,
+      isEstimated: false,
+      ...cbOverrides
+    }
+  };
+}
+
+function buildValidReadoutInput(overrides = {}) {
+  const chain1 = buildBoundAuditChain({
+    traceSeed: 'a',
+    commitSeed: '1',
+    squashSeed: '2',
+    deliveryId: 'del-1',
+    startedAtMs: 210_000,
+    completedAtMs: 220_000,
+    pullNumber: 141
+  });
+  return {
+    repositoryId: SF_REPO_ID,
+    evaluatedHeadSha: '2'.repeat(40),
+    evidenceMode: 'pre-cohort-synthetic',
+    liveAutonomousOutcomesCount: 0,
+    auditChains: [chain1],
+    proposalInput: {
+      scorecard: buildSampleScorecard(),
+      knowledgeLanes: buildKnowledgeLanes(),
+      failureTaxonomy: [
+        {
+          id: 'wf-drift',
+          repositoryId: SF_REPO_ID,
+          laneId: 'sf-governance-lane',
+          failureClass: 'workflow-lock',
+          occurrences: 3,
+          baselineRateBps: 1000,
+          targetRateBps: 0,
+          targetPaths: ['.github/workflows/ci.yml'],
+          touchesContract: true
+        }
+      ],
+      feedbackItems: []
+    },
+    cohortInput: {
+      beforeCohort: buildBaselineCohort(),
+      afterCohort: buildCandidateCohort({
+        medianCycleTimeMs: 320_000,
+        reworkRateBps: 900,
+        aiCreditsTotal: 150
+      })
+    },
+    ...overrides
+  };
+}
+
+test('evaluateKaizenCohortReadout binds 100% 9-link provenance, human-approved proposals, >=5 cohort verification, live mode, and automatic revert specs', () => {
+  assert.deepEqual(KAIZEN_EVIDENCE_MODES, ['pre-cohort-synthetic', 'live-autonomous-cohort']);
+
+  // Pre-cohort synthetic improvement readout never asserts liveCohortVerified or issue137ReadyToClose
+  const preInput = buildValidReadoutInput();
+  const preRes = evaluateKaizenCohortReadout(preInput);
+  assert.equal(preRes.valid, true);
+  assert.equal(preRes.shadow, true);
+  assert.equal(preRes.readOnly, true);
+  assert.equal(preRes.liveMutation, false);
+  assert.equal(preRes.directMainMutation, false);
+  assert.equal(preRes.autoPolicyMutation, false);
+  assert.equal(preRes.evidenceMode, 'pre-cohort-synthetic');
+  assert.equal(preRes.syntheticReplayOnly, true);
+  assert.equal(preRes.liveCohortVerified, false);
+  assert.equal(preRes.issue137ReadyToClose, false);
+  assert.equal(preRes.readoutStatus, 'VERIFIED_IMPROVEMENT');
+  assert.equal(preRes.revertCandidateSpec, null);
+  assert.equal(preRes.provenanceSummary.provenanceCompletenessPct, 100);
+  assert.equal(preRes.provenanceSummary.protectedSelfModifications, 0);
+  assert.equal(preRes.provenanceSummary.zeroUnapprovedSpend, true);
+  assert.equal(Object.isFrozen(preRes), true);
+  assert.equal(Object.isFrozen(preRes.provenanceSummary), true);
+  assert.equal(Object.isFrozen(preRes.proposalSummary), true);
+
+  // Pre-cohort INSUFFICIENT_COHORT is reported honestly without claiming improvement or rollback
+  const insufficientPre = evaluateKaizenCohortReadout(buildValidReadoutInput({
+    cohortInput: {
+      beforeCohort: buildBaselineCohort({acceptedOutcomes: 3}),
+      afterCohort: buildCandidateCohort({acceptedOutcomes: 4})
+    }
+  }));
+  assert.equal(insufficientPre.valid, true);
+  assert.equal(insufficientPre.readoutStatus, 'INSUFFICIENT_COHORT');
+  assert.equal(insufficientPre.liveCohortVerified, false);
+
+  // Live autonomous cohort mode succeeds ONLY with >=5 verified copilot-swe-agent[bot] chains inside afterCohort window
+  const liveSeeds = ['1', '2', '3', '4', '5'];
+  const liveChains = liveSeeds.map((seed, idx) => buildBoundAuditChain({
+    traceSeed: seed,
+    commitSeed: seed,
+    squashSeed: (idx + 5).toString(16),
+    deliveryId: `live-del-${idx + 1}`,
+    startedAtMs: 205_000 + idx * 10_000,
+    completedAtMs: 210_000 + idx * 10_000,
+    pullNumber: 200 + idx
+  }));
+  const liveImproved = evaluateKaizenCohortReadout(buildValidReadoutInput({
+    evaluatedHeadSha: '9'.repeat(40),
+    evidenceMode: 'live-autonomous-cohort',
+    liveAutonomousOutcomesCount: 5,
+    auditChains: liveChains,
+    cohortInput: {
+      beforeCohort: buildBaselineCohort({acceptedOutcomes: 5}),
+      afterCohort: buildCandidateCohort({
+        acceptedOutcomes: 5,
+        medianCycleTimeMs: 310_000,
+        reworkRateBps: 900,
+        aiCreditsTotal: 140
+      })
+    },
+    shippedCandidate: {
+      proposalId: `bottleneck:${SF_REPO_ID}:provenance-completeness-gap`,
+      repositoryId: SF_REPO_ID,
+      laneId: 'sf-velocity-lane',
+      scope: 'factory-velocity',
+      ownedPaths: ['tools/engineering-factory/stage-latency.mjs'],
+      touchedPaths: ['tools/engineering-factory/stage-latency.mjs'],
+      targetPaths: ['tools/engineering-factory/stage-latency.mjs'],
+      squashCommitSha: '9'.repeat(40),
+      pullNumber: 204,
+      issueNumber: 137
+    }
+  }));
+  assert.equal(liveImproved.valid, true);
+  assert.equal(liveImproved.syntheticReplayOnly, false);
+  assert.equal(liveImproved.liveCohortVerified, true);
+  assert.equal(liveImproved.issue137ReadyToClose, true);
+  assert.equal(liveImproved.revertCandidateSpec, null);
+
+  // Live NO_MATERIAL_GAIN keeps liveCohortVerified: false and issue137ReadyToClose: false
+  const liveNeutral = evaluateKaizenCohortReadout(buildValidReadoutInput({
+    evaluatedHeadSha: '9'.repeat(40),
+    evidenceMode: 'live-autonomous-cohort',
+    liveAutonomousOutcomesCount: 5,
+    auditChains: liveChains,
+    cohortInput: {
+      beforeCohort: buildBaselineCohort({acceptedOutcomes: 5, aiCreditsTotal: 150}),
+      afterCohort: buildCandidateCohort({acceptedOutcomes: 5, aiCreditsTotal: 150})
+    }
+  }));
+  assert.equal(liveNeutral.valid, true);
+  assert.equal(liveNeutral.readoutStatus, 'NO_MATERIAL_GAIN');
+  assert.equal(liveNeutral.liveCohortVerified, false);
+  assert.equal(liveNeutral.issue137ReadyToClose, false);
+
+  // Regression with inline provenanceChain, billed-spend regression, and contract-touching proposal propagates requiresHumanApproval: true
+  const rawInlineChain = {stages: liveChains[4].stages};
+  const contractRollout = evaluateKaizenCohortReadout(buildValidReadoutInput({
+    evaluatedHeadSha: '9'.repeat(40),
+    auditChains: liveChains,
+    proposalInput: {
+      scorecard: {...buildSampleScorecard(), bottlenecks: []},
+      knowledgeLanes: buildKnowledgeLanes(),
+      failureTaxonomy: [],
+      feedbackItems: [
+        {
+          id: 'vel-contract-touch',
+          repositoryId: SF_REPO_ID,
+          laneId: 'sf-velocity-lane',
+          source: 'operator',
+          metricName: 'stageMs',
+          baselineValue: 100,
+          targetValue: 50,
+          targetPaths: ['tools/engineering-factory/stage-latency.mjs'],
+          touchesContract: true
+        }
+      ]
+    },
+    cohortInput: {
+      beforeCohort: buildBaselineCohort(),
+      afterCohort: buildCandidateCohort({incrementalBilledUsdCents: 7})
+    },
+    shippedCandidate: {
+      proposalId: `feedback:${SF_REPO_ID}:vel-contract-touch`,
+      repositoryId: SF_REPO_ID,
+      laneId: 'sf-velocity-lane',
+      targetPaths: ['tools/engineering-factory/stage-latency.mjs'],
+      targetRevertCommitSha: '9'.repeat(40),
+      provenanceChain: rawInlineChain
+    }
+  }));
+  assert.equal(contractRollout.valid, true);
+  assert.equal(contractRollout.readoutStatus, 'ROLLBACK_REQUIRED');
+  assert.equal(contractRollout.provenanceSummary.unapprovedSpendUsdCents, 7);
+  assert.equal(contractRollout.provenanceSummary.zeroUnapprovedSpend, false);
+  assert.equal(contractRollout.revertCandidateSpec.valid, true);
+  assert.equal(contractRollout.revertCandidateSpec.provenanceVerified, true);
+  assert.equal(contractRollout.revertCandidateSpec.requiresHumanApproval, true);
+  assert.equal(contractRollout.revertCandidateSpec.deliveryKind, 'human-approved-revert-pr');
+
+  // Consumer repository rollback synthesizes coveragePolicy from auditChains when inline provenanceChain is omitted
+  const consumerChain = buildBoundAuditChain({
+    traceSeed: 'f',
+    commitSeed: 'b',
+    squashSeed: 'c',
+    repositoryId: FAMILYTREE_REPO_ID,
+    agentIdentity: 'custom-specialist-runner',
+    issueNumber: null,
+    pullNumber: null
+  });
+  const consumerScorecard = buildAiCreditAndAutonomyScorecard({
+    repositoryId: FAMILYTREE_REPO_ID,
+    authorizedRepositoryIds: [FAMILYTREE_REPO_ID],
+    cohort: 'ft-cohort',
+    sourceKind: 'verified-autonomous',
+    fromMs: 1_000,
+    toMs: 20_000,
+    observedMs: 22_000,
+    nowMs: 25_000,
+    maxAgeMs: 10_000,
+    records: [
+      {
+        id: 'ft-act-1',
+        issueNumber: 12,
+        repositoryId: FAMILYTREE_REPO_ID,
+        cohort: 'ft-cohort',
+        sourceKind: 'verified-autonomous',
+        observedMs: 5_000,
+        accepted: true,
+        accounting: {
+          status: 'verified',
+          aiCredits: 20,
+          incrementalBilledUsdCents: 0,
+          cloudSandboxMinutes: 3,
+          actionsRunnerMinutes: 2
+        },
+        ghAwQueueLatencyMs: 20_000,
+        maf: {supersteps: 4, checkpointResumes: 0, innerRepairIterations: 0},
+        audit: {fullProvenance: true, killSwitchTripped: false, violations: []}
+      }
+    ]
+  });
+  const consumerRollback = evaluateKaizenCohortReadout({
+    repositoryId: FAMILYTREE_REPO_ID,
+    evaluatedHeadSha: 'c'.repeat(40),
+    evidenceMode: 'pre-cohort-synthetic',
+    liveAutonomousOutcomesCount: 0,
+    auditChains: [consumerChain],
+    proposalInput: {
+      scorecard: consumerScorecard,
+      knowledgeLanes: [buildKnowledgeLanes()[4]],
+      failureTaxonomy: [],
+      feedbackItems: [
+        {
+          id: 'ft-perf',
+          repositoryId: FAMILYTREE_REPO_ID,
+          laneId: 'ft-product-lane',
+          source: 'product',
+          metricName: 'renderMs',
+          baselineValue: 120,
+          targetValue: 60,
+          targetPaths: ['src/tree/pedigree.ts']
+        }
+      ]
+    },
+    cohortInput: {
+      beforeCohort: buildBaselineCohort({repositoryId: FAMILYTREE_REPO_ID, coveredLines: 975, coveredBranches: 465}),
+      afterCohort: buildCandidateCohort({repositoryId: FAMILYTREE_REPO_ID, coveredLines: 965, coveredBranches: 465}),
+      policy: {profile: 'consumer', minLinePercent: 97, minBranchPercent: 92}
+    },
+    shippedCandidate: {
+      proposalId: 'unlisted-prior-ft-proposal',
+      repositoryId: FAMILYTREE_REPO_ID,
+      laneId: 'ft-product-lane',
+      targetPaths: ['src/tree/pedigree.ts'],
+      squashCommitSha: 'c'.repeat(40)
+    }
+  });
+  assert.equal(consumerRollback.valid, true);
+  assert.equal(consumerRollback.readoutStatus, 'ROLLBACK_REQUIRED');
+  assert.equal(consumerRollback.provenanceSummary.copilotAgentChainsCount, 0);
+  assert.equal(consumerRollback.revertCandidateSpec.provenanceVerified, true);
+  assert.equal(consumerRollback.revertCandidateSpec.requiresHumanApproval, false);
+  assert.equal(consumerRollback.revertCandidateSpec.deliveryKind, 'candidate-revert-pr');
+
+  // Claiming pullNumber when verified audit chain had pullNumber: null fails closed
+  assert.equal(
+    evaluateKaizenCohortReadout({
+      repositoryId: FAMILYTREE_REPO_ID,
+      evaluatedHeadSha: 'c'.repeat(40),
+      evidenceMode: 'pre-cohort-synthetic',
+      liveAutonomousOutcomesCount: 0,
+      auditChains: [consumerChain],
+      proposalInput: {
+        scorecard: consumerScorecard,
+        knowledgeLanes: [buildKnowledgeLanes()[4]],
+        failureTaxonomy: [],
+        feedbackItems: [
+          {
+            id: 'ft-perf',
+            repositoryId: FAMILYTREE_REPO_ID,
+            laneId: 'ft-product-lane',
+            source: 'product',
+            metricName: 'renderMs',
+            baselineValue: 120,
+            targetValue: 60,
+            targetPaths: ['src/tree/pedigree.ts']
+          }
+        ]
+      },
+      cohortInput: {
+        beforeCohort: buildBaselineCohort({repositoryId: FAMILYTREE_REPO_ID, coveredLines: 975, coveredBranches: 465}),
+        afterCohort: buildCandidateCohort({repositoryId: FAMILYTREE_REPO_ID, coveredLines: 965, coveredBranches: 465}),
+        policy: {profile: 'consumer', minLinePercent: 97, minBranchPercent: 92}
+      },
+      shippedCandidate: {
+        proposalId: 'unlisted-prior-ft-proposal',
+        repositoryId: FAMILYTREE_REPO_ID,
+        laneId: 'ft-product-lane',
+        targetPaths: ['src/tree/pedigree.ts'],
+        squashCommitSha: 'c'.repeat(40),
+        pullNumber: 88
+      }
+    }).reason,
+    'CANDIDATE_PROVENANCE_MISMATCH'
+  );
+});
+
+test('evaluateKaizenCohortReadout fails closed across malformed inputs, anti-rogue violations, unverified heads, live-claim spoofing, and candidate mismatches', () => {
+  const validInput = buildValidReadoutInput();
+
+  // Envelope, proxy, non-enumerable, and primitive rejections
+  for (const bad of [
+    null,
+    new Proxy(validInput, {}),
+    {...validInput, extraField: 1},
+    {...validInput, repositoryId: 0},
+    {...validInput, liveAutonomousOutcomesCount: -1}
+  ]) {
+    const res = evaluateKaizenCohortReadout(bad);
+    assert.equal(res.valid, false);
+    assert.equal(res.reason, 'INVALID_KAIZEN_READOUT_INPUT');
+    assert.equal(res.readoutStatus, 'BLOCKED');
+  }
+
+  assert.equal(
+    evaluateKaizenCohortReadout({...validInput, evaluatedHeadSha: 'bad-sha'}).reason,
+    'INVALID_EVALUATED_HEAD_SHA'
+  );
+  assert.equal(
+    evaluateKaizenCohortReadout({...validInput, evaluatedHeadSha: '0'.repeat(40)}).reason,
+    'INVALID_EVALUATED_HEAD_SHA'
+  );
+  assert.equal(
+    evaluateKaizenCohortReadout({...validInput, evidenceMode: 'bogus'}).reason,
+    'INVALID_EVIDENCE_MODE'
+  );
+  assert.equal(
+    evaluateKaizenCohortReadout({...validInput, liveAutonomousOutcomesCount: 5}).reason,
+    'INCONSISTENT_EVIDENCE_MODE'
+  );
+  assert.equal(
+    evaluateKaizenCohortReadout({
+      ...validInput,
+      evidenceMode: 'live-autonomous-cohort',
+      liveAutonomousOutcomesCount: 4
+    }).reason,
+    'UNVERIFIED_LIVE_COHORT_CLAIM'
+  );
+
+  // Audit trail failures: broken array, empty repo chains, missing/incomplete circuitBreaker, protected self-mod, spend, other violations
+  assert.equal(
+    evaluateKaizenCohortReadout({...validInput, auditChains: null}).reason,
+    'INVALID_AUDIT_CHAINS'
+  );
+  const onlyForeign = buildBoundAuditChain({repositoryId: FAMILYTREE_REPO_ID});
+  assert.equal(
+    evaluateKaizenCohortReadout({...validInput, auditChains: [onlyForeign]}).reason,
+    'EMPTY_PROVENANCE_AUDIT_TRAIL'
+  );
+
+  const withoutCb = {...validInput.auditChains[0]};
+  delete withoutCb.circuitBreaker;
+  assert.equal(
+    evaluateKaizenCohortReadout({...validInput, auditChains: [withoutCb]}).reason,
+    'MISSING_CIRCUIT_BREAKER_EVIDENCE'
+  );
+
+  const missingMainBinding = {
+    ...validInput.auditChains[0],
+    circuitBreaker: {...validInput.auditChains[0].circuitBreaker}
+  };
+  delete missingMainBinding.circuitBreaker.mainHealthy;
+  assert.equal(
+    evaluateKaizenCohortReadout({...validInput, auditChains: [missingMainBinding]}).reason,
+    'INCOMPLETE_CIRCUIT_BREAKER_BINDING'
+  );
+
+  const protectedSelfMod = buildBoundAuditChain({
+    laneId: 'sf-governance-lane',
+    ownedPaths: ['.github/workflows/ci.yml'],
+    cbOverrides: {humanOwnerSignOffVerified: false}
+  });
+  delete protectedSelfMod.violations;
+  assert.equal(
+    evaluateKaizenCohortReadout({...validInput, auditChains: [protectedSelfMod]}).reason,
+    'PROTECTED_FILE_SELF_MODIFICATION_DETECTED'
+  );
+
+  const creditAnomaly = buildBoundAuditChain({
+    cbOverrides: {incrementalBilledUsdCents: 10}
+  });
+  delete creditAnomaly.violations;
+  assert.equal(
+    evaluateKaizenCohortReadout({...validInput, auditChains: [creditAnomaly]}).reason,
+    'UNAPPROVED_SPEND_OR_CREDIT_ANOMALY'
+  );
+
+  const retryViolation = buildBoundAuditChain({
+    cbOverrides: {attempt: 5, maxRetries: 2}
+  });
+  delete retryViolation.violations;
+  assert.equal(
+    evaluateKaizenCohortReadout({...validInput, auditChains: [retryViolation]}).reason,
+    'ANTI_ROGUE_VIOLATION_DETECTED'
+  );
+
+  // Unverified or stale evaluatedHeadSha and insufficient agent provenance
+  assert.equal(
+    evaluateKaizenCohortReadout({...validInput, evaluatedHeadSha: 'f'.repeat(40)}).reason,
+    'UNVERIFIED_EVALUATED_HEAD_SHA'
+  );
+  const newerChain = buildBoundAuditChain({
+    traceSeed: 'b',
+    commitSeed: '3',
+    squashSeed: '4',
+    deliveryId: 'del-2',
+    startedAtMs: 250_000,
+    completedAtMs: 260_000,
+    pullNumber: 142
+  });
+  assert.equal(
+    evaluateKaizenCohortReadout({
+      ...validInput,
+      evaluatedHeadSha: '2'.repeat(40),
+      auditChains: [validInput.auditChains[0], newerChain]
+    }).reason,
+    'STALE_EVALUATED_HEAD_SHA'
+  );
+  assert.equal(
+    evaluateKaizenCohortReadout({...validInput, liveAutonomousOutcomesCount: 2}).reason,
+    'INSUFFICIENT_VERIFIED_AGENT_PROVENANCE'
+  );
+
+  // Proposal and scorecard rejections
+  assert.equal(
+    evaluateKaizenCohortReadout({
+      ...validInput,
+      proposalInput: {...validInput.proposalInput, scorecard: null}
+    }).reason,
+    'INVALID_SCORECARD'
+  );
+  assert.equal(
+    evaluateKaizenCohortReadout({
+      ...validInput,
+      proposalInput: {
+        ...validInput.proposalInput,
+        scorecard: {
+          valid: true,
+          sourceKind: 'verified-autonomous',
+          repositoryId: FAMILYTREE_REPO_ID,
+          bottlenecks: []
+        }
+      }
+    }).reason,
+    'SCORECARD_REPOSITORY_MISMATCH'
+  );
+  assert.equal(
+    evaluateKaizenCohortReadout({
+      ...validInput,
+      proposalInput: {
+        scorecard: {...buildSampleScorecard(), bottlenecks: []},
+        knowledgeLanes: buildKnowledgeLanes(),
+        failureTaxonomy: [],
+        feedbackItems: [
+          {
+            id: 'only-consumer-prop',
+            repositoryId: FAMILYTREE_REPO_ID,
+            laneId: 'ft-product-lane',
+            source: 'product',
+            metricName: 'm',
+            baselineValue: 20,
+            targetValue: 10,
+            targetPaths: ['src/tree/pedigree.ts']
+          }
+        ]
+      }
+    }).reason,
+    'NO_CANDIDATE_PROPOSALS'
+  );
+
+  // Cohort & live-window rejections
+  assert.equal(
+    evaluateKaizenCohortReadout({...validInput, cohortInput: null}).reason,
+    'INVALID_INPUT'
+  );
+  assert.equal(
+    evaluateKaizenCohortReadout({
+      ...validInput,
+      cohortInput: {
+        beforeCohort: buildBaselineCohort({repositoryId: FAMILYTREE_REPO_ID}),
+        afterCohort: buildCandidateCohort({repositoryId: FAMILYTREE_REPO_ID})
+      }
+    }).reason,
+    'COHORT_REPOSITORY_MISMATCH'
+  );
+  assert.equal(
+    evaluateKaizenCohortReadout({
+      ...validInput,
+      cohortInput: {
+        beforeCohort: buildBaselineCohort({incrementalBilledUsdCents: 1}),
+        afterCohort: buildCandidateCohort()
+      }
+    }).reason,
+    'UNAPPROVED_SPEND_OR_CREDIT_ANOMALY'
+  );
+
+  const sixWindowEdgeChains = ['1', '2', '3', '4', '5', '6'].map((seed, idx) => {
+    let startedAtMs = 110_000;
+    let completedAtMs = 120_000;
+    if (idx === 3 || idx === 4) {
+      startedAtMs = 210_000 + idx * 1_000;
+      completedAtMs = 220_000 + idx * 1_000;
+    } else if (idx === 5) {
+      startedAtMs = 310_000;
+      completedAtMs = 320_000;
+    }
+    return buildBoundAuditChain({
+      traceSeed: seed,
+      commitSeed: seed,
+      squashSeed: (idx + 5).toString(16),
+      deliveryId: `out-del-${idx}`,
+      startedAtMs,
+      completedAtMs,
+      agentIdentity: idx === 3 ? 'manual-helper-agent' : 'copilot-swe-agent[bot]',
+      pullNumber: 300 + idx
+    });
+  });
+  assert.equal(
+    evaluateKaizenCohortReadout({
+      ...validInput,
+      evaluatedHeadSha: 'a'.repeat(40),
+      evidenceMode: 'live-autonomous-cohort',
+      liveAutonomousOutcomesCount: 5,
+      auditChains: sixWindowEdgeChains,
+      cohortInput: {
+        beforeCohort: buildBaselineCohort({acceptedOutcomes: 4}),
+        afterCohort: buildCandidateCohort({acceptedOutcomes: 5})
+      }
+    }).reason,
+    'INSUFFICIENT_LIVE_COHORT_OUTCOMES'
+  );
+  assert.equal(
+    evaluateKaizenCohortReadout({
+      ...validInput,
+      evaluatedHeadSha: 'a'.repeat(40),
+      evidenceMode: 'live-autonomous-cohort',
+      liveAutonomousOutcomesCount: 5,
+      auditChains: sixWindowEdgeChains,
+      cohortInput: {
+        beforeCohort: buildBaselineCohort({acceptedOutcomes: 5}),
+        afterCohort: buildCandidateCohort({acceptedOutcomes: 6})
+      }
+    }).reason,
+    'LIVE_OUTCOME_COUNT_MISMATCH'
+  );
+  assert.equal(
+    evaluateKaizenCohortReadout({
+      ...validInput,
+      evaluatedHeadSha: 'a'.repeat(40),
+      evidenceMode: 'live-autonomous-cohort',
+      liveAutonomousOutcomesCount: 5,
+      auditChains: sixWindowEdgeChains,
+      cohortInput: {
+        beforeCohort: buildBaselineCohort({acceptedOutcomes: 5}),
+        afterCohort: buildCandidateCohort({acceptedOutcomes: 5, medianCycleTimeMs: 300_000})
+      }
+    }).reason,
+    'INSUFFICIENT_VERIFIED_AGENT_PROVENANCE'
+  );
+
+  // Regression missing shippedCandidate and candidate validation on both rollback and non-rollback paths
+  const regressCohort = {
+    beforeCohort: buildBaselineCohort(),
+    afterCohort: buildCandidateCohort({reworkRateBps: 2000})
+  };
+  assert.equal(
+    evaluateKaizenCohortReadout({...validInput, cohortInput: regressCohort}).reason,
+    'MISSING_REVERT_CANDIDATE_META'
+  );
+  assert.equal(
+    evaluateKaizenCohortReadout({
+      ...validInput,
+      cohortInput: regressCohort,
+      shippedCandidate: null
+    }).reason,
+    'INVALID_CANDIDATE_META'
+  );
+  assert.equal(
+    evaluateKaizenCohortReadout({...validInput, shippedCandidate: undefined}).reason,
+    'INVALID_CANDIDATE_META'
+  );
+
+  const scBottleneckId = validInput.proposalInput.scorecard.bottlenecks[0].id;
+  const validShipped = {
+    proposalId: `bottleneck:${SF_REPO_ID}:${scBottleneckId}`,
+    repositoryId: SF_REPO_ID,
+    laneId: 'sf-velocity-lane',
+    targetPaths: ['tools/engineering-factory/stage-latency.mjs'],
+    targetRevertCommitSha: '2'.repeat(40)
+  };
+  assert.equal(
+    evaluateKaizenCohortReadout({
+      ...validInput,
+      shippedCandidate: {...validShipped, targetRevertCommitSha: 'e'.repeat(40)}
+    }).reason,
+    'UNVERIFIED_CANDIDATE_PROVENANCE'
+  );
+
+  // Provenance mismatches against auditTrail record (laneId, targetPaths, ownedPaths, pullNumber, issueNumber, inline provenance)
+  const twoChains = [
+    buildBoundAuditChain({
+      traceSeed: 'a',
+      commitSeed: '1',
+      squashSeed: '2',
+      laneId: 'sf-velocity-lane',
+      ownedPaths: ['tools/engineering-factory'],
+      touchedPaths: ['tools/engineering-factory/stage-latency.mjs'],
+      startedAtMs: 210_000,
+      completedAtMs: 220_000,
+      pullNumber: 141,
+      issueNumber: 137,
+      cbOverrides: {humanOwnerSignOffVerified: true}
+    })
+  ];
+  for (const badCandidate of [
+    {...validShipped, laneId: 'other-lane'},
+    {...validShipped, targetPaths: ['docs/other.md']},
+    {...validShipped, ownedPaths: ['tools/engineering-factory/stage-latency.mjs']},
+    {...validShipped, pullNumber: 999},
+    {...validShipped, issueNumber: 999},
+    {
+      ...validShipped,
+      ownedPaths: ['tools/engineering-factory'],
+      provenanceChain: {
+        stages: {
+          ...twoChains[0].stages,
+          eventDelivery: {...twoChains[0].stages.eventDelivery, deliveryId: 'different-delivery'}
+        }
+      }
+    }
+  ]) {
+    assert.equal(
+      evaluateKaizenCohortReadout({
+        ...validInput,
+        auditChains: twoChains,
+        shippedCandidate: badCandidate
+      }).reason,
+      'CANDIDATE_PROVENANCE_MISMATCH'
+    );
+  }
+
+  // Proposal mismatches (laneId, targetPaths, scope, or downgrading requiresHumanApproval on governed proposal)
+  const govChain = buildBoundAuditChain({
+    traceSeed: 'd',
+    commitSeed: '7',
+    squashSeed: '8',
+    laneId: 'sf-governance-lane',
+    ownedPaths: ['.github/workflows/ci.yml'],
+    cbOverrides: {humanOwnerSignOffVerified: true}
+  });
+  for (const [chainsToUse, headSha, badPropCandidate] of [
+    [
+      [validInput.auditChains[0]],
+      '2'.repeat(40),
+      {...validShipped, proposalId: `failure:${SF_REPO_ID}:wf-drift`}
+    ],
+    [
+      [
+        buildBoundAuditChain({
+          laneId: 'sf-governance-lane',
+          ownedPaths: ['.github/workflows/ci.yml', '.github/workflows/extra.yml'],
+          touchedPaths: ['.github/workflows/ci.yml', '.github/workflows/extra.yml'],
+          cbOverrides: {humanOwnerSignOffVerified: true}
+        })
+      ],
+      '2'.repeat(40),
+      {
+        proposalId: `failure:${SF_REPO_ID}:wf-drift`,
+        repositoryId: SF_REPO_ID,
+        laneId: 'sf-governance-lane',
+        targetPaths: ['.github/workflows/ci.yml', '.github/workflows/extra.yml'],
+        targetRevertCommitSha: '2'.repeat(40)
+      }
+    ],
+    [
+      [validInput.auditChains[0]],
+      '2'.repeat(40),
+      {...validShipped, scope: 'knowledge-map'}
+    ],
+    [
+      [govChain],
+      '8'.repeat(40),
+      {
+        proposalId: `failure:${SF_REPO_ID}:wf-drift`,
+        repositoryId: SF_REPO_ID,
+        laneId: 'sf-governance-lane',
+        targetPaths: ['.github/workflows/ci.yml'],
+        targetRevertCommitSha: '8'.repeat(40),
+        requiresHumanApproval: false
+      }
+    ]
+  ]) {
+    assert.equal(
+      evaluateKaizenCohortReadout({
+        ...validInput,
+        evaluatedHeadSha: headSha,
+        auditChains: chainsToUse,
+        shippedCandidate: badPropCandidate
+      }).reason,
+      'CANDIDATE_PROPOSAL_MISMATCH'
+    );
+  }
+});
+
+test('docs/evidence/m02-07-kaizen-audit-cohort.json deterministically replays Waves 3-4 signals on main @ ec438f54 without live-cohort overclaim', () => {
+  const receiptUrl = new URL('../../docs/evidence/m02-07-kaizen-audit-cohort.json', import.meta.url);
+  const rawReceipt = readFileSync(receiptUrl, 'utf8');
+  const receipt = JSON.parse(rawReceipt);
+
+  assert.equal(receipt.milestone, 'M02.07');
+  assert.equal(receipt.issueNumber, 137);
+  assert.equal(receipt.repository, 'Jamula/SoftwareFactory');
+  assert.equal(receipt.repositoryId, SF_REPO_ID);
+  assert.equal(receipt.evaluatedMainHead, 'ec438f54088f30856c2df6ff626e894dde2a0100');
+  assert.equal(receipt.liveExecutionDisclosure.evidenceMode, 'pre-cohort-synthetic');
+  assert.equal(receipt.liveExecutionDisclosure.syntheticReplayOnly, true);
+  assert.equal(receipt.liveExecutionDisclosure.liveAutonomousOutcomesCount, 0);
+  assert.equal(receipt.liveExecutionDisclosure.liveCohortVerified, false);
+  assert.equal(receipt.liveExecutionDisclosure.issue137ReadyToClose, false);
+  assert.equal(receipt.observedWaves3To4Signals.length, 3);
+
+  // Direct replay across queryCausalAuditTrail, proposeOptimisticImprovements, and verifyCohortImprovementOrRollback
+  const auditRes = queryCausalAuditTrail(receipt.readoutInput.auditChains, {repositoryId: SF_REPO_ID});
+  assert.equal(auditRes.valid, true);
+  assert.equal(auditRes.totalRepositoryChains, 5);
+  assert.equal(auditRes.isolatedOutCount, 1);
+
+  const propRes = proposeOptimisticImprovements(receipt.readoutInput.proposalInput);
+  assert.equal(propRes.valid, true);
+  assert.deepEqual(
+    propRes.proposals.map(p => p.proposalId),
+    receipt.expectedReadoutSummary.proposalCounts.proposalIds
+  );
+  assert.deepEqual(
+    propRes.proposals.filter(p => p.requiresHumanApproval).map(p => p.proposalId),
+    receipt.expectedReadoutSummary.proposalCounts.humanApprovalProposalIds
+  );
+  assert.deepEqual(
+    propRes.deferredByOverlap.map(d => d.proposalId),
+    receipt.expectedReadoutSummary.proposalCounts.deferredProposalIds
+  );
+
+  const cohortRes = verifyCohortImprovementOrRollback(receipt.readoutInput.cohortInput);
+  assert.deepEqual(cohortRes, receipt.expectedReadoutSummary.cohortVerdict);
+
+  // Full bound readout replay on ec438f54088f30856c2df6ff626e894dde2a0100
+  const readout = evaluateKaizenCohortReadout(receipt.readoutInput);
+  assert.equal(readout.valid, receipt.expectedReadoutSummary.valid);
+  assert.equal(readout.shadow, receipt.expectedReadoutSummary.shadow);
+  assert.equal(readout.readOnly, receipt.expectedReadoutSummary.readOnly);
+  assert.equal(readout.liveMutation, receipt.expectedReadoutSummary.liveMutation);
+  assert.equal(readout.directMainMutation, receipt.expectedReadoutSummary.directMainMutation);
+  assert.equal(readout.autoPolicyMutation, receipt.expectedReadoutSummary.autoPolicyMutation);
+  assert.equal(readout.reason, receipt.expectedReadoutSummary.reason);
+  assert.equal(readout.repositoryId, receipt.expectedReadoutSummary.repositoryId);
+  assert.equal(readout.evaluatedHeadSha, receipt.expectedReadoutSummary.evaluatedHeadSha);
+  assert.equal(readout.evidenceMode, receipt.expectedReadoutSummary.evidenceMode);
+  assert.equal(readout.syntheticReplayOnly, receipt.expectedReadoutSummary.syntheticReplayOnly);
+  assert.equal(readout.liveAutonomousOutcomesCount, receipt.expectedReadoutSummary.liveAutonomousOutcomesCount);
+  assert.equal(readout.liveCohortVerified, receipt.expectedReadoutSummary.liveCohortVerified);
+  assert.equal(readout.issue137ReadyToClose, receipt.expectedReadoutSummary.issue137ReadyToClose);
+  assert.equal(readout.readoutStatus, receipt.expectedReadoutSummary.readoutStatus);
+  assert.deepEqual(readout.gatePipelineRequired, receipt.expectedReadoutSummary.gatePipelineRequired);
+  assert.equal(readout.revertCandidateSpec, null);
+
+  const {records: _omittedRecords, ...actualProvenanceCounts} = readout.provenanceSummary;
+  assert.deepEqual(actualProvenanceCounts, receipt.expectedReadoutSummary.provenanceCounts);
+  assert.equal(readout.proposalSummary.totalProposals, receipt.expectedReadoutSummary.proposalCounts.totalProposals);
+  assert.equal(
+    readout.proposalSummary.repositoryProposalsCount,
+    receipt.expectedReadoutSummary.proposalCounts.repositoryProposalsCount
+  );
+  assert.equal(
+    readout.proposalSummary.humanApprovalRequiredCount,
+    receipt.expectedReadoutSummary.proposalCounts.humanApprovalRequiredCount
+  );
+  assert.equal(
+    readout.proposalSummary.standardCandidateCount,
+    receipt.expectedReadoutSummary.proposalCounts.standardCandidateCount
+  );
+  assert.equal(readout.proposalSummary.deferredCount, receipt.expectedReadoutSummary.proposalCounts.deferredCount);
+
+  // Regression drills: governed #168 revert spec AND standard #161 revert spec
+  const governedRegression = evaluateKaizenCohortReadout({
+    ...receipt.readoutInput,
+    cohortInput: {
+      beforeCohort: receipt.readoutInput.cohortInput.beforeCohort,
+      afterCohort: receipt.regressionDrill.regressionAfterCohort
+    }
+  });
+  assert.equal(governedRegression.valid, true);
+  assert.equal(governedRegression.readoutStatus, receipt.expectedRegressionDrillSummary.readoutStatus);
+  assert.equal(governedRegression.cohortVerdict.rollbackRequired, true);
+  assert.deepEqual(
+    governedRegression.cohortVerdict.rollbackReasons,
+    receipt.expectedRegressionDrillSummary.rollbackReasons
+  );
+  assert.equal(governedRegression.liveCohortVerified, false);
+  assert.equal(governedRegression.issue137ReadyToClose, false);
+  for (const [key, expectedVal] of Object.entries(receipt.expectedRegressionDrillSummary.governedRevertSpec)) {
+    assert.deepEqual(governedRegression.revertCandidateSpec[key], expectedVal, `governedRevertSpec.${key}`);
+  }
+
+  const standardRegression = evaluateKaizenCohortReadout({
+    ...receipt.readoutInput,
+    cohortInput: {
+      beforeCohort: receipt.readoutInput.cohortInput.beforeCohort,
+      afterCohort: receipt.regressionDrill.regressionAfterCohort
+    },
+    shippedCandidate: receipt.regressionDrill.standardShippedCandidate
+  });
+  assert.equal(standardRegression.valid, true);
+  assert.equal(standardRegression.readoutStatus, 'ROLLBACK_REQUIRED');
+  for (const [key, expectedVal] of Object.entries(receipt.expectedRegressionDrillSummary.standardRevertSpec)) {
+    assert.deepEqual(standardRegression.revertCandidateSpec[key], expectedVal, `standardRevertSpec.${key}`);
+  }
+});
+
