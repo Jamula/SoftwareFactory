@@ -323,10 +323,15 @@ function makeFullHealthyInput() {
   };
 }
 
-test('replays recorded cec2745b7b8a21e77ad9f2839d4255d42305d419 main quality audit receipt fail-closed on CodeQL Analyze (python)', () => {
+test('replays recorded b0924c38 main quality audit receipt with 13/13 green Push on main checks and flips to MAIN_HEALTHY once CodeQL code_scanning ruleset is present', () => {
   assert.equal(ACTIVE_MAIN_WORKFLOWS.length, 6);
-  assert.equal(recordedEvidence.auditedHead, 'cec2745b7b8a21e77ad9f2839d4255d42305d419');
+  assert.equal(recordedEvidence.auditedHead, 'b0924c3807f797e6090e1dc3e1e65fc9caa07550');
   assert.equal(recordedEvidence.mainHealthy, false);
+  assert.equal(recordedEvidence.statusSummary.allActiveWorkflowsGreen, true);
+  assert.equal(recordedEvidence.statusSummary.activeWorkflowChecksPassed, 13);
+  assert.equal(recordedEvidence.statusSummary.analyzePythonJobCount, 0);
+  assert.equal(recordedEvidence.mergeQueueReceipt.mergedPullRequest, 157);
+  assert.equal(recordedEvidence.mergeQueueReceipt.mergeGroupHead, 'b0924c3807f797e6090e1dc3e1e65fc9caa07550');
 
   const actual = auditProtectedMainAndCandidateGates(recordedEvidence.auditInput);
   assert.equal(Object.isFrozen(actual), true);
@@ -340,24 +345,38 @@ test('replays recorded cec2745b7b8a21e77ad9f2839d4255d42305d419 main quality aud
   assert.equal(actual.eligible, false);
   assert.equal(actual.mainHealthy, false);
   assert.equal(actual.dependentWorkAllowed, false);
-  assert.equal(actual.reason, 'MAIN_WORKFLOW_FAILED');
-  assert.deepEqual(actual.failedMainWorkflows, ['CodeQL']);
-  assert.deepEqual(actual.failedMainJobs, [
-    {
-      workflow: 'CodeQL',
-      runName: 'Push on main',
-      runId: 45975773999,
-      jobName: 'Analyze (python)',
-      jobId: 140426999433,
-      status: 'completed',
-      conclusion: 'failure'
-    }
-  ]);
-  assert.equal(actual.coverageSummary.mainJs.componentCount, 57);
-  assert.equal(actual.coverageSummary.mainJs.linePercent, '99.94%');
-  assert.equal(actual.coverageSummary.mainJs.branchPercent, '98.91%');
+  assert.equal(actual.reason, 'RULESET_INCOMPLETE');
+  assert.deepEqual(actual.failureReasons, ['RULESET_INCOMPLETE']);
+  assert.deepEqual(actual.failedMainWorkflows, []);
+  assert.deepEqual(actual.failedMainJobs, []);
+  assert.equal(actual.coverageSummary.mainJs.componentCount, 70);
+  assert.equal(actual.coverageSummary.mainJs.lines, 40665);
+  assert.equal(actual.coverageSummary.mainJs.lineTotal, 40685);
+  assert.equal(actual.coverageSummary.mainJs.linePercent, '99.95%');
+  assert.equal(actual.coverageSummary.mainJs.branches, 21454);
+  assert.equal(actual.coverageSummary.mainJs.branchTotal, 21644);
+  assert.equal(actual.coverageSummary.mainJs.branchPercent, '99.12%');
   assert.equal(actual.coverageSummary.mainDotnet.linePercent, '99.88%');
   assert.equal(actual.coverageSummary.mainDotnet.branchPercent, '98.50%');
+
+  // Adding the CodeQL code_scanning ruleset entry to the exact b0924c38 auditInput immediately flips mainHealthy to true.
+  const withCodeqlRuleset = cloneJson(recordedEvidence.auditInput);
+  withCodeqlRuleset.ruleset.codeScanningTools = [
+    {
+      tool: 'CodeQL',
+      securityAlertsThreshold: 'medium_or_higher',
+      alertsThreshold: 'errors_and_warnings'
+    }
+  ];
+  const healthyVerdict = auditProtectedMainAndCandidateGates(withCodeqlRuleset);
+  assert.equal(healthyVerdict.valid, true);
+  assert.equal(healthyVerdict.eligible, false);
+  assert.equal(healthyVerdict.mainHealthy, true);
+  assert.equal(healthyVerdict.dependentWorkAllowed, true);
+  assert.equal(healthyVerdict.reason, 'MAIN_HEALTHY');
+  assert.deepEqual(healthyVerdict.failureReasons, []);
+  assert.deepEqual(healthyVerdict.failedMainWorkflows, []);
+  assert.deepEqual(healthyVerdict.failedMainJobs, []);
 });
 
 test('verifies healthy protected main alone and full protected main + candidate integration gates', () => {

@@ -9,7 +9,7 @@
     "milestone": "M01.02.01",
     "priority": "P0",
     "state": "OPEN",
-    "keepOpenReason": "GitHub CodeQL Default Setup on Push on main still runs stale Analyze (python) because python remains checked in repository CodeQL Default Setup UI settings."
+    "keepOpenReason": null
   },
   "implementationPullRequest": {
     "number": 120,
@@ -18,10 +18,17 @@
     "mergeCommit": "824031eb8d9d79c5dec03043a96ee575293978c0",
     "mergedAt": "2026-11-27T09:35:37Z"
   },
+  "residualGuardPullRequest": {
+    "number": 150,
+    "title": "M01.02.01: Detect residual CodeQL Python checks and record #118 acceptance evidence",
+    "url": "https://github.com/Jamula/SoftwareFactory/pull/150",
+    "mergeCommit": "3d3b0c0c1d28b1df13a401d9caaaaeb9dcb357cb",
+    "mergedAt": "2026-11-28T02:32:53Z"
+  },
   "verifiedMainCandidate": {
     "branch": "main",
-    "headSha": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
-    "observedAt": "2026-11-27T10:00:33Z",
+    "headSha": "b0924c3807f797e6090e1dc3e1e65fc9caa07550",
+    "observedAt": "2026-11-28T03:13:03Z",
     "pinnedNodeVersion": "26.13.1",
     "trackedPyFiles": 0,
     "trackedPywFiles": 0,
@@ -65,172 +72,272 @@
     {
       "path": "tools/engineering-factory/no-python-guard.mjs",
       "testSuite": "tests/engineering-factory/no-python-guard.test.mjs",
-      "lines": 68,
-      "lineTotal": 68,
-      "branches": 49,
-      "branchTotal": 49
+      "lines": 354,
+      "lineTotal": 354,
+      "branches": 239,
+      "branchTotal": 239
     }
   ],
   "hostedCoverageSummary": {
-    "headSha": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
-    "runId": 45975774012,
-    "jobId": 140426990061,
-    "lines": 20664,
-    "lineTotal": 20676,
-    "branches": 12645,
-    "branchTotal": 12784,
+    "headSha": "b0924c3807f797e6090e1dc3e1e65fc9caa07550",
+    "runId": 46101609302,
+    "jobId": 140845083481,
+    "artifactId": 15245462878,
+    "componentCount": 70,
+    "lines": 40665,
+    "lineTotal": 40685,
+    "branches": 21454,
+    "branchTotal": 21644,
     "mandatoryLinePercentMin": 98,
     "mandatoryBranchPercentMin": 95,
     "valid": true
   },
   "hostedRuntimeRuns": {
     "linuxFactoryValidation": {
-      "runId": 45975774012,
+      "runId": 46101609302,
       "name": "Factory validation",
       "event": "push",
-      "headSha": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
+      "headSha": "b0924c3807f797e6090e1dc3e1e65fc9caa07550",
       "status": "completed",
       "conclusion": "success",
-      "url": "https://github.com/Jamula/SoftwareFactory/actions/runs/45975774012",
+      "url": "https://github.com/Jamula/SoftwareFactory/actions/runs/46101609302",
       "jobs": [
-        {"id": 140426990061, "name": "test-coverage", "status": "completed", "conclusion": "success"},
-        {"id": 140426990428, "name": "linux-aspire-runtime", "status": "completed", "conclusion": "success"},
-        {"id": 140427292828, "name": "upload-coverage-javascript", "status": "completed", "conclusion": "success"},
-        {"id": 140427422272, "name": "build-test", "status": "completed", "conclusion": "success"}
+        {"id": 140845083481, "name": "test-coverage", "status": "completed", "conclusion": "success"},
+        {"id": 140845083688, "name": "linux-aspire-runtime", "status": "completed", "conclusion": "success"},
+        {"id": 140845266327, "name": "upload-coverage-javascript", "status": "completed", "conclusion": "success"},
+        {"id": 140845427660, "name": "build-test", "status": "completed", "conclusion": "success"}
       ]
     },
     "windowsAspireRuntime": {
-      "runId": 45975774125,
+      "runId": 46101609338,
       "name": "Windows Aspire runtime",
       "event": "push",
-      "headSha": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
+      "headSha": "b0924c3807f797e6090e1dc3e1e65fc9caa07550",
       "status": "completed",
       "conclusion": "success",
-      "url": "https://github.com/Jamula/SoftwareFactory/actions/runs/45975774125",
+      "url": "https://github.com/Jamula/SoftwareFactory/actions/runs/46101609338",
       "jobs": [
-        {"id": 140426992317, "name": "windows-aspire-runtime", "status": "completed", "conclusion": "success"}
+        {"id": 140845083870, "name": "windows-aspire-runtime", "status": "completed", "conclusion": "success"}
+      ]
+    },
+    "dotnetMafSpecialistAgents": {
+      "runId": 46101609310,
+      "name": ".NET MAF specialist agents",
+      "event": "push",
+      "headSha": "b0924c3807f797e6090e1dc3e1e65fc9caa07550",
+      "status": "completed",
+      "conclusion": "success",
+      "url": "https://github.com/Jamula/SoftwareFactory/actions/runs/46101609310",
+      "jobs": [
+        {"id": 140845083498, "name": "linux-dotnet-agents", "status": "completed", "conclusion": "success"},
+        {"id": 140845083582, "name": "windows-dotnet-agents", "status": "completed", "conclusion": "success"}
+      ]
+    },
+    "reusableReplaySmoke": {
+      "runId": 46101609462,
+      "name": "Reusable replay smoke",
+      "event": "push",
+      "headSha": "b0924c3807f797e6090e1dc3e1e65fc9caa07550",
+      "status": "completed",
+      "conclusion": "success",
+      "url": "https://github.com/Jamula/SoftwareFactory/actions/runs/46101609462",
+      "jobs": [
+        {"id": 140845084128, "name": "pinned-synthetic-replay / replay", "status": "completed", "conclusion": "success"}
+      ]
+    },
+    "codeqlPushOnMain": {
+      "runId": 46101609262,
+      "name": "Push on main",
+      "event": "dynamic",
+      "headSha": "b0924c3807f797e6090e1dc3e1e65fc9caa07550",
+      "status": "completed",
+      "conclusion": "success",
+      "url": "https://github.com/Jamula/SoftwareFactory/actions/runs/46101609262",
+      "analyzePythonJobCount": 0,
+      "jobs": [
+        {"id": 140845087572, "name": "Analyze (actions)", "status": "completed", "conclusion": "success"},
+        {"id": 140845087358, "name": "Analyze (csharp)", "status": "completed", "conclusion": "success"},
+        {"id": 140845087609, "name": "Analyze (javascript-typescript)", "status": "completed", "conclusion": "success"}
+      ]
+    },
+    "codeqlCodeQualityPushOnMain": {
+      "runId": 46101609773,
+      "name": "Code Quality: Push on main",
+      "event": "dynamic",
+      "headSha": "b0924c3807f797e6090e1dc3e1e65fc9caa07550",
+      "status": "completed",
+      "conclusion": "success",
+      "url": "https://github.com/Jamula/SoftwareFactory/actions/runs/46101609773",
+      "analyzePythonJobCount": 0,
+      "jobs": [
+        {"id": 140845088964, "name": "Analyze (csharp)", "status": "completed", "conclusion": "success"},
+        {"id": 140845089134, "name": "Analyze (javascript-typescript)", "status": "completed", "conclusion": "success"}
       ]
     }
   },
-  "codeqlDefaultSetupBlocker": {
-    "runId": 45975773999,
+  "codeqlDefaultSetupVerification": {
+    "runId": 46101609262,
+    "codeQualityRunId": 46101609773,
     "name": "Push on main",
     "event": "dynamic",
-    "headSha": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
+    "headSha": "b0924c3807f797e6090e1dc3e1e65fc9caa07550",
     "status": "completed",
-    "conclusion": "failure",
-    "url": "https://github.com/Jamula/SoftwareFactory/actions/runs/45975773999",
-    "failingJobId": 140426999433,
-    "failingCheckName": "Analyze (python)",
-    "codeqlExitCode": 32,
-    "diagnostic": "CodeQL did not detect any code written in languages supported by this CodeQL distribution (Python or YAML).",
-    "residualPythonCodeql": true,
-    "remediation": "Uncheck python in Settings -> Code security -> Code scanning -> Default setup"
+    "conclusion": "success",
+    "url": "https://github.com/Jamula/SoftwareFactory/actions/runs/46101609262",
+    "analyzePythonJobCount": 0,
+    "residualPythonCodeql": false,
+    "reason": "CODEQL_PYTHON_ABSENT",
+    "remediation": null
   },
   "checkRuns": [
     {
-      "id": 140426990061,
+      "id": 140845083481,
       "name": "test-coverage",
-      "head_sha": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
+      "head_sha": "b0924c3807f797e6090e1dc3e1e65fc9caa07550",
       "app": "github-actions",
       "status": "completed",
       "conclusion": "success",
-      "started_at": "2026-11-27T09:41:18Z",
-      "completed_at": "2026-11-27T09:41:54Z",
-      "html_url": "https://github.com/Jamula/SoftwareFactory/actions/runs/45975774012/job/140426990061"
+      "started_at": "2026-11-28T03:11:03Z",
+      "completed_at": "2026-11-28T03:11:42Z",
+      "html_url": "https://github.com/Jamula/SoftwareFactory/actions/runs/46101609302/job/140845083481"
     },
     {
-      "id": 140426990428,
+      "id": 140845083688,
       "name": "linux-aspire-runtime",
-      "head_sha": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
+      "head_sha": "b0924c3807f797e6090e1dc3e1e65fc9caa07550",
       "app": "github-actions",
       "status": "completed",
       "conclusion": "success",
-      "started_at": "2026-11-27T09:41:18Z",
-      "completed_at": "2026-11-27T09:42:11Z",
-      "html_url": "https://github.com/Jamula/SoftwareFactory/actions/runs/45975774012/job/140426990428"
+      "started_at": "2026-11-28T03:11:03Z",
+      "completed_at": "2026-11-28T03:12:21Z",
+      "html_url": "https://github.com/Jamula/SoftwareFactory/actions/runs/46101609302/job/140845083688"
     },
     {
-      "id": 140427292828,
+      "id": 140845266327,
       "name": "upload-coverage-javascript",
-      "head_sha": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
+      "head_sha": "b0924c3807f797e6090e1dc3e1e65fc9caa07550",
       "app": "github-actions",
       "status": "completed",
       "conclusion": "success",
-      "started_at": "2026-11-27T09:41:57Z",
-      "completed_at": "2026-11-27T09:42:07Z",
-      "html_url": "https://github.com/Jamula/SoftwareFactory/actions/runs/45975774012/job/140427292828"
+      "started_at": "2026-11-28T03:11:45Z",
+      "completed_at": "2026-11-28T03:11:56Z",
+      "html_url": "https://github.com/Jamula/SoftwareFactory/actions/runs/46101609302/job/140845266327"
     },
     {
-      "id": 140427422272,
+      "id": 140845427660,
       "name": "build-test",
-      "head_sha": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
+      "head_sha": "b0924c3807f797e6090e1dc3e1e65fc9caa07550",
       "app": "github-actions",
       "status": "completed",
       "conclusion": "success",
-      "started_at": "2026-11-27T09:42:14Z",
-      "completed_at": "2026-11-27T09:42:17Z",
-      "html_url": "https://github.com/Jamula/SoftwareFactory/actions/runs/45975774012/job/140427422272"
+      "started_at": "2026-11-28T03:12:24Z",
+      "completed_at": "2026-11-28T03:12:27Z",
+      "html_url": "https://github.com/Jamula/SoftwareFactory/actions/runs/46101609302/job/140845427660"
     },
     {
-      "id": 140426992317,
+      "id": 140845083870,
       "name": "windows-aspire-runtime",
-      "head_sha": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
+      "head_sha": "b0924c3807f797e6090e1dc3e1e65fc9caa07550",
       "app": "github-actions",
       "status": "completed",
       "conclusion": "success",
-      "started_at": "2026-11-27T09:41:20Z",
-      "completed_at": "2026-11-27T09:43:29Z",
-      "html_url": "https://github.com/Jamula/SoftwareFactory/actions/runs/45975774125/job/140426992317"
+      "started_at": "2026-11-28T03:11:03Z",
+      "completed_at": "2026-11-28T03:12:59Z",
+      "html_url": "https://github.com/Jamula/SoftwareFactory/actions/runs/46101609338/job/140845083870"
     },
     {
-      "id": 140426998986,
-      "name": "Analyze (javascript-typescript)",
-      "head_sha": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
+      "id": 140845083498,
+      "name": "linux-dotnet-agents",
+      "head_sha": "b0924c3807f797e6090e1dc3e1e65fc9caa07550",
       "app": "github-actions",
       "status": "completed",
       "conclusion": "success",
-      "started_at": "2026-11-27T09:41:19Z",
-      "completed_at": "2026-11-27T09:42:46Z",
-      "html_url": "https://github.com/Jamula/SoftwareFactory/actions/runs/45975773999/job/140426998986"
+      "started_at": "2026-11-28T03:11:03Z",
+      "completed_at": "2026-11-28T03:11:37Z",
+      "html_url": "https://github.com/Jamula/SoftwareFactory/actions/runs/46101609310/job/140845083498"
     },
     {
-      "id": 140426999412,
-      "name": "Analyze (csharp)",
-      "head_sha": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
+      "id": 140845083582,
+      "name": "windows-dotnet-agents",
+      "head_sha": "b0924c3807f797e6090e1dc3e1e65fc9caa07550",
       "app": "github-actions",
       "status": "completed",
       "conclusion": "success",
-      "started_at": "2026-11-27T09:41:19Z",
-      "completed_at": "2026-11-27T09:42:57Z",
-      "html_url": "https://github.com/Jamula/SoftwareFactory/actions/runs/45975773999/job/140426999412"
+      "started_at": "2026-11-28T03:11:05Z",
+      "completed_at": "2026-11-28T03:12:25Z",
+      "html_url": "https://github.com/Jamula/SoftwareFactory/actions/runs/46101609310/job/140845083582"
     },
     {
-      "id": 140426999431,
+      "id": 140845084128,
+      "name": "pinned-synthetic-replay / replay",
+      "head_sha": "b0924c3807f797e6090e1dc3e1e65fc9caa07550",
+      "app": "github-actions",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-11-28T03:11:03Z",
+      "completed_at": "2026-11-28T03:11:12Z",
+      "html_url": "https://github.com/Jamula/SoftwareFactory/actions/runs/46101609462/job/140845084128"
+    },
+    {
+      "id": 140845087572,
       "name": "Analyze (actions)",
-      "head_sha": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
+      "head_sha": "b0924c3807f797e6090e1dc3e1e65fc9caa07550",
       "app": "github-actions",
       "status": "completed",
       "conclusion": "success",
-      "started_at": "2026-11-27T09:41:19Z",
-      "completed_at": "2026-11-27T09:42:03Z",
-      "html_url": "https://github.com/Jamula/SoftwareFactory/actions/runs/45975773999/job/140426999431"
+      "started_at": "2026-11-28T03:11:04Z",
+      "completed_at": "2026-11-28T03:11:45Z",
+      "html_url": "https://github.com/Jamula/SoftwareFactory/actions/runs/46101609262/job/140845087572"
     },
     {
-      "id": 140426999433,
-      "name": "Analyze (python)",
-      "head_sha": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
+      "id": 140845087358,
+      "name": "Analyze (csharp)",
+      "head_sha": "b0924c3807f797e6090e1dc3e1e65fc9caa07550",
       "app": "github-actions",
       "status": "completed",
-      "conclusion": "failure",
-      "started_at": "2026-11-27T09:41:19Z",
-      "completed_at": "2026-11-27T09:41:54Z",
-      "html_url": "https://github.com/Jamula/SoftwareFactory/actions/runs/45975773999/job/140426999433"
+      "conclusion": "success",
+      "started_at": "2026-11-28T03:11:05Z",
+      "completed_at": "2026-11-28T03:12:47Z",
+      "html_url": "https://github.com/Jamula/SoftwareFactory/actions/runs/46101609262/job/140845087358"
+    },
+    {
+      "id": 140845087609,
+      "name": "Analyze (javascript-typescript)",
+      "head_sha": "b0924c3807f797e6090e1dc3e1e65fc9caa07550",
+      "app": "github-actions",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-11-28T03:11:04Z",
+      "completed_at": "2026-11-28T03:12:46Z",
+      "html_url": "https://github.com/Jamula/SoftwareFactory/actions/runs/46101609262/job/140845087609"
+    },
+    {
+      "id": 140845088964,
+      "name": "Analyze (csharp)",
+      "head_sha": "b0924c3807f797e6090e1dc3e1e65fc9caa07550",
+      "app": "github-actions",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-11-28T03:11:04Z",
+      "completed_at": "2026-11-28T03:12:27Z",
+      "html_url": "https://github.com/Jamula/SoftwareFactory/actions/runs/46101609773/job/140845088964"
+    },
+    {
+      "id": 140845089134,
+      "name": "Analyze (javascript-typescript)",
+      "head_sha": "b0924c3807f797e6090e1dc3e1e65fc9caa07550",
+      "app": "github-actions",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-11-28T03:11:05Z",
+      "completed_at": "2026-11-28T03:12:18Z",
+      "html_url": "https://github.com/Jamula/SoftwareFactory/actions/runs/46101609773/job/140845089134"
     }
   ],
   "acceptanceStatus": {
     "codeAndRuntimeExitCriteriaDelivered": true,
-    "finalIssueClosureReady": false,
-    "remainingAction": "Uncheck python in Settings -> Code security -> Code scanning -> Default setup and verify Push on main CodeQL completes without Analyze (python)."
+    "acceptanceReadyToClose": true,
+    "finalIssueClosureReady": true,
+    "remainingAction": null
   }
 }
