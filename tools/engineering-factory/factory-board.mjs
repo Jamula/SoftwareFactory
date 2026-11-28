@@ -2457,110 +2457,163 @@ export function createStaticPagesHost(win, { defaultIntervalSeconds = 60 } = {})
     emit("state", { data: JSON.stringify(currentEnvelope()) });
   }
 
-  function mapStaticRestSnapshot(milestonesRaw, issuesOnlyRaw, pullsRaw) {
+  function mapStaticRestSnapshot(milestonesRaw, issuesOnlyRaw, openPullsRaw, closedPullsRaw, partial) {
     const canonicalIds = [
       ["M01", "M01 - Autonomous SoftwareFactory"],
       ["M02", "M02 - Fast SoftwareFactory"],
-      ["M03", "M03 - Spellbook autonomous adoption"],
-      ["M04", "M04 - FamilyTree autonomous adoption"],
+      ["M03", "M03 - FamilyTree autonomous adoption"],
+      ["M04", "M04 - Spellbook autonomous adoption"],
       ["M05", "M05 - FamilyHub autonomous adoption"],
     ];
     const codeRe = /\b(M0[1-5])\b/i;
     const byId = new Map(
       canonicalIds.map(([id, title]) => [
         id,
-        { id, title, state: "OPEN", openIssues: 0, closedIssues: 0, totalIssues: 0, completionPercent: 0, openPrs: 0, partial: false, issues: [] },
+        {
+          id,
+          number: null,
+          title,
+          state: "missing",
+          openIssues: 0,
+          closedIssues: 0,
+          totalIssues: 0,
+          completionPercent: partial ? null : 0,
+          activePulls: 0,
+          ciPassingPulls: 0,
+          ciPendingPulls: 0,
+          ciFailingPulls: 0,
+          queuedPulls: null,
+          issues: [],
+        },
       ]),
     );
     for (const m of milestonesRaw) {
       const match = codeRe.exec(m.title);
       if (match && !/^historical\b/i.test(m.title.trim())) {
         const slot = byId.get(match[1].toUpperCase());
+        slot.number = typeof m.number === "number" ? m.number : null;
         slot.title = m.title;
-        slot.state = m.state.toUpperCase();
+        slot.state = m.state.toLowerCase();
       }
     }
-    const unassigned = [];
-    let openIssues = 0;
-    let closedIssues = 0;
+    const unassignedIssues = [];
+    const issueMilestoneMap = new Map();
+    let issuesOpen = 0;
+    let issuesClosed = 0;
     for (const it of issuesOnlyRaw) {
       const state = it.state.toUpperCase();
-      if (state === "CLOSED") closedIssues += 1;
-      else openIssues += 1;
+      if (state === "CLOSED") issuesClosed += 1;
+      else issuesOpen += 1;
       const labels = it.labels.map((l) => (typeof l === "string" ? l : l.name));
       const mText = `${it.milestone ? it.milestone.title : ""} ${it.title} ${labels.join(" ")}`;
       const mMatch = codeRe.exec(mText);
       const prioMatch = labels.find((l) => /^P[0-2]$/i.test(l));
-      const row = { number: it.number, title: it.title, state, priority: prioMatch ? prioMatch.toUpperCase() : null, stepId: null, url: it.html_url, updatedAt: it.updated_at };
-      if (mMatch) {
-        const slot = byId.get(mMatch[1].toUpperCase());
+      const milestoneId = mMatch ? mMatch[1].toUpperCase() : null;
+      const row = {
+        number: it.number,
+        title: it.title,
+        state,
+        priority: prioMatch ? prioMatch.toUpperCase() : null,
+        milestoneId,
+        stepId: null,
+        labels,
+        linkedPullNumbers: [],
+        url: it.html_url,
+        updatedAt: it.updated_at,
+      };
+      if (milestoneId) {
+        issueMilestoneMap.set(it.number, milestoneId);
+        const slot = byId.get(milestoneId);
         slot.issues.push(row);
         if (state === "CLOSED") slot.closedIssues += 1;
         else slot.openIssues += 1;
       } else {
-        unassigned.push(row);
+        unassignedIssues.push(row);
       }
     }
-    for (const slot of byId.values()) {
-      slot.totalIssues = slot.openIssues + slot.closedIssues;
-      slot.completionPercent = slot.totalIssues > 0 ? Math.round((slot.closedIssues / slot.totalIssues) * 100) : 0;
-    }
     const openPulls = [];
+    for (const pr of openPullsRaw) {
+      const prCode = codeRe.exec(`${pr.milestone ? pr.milestone.title : ""} ${pr.title}`);
+      const linkedNums = [...pr.title.matchAll(/#(\d+)\b/g)].map((m) => Number.parseInt(m[1], 10));
+      const milestoneId = prCode ? prCode[1].toUpperCase() : linkedNums.map((n) => issueMilestoneMap.get(n)).find(Boolean) || null;
+      if (milestoneId) {
+        byId.get(milestoneId).activePulls += 1;
+      }
+      openPulls.push({
+        number: pr.number,
+        title: pr.title,
+        url: pr.html_url,
+        headRefName: pr.head.ref,
+        headSha: pr.head.sha || "",
+        isDraft: Boolean(pr.draft),
+        linkedIssueNumbers: linkedNums,
+        milestoneId,
+        ci: { state: "UNKNOWN", passed: 0, failed: 0, pending: 0, total: 0 },
+        reviewStatus: "UNKNOWN",
+        mergeStateStatus: "UNKNOWN",
+        autoMerge: Boolean(pr.auto_merge),
+        mergeQueue: { known: false, queued: null, state: null, position: null },
+        updatedAt: pr.updated_at,
+      });
+    }
     const mergedPulls = [];
-    for (const pr of pullsRaw) {
-      const prCode = codeRe.exec(pr.title);
-      const milestoneId = prCode ? prCode[1].toUpperCase() : null;
-      if (pr.state === "open") {
-        openPulls.push({
-          number: pr.number,
-          title: pr.title,
-          url: pr.html_url,
-          headRefName: pr.head.ref,
-          isDraft: Boolean(pr.draft),
-          milestoneId,
-          ci: { state: "UNKNOWN", passed: 0, failed: 0, pending: 0, total: 0 },
-          reviewStatus: "UNKNOWN",
-          mergeStateStatus: "UNKNOWN",
-          autoMerge: Boolean(pr.auto_merge),
-          mergeQueue: { known: false, queued: null, state: null, position: null },
-          updatedAt: pr.updated_at,
-        });
-      } else if (pr.merged_at) {
+    for (const pr of closedPullsRaw) {
+      if (pr.merged_at) {
+        const prCode = codeRe.exec(`${pr.milestone ? pr.milestone.title : ""} ${pr.title}`);
         mergedPulls.push({
           number: pr.number,
           title: pr.title,
           url: pr.html_url,
           headRefName: pr.head.ref,
-          milestoneId,
+          milestoneId: prCode ? prCode[1].toUpperCase() : null,
           mergedAt: pr.merged_at,
         });
       }
     }
-    const totalIssues = openIssues + closedIssues;
+    for (const slot of byId.values()) {
+      slot.totalIssues = slot.openIssues + slot.closedIssues;
+      slot.completionPercent = partial
+        ? null
+        : slot.totalIssues > 0
+          ? Math.round((slot.closedIssues / slot.totalIssues) * 100)
+          : 0;
+    }
+    const issuesTotal = issuesOpen + issuesClosed;
     return {
-      ok: true,
-      verified: true,
-      stale: false,
-      partial: false,
       repo,
-      source: "github-pages-rest",
-      generatedAt: new Date(nowFn()).toISOString(),
+      source: "github-rest",
+      readOnly: true,
+      verified: true,
+      ok: true,
+      partial,
+      stale: false,
       error: null,
+      generatedAt: new Date(nowFn()).toISOString(),
+      rateLimit: null,
       totals: {
-        totalIssues,
-        openIssues,
-        closedIssues,
-        completionPercent: Math.round((closedIssues / Math.max(1, totalIssues)) * 100),
+        milestonesOpen: [...byId.values()].filter((m) => m.state === "open").length,
+        issuesOpen,
+        issuesClosed,
+        issuesTotal,
+        completionPercent: partial
+          ? null
+          : issuesTotal > 0
+            ? Math.round((issuesClosed / issuesTotal) * 100)
+            : 0,
         openPulls: openPulls.length,
+        draftPulls: openPulls.filter((pr) => pr.isDraft).length,
+        ciPassingPulls: 0,
+        ciPendingPulls: 0,
+        ciFailingPulls: 0,
+        ciUnknownPulls: openPulls.length,
+        approvedPulls: null,
         queuedPulls: null,
-        failingPulls: 0,
-        activeMilestones: [...byId.values()].filter((m) => m.state === "OPEN").length,
-        totalMilestones: byId.size,
+        mergedRecentPulls: mergedPulls.length,
       },
       milestones: [...byId.values()],
-      unassignedIssues: { openIssues: unassigned.filter((i) => i.state !== "CLOSED").length, closedIssues: unassigned.filter((i) => i.state === "CLOSED").length, issues: unassigned },
       openPulls,
       mergedPulls,
+      unassignedIssues,
     };
   }
 
@@ -2571,25 +2624,32 @@ export function createStaticPagesHost(win, { defaultIntervalSeconds = 60 } = {})
     const base = `https://api.github.com/repos/${repo}`;
     const headers = { Accept: "application/vnd.github+json" };
     try {
-      const [mRes, iRes, pRes] = await Promise.all([
+      const [mRes, iRes, opRes, cpRes] = await Promise.all([
         realFetch(`${base}/milestones?state=all&per_page=100`, { headers }),
         realFetch(`${base}/issues?state=all&per_page=100`, { headers }),
-        realFetch(`${base}/pulls?state=all&sort=updated&direction=desc&per_page=50`, { headers }),
+        realFetch(`${base}/pulls?state=open&sort=updated&direction=desc&per_page=100`, { headers }),
+        realFetch(`${base}/pulls?state=closed&sort=updated&direction=desc&per_page=50`, { headers }),
       ]);
-      for (const r of [mRes, iRes, pRes]) {
+      const responses = [mRes, iRes, opRes, cpRes];
+      let hasNextPage = false;
+      for (const r of responses) {
         const rem = r.headers.get("x-ratelimit-remaining");
         const rst = Number.parseInt(r.headers.get("x-ratelimit-reset") || "", 10);
         if (rem === "0" && Number.isFinite(rst)) {
           blockedUntilMs = rst * 1000;
         }
+        const linkHeader = r.headers.get("link") || "";
+        if (/\brel="next"/i.test(linkHeader)) {
+          hasNextPage = true;
+        }
       }
-      if (!mRes.ok || !iRes.ok || !pRes.ok) {
+      if (responses.some((r) => !r.ok)) {
         emit("error", {});
         return;
       }
-      const [mJson, iJson, pJson] = await Promise.all([mRes.json(), iRes.json(), pRes.json()]);
+      const [mJson, iJson, opJson, cpJson] = await Promise.all(responses.map((r) => r.json()));
       const issuesOnly = iJson.filter((item) => !item.pull_request);
-      snapshot = mapStaticRestSnapshot(mJson, issuesOnly, pJson);
+      snapshot = mapStaticRestSnapshot(mJson, issuesOnly, opJson, cpJson, hasNextPage);
       emit("open", {});
       pushState();
     } catch {

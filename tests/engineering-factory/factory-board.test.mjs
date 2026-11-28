@@ -2785,8 +2785,8 @@ test("buildStaticBoardPagesBundle and createStaticPagesHost emit CSP-hardened Gi
         if (String(url).includes("/milestones")) {
           return new Response(
             JSON.stringify([
-              { title: "M01 - Autonomous SoftwareFactory", state: "open" },
-              { title: "Historical v1 M03", state: "closed" },
+              { number: 2, title: "M01 - Autonomous SoftwareFactory", state: "open" },
+              { number: 1, title: "Historical v1 M03", state: "closed" },
             ]),
             { status: 200 },
           );
@@ -2799,13 +2799,28 @@ test("buildStaticBoardPagesBundle and createStaticPagesHost emit CSP-hardened Gi
               { number: 99, title: "Misc note", state: "closed", labels: [], html_url: "https://github.com/Jamula/SoftwareFactory/issues/99", updated_at: "2026-11-28T00:00:00Z" },
               { number: 180, title: "PR item", state: "open", pull_request: {}, labels: [] },
             ]),
+            {
+              status: 200,
+              headers:
+                fetchMode === "rest-paged"
+                  ? { Link: '<https://api.github.com/repos/Jamula/SoftwareFactory/issues?page=2>; rel="next"' }
+                  : {},
+            },
+          );
+        }
+        if (String(url).includes("state=open")) {
+          return new Response(
+            JSON.stringify([
+              { number: 184, title: "Enable gatekeeper (#10)", state: "open", draft: false, auto_merge: true, head: { ref: "u/dev/a", sha: "abc" }, html_url: "https://github.com/Jamula/SoftwareFactory/pull/184", updated_at: "2026-11-28T00:00:00Z" },
+              { number: 185, title: "Docs cleanup", state: "open", draft: true, auto_merge: false, head: { ref: "u/dev/c" }, html_url: "https://github.com/Jamula/SoftwareFactory/pull/185", updated_at: "2026-11-28T00:00:00Z" },
+            ]),
             { status: 200 },
           );
         }
         return new Response(
           JSON.stringify([
-            { number: 184, title: "M01.05: Automode", state: "open", draft: false, auto_merge: true, head: { ref: "u/dev/a" }, html_url: "https://github.com/Jamula/SoftwareFactory/pull/184", updated_at: "2026-11-28T00:00:00Z" },
-            { number: 179, title: "M02.03: Lessons", state: "closed", merged_at: "2026-11-28T00:00:00Z", head: { ref: "u/dev/b" }, html_url: "https://github.com/Jamula/SoftwareFactory/pull/179" },
+            { number: 179, title: "M02.03: Lessons", state: "closed", merged_at: "2026-11-28T00:00:00Z", milestone: { title: "M02" }, head: { ref: "u/dev/b" }, html_url: "https://github.com/Jamula/SoftwareFactory/pull/179" },
+            { number: 181, title: "Closed unmerged", state: "closed", merged_at: null, head: { ref: "u/dev/d" }, html_url: "https://github.com/Jamula/SoftwareFactory/pull/181" },
           ]),
           { status: 200 },
         );
@@ -2824,15 +2839,30 @@ test("buildStaticBoardPagesBundle and createStaticPagesHost emit CSP-hardened Gi
     assert.equal(stJson.config.intervalSeconds, 30);
     assert.equal((await host.fetch("/unknown")).status, 404);
 
-    // Live REST refresh + timer tick + control pause/interval
+    // Live REST refresh + schema parity with buildFactoryBoardSnapshot + pagination handling
     fetchMode = "rest-ok";
     const refRes = await host.fetch("/api/refresh");
     const refJson = await refRes.json();
-    assert.equal(refJson.snapshot.source, "github-pages-rest");
-    assert.equal(refJson.snapshot.totals.openIssues, 1);
-    assert.equal(refJson.snapshot.totals.closedIssues, 2);
-    assert.equal(refJson.snapshot.openPulls.length, 1);
+    assert.equal(refJson.snapshot.source, "github-rest");
+    assert.equal(refJson.snapshot.partial, false);
+    assert.equal(refJson.snapshot.totals.issuesOpen, 1);
+    assert.equal(refJson.snapshot.totals.issuesClosed, 2);
+    assert.equal(refJson.snapshot.totals.issuesTotal, 3);
+    assert.equal(refJson.snapshot.totals.milestonesOpen, 1);
+    assert.equal(refJson.snapshot.totals.draftPulls, 1);
+    assert.equal(refJson.snapshot.openPulls.length, 2);
     assert.equal(refJson.snapshot.mergedPulls.length, 1);
+    assert.equal(Array.isArray(refJson.snapshot.unassignedIssues), true);
+    assert.equal(refJson.snapshot.unassignedIssues.length, 1);
+    assert.equal(refJson.snapshot.milestones[0].activePulls, 1);
+    assert.match(refJson.snapshot.milestones[2].title, /M03 - FamilyTree/);
+    assert.match(refJson.snapshot.milestones[3].title, /M04 - Spellbook/);
+
+    fetchMode = "rest-paged";
+    const pagedRes = await host.fetch("/api/refresh");
+    const pagedJson = await pagedRes.json();
+    assert.equal(pagedJson.snapshot.partial, true);
+    assert.equal(pagedJson.snapshot.totals.completionPercent, null);
 
     await scheduledCb();
     await host.fetch("/api/control", { body: JSON.stringify({ intervalSeconds: 45, paused: true }) });
