@@ -17,8 +17,8 @@ Align local toolchains with the repository's immutable hosted runner pins so beh
 | --- | --- | --- |
 | **Node.js** | `26.13.1` (`npm ci --ignore-scripts`) | `.github/workflows/validate.yml`, `.github/workflows/windows-aspire.yml` |
 | **.NET SDK** | `10.0.404` (`rollForward: "disable"`) | `global.json` |
-| **Aspire CLI** | `Aspire.Cli 17.0.0` (scoped `--tool-path`) | `apphost.cs` (`Aspire.Hosting.AppHost@17.0.0`, `Aspire.Hosting.JavaScript@17.0.0`) |
-| **Container daemon** | **None required** for the file-based Node synthetic shadow AppHost | `apphost.cs` (`AddNodeApp("synthetic-shadow", ...)` with `WithExplicitStart()`) |
+| **Aspire CLI** | `Aspire.Cli 17.0.0` (scoped `--tool-path`) | `apphost.cs` (`Aspire.Hosting.AppHost@17.0.0`, `Aspire.Hosting.Dotnet@17.0.0`, `Aspire.Hosting.JavaScript@17.0.0`) |
+| **Container daemon** | **None required** for the file-based Node and `.NET` shadow AppHost resources | `apphost.cs` (`AddNodeApp("synthetic-shadow", ...)` and `AddDotnetProject("maf-specialist-shadow", ...)` with `WithExplicitStart()`) |
 | **Telemetry opt-out** | `DOTNET_CLI_TELEMETRY_OPTOUT=1`, `ASPIRE_CLI_TELEMETRY_OPTOUT=true`, `ASPIRE_DASHBOARD_TELEMETRY_OPTOUT=true` | Local-only diagnostics; zero external telemetry |
 
 ### Headless verification (no Aspire daemon required)
@@ -60,12 +60,13 @@ dotnet build apphost.cs --configuration Release --no-restore
 
 ## Scoped loopback HTTPS dev-cert setup by platform
 
-SoftwareFactory enforces authenticated loopback TLS for both the Aspire Dashboard and local OTLP ingestion (`apphost.run.json`):
+SoftwareFactory enforces authenticated loopback TLS for the Aspire Dashboard, resource service, and local OTLP ingestion (`apphost.run.json`, plus per-run ephemeral dashboard persistence in the shell):
 
-- `ASPIRE_ALLOW_UNSECURED_TRANSPORT=false`
-- `ASPIRE_DASHBOARD_UNSECURED_ALLOW_ANONYMOUS=false`
-- `ASPIRE_DASHBOARD_OTLP_HTTP_ENDPOINT_URL=https://127.0.0.1:18890`
-- `ASPIRE_DASHBOARD_PERSISTENCE_MODE=Run`
+- `ASPIRE_ALLOW_UNSECURED_TRANSPORT=false` (`apphost.run.json`)
+- `ASPIRE_DASHBOARD_UNSECURED_ALLOW_ANONYMOUS=false` (`apphost.run.json`)
+- `ASPIRE_DASHBOARD_OTLP_HTTP_ENDPOINT_URL=https://127.0.0.1:18890` (`apphost.run.json`)
+- `ASPIRE_RESOURCE_SERVICE_ENDPOINT_URL=https://localhost:18891` (`apphost.run.json`)
+- `ASPIRE_DASHBOARD_PERSISTENCE_MODE=Run` (exported per isolated run)
 
 Node.js does not read OS certificate stores by default, so export the `.NET` HTTPS development certificate in PEM format to a private `0700` temporary directory and point `NODE_EXTRA_CA_CERTS` at that PEM file.
 
@@ -136,6 +137,41 @@ export ASPIRE_ALLOW_UNSECURED_TRANSPORT=false
 export ASPIRE_DASHBOARD_UNSECURED_ALLOW_ANONYMOUS=false
 export ASPIRE_DASHBOARD_OTLP_HTTP_ENDPOINT_URL="https://127.0.0.1:18890"
 ```
+
+## Deterministic zero-private-data preflight (`workstation-preflight.mjs`)
+
+Before starting `apphost.cs`, run `tools/engineering-factory/workstation-preflight.mjs` to verify local toolchain pins, telemetry opt-outs, scoped loopback HTTPS posture, and operational isolation without mutating OS trust stores or emitting personal data:
+
+```bash
+# macOS / Linux / WSL2 (run in a clean subshell without ambient PAT/API-key env vars)
+(
+  unset GITHUB_TOKEN GH_TOKEN COPILOT_GITHUB_TOKEN OPENAI_API_KEY ANTHROPIC_API_KEY
+  PATH="$HOME/.local/share/softwarefactory-aspire-tools:$PATH" \
+    node tools/engineering-factory/workstation-preflight.mjs
+)
+
+# Evaluate an explicit read-only JSON observation fixture offline
+node tools/engineering-factory/workstation-preflight.mjs --observation <observation.json>
+```
+
+```powershell
+# Windows 11 PowerShell 7+ (after exporting $certPem and telemetry/TLS env vars; clear ambient PATs if set)
+Remove-Item Env:GITHUB_TOKEN, Env:GH_TOKEN, Env:COPILOT_GITHUB_TOKEN -ErrorAction SilentlyContinue
+$toolDir = Join-Path $HOME '.local\share\softwarefactory-aspire-tools'
+$env:PATH = "$toolDir$([IO.Path]::PathSeparator)$env:PATH"
+node tools/engineering-factory/workstation-preflight.mjs
+```
+
+### Preflight evaluator invariants (`evaluateWorkstationCompatibilityPreflight(observation)`)
+
+`evaluateWorkstationCompatibilityPreflight(observation)` in `tools/engineering-factory/workstation-preflight.mjs` is pure, deterministic, read-only, and fail-closed (`shadow: true`, `nonBlockingOptionalP2: true`, `operationalOrchestratorAllowed: false`, `liveDispatch: false`, `liveMerge: false`, `zeroPrivateData: true`):
+
+- **Strict input shape**: Enforces `types.isProxy` rejection and plain-object own-enumerable-data-descriptor checks across `observation`, `observation.env`, `observation.pemCa`, and optional dense arrays (`observedIpAddresses`, `loopbackEndpoints`, `diagnosticNotes`).
+- **Pinned toolchain & platforms**: Requires `platform` in `windows-11`, `macos`, `linux`, or `wsl2` (raw `win32`/`darwin` inputs require positive `osRelease` proof for Windows 11 build `>= 22000` or Darwin `>= 20`, and WSL1 / Windows 10 kernel releases are blocked as `UNSUPPORTED_PLATFORM`), `arch` in `x64` or `arm64`, `nodeVersion === "v26.13.1"`, `dotnetSdkVersion === "10.0.404"`, and `aspireCliVersion === "17.0.0"`.
+- **Telemetry opt-outs**: Requires `DOTNET_CLI_TELEMETRY_OPTOUT === "1"`, `ASPIRE_CLI_TELEMETRY_OPTOUT === "true"`, and `ASPIRE_DASHBOARD_TELEMETRY_OPTOUT === "true"`, and blocks external OTLP exporter overrides (`TELEMETRY_OPTOUT_MISSING`).
+- **Scoped loopback HTTPS without OS trust store edits**: Requires `ASPIRE_ALLOW_UNSECURED_TRANSPORT === "false"`, `ASPIRE_DASHBOARD_UNSECURED_ALLOW_ANONYMOUS === "false"`, `osRootTrustStoreModified === false`, zero `NODE_TLS_REJECT_UNAUTHORIZED` or proxy interception overrides, and a readable non-symlink X.509 certificate PEM bundle in `NODE_EXTRA_CA_CERTS` outside OS/Keychain/NSS root stores (`OS_ROOT_TRUST_MODIFIED` / `INVALID_OR_UNREADABLE_PEM_CA`).
+- **Operational host & spend prohibition**: Requires `operationalOrchestratorMode === false` (and rejects `authoritativeLeaseStore: true`, `hostedWorkerHost: true`, `replacesHostedRunnerValidation: true`, `--operational-orchestrator`, self-hosted runner flags, or `incrementalSpendUsdCents > 0`).
+- **Zero private workstation data**: Rejects explicit workstation identity properties, ambient/note identity assignments (`USER`, `USERNAME`, `HOME`, `HOSTNAME`, `COMPUTERNAME`, `USERDOMAIN`), secret tokens/private keys (`?t=...`, `DASHBOARD__API__SECONDARYAPIKEY`, PATs/API keys, `PRIVATE KEY` PEM blocks), MAC addresses, and any IP address or URL authority beyond loopback `127.0.0.1` / `::1` / `localhost`. Free-form `diagnosticNotes` text and raw filesystem paths are omitted from diagnostic receipts (recording only `diagnosticNoteCount` and fixed `strippedPrivateCategories` codes), while `stripPrivateWorkstationIdentifiers(rawText)` redacts local user directory prefixes (`<redacted-home>`, `<redacted-runtime-dir>`, `<redacted-temp>`), non-loopback hosts, MACs, usernames, and tokens.
 
 ## Single-command isolated AppHost start, verify, and stop
 
@@ -298,6 +334,6 @@ SoftwareFactory includes a read-only, loopback-bound **Live Board Canvas** (`.gi
 If the repository owner explicitly requests an optional workstation compatibility check under `#66`, record **only** sanitized metadata:
 
 1. Tested exact `git rev-parse HEAD` commit SHA and OS family/version (for example `Windows 11 24H2 x64`, `macOS 15 arm64`, `Ubuntu 24.04 WSL2 x64`).
-2. Exact tool versions (`node --version`, `dotnet --version`, `aspire --version`).
+2. Exact tool versions (`node --version`, `dotnet --version`, `aspire --version`) and sanitized preflight receipt (`node tools/engineering-factory/workstation-preflight.mjs` -> `WORKSTATION_COMPATIBILITY_VERIFIED`, `zeroPrivateData: true`).
 3. Exit codes and redacted loopback check outcomes (`302 /login` verified, `STOPPED` + `LOCAL_SDK_SHUTDOWN_COMPLETE` observed, `aspire stop` exit `0`, zero lingering listeners).
 4. **Never** attach raw `startup.log` files, exported `.zip` archives containing environment variables, login `?t=` tokens, certificates/private keys, or personal paths, and **never** close `#17` or `#15` from workstation evidence.
