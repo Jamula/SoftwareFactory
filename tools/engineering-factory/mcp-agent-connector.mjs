@@ -1751,6 +1751,8 @@ export async function startMcpStdioServer({ input = process.stdin, output = proc
   if (streamFailure !== null) failStream(streamFailure);
   let pending = Buffer.alloc(0);
   let oversized = false;
+  let activeWrite = Promise.resolve();
+  const boardRateLimits = new Map();
   const writeFrame = async response => {
     if (response === null) return;
     let onDrain;
@@ -1767,7 +1769,10 @@ export async function startMcpStdioServer({ input = process.stdin, output = proc
           });
         }
       });
-      writeDone.catch(() => {});
+      activeWrite = writeDone.then(
+        () => {},
+        () => new Promise(resolve => process.nextTick(resolve))
+      );
       await Promise.race([lifetimeFailure, Promise.all([writeDone, drainDone])]);
     } finally {
       if (onDrain !== undefined) output.off('drain', onDrain);
@@ -1789,6 +1794,11 @@ export async function startMcpStdioServer({ input = process.stdin, output = proc
       if (validTransport && response?.result?.structuredContent?.reason === 'BOARD_TRANSPORT_REQUIRED') {
         const envelope = JSON.parse(text);
         const entry = parseAuthorizedRepositories(requestContext.authorizedRepositories).byId.get(envelope.params.arguments.repositoryId);
+        let rateLimitState = boardRateLimits.get(entry.repositoryId);
+        if (rateLimitState === undefined) {
+          rateLimitState = {};
+          boardRateLimits.set(entry.repositoryId, rateLimitState);
+        }
         const controller = new AbortController();
         let timer;
         let active = true;
@@ -1796,6 +1806,7 @@ export async function startMcpStdioServer({ input = process.stdin, output = proc
           const snapshot = await Promise.race([
             fetchFactoryBoardSnapshot({
               repo: entry.repository,
+              rateLimitState,
               execGh: async () => { throw new Error('DISABLED'); },
               request: (url, options) => {
                 if (!active) throw new Error('BOARD_READ_EXPIRED');
@@ -1895,11 +1906,10 @@ export async function startMcpStdioServer({ input = process.stdin, output = proc
     input.off('error', onInputError);
     input.off('close', onInputClose);
     input.pause();
-    if (output.errored && streamFailure === null) {
-      await new Promise(resolve => process.nextTick(resolve));
-    }
-    output.off('error', onError);
-    output.off('close', onClose);
+    activeWrite.finally(() => {
+      output.off('error', onError);
+      output.off('close', onClose);
+    });
   }
 }
 

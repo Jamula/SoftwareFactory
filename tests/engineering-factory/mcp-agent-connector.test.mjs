@@ -513,6 +513,28 @@ test('stdio denies unauthorized boards before calling injected transport and hid
   await unsafeServer;
   assert.equal(JSON.parse(unsafeText.trim()).result.structuredContent.reason, 'BOARD_RESULT_UNSAFE');
   assert.equal(unsafeText.includes('boardCanary999'), false);
+
+  let rateLimitedCalls = 0;
+  const rlIn = new PassThrough();
+  const rlOut = new PassThrough();
+  let rlText = '';
+  rlOut.on('data', chunk => { rlText += chunk; });
+  const rlServer = startMcpStdioServer({ input: rlIn, output: rlOut, context: {
+    ...authorizedContext(),
+    boardTransport: {
+      request: async () => {
+        rateLimitedCalls++;
+        return new Response('rate limited', { status: 429, headers: { 'retry-after': '60' } });
+      }
+    }
+  } });
+  rlIn.end(`${board(FACTORY_REPO_ID)}\n${board(FACTORY_REPO_ID)}\n`);
+  await rlServer;
+  const rlFrames = rlText.trim().split('\n').map(JSON.parse);
+  assert.equal(rlFrames.length, 2);
+  assert.equal(rlFrames[0].result.structuredContent.reason, 'BOARD_READ_FAILED');
+  assert.equal(rlFrames[1].result.structuredContent.reason, 'BOARD_READ_FAILED');
+  assert.equal(rateLimitedCalls, 1);
 });
 
 test('stdio times out noncooperative board reads and resumes ordered requests without further provider calls', async () => {
@@ -584,6 +606,18 @@ test('stdio honors output backpressure and rejects closed output', async () => {
   const brokenInServer = startMcpStdioServer({ input: brokenIn, output: brokenInOut });
   setImmediate(() => brokenIn.destroy(new Error('INPUT_BROKEN')));
   await assert.rejects(brokenInServer, /INPUT_BROKEN/);
+
+  const dualFailIn = new PassThrough();
+  const dualFailOut = new Writable({
+    write(_chunk, _encoding, callback) {
+      setImmediate(() => dualFailIn.destroy(new Error('INPUT_FAILED_DURING_WRITE')));
+      setTimeout(() => callback(new Error('DELAYED_OUTPUT_FAILED')), 20);
+    }
+  });
+  const dualFailServer = startMcpStdioServer({ input: dualFailIn, output: dualFailOut });
+  dualFailIn.write('{"jsonrpc":"2.0","id":1,"method":"ping"}\n');
+  await assert.rejects(dualFailServer, /INPUT_FAILED_DURING_WRITE/);
+  await new Promise(resolve => setTimeout(resolve, 40));
 
   const alreadyClosedIn = new PassThrough();
   const closedPromise = new Promise(resolve => alreadyClosedIn.once('close', resolve));
