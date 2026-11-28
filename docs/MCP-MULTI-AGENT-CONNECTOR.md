@@ -6,6 +6,43 @@ This document defines SoftwareFactory's versioned, read-only, deterministic **MC
 
 ---
 
+## Running the stdio server
+
+From the repository root, run `node bin/softwarefactory-mcp.mjs` or `npm run mcp`.
+The executable is also registered as `softwarefactory-mcp` in `package.json`.
+The process exchanges one JSON-RPC message per line on stdin and stdout; stdout
+is reserved for protocol messages. No additional npm runtime dependency is needed.
+The workspace registration in `.vscode/mcp.json` starts the same server in VS Code.
+
+For Copilot CLI, add an entry to `~/.copilot/mcp-config.json`, replacing the
+path with the absolute path to this checkout:
+
+```json
+{
+  "mcpServers": {
+    "softwarefactory": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["/path/to/SoftwareFactory/bin/softwarefactory-mcp.mjs"],
+      "tools": ["*"]
+    }
+  }
+}
+```
+
+Other MCP stdio clients, including Copilot App, Copilot Coding Agent, Claude
+Code, Codex, and .NET `IChatClient` MCP integrations, can launch the same
+command using their respective client configuration. Client and provider
+authorization, entitlement, and budget checks remain separate.
+
+The CLI enrolls only `Jamula/SoftwareFactory` (repository ID `1471342715`);
+this is a read-only context, not permission to dispatch, merge, or access
+consumer repositories. Knowledge-map requests still require a revision and a
+freshness timestamp. Results are advisory and do not replace trusted evidence,
+independent review, or consumer-specific gates.
+
+---
+
 ## Architectural Boundaries
 
 1. **External deterministic merge authority (`externalMergeAuthorityOnly: true`):**
@@ -31,7 +68,7 @@ This document defines SoftwareFactory's versioned, read-only, deterministic **MC
 | --- | --- | --- |
 | `initialize` | Negotiate MCP `2025-06-18` capabilities | Returns `{ protocolVersion: "2025-06-18", capabilities: { tools: { listChanged: false } }, serverInfo: { name: "softwarefactory-mcp-connector", version: "1.0.0" } }` |
 | `ping` | Liveness check | Returns `{}` |
-| `tools/list` | Enumerate read-only tools | Returns the 4 frozen tool descriptors with strict JSON Schemas (`additionalProperties: false`) |
+| `tools/list` | Enumerate read-only tools | Returns the 8 read-only tool descriptors and their input schemas |
 | `tools/call` | Invoke a read-only tool | Returns `{ isError, content: [{ type: "text", text }], structuredContent }`; fails closed with `CONNECTOR_STOPPED` if `context.killSwitch` or `context.stop` is active |
 
 ### Read-Only Tools (`tools/call`)
@@ -50,6 +87,14 @@ This document defines SoftwareFactory's versioned, read-only, deterministic **MC
    - Rejects any `ownedPaths` overlapping `FORBIDDEN_CONTROL_PLANE_PATHS` or `.lock.yml` (`FORBIDDEN_CONTROL_PLANE_PATH`), returning bounded `{ ownedPaths, forbiddenControlPlanePaths, maxRepairIterations }`.
 4. **`validate_provider_isolation`**:
    - Executes `validateMultiAgentConnectorConfig(arguments)` for `github-copilot`, `openai-codex`, or `anthropic-claude` adapters.
+5. **`plan_disjoint_lanes`**:
+   - Plans non-overlapping lane ownership and task dependencies without dispatching agents.
+6. **`build_consumer_onboarding_plan`**:
+   - Builds and evaluates read-only consumer onboarding evidence without enrolling or activating a consumer.
+7. **`select_scoped_guidance_and_lessons`**:
+   - Selects guidance and lessons within the supplied scope; selection is not authorization.
+8. **`get_factory_board_snapshot`**:
+   - Provides an informational read-only factory board snapshot when a trusted read-only transport is explicitly injected. The default CLI does not make live provider calls and fails closed when that transport is unavailable; board data does not authorize actions.
 
 ---
 

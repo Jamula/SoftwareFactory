@@ -4,7 +4,8 @@
   "type": "module",
   "scripts": {
     "test": "node --test tests/engineering-factory/*.test.mjs tests/engineering-coordinator/*.test.mjs",
-    "test:coverage": "node --test --experimental-test-coverage --test-coverage-include=\"tools/engineering-factory/*.mjs\" --test-coverage-include=\"tools/engineering-coordinator/*.mjs\" --test-coverage-lines=98 --test-coverage-branches=95 --test-reporter=spec --test-reporter-destination=stdout --test-reporter=./tests/engineering-factory/coverage-reporter.mjs --test-reporter-destination=coverage-evidence.json --test-reporter=cobertura --test-reporter-destination=cobertura-coverage.xml \"tests/engineering-factory/*.test.mjs\" \"tests/engineering-coordinator/*.test.mjs\" tools/engineering-factory/aspire-smoke.mjs"
+    "test:coverage": "node --test --experimental-test-coverage --test-coverage-include=\"tools/engineering-factory/*.mjs\" --test-coverage-include=\"tools/engineering-coordinator/*.mjs\" --test-coverage-lines=98 --test-coverage-branches=95 --test-reporter=spec --test-reporter-destination=stdout --test-reporter=./tests/engineering-factory/coverage-reporter.mjs --test-reporter-destination=coverage-evidence.json --test-reporter=cobertura --test-reporter-destination=cobertura-coverage.xml \"tests/engineering-factory/*.test.mjs\" \"tests/engineering-coordinator/*.test.mjs\" tools/engineering-factory/aspire-smoke.mjs",
+    "mcp": "node bin/softwarefactory-mcp.mjs"
   },
   "devDependencies": {
     "cobertura": "1.0.3"
@@ -19,5 +20,8 @@
     "@opentelemetry/sdk-metrics": "3.0.0",
     "@opentelemetry/sdk-node": "0.300.0",
     "@opentelemetry/sdk-trace": "3.0.0"
+  },
+  "bin": {
+    "softwarefactory-mcp": "./bin/softwarefactory-mcp.mjs"
   }
 }
