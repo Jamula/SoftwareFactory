@@ -33,6 +33,12 @@ const ORCHESTRATOR_EVAL_OPTION_KEYS = new Set([
 ]);
 const HANDOFF_INPUT_KEYS = new Set(['expectedWorkQueueOid','snapshot','pullCursor','repositoryId','now']);
 const HANDOFF_RECORD_KEYS = new Set(['schemaVersion','repositoryId','expectedWorkQueueOid','pullCursor','snapshot']);
+const BROKER_PERSIST_KEYS = new Set([
+  'brokerUrl','rawHandoff','expectedHandoffSha256','expectedWorkQueueOid',
+  'expectedTreeOid','repository','inActions','request','now'
+]);
+const BROKER_RESPONSE_KEYS = new Set(['ok','ref','previousOid','treeOid','oid']);
+const WORK_QUEUE_REF = 'refs/heads/work-queue';
 const HEX40_RE = /^[a-f0-9]{40}$/;
 const HEX64_RE = /^[a-f0-9]{64}$/;
 const ORCHESTRATOR_EVENTS = new Set([
@@ -460,4 +466,85 @@ export function verifyShadowJournalHandoff(rawText,expectedSha256,expectedWorkQu
   } finally {
     verifyStore.close();
   }
+}
+
+export function normalizeWorkQueueBrokerUrl(rawUrl,inActions=false) {
+  if(typeof rawUrl!=='string' || rawUrl.length===0 || rawUrl.length>512) return null;
+  let parsed;
+  try { parsed=new URL(rawUrl); } catch { return null; }
+  if(parsed.username || parsed.password || parsed.search || parsed.hash) return null;
+  if(parsed.protocol==='https:') return parsed.toString();
+  if(!inActions && parsed.protocol==='http:' &&
+     (parsed.hostname==='127.0.0.1' || parsed.hostname==='[::1]') && parsed.port!=='') {
+    return parsed.toString();
+  }
+  return null;
+}
+
+export async function persistShadowJournalViaBroker(input) {
+  if(!isStrictPlainMap(input,BROKER_PERSIST_KEYS)) return {ok:false,reason:'INVALID_BROKER_INPUT'};
+  const request=input.request??fetch;
+  const inActions=input.inActions===true;
+  const repository=input.repository??DEFAULT_SCOPE.repository;
+  const now=input.now??Date.now();
+  const brokerUrl=normalizeWorkQueueBrokerUrl(input.brokerUrl,inActions);
+  if(typeof request!=='function' || typeof input.inActions!=='boolean' && input.inActions!==undefined ||
+     typeof repository!=='string' || repository.length===0 ||
+     typeof input.expectedTreeOid!=='string' || !HEX40_RE.test(input.expectedTreeOid) ||
+     brokerUrl===null) {
+    return {ok:false,reason:'BROKER_UNCONFIGURED'};
+  }
+  const verified=verifyShadowJournalHandoff(
+    input.rawHandoff,
+    input.expectedHandoffSha256,
+    input.expectedWorkQueueOid,
+    now
+  );
+  if(!verified.ok) return verified;
+
+  const payload={
+    schemaVersion:1,
+    protocol:'v3',
+    repository,
+    repositoryId:verified.repositoryId,
+    ref:WORK_QUEUE_REF,
+    expectedOid:verified.expectedWorkQueueOid,
+    expectedTreeOid:input.expectedTreeOid,
+    handoffSha256:input.expectedHandoffSha256,
+    files:{
+      'state/event-journal-snapshot.json':JSON.stringify(verified.snapshot),
+      'state/recovery-cursor.json':JSON.stringify({schemaVersion:1,pullCursor:verified.pullCursor})
+    }
+  };
+  let response;
+  try {
+    response=await request(brokerUrl,{
+      method:'POST',
+      redirect:'error',
+      signal:AbortSignal.timeout(5000),
+      headers:{accept:'application/json','content-type':'application/json'},
+      body:JSON.stringify(payload)
+    });
+  } catch {
+    return {ok:false,reason:'BROKER_UNAVAILABLE'};
+  }
+  if(response.status===409) return {ok:false,reason:'CAS_CONFLICT'};
+  if(response.status===401 || response.status===403) return {ok:false,reason:'BROKER_UNAUTHORIZED'};
+  let body;
+  try { body=await boundedJson(response); } catch { return {ok:false,reason:'BROKER_UNAVAILABLE'}; }
+  if(!isStrictPlainMap(body,BROKER_RESPONSE_KEYS) ||
+     body.ok!==true || body.ref!==WORK_QUEUE_REF ||
+     body.previousOid!==verified.expectedWorkQueueOid ||
+     body.treeOid!==input.expectedTreeOid ||
+     typeof body.oid!=='string' || !HEX40_RE.test(body.oid)) {
+    return {ok:false,reason:'BROKER_INVALID_RESPONSE'};
+  }
+  return {
+    ok:true,
+    reason:'CAS_APPLIED',
+    ref:WORK_QUEUE_REF,
+    previousOid:body.previousOid,
+    treeOid:body.treeOid,
+    oid:body.oid
+  };
 }

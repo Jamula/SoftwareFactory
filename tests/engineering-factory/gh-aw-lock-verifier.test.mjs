@@ -1,10 +1,14 @@
 import assert from 'node:assert/strict';
-import {spawnSync} from 'node:child_process';
+import {execFile, spawnSync} from 'node:child_process';
 import {copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync} from 'node:fs';
+import {createServer} from 'node:http';
 import {tmpdir} from 'node:os';
 import {dirname, join, resolve} from 'node:path';
 import test from 'node:test';
 import {fileURLToPath, pathToFileURL} from 'node:url';
+import {promisify} from 'node:util';
+
+const execFileAsync = promisify(execFile);
 import {
   PINNED_FACTORY_POLICY_SCAN_RUN_SHA256,
   PINNED_GHAW_DETECTION_CONCLUSION_SCRIPT_SHA256,
@@ -2388,7 +2392,7 @@ test('verifies Issue #5 event trigger matrix, 10-minute default-off recovery sch
   assert.equal(verifyEventTriggerMatrix(partialWrChildYaml).reason, 'MISSING_WORKFLOW_RUN_REPO_GUARD');
 });
 
-test('enforces verifyGhAwWorkflowLock trigger parity, workflow_run repo guard, evaluate PR-checkout protection, and runtime shell behavior', () => {
+test('enforces verifyGhAwWorkflowLock trigger parity, workflow_run repo guard, evaluate PR-checkout protection, and runtime shell behavior', async () => {
   const mdPath = resolve(repoRoot, '.github/workflows/factory-orchestrator.md');
   const lockPath = resolve(repoRoot, '.github/workflows/factory-orchestrator.lock.yml');
   const trackedMd = readFileSync(mdPath, 'utf8');
@@ -2580,7 +2584,7 @@ test('enforces verifyGhAwWorkflowLock trigger parity, workflow_run repo guard, e
   // Execute the tracked evaluate, policy_scan, and safe-outputs-persist-journal scripts end-to-end across fresh runners
   const evalScriptMatch = /name: Verify gh-aw workflow lock and execute shadow evaluation[\s\S]*?run: \|\n((?: {10}.*\n)+)/.exec(trackedLock);
   const scanScriptMatch = /id: policy_scan\n {8}run: \|\n((?: {10}.*\n)+)/.exec(trackedLock);
-  const persistScriptMatch = /name: Persist journal snapshot to refs\/heads\/work-queue via non-force CAS[\s\S]*?run: \|\n((?: {10}.*(?:\n|$))+)/.exec(trackedLock);
+  const persistScriptMatch = /name: Persist journal snapshot to refs\/heads\/work-queue via non-force CAS[\s\S]*?run: \|\n((?: {10}.*\n)+)/.exec(trackedLock);
   assert.ok(evalScriptMatch !== null);
   assert.ok(scanScriptMatch !== null);
   assert.ok(persistScriptMatch !== null);
@@ -2591,6 +2595,7 @@ test('enforces verifyGhAwWorkflowLock trigger parity, workflow_run repo guard, e
 
   const prHeadSha = 'b'.repeat(40);
   const tmpDir = mkdtempSync(join(tmpdir(), 'sf-policy-scan-'));
+  let brokerServer = null;
   try {
     // Initialize a real bare origin repository + isolated checkout so evaluate -> safe-outputs CAS handoff uses real Git
     const bareOriginDir = join(tmpDir, 'origin.git');
@@ -2611,6 +2616,74 @@ test('enforces verifyGhAwWorkflowLock trigger parity, workflow_run repo guard, e
       GIT_DIR: join(workRepoDir, '.git'),
       GIT_WORK_TREE: workRepoDir
     };
+
+    // Seed refs/heads/work-queue in bareOriginDir via workRepoDir with unrelated queue & ledger files that MUST survive persistence!
+    const seededLeasesJson = '{"schemaVersion":1,"activeLeases":["lane-alpha"]}\n';
+    const seededLedgerJson = '{"schemaVersion":1,"receipts":["rcpt-001"]}\n';
+    const leaseBlob = spawnSync('git', ['hash-object', '-w', '--stdin'], {cwd: workRepoDir, input: seededLeasesJson, encoding: 'utf8'}).stdout.trim();
+    const ledgerBlob = spawnSync('git', ['hash-object', '-w', '--stdin'], {cwd: workRepoDir, input: seededLedgerJson, encoding: 'utf8'}).stdout.trim();
+    const seedIndex = join(tmpDir, 'seed-wq.index');
+    assert.equal(spawnSync('git', ['update-index', '--add', '--cacheinfo', `100644,${leaseBlob},state/work-queue-leases.json`], {cwd: workRepoDir, env: {...process.env, GIT_INDEX_FILE: seedIndex}}).status, 0);
+    assert.equal(spawnSync('git', ['update-index', '--add', '--cacheinfo', `100644,${ledgerBlob},ledger/dispatch-receipts.json`], {cwd: workRepoDir, env: {...process.env, GIT_INDEX_FILE: seedIndex}}).status, 0);
+    const seedTree = spawnSync('git', ['write-tree'], {cwd: workRepoDir, env: {...process.env, GIT_INDEX_FILE: seedIndex}, encoding: 'utf8'}).stdout.trim();
+    const seedCommit = spawnSync('git', [
+      '-c', 'commit.gpgsign=false', 'commit-tree', seedTree, '-m', 'seed unrelated queue & ledger files'
+    ], {cwd: workRepoDir, encoding: 'utf8'}).stdout.trim();
+    assert.equal(spawnSync('git', ['push', '-q', 'origin', `${seedCommit}:refs/heads/work-queue`], {cwd: workRepoDir}).status, 0);
+
+    // Start loopback ref-scoped work-queue CAS broker backed by a dedicated non-bare broker repo pushing to bareOriginDir
+    const brokerRepoDir = join(tmpDir, 'broker-repo');
+    mkdirSync(brokerRepoDir);
+    assert.equal(spawnSync('git', ['init', '-q'], {cwd: brokerRepoDir}).status, 0);
+    assert.equal(spawnSync('git', ['config', 'user.name', 'broker'], {cwd: brokerRepoDir}).status, 0);
+    assert.equal(spawnSync('git', ['config', 'user.email', 'broker@users.noreply.github.com'], {cwd: brokerRepoDir}).status, 0);
+    assert.equal(spawnSync('git', ['remote', 'add', 'origin', bareOriginDir], {cwd: brokerRepoDir}).status, 0);
+
+    brokerServer = createServer((req, res) => {
+      let body = '';
+      req.setEncoding('utf8');
+      req.on('data', chunk => { body += chunk; });
+      req.on('end', () => {
+        const payload = JSON.parse(body);
+        const fetched = spawnSync('git', ['fetch', '-q', '--no-tags', 'origin', 'refs/heads/work-queue'], {cwd: brokerRepoDir});
+        const currentOid = fetched.status === 0
+          ? spawnSync('git', ['rev-parse', 'FETCH_HEAD'], {cwd: brokerRepoDir, encoding: 'utf8'}).stdout.trim()
+          : '0'.repeat(40);
+        if (payload.ref !== 'refs/heads/work-queue' || currentOid !== payload.expectedOid) {
+          res.writeHead(409, {'content-type': 'application/json'});
+          res.end(JSON.stringify({ok: false, reason: 'CAS_CONFLICT', currentOid}));
+          return;
+        }
+        const brokerIdx = join(tmpDir, `broker-${Date.now()}-${Math.random()}.index`);
+        if (currentOid !== '0'.repeat(40)) {
+          spawnSync('git', ['read-tree', currentOid], {cwd: brokerRepoDir, env: {...process.env, GIT_INDEX_FILE: brokerIdx}});
+        }
+        for (const [relPath, fileContent] of Object.entries(payload.files)) {
+          const blob = spawnSync('git', ['hash-object', '-w', '--stdin'], {cwd: brokerRepoDir, input: fileContent, encoding: 'utf8'}).stdout.trim();
+          spawnSync('git', ['update-index', '--add', '--cacheinfo', `100644,${blob},${relPath}`], {cwd: brokerRepoDir, env: {...process.env, GIT_INDEX_FILE: brokerIdx}});
+        }
+        const treeOid = spawnSync('git', ['write-tree'], {cwd: brokerRepoDir, env: {...process.env, GIT_INDEX_FILE: brokerIdx}, encoding: 'utf8'}).stdout.trim();
+        rmSync(brokerIdx, {force: true});
+        const commitArgs = [
+          '-c', 'commit.gpgsign=false',
+          'commit-tree', treeOid,
+          ...(currentOid === '0'.repeat(40) ? [] : ['-p', currentOid]),
+          '-m', 'chore(work-queue): broker CAS update'
+        ];
+        const nextOid = spawnSync('git', commitArgs, {cwd: brokerRepoDir, encoding: 'utf8'}).stdout.trim();
+        const pushRes = spawnSync('git', ['push', '-q', 'origin', `${nextOid}:refs/heads/work-queue`], {cwd: brokerRepoDir});
+        if (pushRes.status !== 0) {
+          res.writeHead(409, {'content-type': 'application/json'});
+          res.end(JSON.stringify({ok: false, reason: 'CAS_CONFLICT'}));
+          return;
+        }
+        res.writeHead(200, {'content-type': 'application/json'});
+        res.end(JSON.stringify({ok: true, ref: 'refs/heads/work-queue', previousOid: currentOid, treeOid, oid: nextOid}));
+      });
+    });
+    await new Promise(resolveListen => brokerServer.listen(0, '127.0.0.1', resolveListen));
+    const brokerPort = brokerServer.address().port;
+    const brokerUrl = `http://127.0.0.1:${brokerPort}/work-queue-cas`;
 
     const mockFetchFile = join(tmpDir, 'mock-fetch.mjs');
     writeFileSync(mockFetchFile, [
@@ -2650,7 +2723,7 @@ test('enforces verifyGhAwWorkflowLock trigger parity, workflow_run repo guard, e
       })
     );
 
-    const runPersistHandoff = (evalRunnerDir, evalOutFile) => {
+    const runPersistHandoff = async (evalRunnerDir, evalOutFile, persistEnabled = 'true', customBrokerUrl = brokerUrl) => {
       const outputs = parseGitHubOutputs(readFileSync(evalOutFile, 'utf8'));
       const persistRunnerDir = mkdtempSync(join(tmpDir, 'runner-persist-'));
       mkdirSync(join(persistRunnerDir, 'factory-handoff'), {recursive: true});
@@ -2658,18 +2731,24 @@ test('enforces verifyGhAwWorkflowLock trigger parity, workflow_run repo guard, e
         join(evalRunnerDir, 'factory-work-queue-handoff.json'),
         join(persistRunnerDir, 'factory-handoff', 'factory-work-queue-handoff.json')
       );
-      const persistRun = spawnSync('bash', ['-c', persistScript], {
-        cwd: repoRoot,
-        env: {
-          ...process.env,
-          ...gitEnv,
-          RUNNER_TEMP: persistRunnerDir,
-          EXPECTED_HANDOFF_SHA256: outputs.handoff_sha256,
-          EXPECTED_WORK_QUEUE_OID: outputs.expected_work_queue_oid
-        },
-        encoding: 'utf8'
-      });
-      return {persistRun, outputs};
+      try {
+        const {stdout, stderr} = await execFileAsync('bash', ['-c', persistScript], {
+          cwd: repoRoot,
+          env: {
+            ...process.env,
+            ...gitEnv,
+            GITHUB_ACTIONS: 'false',
+            RUNNER_TEMP: persistRunnerDir,
+            FACTORY_GHAW_PERSIST_ENABLED: persistEnabled,
+            FACTORY_WORK_QUEUE_BROKER_URL: customBrokerUrl,
+            EXPECTED_HANDOFF_SHA256: outputs.handoff_sha256,
+            EXPECTED_WORK_QUEUE_OID: outputs.expected_work_queue_oid
+          }
+        });
+        return {persistRun: {status: 0, stdout, stderr}, persistRunnerDir, outputs};
+      } catch (err) {
+        return {persistRun: {status: err.code ?? 1, stdout: err.stdout ?? '', stderr: err.stderr ?? ''}, persistRunnerDir, outputs};
+      }
     };
 
     const runnerTempA = join(tmpDir, 'runner-a');
@@ -2723,11 +2802,34 @@ test('enforces verifyGhAwWorkflowLock trigger parity, workflow_run repo guard, e
     assert.equal(scanRun.status, 0, scanRun.stderr);
     assert.equal(readFileSync(ghOutScan, 'utf8').trim(), 'scan_verified=true');
 
-    const {persistRun: firstPersist} = runPersistHandoff(runnerTempA, evalOutA);
+    // Default staged mode (FACTORY_GHAW_PERSIST_ENABLED unset) stages merged-tree CAS candidate with zero remote writes!
+    const {persistRun: stagedOnlyRun, persistRunnerDir: stagedDir} = await runPersistHandoff(runnerTempA, evalOutA, '', '');
+    assert.equal(stagedOnlyRun.status, 0, stagedOnlyRun.stderr);
+    assert.match(stagedOnlyRun.stdout, /"CAS_CANDIDATE_STAGED"/);
+    const stagedCandidate = JSON.parse(readFileSync(join(stagedDir, 'factory-work-queue-staged', 'work-queue-cas-staged.json'), 'utf8'));
+    assert.equal(stagedCandidate.staged, true);
+    assert.equal(stagedCandidate.expectedOid, seedCommit);
+
+    // Enabling FACTORY_GHAW_PERSIST_ENABLED='true' WITHOUT a broker URL fails closed!
+    const {persistRun: missingBrokerRun} = await runPersistHandoff(runnerTempA, evalOutA, 'true', '');
+    assert.notEqual(missingBrokerRun.status, 0);
+
+    // Authorized broker mode commits CAS update and preserves unrelated seeded queue & ledger files!
+    const {persistRun: firstPersist} = await runPersistHandoff(runnerTempA, evalOutA);
     assert.equal(firstPersist.status, 0, firstPersist.stderr);
 
-    // Replaying the same CAS handoff with stale expected_work_queue_oid (0000...) MUST fail closed on CAS conflict!
-    const {persistRun: staleCasPersist} = runPersistHandoff(runnerTempA, evalOutA);
+    // Verify unrelated seeded queue & ledger files on refs/heads/work-queue survived byte-for-byte intact!
+    assert.equal(
+      spawnSync('git', ['--git-dir', bareOriginDir, 'show', 'refs/heads/work-queue:state/work-queue-leases.json'], {encoding: 'utf8'}).stdout,
+      seededLeasesJson
+    );
+    assert.equal(
+      spawnSync('git', ['--git-dir', bareOriginDir, 'show', 'refs/heads/work-queue:ledger/dispatch-receipts.json'], {encoding: 'utf8'}).stdout,
+      seededLedgerJson
+    );
+
+    // Replaying the same CAS handoff with stale expected_work_queue_oid MUST fail closed on CAS conflict!
+    const {persistRun: staleCasPersist} = await runPersistHandoff(runnerTempA, evalOutA);
     assert.notEqual(staleCasPersist.status, 0);
 
     // Fresh Runner 2 (completely empty RUNNER_TEMP): fetches refs/heads/work-queue from origin & deduplicates!
@@ -2806,7 +2908,7 @@ test('enforces verifyGhAwWorkflowLock trigger parity, workflow_run repo guard, e
       assert.match(reconciledRun.stdout, new RegExp(`"kind":"${expectedKind}"`));
 
       // Persist via safe-outputs CAS to origin, then replay same deliveryId on a brand-new runner2Dir!
-      const {persistRun} = runPersistHandoff(runner1Dir, out1);
+      const {persistRun} = await runPersistHandoff(runner1Dir, out1);
       assert.equal(persistRun.status, 0, persistRun.stderr);
 
       const replayOnFreshRunner = spawnSync('bash', ['-c', evalScript], {
@@ -2849,6 +2951,9 @@ test('enforces verifyGhAwWorkflowLock trigger parity, workflow_run repo guard, e
       assert.notEqual(failedRun.status, 0);
     }
   } finally {
+    if (brokerServer !== null) {
+      await new Promise(resolveClose => brokerServer.close(resolveClose));
+    }
     rmSync(tmpDir, {recursive: true, force: true});
   }
 });

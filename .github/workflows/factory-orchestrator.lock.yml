@@ -255,18 +255,20 @@ jobs:
           '
           echo "scan_verified=true" >> "$GITHUB_OUTPUT"
 
-  # Separately authorized durable Compare-and-Swap persistence stage: workflow GITHUB_TOKEN stays
-  # contents:read (never repo-wide contents:write); live pushes to ruleset-protected refs/heads/work-queue
-  # require separate owner opt-in (vars.FACTORY_GHAW_PERSIST_ENABLED == 'true') and the gh-aw work-queue broker.
+  # Staged Compare-and-Swap candidate & optional ref-scoped broker persistence stage:
+  # workflow GITHUB_TOKEN stays strictly contents:read (safe-outputs: staged:true; never contents:write
+  # or unauthenticated git push). By default this job stages the verified merged-tree CAS candidate
+  # artifact preserving all existing refs/heads/work-queue files; live CAS writes occur only when both
+  # vars.FACTORY_GHAW_PERSIST_ENABLED == 'true' and vars.FACTORY_WORK_QUEUE_BROKER_URL are provisioned.
   safe-outputs-persist-journal:
     needs: [evaluate, threat-and-policy-scan]
-    if: ${{ vars.FACTORY_GHAW_ENABLED == 'true' && vars.FACTORY_GHAW_PERSIST_ENABLED == 'true' && needs.evaluate.result == 'success' && needs.threat-and-policy-scan.result == 'success' && needs.threat-and-policy-scan.outputs.scan_verified == 'true' && needs.evaluate.outputs.handoff_sha256 != '' && !endsWith(github.actor, '[bot]') }}
+    if: ${{ vars.FACTORY_GHAW_ENABLED == 'true' && needs.evaluate.result == 'success' && needs.threat-and-policy-scan.result == 'success' && needs.threat-and-policy-scan.outputs.scan_verified == 'true' && needs.evaluate.outputs.handoff_sha256 != '' && !endsWith(github.actor, '[bot]') }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       contents: read
     steps:
-      - name: Checkout immutable protected-branch workflow revision for CAS persistence
+      - name: Checkout immutable protected-branch workflow revision for CAS staging
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: Jamula/SoftwareFactory
@@ -286,13 +288,16 @@ jobs:
         env:
           EXPECTED_HANDOFF_SHA256: ${{ needs.evaluate.outputs.handoff_sha256 }}
           EXPECTED_WORK_QUEUE_OID: ${{ needs.evaluate.outputs.expected_work_queue_oid }}
+          FACTORY_GHAW_PERSIST_ENABLED: ${{ vars.FACTORY_GHAW_PERSIST_ENABLED }}
+          FACTORY_WORK_QUEUE_BROKER_URL: ${{ vars.FACTORY_WORK_QUEUE_BROKER_URL }}
         run: |
           set -euo pipefail
           HANDOFF_INPUT="${RUNNER_TEMP:-/tmp}/factory-handoff/factory-work-queue-handoff.json"
           STAGE_DIR="${RUNNER_TEMP:-/tmp}/factory-work-queue-stage"
-          rm -rf "$STAGE_DIR"
-          mkdir -p "$STAGE_DIR"
-          export HANDOFF_INPUT STAGE_DIR
+          STAGED_OUT_DIR="${RUNNER_TEMP:-/tmp}/factory-work-queue-staged"
+          rm -rf "$STAGE_DIR" "$STAGED_OUT_DIR"
+          mkdir -p "$STAGE_DIR" "$STAGED_OUT_DIR"
+          export HANDOFF_INPUT STAGE_DIR STAGED_OUT_DIR
           node --input-type=module -e '
             import {readFileSync, writeFileSync} from "node:fs";
             import {join} from "node:path";
@@ -320,15 +325,57 @@ jobs:
           fi
           SNAP_BLOB="$(git hash-object -w "$STAGE_DIR/event-journal-snapshot.json")"
           CURSOR_BLOB="$(git hash-object -w "$STAGE_DIR/recovery-cursor.json")"
-          STATE_TREE="$(printf '100644 blob %s\tevent-journal-snapshot.json\n100644 blob %s\trecovery-cursor.json\n' "$SNAP_BLOB" "$CURSOR_BLOB" | git mktree)"
-          ROOT_TREE="$(printf '040000 tree %s\tstate\n' "$STATE_TREE" | git mktree)"
-          export GIT_AUTHOR_NAME="softwarefactory-work-queue"
-          export GIT_AUTHOR_EMAIL="work-queue@users.noreply.github.com"
-          export GIT_COMMITTER_NAME="softwarefactory-work-queue"
-          export GIT_COMMITTER_EMAIL="work-queue@users.noreply.github.com"
-          if [ "$EXPECTED_WORK_QUEUE_OID" = "0000000000000000000000000000000000000000" ]; then
-            COMMIT_OID="$(git commit-tree "$ROOT_TREE" -m "chore(work-queue): persist shadow journal snapshot")"
-          else
-            COMMIT_OID="$(git commit-tree "$ROOT_TREE" -p "$EXPECTED_WORK_QUEUE_OID" -m "chore(work-queue): persist shadow journal snapshot")"
+          WQ_INDEX="$STAGE_DIR/work-queue.index"
+          rm -f "$WQ_INDEX"
+          if [ "$EXPECTED_WORK_QUEUE_OID" != "0000000000000000000000000000000000000000" ]; then
+            GIT_INDEX_FILE="$WQ_INDEX" git read-tree "$EXPECTED_WORK_QUEUE_OID"
           fi
-          git push --porcelain origin "$COMMIT_OID:refs/heads/work-queue"
+          GIT_INDEX_FILE="$WQ_INDEX" git update-index --add --cacheinfo "100644,$SNAP_BLOB,state/event-journal-snapshot.json"
+          GIT_INDEX_FILE="$WQ_INDEX" git update-index --add --cacheinfo "100644,$CURSOR_BLOB,state/recovery-cursor.json"
+          EXPECTED_TREE_OID="$(GIT_INDEX_FILE="$WQ_INDEX" git write-tree)"
+          export EXPECTED_TREE_OID
+          node --input-type=module -e '
+            import {readFileSync, writeFileSync} from "node:fs";
+            import {join} from "node:path";
+            import {persistShadowJournalViaBroker} from "./tools/engineering-factory/shadow-runtime.mjs";
+            const rawHandoff = readFileSync(process.env.HANDOFF_INPUT, "utf8");
+            const stagedCandidate = {
+              schemaVersion: 1,
+              protocol: "v3",
+              staged: process.env.FACTORY_GHAW_PERSIST_ENABLED !== "true",
+              ref: "refs/heads/work-queue",
+              expectedOid: process.env.EXPECTED_WORK_QUEUE_OID,
+              expectedTreeOid: process.env.EXPECTED_TREE_OID,
+              handoffSha256: process.env.EXPECTED_HANDOFF_SHA256
+            };
+            writeFileSync(
+              join(process.env.STAGED_OUT_DIR, "work-queue-cas-staged.json"),
+              JSON.stringify(stagedCandidate),
+              "utf8"
+            );
+            if (process.env.FACTORY_GHAW_PERSIST_ENABLED === "true") {
+              const outcome = await persistShadowJournalViaBroker({
+                brokerUrl: process.env.FACTORY_WORK_QUEUE_BROKER_URL ?? "",
+                rawHandoff,
+                expectedHandoffSha256: process.env.EXPECTED_HANDOFF_SHA256,
+                expectedWorkQueueOid: process.env.EXPECTED_WORK_QUEUE_OID,
+                expectedTreeOid: process.env.EXPECTED_TREE_OID,
+                repository: process.env.GITHUB_REPOSITORY || "Jamula/SoftwareFactory",
+                inActions: process.env.GITHUB_ACTIONS === "true"
+              });
+              if (!outcome.ok) {
+                console.error(JSON.stringify(outcome));
+                process.exit(1);
+              }
+              console.log(JSON.stringify(outcome));
+            } else {
+              console.log(JSON.stringify({...stagedCandidate, reason: "CAS_CANDIDATE_STAGED"}));
+            }
+          '
+      - name: Upload staged work-queue CAS candidate artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: factory-work-queue-cas-staged
+          path: ${{ runner.temp }}/factory-work-queue-staged/work-queue-cas-staged.json
+          if-no-files-found: error
+          retention-days: 1

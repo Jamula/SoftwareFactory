@@ -5,6 +5,8 @@ import {fileURLToPath} from 'node:url';
 import {spawnSync} from 'node:child_process';
 import {
   buildShadowJournalHandoff,
+  normalizeWorkQueueBrokerUrl,
+  persistShadowJournalViaBroker,
   plan,
   readInventory,
   reconcileShadowOrchestratorRun,
@@ -464,6 +466,74 @@ test('orchestrator shadow evaluation deduplicates persisted snapshots, retries d
     assert.equal(buildShadowJournalHandoff(badBuild).ok,false);
   }
   assert.equal(verifyShadowJournalHandoff(123,builtHandoff.sha256,zeroOid).ok,false);
+
+  // Ref-scoped work-queue CAS broker URL validation & persistence fail-closed contracts
+  assert.equal(normalizeWorkQueueBrokerUrl('https://broker.example.test/work-queue-cas',true),'https://broker.example.test/work-queue-cas');
+  assert.equal(normalizeWorkQueueBrokerUrl('http://127.0.0.1:8123/cas',false),'http://127.0.0.1:8123/cas');
+  assert.equal(normalizeWorkQueueBrokerUrl('http://[::1]:8123/cas',false),'http://[::1]:8123/cas');
+  for(const [badUrl,inAct] of [
+    ['',false],
+    [123,false],
+    ['not-a-url',false],
+    ['http://127.0.0.1:8123/cas',true],
+    ['http://127.0.0.1/no-port',false],
+    ['https://user:pass@broker.example.test/cas',false],
+    ['https://broker.example.test/cas?x=1',false],
+    ['https://broker.example.test/cas#frag',false]
+  ]) {
+    assert.equal(normalizeWorkQueueBrokerUrl(badUrl,inAct),null);
+  }
+
+  const treeOid='c'.repeat(40);
+  const nextOid='e'.repeat(40);
+  const brokerApplied=await persistShadowJournalViaBroker({
+    brokerUrl:'https://broker.example.test/cas',
+    rawHandoff:builtHandoff.serialized,
+    expectedHandoffSha256:builtHandoff.sha256,
+    expectedWorkQueueOid:zeroOid,
+    expectedTreeOid:treeOid,
+    inActions:true,
+    now:3606000,
+    request:async(url,opts)=>{
+      assert.equal(url,'https://broker.example.test/cas');
+      assert.equal(opts.method,'POST');
+      const sent=JSON.parse(opts.body);
+      assert.equal(sent.ref,'refs/heads/work-queue');
+      assert.equal(sent.expectedTreeOid,treeOid);
+      return json({ok:true,ref:'refs/heads/work-queue',previousOid:zeroOid,treeOid,oid:nextOid});
+    }
+  });
+  assert.equal(brokerApplied.ok,true);
+  assert.equal(brokerApplied.oid,nextOid);
+
+  assert.equal((await persistShadowJournalViaBroker(null)).reason,'INVALID_BROKER_INPUT');
+  assert.equal((await persistShadowJournalViaBroker({
+    brokerUrl:'',rawHandoff:builtHandoff.serialized,expectedHandoffSha256:builtHandoff.sha256,
+    expectedWorkQueueOid:zeroOid,expectedTreeOid:treeOid
+  })).reason,'BROKER_UNCONFIGURED');
+  assert.equal((await persistShadowJournalViaBroker({
+    brokerUrl:'https://broker.example.test/cas',rawHandoff:builtHandoff.serialized,
+    expectedHandoffSha256:'f'.repeat(64),expectedWorkQueueOid:zeroOid,expectedTreeOid:treeOid,now:3606000
+  })).reason,'HANDOFF_DIGEST_MISMATCH');
+  for(const [mockResp,expectedReason] of [
+    [()=>Promise.reject(new Error('offline')),'BROKER_UNAVAILABLE'],
+    [()=>new Response('conflict',{status:409}),'CAS_CONFLICT'],
+    [()=>new Response('forbidden',{status:403}),'BROKER_UNAUTHORIZED'],
+    [()=>new Response('bad',{status:502}),'BROKER_UNAVAILABLE'],
+    [()=>json({ok:true,ref:'refs/heads/main',previousOid:zeroOid,treeOid,oid:nextOid}),'BROKER_INVALID_RESPONSE'],
+    [()=>json({ok:true,ref:'refs/heads/work-queue',previousOid:zeroOid,treeOid:'1'.repeat(40),oid:nextOid}),'BROKER_INVALID_RESPONSE']
+  ]) {
+    const out=await persistShadowJournalViaBroker({
+      brokerUrl:'https://broker.example.test/cas',
+      rawHandoff:builtHandoff.serialized,
+      expectedHandoffSha256:builtHandoff.sha256,
+      expectedWorkQueueOid:zeroOid,
+      expectedTreeOid:treeOid,
+      now:3606000,
+      request:()=>mockResp()
+    });
+    assert.equal(out.reason,expectedReason);
+  }
 
   assert.equal((await reconcileShadowOrchestratorRun(
     {...baseEnv,GITHUB_EVENT_NAME:'schedule',FACTORY_ISSUE_NUMBER:''},
