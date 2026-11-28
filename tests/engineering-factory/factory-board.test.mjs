@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFile as execFileCb } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import {
@@ -9,10 +10,12 @@ import {
   DEFAULT_INTERVAL_SECONDS,
   DEFAULT_REPO,
   buildFactoryBoardSnapshot,
+  buildStaticBoardPagesBundle,
   buildUnavailableSnapshot,
   combineRestChecksAndStatus,
   createBoardPoller,
   createSseClientRegistry,
+  createStaticPagesHost,
   extractMilestoneStep,
   extractReferencedIssueNumbers,
   fetchFactoryBoardSnapshot,
@@ -2716,4 +2719,152 @@ test("startFactoryBoardExtension and extension.mjs register canvas, forward logs
   ]);
   assert.equal(stdout, "");
   assert.match(stderr, /EXT_JOINED:factory-board/);
+});
+
+test("buildStaticBoardPagesBundle and createStaticPagesHost emit CSP-hardened GitHub Pages bundle and refresh via browser REST", async () => {
+  assert.throws(() => buildStaticBoardPagesBundle({ outputDir: "" }), /INVALID_OUTPUT_DIR/);
+  assert.throws(() => buildStaticBoardPagesBundle({ outputDir: "bad\0dir" }), /INVALID_OUTPUT_DIR/);
+  assert.throws(() => buildStaticBoardPagesBundle({ outputDir: "/tmp/x", intervalSeconds: 3 }), /between 10 and 300/);
+
+  const outDir = mkdtempSync(join(tmpdir(), "sf-pages-bundle-"));
+  try {
+    const built = buildStaticBoardPagesBundle({ outputDir: outDir, intervalSeconds: 30 });
+    assert.equal(built.repo, DEFAULT_REPO);
+    assert.equal(built.intervalSeconds, 30);
+    assert.equal(built.files.length, 4);
+    for (const filePath of built.files) {
+      assert.equal(existsSync(filePath), true);
+    }
+
+    const html = readFileSync(join(outDir, "index.html"), "utf8");
+    assert.match(html, /http-equiv="Content-Security-Policy"/);
+    assert.match(html, /connect-src 'self' https:\/\/api\.github\.com/);
+    assert.match(html, /data-static-pages="true"/);
+    assert.match(html, /src="\.\/client\.mjs"/);
+
+    const snapEnvelope = JSON.parse(readFileSync(join(outDir, "snapshot.json"), "utf8"));
+    assert.equal(snapEnvelope.config.repo, DEFAULT_REPO);
+    assert.equal(snapEnvelope.config.intervalSeconds, 30);
+    assert.equal(snapEnvelope.snapshot.error.code, "STATIC_COLD_START");
+
+    let nowValue = 1_700_000_000_000;
+    let scheduledCb = null;
+    let clearedCount = 0;
+    let fetchMode = "baked";
+    const fakeHostWin = {
+      document: {
+        body: { getAttribute: (k) => (k === "data-repo" ? DEFAULT_REPO : "") },
+      },
+      Date: { now: () => nowValue },
+      setInterval: (cb) => {
+        scheduledCb = cb;
+        return 77;
+      },
+      clearInterval: () => {
+        clearedCount += 1;
+      },
+      fetch: async (url) => {
+        if (url === "./snapshot.json") {
+          if (fetchMode === "baked") {
+            return new Response(JSON.stringify(snapEnvelope), { status: 200 });
+          }
+          if (fetchMode === "throw-snap") {
+            throw new Error("no snap");
+          }
+          return new Response("missing", { status: 404 });
+        }
+        if (fetchMode === "rest-throw") {
+          throw new Error("network down");
+        }
+        if (fetchMode === "rest-500") {
+          return new Response("err", {
+            status: 500,
+            headers: { "x-ratelimit-remaining": "0", "x-ratelimit-reset": String(Math.floor((nowValue + 60_000) / 1000)) },
+          });
+        }
+        if (String(url).includes("/milestones")) {
+          return new Response(
+            JSON.stringify([
+              { title: "M01 - Autonomous SoftwareFactory", state: "open" },
+              { title: "Historical v1 M03", state: "closed" },
+            ]),
+            { status: 200 },
+          );
+        }
+        if (String(url).includes("/issues")) {
+          return new Response(
+            JSON.stringify([
+              { number: 10, title: "[M01.08 P0] Autonomy", state: "open", labels: [{ name: "P0" }, { name: "M01" }], html_url: "https://github.com/Jamula/SoftwareFactory/issues/10", updated_at: "2026-11-28T00:00:00Z" },
+              { number: 4, title: "[M01.01] Quality", state: "closed", milestone: { title: "M01" }, labels: ["P0"], html_url: "https://github.com/Jamula/SoftwareFactory/issues/4", updated_at: "2026-11-28T00:00:00Z" },
+              { number: 99, title: "Misc note", state: "closed", labels: [], html_url: "https://github.com/Jamula/SoftwareFactory/issues/99", updated_at: "2026-11-28T00:00:00Z" },
+              { number: 180, title: "PR item", state: "open", pull_request: {}, labels: [] },
+            ]),
+            { status: 200 },
+          );
+        }
+        return new Response(
+          JSON.stringify([
+            { number: 184, title: "M01.05: Automode", state: "open", draft: false, auto_merge: true, head: { ref: "u/dev/a" }, html_url: "https://github.com/Jamula/SoftwareFactory/pull/184", updated_at: "2026-11-28T00:00:00Z" },
+            { number: 179, title: "M02.03: Lessons", state: "closed", merged_at: "2026-11-28T00:00:00Z", head: { ref: "u/dev/b" }, html_url: "https://github.com/Jamula/SoftwareFactory/pull/179" },
+          ]),
+          { status: 200 },
+        );
+      },
+    };
+
+    const host = createStaticPagesHost(fakeHostWin, { defaultIntervalSeconds: 20 });
+    const es = new host.EventSource("/events");
+    const events = [];
+    es.addEventListener("open", () => events.push("open"));
+    es.addEventListener("error", () => events.push("error"));
+    es.addEventListener("state", (ev) => events.push(JSON.parse(ev.data)));
+
+    const stRes = await host.fetch("/api/state");
+    const stJson = await stRes.json();
+    assert.equal(stJson.config.intervalSeconds, 30);
+    assert.equal((await host.fetch("/unknown")).status, 404);
+
+    // Live REST refresh + timer tick + control pause/interval
+    fetchMode = "rest-ok";
+    const refRes = await host.fetch("/api/refresh");
+    const refJson = await refRes.json();
+    assert.equal(refJson.snapshot.source, "github-pages-rest");
+    assert.equal(refJson.snapshot.totals.openIssues, 1);
+    assert.equal(refJson.snapshot.totals.closedIssues, 2);
+    assert.equal(refJson.snapshot.openPulls.length, 1);
+    assert.equal(refJson.snapshot.mergedPulls.length, 1);
+
+    await scheduledCb();
+    await host.fetch("/api/control", { body: JSON.stringify({ intervalSeconds: 45, paused: true }) });
+    assert.equal(clearedCount > 0, true);
+
+    // Rate-limit 500 backoff and cold-start fallback without snapshot.json
+    fetchMode = "rest-500";
+    await host.fetch("/api/refresh");
+    assert.equal(events.includes("error"), true);
+    // Blocked by rate limit on immediate retry
+    await host.fetch("/api/refresh");
+
+    const coldHost = createStaticPagesHost(
+      {
+        document: { body: { getAttribute: () => null } },
+        fetch: async (u) => {
+          if (u === "./snapshot.json") throw new Error("missing");
+          throw new Error("offline");
+        },
+      },
+      { defaultIntervalSeconds: 60 },
+    );
+    const coldEs = new coldHost.EventSource("/events");
+    let coldErr = 0;
+    coldEs.addEventListener("error", () => {
+      coldErr += 1;
+    });
+    await coldHost.fetch("/api/state");
+    assert.equal(coldErr, 1);
+    coldHost.stop();
+    host.stop();
+  } finally {
+    rmSync(outDir, { recursive: true, force: true });
+  }
 });

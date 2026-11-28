@@ -1,6 +1,8 @@
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
+import { join, resolve } from "node:path";
 import { startLocalSdk } from "./local-otel-sdk.mjs";
 import { telemetrySummary } from "./telemetry.mjs";
 
@@ -2205,15 +2207,23 @@ export function renderBoardHtml({
   title = CANVAS_DISPLAY_NAME,
   repo = DEFAULT_REPO,
   boardToken = "",
+  staticPages = false,
 } = {}) {
   const safeTitle = escapeHtml(title);
   const safeRepo = escapeHtml(repo);
   const safeToken = escapeHtml(boardToken);
+  const cspMeta = staticPages
+    ? `\n  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://api.github.com; img-src 'self' data:; object-src 'none'; base-uri 'self'" />`
+    : "";
+  const bodyAttrs = staticPages
+    ? `data-board-token="${safeToken}" data-static-pages="true" data-repo="${safeRepo}"`
+    : `data-board-token="${safeToken}"`;
+  const scriptSrc = staticPages ? "./client.mjs" : "/client.mjs";
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />${cspMeta}
   <title>${safeTitle}</title>
   <style>
     :root {
@@ -2344,7 +2354,7 @@ export function renderBoardHtml({
     .empty-state { padding: 18px; text-align: center; color: var(--board-muted); font-size: 13px; }
   </style>
 </head>
-<body data-board-token="${safeToken}">
+  <body ${bodyAttrs}>
   <div class="board-shell">
     <header class="topbar">
       <div class="title-group">
@@ -2407,9 +2417,324 @@ export function renderBoardHtml({
       <div class="table-wrap" id="merged-prs-wrap"></div>
     </section>
   </div>
-  <script type="module" src="/client.mjs"></script>
+  <script type="module" src="${scriptSrc}"></script>
 </body>
 </html>`;
+}
+
+export function createStaticPagesHost(win, { defaultIntervalSeconds = 60 } = {}) {
+  const doc = win.document;
+  const realFetch = win.fetch.bind(win);
+  const setTimer = (fn, ms) => (win.setInterval ? win.setInterval(fn, ms) : setInterval(fn, ms));
+  const clearTimer = (id) => (win.clearInterval ? win.clearInterval(id) : clearInterval(id));
+  const nowFn = win.Date ? () => win.Date.now() : Date.now;
+  const repo = doc.body.getAttribute("data-repo") || "Jamula/SoftwareFactory";
+  const listeners = new Map();
+
+  let seq = 0;
+  let intervalSeconds = defaultIntervalSeconds;
+  let paused = false;
+  let snapshot = null;
+  let blockedUntilMs = 0;
+  let timer = null;
+
+  const statusText = () => (paused ? "Paused" : `Auto-refreshing (${intervalSeconds}s)`);
+  const currentEnvelope = () => ({
+    seq,
+    config: { repo, intervalSeconds, paused, status: statusText() },
+    snapshot,
+  });
+
+  function emit(eventName, payload) {
+    const fn = listeners.get(eventName);
+    if (fn) {
+      fn(payload);
+    }
+  }
+
+  function pushState() {
+    seq += 1;
+    emit("state", { data: JSON.stringify(currentEnvelope()) });
+  }
+
+  function mapStaticRestSnapshot(milestonesRaw, issuesOnlyRaw, pullsRaw) {
+    const canonicalIds = [
+      ["M01", "M01 - Autonomous SoftwareFactory"],
+      ["M02", "M02 - Fast SoftwareFactory"],
+      ["M03", "M03 - Spellbook autonomous adoption"],
+      ["M04", "M04 - FamilyTree autonomous adoption"],
+      ["M05", "M05 - FamilyHub autonomous adoption"],
+    ];
+    const codeRe = /\b(M0[1-5])\b/i;
+    const byId = new Map(
+      canonicalIds.map(([id, title]) => [
+        id,
+        { id, title, state: "OPEN", openIssues: 0, closedIssues: 0, totalIssues: 0, completionPercent: 0, openPrs: 0, partial: false, issues: [] },
+      ]),
+    );
+    for (const m of milestonesRaw) {
+      const match = codeRe.exec(m.title);
+      if (match && !/^historical\b/i.test(m.title.trim())) {
+        const slot = byId.get(match[1].toUpperCase());
+        slot.title = m.title;
+        slot.state = m.state.toUpperCase();
+      }
+    }
+    const unassigned = [];
+    let openIssues = 0;
+    let closedIssues = 0;
+    for (const it of issuesOnlyRaw) {
+      const state = it.state.toUpperCase();
+      if (state === "CLOSED") closedIssues += 1;
+      else openIssues += 1;
+      const labels = it.labels.map((l) => (typeof l === "string" ? l : l.name));
+      const mText = `${it.milestone ? it.milestone.title : ""} ${it.title} ${labels.join(" ")}`;
+      const mMatch = codeRe.exec(mText);
+      const prioMatch = labels.find((l) => /^P[0-2]$/i.test(l));
+      const row = { number: it.number, title: it.title, state, priority: prioMatch ? prioMatch.toUpperCase() : null, stepId: null, url: it.html_url, updatedAt: it.updated_at };
+      if (mMatch) {
+        const slot = byId.get(mMatch[1].toUpperCase());
+        slot.issues.push(row);
+        if (state === "CLOSED") slot.closedIssues += 1;
+        else slot.openIssues += 1;
+      } else {
+        unassigned.push(row);
+      }
+    }
+    for (const slot of byId.values()) {
+      slot.totalIssues = slot.openIssues + slot.closedIssues;
+      slot.completionPercent = slot.totalIssues > 0 ? Math.round((slot.closedIssues / slot.totalIssues) * 100) : 0;
+    }
+    const openPulls = [];
+    const mergedPulls = [];
+    for (const pr of pullsRaw) {
+      const prCode = codeRe.exec(pr.title);
+      const milestoneId = prCode ? prCode[1].toUpperCase() : null;
+      if (pr.state === "open") {
+        openPulls.push({
+          number: pr.number,
+          title: pr.title,
+          url: pr.html_url,
+          headRefName: pr.head.ref,
+          isDraft: Boolean(pr.draft),
+          milestoneId,
+          ci: { state: "UNKNOWN", passed: 0, failed: 0, pending: 0, total: 0 },
+          reviewStatus: "UNKNOWN",
+          mergeStateStatus: "UNKNOWN",
+          autoMerge: Boolean(pr.auto_merge),
+          mergeQueue: { known: false, queued: null, state: null, position: null },
+          updatedAt: pr.updated_at,
+        });
+      } else if (pr.merged_at) {
+        mergedPulls.push({
+          number: pr.number,
+          title: pr.title,
+          url: pr.html_url,
+          headRefName: pr.head.ref,
+          milestoneId,
+          mergedAt: pr.merged_at,
+        });
+      }
+    }
+    const totalIssues = openIssues + closedIssues;
+    return {
+      ok: true,
+      verified: true,
+      stale: false,
+      partial: false,
+      repo,
+      source: "github-pages-rest",
+      generatedAt: new Date(nowFn()).toISOString(),
+      error: null,
+      totals: {
+        totalIssues,
+        openIssues,
+        closedIssues,
+        completionPercent: Math.round((closedIssues / Math.max(1, totalIssues)) * 100),
+        openPulls: openPulls.length,
+        queuedPulls: null,
+        failingPulls: 0,
+        activeMilestones: [...byId.values()].filter((m) => m.state === "OPEN").length,
+        totalMilestones: byId.size,
+      },
+      milestones: [...byId.values()],
+      unassignedIssues: { openIssues: unassigned.filter((i) => i.state !== "CLOSED").length, closedIssues: unassigned.filter((i) => i.state === "CLOSED").length, issues: unassigned },
+      openPulls,
+      mergedPulls,
+    };
+  }
+
+  async function refreshFromGitHubRest() {
+    if (nowFn() < blockedUntilMs) {
+      return;
+    }
+    const base = `https://api.github.com/repos/${repo}`;
+    const headers = { Accept: "application/vnd.github+json" };
+    try {
+      const [mRes, iRes, pRes] = await Promise.all([
+        realFetch(`${base}/milestones?state=all&per_page=100`, { headers }),
+        realFetch(`${base}/issues?state=all&per_page=100`, { headers }),
+        realFetch(`${base}/pulls?state=all&sort=updated&direction=desc&per_page=50`, { headers }),
+      ]);
+      for (const r of [mRes, iRes, pRes]) {
+        const rem = r.headers.get("x-ratelimit-remaining");
+        const rst = Number.parseInt(r.headers.get("x-ratelimit-reset") || "", 10);
+        if (rem === "0" && Number.isFinite(rst)) {
+          blockedUntilMs = rst * 1000;
+        }
+      }
+      if (!mRes.ok || !iRes.ok || !pRes.ok) {
+        emit("error", {});
+        return;
+      }
+      const [mJson, iJson, pJson] = await Promise.all([mRes.json(), iRes.json(), pRes.json()]);
+      const issuesOnly = iJson.filter((item) => !item.pull_request);
+      snapshot = mapStaticRestSnapshot(mJson, issuesOnly, pJson);
+      emit("open", {});
+      pushState();
+    } catch {
+      emit("error", {});
+    }
+  }
+
+  function reschedule() {
+    if (timer !== null) {
+      clearTimer(timer);
+      timer = null;
+    }
+    if (!paused) {
+      timer = setTimer(() => {
+        void refreshFromGitHubRest();
+      }, intervalSeconds * 1000);
+    }
+  }
+
+  class StaticEventSource {
+    addEventListener(ev, fn) {
+      listeners.set(ev, fn);
+    }
+  }
+
+  async function staticFetch(path, opts) {
+    if (path === "/api/state") {
+      if (!snapshot) {
+        try {
+          const snapRes = await realFetch("./snapshot.json", { cache: "no-store" });
+          if (snapRes.ok) {
+            const loaded = await snapRes.json();
+            snapshot = loaded?.snapshot ?? loaded;
+            if (Number.isSafeInteger(loaded?.config?.intervalSeconds)) {
+              intervalSeconds = loaded.config.intervalSeconds;
+            }
+          }
+        } catch {
+          // Fall back to live REST poll below
+        }
+      }
+      emit("open", {});
+      if (!snapshot) {
+        await refreshFromGitHubRest();
+      }
+      reschedule();
+      return new Response(JSON.stringify(currentEnvelope()), { status: 200 });
+    }
+    if (path === "/api/refresh") {
+      await refreshFromGitHubRest();
+      return new Response(JSON.stringify(currentEnvelope()), { status: 200 });
+    }
+    if (path === "/api/control") {
+      const body = JSON.parse(opts?.body || "{}");
+      if (Number.isSafeInteger(body.intervalSeconds) && body.intervalSeconds >= 10 && body.intervalSeconds <= 300) {
+        intervalSeconds = body.intervalSeconds;
+      }
+      if (typeof body.paused === "boolean") {
+        paused = body.paused;
+      }
+      reschedule();
+      pushState();
+      return new Response(JSON.stringify(currentEnvelope()), { status: 200 });
+    }
+    return new Response("{}", { status: 404 });
+  }
+
+  return {
+    document: doc,
+    EventSource: StaticEventSource,
+    fetch: staticFetch,
+    stop: () => {
+      if (timer !== null) {
+        clearTimer(timer);
+        timer = null;
+      }
+    },
+  };
+}
+
+export function buildStaticBoardPagesBundle({
+  outputDir,
+  repo = DEFAULT_REPO,
+  snapshot = null,
+  intervalSeconds = 60,
+  generatedAt = new Date().toISOString(),
+} = {}) {
+  if (typeof outputDir !== "string" || outputDir.trim().length === 0 || outputDir.includes("\0")) {
+    throw new Error("INVALID_OUTPUT_DIR");
+  }
+  const parsedRepo = parseRepoSlug(repo);
+  const validatedInterval = validateIntervalSeconds(intervalSeconds);
+  if (!validatedInterval.valid) {
+    throw new Error(validatedInterval.message);
+  }
+  const resolvedDir = resolve(outputDir);
+  mkdirSync(resolvedDir, { recursive: true });
+
+  const effectiveSnapshot =
+    snapshot ??
+    buildUnavailableSnapshot({
+      repo: parsedRepo.fullName,
+      generatedAt,
+      error: { code: "STATIC_COLD_START", message: "Refreshing live state from GitHub REST API…" },
+      previousSnapshot: null,
+    });
+
+  const envelope = {
+    seq: 1,
+    config: {
+      repo: parsedRepo.fullName,
+      intervalSeconds: validatedInterval.intervalSeconds,
+      paused: false,
+      status: formatBoardStatus(validatedInterval.intervalSeconds, false),
+    },
+    snapshot: effectiveSnapshot,
+  };
+
+  const indexHtml = renderBoardHtml({
+    title: CANVAS_DISPLAY_NAME,
+    repo: parsedRepo.fullName,
+    boardToken: "",
+    staticPages: true,
+  });
+  const clientJs =
+    `const createStaticPagesHost = ${createStaticPagesHost.toString()};\n` +
+    `const initFactoryBoardClient = ${initFactoryBoardClient.toString()};\n` +
+    `initFactoryBoardClient(createStaticPagesHost(window, { defaultIntervalSeconds: ${validatedInterval.intervalSeconds} }));\n`;
+
+  const indexPath = join(resolvedDir, "index.html");
+  const clientPath = join(resolvedDir, "client.mjs");
+  const snapshotPath = join(resolvedDir, "snapshot.json");
+  const nojekyllPath = join(resolvedDir, ".nojekyll");
+
+  writeFileSync(indexPath, indexHtml, "utf8");
+  writeFileSync(clientPath, clientJs, "utf8");
+  writeFileSync(snapshotPath, `${JSON.stringify(envelope, null, 2)}\n`, "utf8");
+  writeFileSync(nojekyllPath, "", "utf8");
+
+  return {
+    outputDir: resolvedDir,
+    repo: parsedRepo.fullName,
+    intervalSeconds: validatedInterval.intervalSeconds,
+    files: [indexPath, clientPath, snapshotPath, nojekyllPath],
+  };
 }
 
 function sendJson(res, statusCode, payload) {
