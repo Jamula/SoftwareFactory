@@ -44,7 +44,7 @@ function loadRepoManifests() {
   };
 }
 
-test('validates committed cec2745 cross-OS hosted Linux + Windows Aspire receipt and live repo parity', () => {
+test('validates committed b0924c38 cross-OS hosted Linux + Windows Aspire receipt and live repo parity', () => {
   const verdict = verifyCrossOsAspireRuntimeEvidence(COMMITTED_RECEIPT);
   assert.equal(Object.isFrozen(verdict), true);
   assert.deepEqual(verdict, {
@@ -55,12 +55,12 @@ test('validates committed cec2745 cross-OS hosted Linux + Windows Aspire receipt
     reason: 'CROSS_OS_HOSTED_ASPIRE_VERIFIED',
     repository: 'Jamula/SoftwareFactory',
     repositoryId: 1471342715,
-    headSha: 'cec2745b7b8a21e77ad9f2839d4255d42305d419',
-    linuxRunId: 45975774012,
-    linuxJobId: 140426990428,
-    windowsRunId: 45975774125,
-    windowsJobId: 140426992317,
-    mafWorkflowRunId: 45975773949,
+    headSha: 'b0924c3807f797e6090e1dc3e1e65fc9caa07550',
+    linuxRunId: 46101609302,
+    linuxJobId: 140845083688,
+    windowsRunId: 46101609338,
+    windowsJobId: 140845083870,
+    mafWorkflowRunId: 46101609310,
     mafWorkflowsSourceReady: true
   });
 
@@ -303,8 +303,8 @@ test('enforces cross-OS runner provenance, SHA/branch alignment, pinned toolchai
     [r => { r.platforms.linux. workflowName = 123; }, 'JOB_IDENTITY_MISMATCH'],
     [r => { r.platforms.linux.runId = 0; }, 'INVALID_PLATFORM_RECEIPT'],
     [r => { r.platforms.windows.jobId = -5; }, 'INVALID_PLATFORM_RECEIPT'],
-    [r => { r.platforms.linux.runUrl = 'https://evil.example/Jamula/SoftwareFactory/actions/runs/45975774012'; }, 'RUN_URL_MISMATCH'],
-    [r => { r.platforms.windows.jobUrl = 'https://github.com/Jamula/SoftwareFactory/actions/runs/45975774125/job/999'; }, 'RUN_URL_MISMATCH'],
+    [r => { r.platforms.linux.runUrl = 'https://evil.example/Jamula/SoftwareFactory/actions/runs/46101609302'; }, 'RUN_URL_MISMATCH'],
+    [r => { r.platforms.windows.jobUrl = 'https://github.com/Jamula/SoftwareFactory/actions/runs/46101609338/job/999'; }, 'RUN_URL_MISMATCH'],
     [r => { r.platforms.linux.headSha = otherSha; }, 'HEAD_SHA_MISMATCH'],
     [r => { r.platforms.windows.headSha = 'invalid-sha'; }, 'HEAD_SHA_MISMATCH'],
     [r => { r.platforms.linux.headBranch = 'develop'; }, 'BRANCH_MISMATCH'],
@@ -313,12 +313,12 @@ test('enforces cross-OS runner provenance, SHA/branch alignment, pinned toolchai
     [r => { r.platforms.linux.status = 'in_progress'; }, 'RUNTIME_JOB_NOT_SUCCESSFUL'],
     [r => { r.platforms.windows.conclusion = 'failure'; }, 'RUNTIME_JOB_NOT_SUCCESSFUL'],
     [r => { r.platforms.linux.startedAt = 12345; }, 'INVALID_TIMING'],
-    [r => { r.platforms.linux.startedAt = '2026-11-27 09:41:18Z'; }, 'INVALID_TIMING'],
+    [r => { r.platforms.linux.startedAt = '2026-11-28 03:11:03Z'; }, 'INVALID_TIMING'],
     [r => { r.platforms.linux.startedAt = '2026-13-01T00:00:00Z'; }, 'INVALID_TIMING'],
     [r => { r.platforms.linux.startedAt = '2026-02-30T00:00:00Z'; }, 'INVALID_TIMING'],
-    [r => { r.platforms.windows.completedAt = '2026-11-27T09:41:20Z'; }, 'INVALID_TIMING'],
-    [r => { r.platforms.windows.durationMs = 128000; }, 'INVALID_TIMING'],
-    [r => { r.platforms.windows.durationMs = '129000'; }, 'INVALID_TIMING'],
+    [r => { r.platforms.windows.completedAt = '2026-11-28T03:11:03Z'; }, 'INVALID_TIMING'],
+    [r => { r.platforms.windows.durationMs = 115000; }, 'INVALID_TIMING'],
+    [r => { r.platforms.windows.durationMs = '116000'; }, 'INVALID_TIMING'],
     [r => {
       r.platforms.linux.startedAt = '2026-11-27T08:00:00Z';
       r.platforms.linux.completedAt = '2026-11-27T09:00:01Z';
@@ -443,10 +443,10 @@ test('enforces MAF Microsoft.Agents.AI.Workflows ActivitySource readiness and re
     [m => { delete m.activitySources; }, 'MAF_ACTIVITY_SOURCE_UNREADY'],
     [m => { m.headSha = 'b'.repeat(40); }, 'HEAD_SHA_MISMATCH'],
     [m => { m.retiredGitHubModelsReferenced = true; }, 'RETIRED_GITHUB_MODELS_PACKAGE_FORBIDDEN'],
-    [m => { m.workflowRunId = 45975774012; }, 'DUPLICATE_RUN_OR_JOB_ID'],
+    [m => { m.workflowRunId = 46101609302; }, 'DUPLICATE_RUN_OR_JOB_ID'],
     [m => { m.linuxAgentJobId = m.windowsAgentJobId; }, 'DUPLICATE_RUN_OR_JOB_ID'],
-    [m => { m.linuxAgentJobId = 140426990428; }, 'DUPLICATE_RUN_OR_JOB_ID'],
-    [m => { m.windowsAgentJobId = 140426992317; }, 'DUPLICATE_RUN_OR_JOB_ID'],
+    [m => { m.linuxAgentJobId = 140845083688; }, 'DUPLICATE_RUN_OR_JOB_ID'],
+    [m => { m.windowsAgentJobId = 140845083870; }, 'DUPLICATE_RUN_OR_JOB_ID'],
     [m => { m.workflowRunId = 0; }, 'DUPLICATE_RUN_OR_JOB_ID'],
     [m => { m.workflowRunUrl = 'https://github.com/Jamula/SoftwareFactory/actions/runs/999'; }, 'RUN_URL_MISMATCH'],
     [m => { m.appHostResourceName = 'wrong-resource'; }, 'MAF_ACTIVITY_SOURCE_UNREADY'],

@@ -207,15 +207,55 @@ test('verifyNoPythonInventory rejects Python workflow actions, interpreters, pac
   }
 });
 
-test('evaluateCodeqlPythonResidual detects stale Analyze (python) on verified cec2745 evidence and clears once removed',()=>{
+test('evaluateCodeqlPythonResidual verifies committed b0924c38 Push on main evidence has zero Python residual and detects stale Analyze (python) when present',()=>{
   const evidencePath=join(process.cwd(),'docs/evidence/m01-02-01-no-python-acceptance.json');
   const evidence=JSON.parse(readFileSync(evidencePath,'utf8'));
-  assert.equal(evidence.verifiedMainCandidate.headSha,'cec2745b7b8a21e77ad9f2839d4255d42305d419');
-  assert.equal(evidence.hostedRuntimeRuns.linuxFactoryValidation.runId,45975774012);
-  assert.equal(evidence.hostedRuntimeRuns.windowsAspireRuntime.runId,45975774125);
-  assert.equal(evidence.codeqlDefaultSetupBlocker.runId,45975773999);
+  assert.equal(evidence.verifiedMainCandidate.headSha,'b0924c3807f797e6090e1dc3e1e65fc9caa07550');
+  assert.equal(evidence.issue.keepOpenReason,null);
+  assert.equal(evidence.acceptanceStatus.acceptanceReadyToClose,true);
+  assert.equal(evidence.acceptanceStatus.finalIssueClosureReady,true);
+  assert.equal(evidence.hostedRuntimeRuns.linuxFactoryValidation.runId,46101609302);
+  assert.equal(evidence.hostedRuntimeRuns.windowsAspireRuntime.runId,46101609338);
+  assert.equal(evidence.codeqlDefaultSetupVerification.runId,46101609262);
+  assert.equal(evidence.codeqlDefaultSetupVerification.codeQualityRunId,46101609773);
+  assert.equal(evidence.codeqlDefaultSetupVerification.residualPythonCodeql,false);
+  assert.equal(evidence.checkRuns.length,13);
 
-  const residual=evaluateCodeqlPythonResidual(evidence.checkRuns);
+  const committedResult=evaluateCodeqlPythonResidual(evidence.checkRuns);
+  assert.equal(Object.isFrozen(committedResult),true);
+  assert.equal(Object.isFrozen(committedResult.matchedChecks),true);
+  assert.deepEqual(committedResult,{
+    valid:true,
+    residualPythonCodeql:false,
+    remediation:null,
+    reason:'CODEQL_PYTHON_ABSENT',
+    matchedChecks:[]
+  });
+
+  // Also passes when wrapped in the GitHub check-runs API envelope.
+  const envelopeResult=evaluateCodeqlPythonResidual({
+    total_count:evidence.checkRuns.length,
+    incomplete_results:false,
+    check_runs:evidence.checkRuns
+  });
+  assert.deepEqual(envelopeResult,committedResult);
+
+  // Reintroducing a stale Analyze (python) check run fails closed with exact remediation.
+  const staleCheckRuns=[
+    ...evidence.checkRuns,
+    {
+      id:140426999433,
+      name:'Analyze (python)',
+      head_sha:'b0924c3807f797e6090e1dc3e1e65fc9caa07550',
+      app:'github-actions',
+      status:'completed',
+      conclusion:'failure',
+      started_at:'2026-11-28T03:11:04Z',
+      completed_at:'2026-11-28T03:11:40Z',
+      html_url:'https://github.com/Jamula/SoftwareFactory/actions/runs/46101609262/job/140426999433'
+    }
+  ];
+  const residual=evaluateCodeqlPythonResidual(staleCheckRuns);
   assert.equal(Object.isFrozen(residual),true);
   assert.equal(Object.isFrozen(residual.matchedChecks),true);
   assert.deepEqual(residual,{
@@ -254,39 +294,24 @@ test('evaluateCodeqlPythonResidual detects stale Analyze (python) on verified ce
   assert.equal(prefixedPythonResult.remediation,CODEQL_PYTHON_REMEDIATION);
   assert.deepEqual(prefixedPythonResult.matchedChecks,['Push on main / Analyze (Python)','CodeQL (python)']);
 
-  // Once python is unchecked in Default Setup, remaining check runs pass cleanly.
-  const cleanedCheckRuns=evidence.checkRuns.filter(run=>run.name!=='Analyze (python)');
-  const cleanResult=evaluateCodeqlPythonResidual({
-    total_count:cleanedCheckRuns.length,
-    incomplete_results:false,
-    check_runs:cleanedCheckRuns
-  });
-  assert.deepEqual(cleanResult,{
-    valid:true,
-    residualPythonCodeql:false,
-    remediation:null,
-    reason:'CODEQL_PYTHON_ABSENT',
-    matchedChecks:[]
-  });
-
   // Also supports fractional-second ISO timestamps and matching head/head_sha fields.
   const headMatched=evaluateCodeqlPythonResidual([
     {
       id:10,
       name:'CodeQL',
-      head:'cec2745b7b8a21e77ad9f2839d4255d42305d419',
-      head_sha:'cec2745b7b8a21e77ad9f2839d4255d42305d419',
+      head:'b0924c3807f797e6090e1dc3e1e65fc9caa07550',
+      head_sha:'b0924c3807f797e6090e1dc3e1e65fc9caa07550',
       app:'github-code-scanning',
       status:'completed',
       conclusion:'success',
-      started_at:'2026-11-27T09:41:19.1234567Z',
-      completed_at:'2026-11-27T09:42:00.5Z',
+      started_at:'2026-11-28T03:11:04.1234567Z',
+      completed_at:'2026-11-28T03:12:46.5Z',
       details_url:'https://github.com/Jamula/SoftwareFactory/runs/10'
     },
     {
       id:11,
       name:'CodeQL (javascript-typescript)',
-      head:'cec2745b7b8a21e77ad9f2839d4255d42305d419',
+      head:'b0924c3807f797e6090e1dc3e1e65fc9caa07550',
       app:{slug:'github-actions'},
       status:'completed',
       conclusion:'success'
