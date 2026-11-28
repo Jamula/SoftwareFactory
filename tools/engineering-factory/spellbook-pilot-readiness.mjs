@@ -112,6 +112,28 @@ const text = (value, max = 200) =>
 const posInt = value => Number.isSafeInteger(value) && value > 0;
 const sha40 = value => typeof value === 'string' && /^[0-9a-f]{40}$/.test(value);
 
+const VALID_CHECK_STATUSES = new Set(['queued', 'in_progress', 'completed']);
+const VALID_COMPLETED_CONCLUSIONS = new Set([
+  'success',
+  'failure',
+  'cancelled',
+  'timed_out',
+  'action_required',
+  'neutral',
+  'skipped',
+  'stale'
+]);
+
+const validCheckItem = c =>
+  exact(c, ['name', 'head', 'appId', 'status', 'conclusion']) &&
+  text(c.name, 120) &&
+  sha40(c.head) &&
+  posInt(c.appId) &&
+  VALID_CHECK_STATUSES.has(c.status) &&
+  (c.status === 'completed'
+    ? VALID_COMPLETED_CONCLUSIONS.has(c.conclusion)
+    : c.conclusion === null);
+
 const validSnapshotReview = r =>
   exact(r, ['reviewer', 'head', 'state']) ||
   (exact(r, ['reviewer', 'head', 'state', 'summaryDisposition']) &&
@@ -132,7 +154,7 @@ const strictSnapshotShape = s =>
   dense(s.dependencies) &&
   s.dependencies.every(d => exact(d, ['issue', 'accepted'])) &&
   dense(s.checks) &&
-  s.checks.every(c => exact(c, ['name', 'head', 'appId', 'status', 'conclusion'])) &&
+  s.checks.every(validCheckItem) &&
   dense(s.reviews) &&
   s.reviews.every(validSnapshotReview) &&
   text(s.author, 120) &&
@@ -168,7 +190,7 @@ function singleCheckMutation(baseSnap, scenario, targetCheckName) {
   if (
     !singleMutation(baseSnap, scenario, 'checks') ||
     !dense(scenario.checks) ||
-    !scenario.checks.every(c => exact(c, ['name', 'head', 'appId', 'status', 'conclusion']))
+    !scenario.checks.every(validCheckItem)
   ) {
     return false;
   }
@@ -474,27 +496,65 @@ export function evaluateSpellbookShadowReadiness(input) {
     return shadowDeny(candidateDecision.reason);
   }
 
-  if (!exact(input.appCoverage, ['head', 'expectedComponents', 'reports']) || !sha40(input.appCoverage.head)) {
+  if (
+    !plainWithOptional(
+      input.appCoverage,
+      ['head', 'expectedComponents', 'reports'],
+      ['branchless']
+    ) ||
+    !sha40(input.appCoverage.head) ||
+    (Object.hasOwn(input.appCoverage, 'branchless') && !dense(input.appCoverage.branchless))
+  ) {
     return shadowDeny('APP_COVERAGE_INVALID');
   }
   if (input.appCoverage.head !== input.candidate.head) {
     return shadowDeny('STALE_HEAD_OR_BASE');
   }
 
+  const branchless = Object.hasOwn(input.appCoverage, 'branchless')
+    ? input.appCoverage.branchless
+    : undefined;
+  const covPolicy = {
+    repository: pkg.policy.repository,
+    existingLineMin: SPELLBOOK_MIN_LINE_COVERAGE,
+    existingBranchMin: SPELLBOOK_MIN_BRANCH_COVERAGE,
+    lineMin: pkg.policy.coverage.line,
+    branchMin: pkg.policy.coverage.branch,
+    ...(branchless === undefined ? {} : { branchless })
+  };
+
   const cov = coverageEvidence(
     input.candidate.head,
     input.appCoverage.expectedComponents,
     input.appCoverage.reports,
-    {
-      repository: pkg.policy.repository,
-      existingLineMin: SPELLBOOK_MIN_LINE_COVERAGE,
-      existingBranchMin: SPELLBOOK_MIN_BRANCH_COVERAGE,
-      lineMin: pkg.policy.coverage.line,
-      branchMin: pkg.policy.coverage.branch
-    }
+    covPolicy
   );
-  if (!cov.valid) {
+  if (!cov.valid || cov.branchTotal === 0) {
     return shadowDeny('APP_COVERAGE_BELOW_SPELLBOOK_TARGET');
+  }
+
+  if (branchless !== undefined) {
+    const reviewerAllowlist = new Set(pkg.policy.reviewers.map(r => r.toLowerCase()));
+    const authorLower = input.candidate.author.toLowerCase();
+    const agentLower = input.candidate.agent.toLowerCase();
+    const approvedOnHead = new Set(
+      input.candidate.reviews
+        .filter(r => r.state === 'APPROVED' && r.head === input.candidate.head)
+        .map(r => r.reviewer.toLowerCase())
+    );
+    if (
+      branchless.some(entry => {
+        const by = entry.reviewedBy.toLowerCase();
+        return (
+          !reviewerAllowlist.has(by) ||
+          by === authorLower ||
+          by === agentLower ||
+          !approvedOnHead.has(by)
+        );
+      })
+    ) {
+      return shadowDeny('BRANCHLESS_REVIEW_UNVERIFIED');
+    }
   }
 
   const measuredLinePct = (cov.lines * 100) / cov.lineTotal;

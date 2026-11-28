@@ -289,6 +289,116 @@ test('preserves >=97% app line and >=90% branch coverage and rejects lowering 97
   const inflatedBranch = readyInput();
   inflatedBranch.candidate.coverage.branch = 99;
   assert.equal(evaluateSpellbookShadowReadiness(inflatedBranch).reason, 'APP_COVERAGE_MISMATCH');
+
+  // Optional branchless justifications allow genuine 0/0 components when independently APPROVED on exact head
+  const withBranchless = readyInput();
+  withBranchless.appCoverage = {
+    head,
+    expectedComponents: ['ios.bridge', 'app.ui', 'ios.constants'],
+    reports: [
+      { component: 'ios.bridge', head, lines: 98, lineTotal: 100, branches: 46, branchTotal: 50 },
+      { component: 'app.ui', head, lines: 98, lineTotal: 100, branches: 46, branchTotal: 50 },
+      { component: 'ios.constants', head, lines: 50, lineTotal: 50, branches: 0, branchTotal: 0 }
+    ],
+    branchless: [
+      {
+        component: 'ios.constants',
+        head,
+        reviewedBy: 'synthetic-spellbook-reviewer',
+        reason: 'Pure Swift/TS constant declarations with zero runtime branches'
+      }
+    ]
+  };
+  withBranchless.candidate.coverage.line = 98.4;
+  const branchlessOk = evaluateSpellbookShadowReadiness(withBranchless);
+  assert.equal(branchlessOk.ready, true);
+  assert.deepEqual(branchlessOk.appCoverage, {
+    lines: 246,
+    lineTotal: 250,
+    branches: 92,
+    branchTotal: 100
+  });
+
+  // Malformed branchless list fails closed with APP_COVERAGE_INVALID
+  assert.equal(
+    evaluateSpellbookShadowReadiness({
+      ...withBranchless,
+      appCoverage: { ...withBranchless.appCoverage, branchless: 'not-array' }
+    }).reason,
+    'APP_COVERAGE_INVALID'
+  );
+
+  // Unjustified 0/0 component or all-branchless 0/0 inventory fails closed
+  const unjustifiedBranchless = structuredClone(withBranchless);
+  delete unjustifiedBranchless.appCoverage.branchless;
+  assert.equal(
+    evaluateSpellbookShadowReadiness(unjustifiedBranchless).reason,
+    'APP_COVERAGE_BELOW_SPELLBOOK_TARGET'
+  );
+
+  const allZeroBranches = readyInput();
+  allZeroBranches.appCoverage = {
+    head,
+    expectedComponents: ['ios.constants'],
+    reports: [{ component: 'ios.constants', head, lines: 50, lineTotal: 50, branches: 0, branchTotal: 0 }],
+    branchless: [
+      {
+        component: 'ios.constants',
+        head,
+        reviewedBy: 'synthetic-spellbook-reviewer',
+        reason: 'Pure constant declarations only'
+      }
+    ]
+  };
+  assert.equal(
+    evaluateSpellbookShadowReadiness(allZeroBranches).reason,
+    'APP_COVERAGE_BELOW_SPELLBOOK_TARGET'
+  );
+
+  // Branchless justification requires an independent exact-head APPROVED reviewer from policy.reviewers
+  const unlistedReviewerBranchless = structuredClone(withBranchless);
+  unlistedReviewerBranchless.appCoverage.branchless[0].reviewedBy = 'unlisted-reviewer';
+  assert.equal(
+    evaluateSpellbookShadowReadiness(unlistedReviewerBranchless).reason,
+    'BRANCHLESS_REVIEW_UNVERIFIED'
+  );
+
+  const addPolicyReviewer = (src, extraReviewer, reviewHead = head) => {
+    const copy = structuredClone(src);
+    copy.onboardingPackage.policy.reviewers.push(extraReviewer);
+    copy.onboardingPackage.replaySuite.killSwitchPolicy.reviewers.push(extraReviewer);
+    copy.rollback.receipt.postPolicy.reviewers.push(extraReviewer);
+    if (reviewHead !== null) {
+      copy.candidate.reviews.push({ reviewer: extraReviewer, head: reviewHead, state: 'APPROVED' });
+    }
+    copy.appCoverage.branchless[0].reviewedBy = extraReviewer;
+    return copy;
+  };
+
+  assert.equal(
+    evaluateSpellbookShadowReadiness(
+      addPolicyReviewer(withBranchless, 'synthetic-spellbook-author', head)
+    ).reason,
+    'BRANCHLESS_REVIEW_UNVERIFIED'
+  );
+  assert.equal(
+    evaluateSpellbookShadowReadiness(
+      addPolicyReviewer(withBranchless, 'copilot-swe-agent[bot]', head)
+    ).reason,
+    'BRANCHLESS_REVIEW_UNVERIFIED'
+  );
+  assert.equal(
+    evaluateSpellbookShadowReadiness(
+      addPolicyReviewer(withBranchless, 'second-spellbook-reviewer', base)
+    ).reason,
+    'BRANCHLESS_REVIEW_UNVERIFIED'
+  );
+  assert.equal(
+    evaluateSpellbookShadowReadiness(
+      addPolicyReviewer(withBranchless, 'second-spellbook-reviewer', null)
+    ).reason,
+    'BRANCHLESS_REVIEW_UNVERIFIED'
+  );
 });
 
 test('enforces <=2 concurrent-agent cap and rejects 3+ until separately verified scaling is approved', () => {
@@ -700,7 +810,42 @@ test('prevents duplicate existing PRs, enforces Spellbook profile isolation, and
     );
   }
 
-  // Mutating target check in a way that still evaluates SHADOW_ELIGIBLE (impossible for required checks) or mutating paths/objects in sameData
+  // In-progress check with null conclusion is a valid incomplete-check shadow denial, whereas proxy or malformed primitive fields are rejected
+  const inProgressWebkitDenials = structuredClone(denials);
+  inProgressWebkitDenials.webkitCheckFailed.checks[0] = {
+    ...baseSnap.checks[0],
+    status: 'in_progress',
+    conclusion: null
+  };
+  assert.equal(
+    evaluateSpellbookShadowReadiness(readyInput({ spellbookShadowDenials: inProgressWebkitDenials })).ready,
+    true
+  );
+
+  const revokedCheckHead = Proxy.revocable({}, {});
+  revokedCheckHead.revoke();
+  for (const badCheckOverride of [
+    { head: revokedCheckHead.proxy },
+    { head: 'not-a-sha' },
+    { name: '' },
+    { appId: 0 },
+    { status: 'bogus' },
+    { status: 'completed', conclusion: null },
+    { status: 'in_progress', conclusion: 'success' }
+  ]) {
+    const badCheckDenials = structuredClone(denials);
+    badCheckDenials.webkitCheckFailed.checks[0] = {
+      ...denials.webkitCheckFailed.checks[0],
+      ...badCheckOverride
+    };
+    const badCheckRes = evaluateSpellbookShadowReadiness(
+      readyInput({ spellbookShadowDenials: badCheckDenials })
+    );
+    assert.equal(badCheckRes.valid, false);
+    assert.equal(badCheckRes.ready, false);
+    assert.equal(badCheckRes.shadowVerified, false);
+    assert.equal(badCheckRes.reason, 'SPELLBOOK_SHADOW_REPLAY_INCOMPLETE');
+  }
   const mutatedNestedDenials = structuredClone(denials);
   mutatedNestedDenials.staleHead.paths = ['ios/Other.swift', 'src/spellbook-ui.ts'];
   assert.equal(
