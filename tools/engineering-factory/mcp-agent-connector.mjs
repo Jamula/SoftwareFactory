@@ -203,8 +203,8 @@ export const MCP_CONNECTOR_TOOLS = Object.freeze([
   }),
   ...[
     ['plan_disjoint_lanes', 'Plan disjoint authorized lanes without dispatching.', ['repositoryId', 'tasks'], {
-      repositoryId: { type: 'integer', minimum: 1 }, tasks: { type: 'array', maxItems: 250 },
-      active: { type: 'array', maxItems: 32 }, policy: { type: 'object' }
+      repositoryId: { type: 'integer', minimum: 1 }, tasks: { type: 'array', maxItems: 250, items: { type: 'object' } },
+      active: { type: 'array', maxItems: 32, items: { type: 'object' } }, policy: { type: 'object' }
     }],
     ['build_consumer_onboarding_plan', 'Build a read-only consumer onboarding plan and optional success evaluation.', ['repositoryId', 'discovery'], {
       repositoryId: { type: 'integer', minimum: 1 }, discovery: { type: 'object' }, success: { type: 'object' }
@@ -216,8 +216,9 @@ export const MCP_CONNECTOR_TOOLS = Object.freeze([
       repositoryId: { type: 'integer', minimum: 1 }, repositorySlug: { type: 'string' },
       expectedHeadSha: { type: 'string' }, nowMs: { type: 'integer', minimum: 0 },
       targetComponent: { type: 'string' }, specialistRole: { type: 'string' },
-      changedPaths: { type: 'array', maxItems: 200 }, guidanceEntries: { type: 'array', maxItems: 100 },
-      curatedLessons: { type: 'array', maxItems: 200 }, issueNumber: { type: 'integer', minimum: 1 },
+      changedPaths: { type: 'array', maxItems: 200, items: { type: 'string' } },
+      guidanceEntries: { type: 'array', maxItems: 100, items: { type: 'object' } },
+      curatedLessons: { type: 'array', maxItems: 200, items: { type: 'object' } }, issueNumber: { type: 'integer', minimum: 1 },
       policy: { type: 'object' }, checkpointEvidence: { type: 'object' }, externalKnowledgeStoreRequired: { type: 'boolean' }
     }],
     ['get_factory_board_snapshot', 'Read an authorized board using an injected read-only transport.', ['repositoryId'], {
@@ -867,6 +868,28 @@ function parseAuthorizedRepositories(authorizedRepositories) {
   return { ok: true, byId };
 }
 
+const validEnrolledLanes = lanes =>
+  isDenseArray(lanes, 32) && lanes.length > 0 &&
+  lanes.every(lane => hasAllowedKeys(lane, ['id', 'specialist', 'owners']) &&
+    isSlug(lane.id) && SPECIALIST_ROLES.includes(lane.specialist) &&
+    isDenseArray(lane.owners, 32) && lane.owners.length > 0 && lane.owners.every(isRepoPath)) &&
+  isUnique(lanes.map(lane => lane.id)) && arePathsDisjoint(lanes.flatMap(lane => lane.owners));
+
+export function validateMcpConnectorEnrollment(authorizedRepositories) {
+  const context = { authorizedRepositories };
+  if (!isValidConnectorContext(context)) return false;
+  const tree = inspectBoundedPlainTree(authorizedRepositories);
+  if (!tree.valid || tree.hasSecret) return false;
+  const auth = parseAuthorizedRepositories(authorizedRepositories);
+  if (!auth.ok) return false;
+  return [...auth.byId.values()].every(entry =>
+    (entry.lanes === undefined || validEnrolledLanes(entry.lanes)) &&
+    (entry.projectConfig === undefined ||
+      (validateProjectConfig(entry.projectConfig) &&
+       entry.projectConfig.project.repository === entry.repository &&
+       entry.projectConfig.project.defaultBranch === entry.defaultBranch)));
+}
+
 function buildSanitizedKnowledgeMap(entry, revision, nowMs, requestedTestInventory) {
   if (entry.projectConfig !== undefined) {
     if (!validateProjectConfig(entry.projectConfig) ||
@@ -949,12 +972,7 @@ function buildSanitizedKnowledgeMap(entry, revision, nowMs, requestedTestInvento
   if (entry.lanes === undefined) {
     return { ok: false, reason: 'KNOWLEDGE_MAP_UNAVAILABLE' };
   }
-  if (!isDenseArray(entry.lanes, 32) || entry.lanes.length === 0 ||
-      !entry.lanes.every(lane => hasAllowedKeys(lane, ['id', 'specialist', 'owners']) &&
-        isSlug(lane.id) && SPECIALIST_ROLES.includes(lane.specialist) &&
-        isDenseArray(lane.owners, 32) && lane.owners.length > 0 && lane.owners.every(isRepoPath)) ||
-      !isUnique(entry.lanes.map(lane => lane.id)) ||
-      !arePathsDisjoint(entry.lanes.flatMap(lane => lane.owners))) {
+  if (!validEnrolledLanes(entry.lanes)) {
     return { ok: false, reason: 'INVALID_LANE_OWNERSHIP' };
   }
   const lanes = Object.freeze(entry.lanes.map(lane => Object.freeze({
@@ -1300,8 +1318,35 @@ function handleGetBoundedWorkItemContext(args, context) {
 
 const wrapperDenied = reason => toolCallOutcome({ shadow: true, readOnly: true, reason }, true);
 
-function handleAdditionalTool(name, args, context) {
+function inspectAdditionalArguments(name, args) {
   const tree = inspectBoundedPlainTree(args);
+  if (!tree.valid || !tree.hasSecret || name !== 'build_consumer_onboarding_plan' ||
+      !isPlainObject(args.success)) return tree;
+  const copy = structuredClone(args);
+  const packages = [copy.success.onboardingPackage];
+  if (isDenseArray(copy.success.rollbackProof?.cohortPackages, 256)) {
+    packages.push(...copy.success.rollbackProof.cohortPackages);
+  }
+  for (const pkg of packages) {
+    if (!isPlainObject(pkg) || !Object.hasOwn(pkg, 'credentials')) continue;
+    if (Object.hasOwn(pkg, 'credentialMetadata')) return tree;
+    const metadata = pkg.credentials;
+    if (!hasAllowedKeys(metadata, [
+      'credentialId', 'scope', 'allowedRepositories', 'sharedAdminToken', 'persistedInCheckout'
+    ]) || metadata.sharedAdminToken !== false || metadata.persistedInCheckout !== false) return tree;
+    if (!isPlainObject(pkg.workflowPin) || pkg.workflowPin.persistCredentials !== false) return tree;
+    delete pkg.credentials;
+    delete pkg.workflowPin.persistCredentials;
+    pkg.credentialMetadata = {
+      credentialId: metadata.credentialId, scope: metadata.scope,
+      allowedRepositories: metadata.allowedRepositories
+    };
+  }
+  return inspectBoundedPlainTree(copy);
+}
+
+function handleAdditionalTool(name, args, context) {
+  const tree = inspectAdditionalArguments(name, args);
   if (!tree.valid || tree.hasSecret) return wrapperDenied('INVALID_OR_SECRET_ARGUMENTS');
   const auth = parseAuthorizedRepositories(context.authorizedRepositories);
   if (!auth.ok) return wrapperDenied(auth.reason);
@@ -1328,7 +1373,8 @@ function handleAdditionalTool(name, args, context) {
     const inventories = [args.tasks, args.active ?? []];
     if (inventories.some(items => !isDenseArray(items, 250) || items.some(item =>
       !isPlainObject(item) || !isDenseArray(item.paths, 256) ||
-      item.paths.some(path => typeof path !== 'string' || FORBIDDEN_CONTROL_PLANE_PATHS.some(blocked => pathsOverlap(path, blocked)))))) {
+      item.paths.some(path => typeof path !== 'string' || path.endsWith('.lock.yml') ||
+        FORBIDDEN_CONTROL_PLANE_PATHS.some(blocked => pathsOverlap(path, blocked)))))) {
       return wrapperDenied('INVALID_OR_PROTECTED_PATH');
     }
     result = planLanes(config, args.tasks, args.active, args.policy);
@@ -1343,13 +1389,19 @@ function handleAdditionalTool(name, args, context) {
         coverage.line < entry.coverageThresholds.line || coverage.branch < entry.coverageThresholds.branch)) {
       return wrapperDenied('COVERAGE_FLOOR_VIOLATION');
     }
-    const discovery = { ...args.discovery, stricterCoverageThresholds: coverage ?? entry.coverageThresholds };
-    const plan = buildReadOnlyOnboardingPlan(discovery);
+    const plan = buildReadOnlyOnboardingPlan(args.discovery);
+    if (plan.valid && (plan.localGates.minLineCoverage < entry.coverageThresholds.line ||
+        plan.localGates.minBranchCoverage < entry.coverageThresholds.branch)) {
+      return wrapperDenied('LOCAL_GATE_BELOW_ENROLLMENT');
+    }
     const success = args.success === undefined ? undefined : evaluateConsumerOnboardingSuccess(args.success);
-    if (success?.valid && (args.success.onboardingPackage?.repositoryId !== entry.repositoryId ||
+    if ((success?.valid || success?.shadowOnboarded === true) &&
+        (args.success.onboardingPackage?.repositoryId !== entry.repositoryId ||
         args.success.onboardingPackage?.policy?.repository !== entry.repository ||
         success.effectiveCoverage?.line < entry.coverageThresholds.line ||
-        success.effectiveCoverage?.branch < entry.coverageThresholds.branch)) {
+        success.effectiveCoverage?.branch < entry.coverageThresholds.branch ||
+        args.success.onboardingPackage.localGates.minLineCoverage < entry.coverageThresholds.line ||
+        args.success.onboardingPackage.localGates.minBranchCoverage < entry.coverageThresholds.branch)) {
       return wrapperDenied('ONBOARDING_IDENTITY_OR_COVERAGE_MISMATCH');
     }
     result = success === undefined ? { plan } : { plan, success };

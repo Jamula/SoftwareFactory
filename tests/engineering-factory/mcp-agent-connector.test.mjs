@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { PassThrough, Writable } from 'node:stream';
 import test from 'node:test';
 import {
   defaultSoftwareFactoryTestInventory
 } from '../../tools/engineering-factory/contract-routing.mjs';
+import { buildReadOnlyOnboardingPlan, evaluateConsumerOnboardingSuccess } from '../../tools/engineering-factory/consumer-onboarding.mjs';
 import {
   CONNECTOR_PROTOCOL_VERSION,
   CONNECTOR_ROLES,
@@ -24,6 +25,7 @@ import {
   isValidTraceparent,
   processMcpFramedMessages,
   startMcpStdioServer,
+  validateMcpConnectorEnrollment,
   validateMultiAgentConnectorConfig
 } from '../../tools/engineering-factory/mcp-agent-connector.mjs';
 
@@ -47,6 +49,8 @@ test('new read-only tools enforce enrollment, trusted lanes, identities and stri
   assert.equal(plan.structuredContent.scheduled.length, 1);
   assert.equal(mcpCall('plan_disjoint_lanes', { repositoryId: CONSUMER_REPO_ID, tasks: [{ ...task, dependencies: [1] }] }).structuredContent.reason, 'DEPENDENCY_CYCLE');
   assert.equal(mcpCall('plan_disjoint_lanes', { repositoryId: CONSUMER_REPO_ID, tasks: [{ ...task, paths: ['.github/workflows/x.yml'] }] }).structuredContent.reason, 'INVALID_OR_PROTECTED_PATH');
+  assert.equal(mcpCall('plan_disjoint_lanes', { repositoryId: CONSUMER_REPO_ID, tasks: [{ ...task, paths: ['src/api/build.lock.yml'] }] }).structuredContent.reason, 'INVALID_OR_PROTECTED_PATH');
+  assert.equal(mcpCall('plan_disjoint_lanes', { repositoryId: CONSUMER_REPO_ID, tasks: [], active: [{ id: 2, lane: 'api', paths: ['src/api/build.lock.yml'] }] }).structuredContent.reason, 'INVALID_OR_PROTECTED_PATH');
   assert.equal(mcpCall('plan_disjoint_lanes', { repositoryId: FACTORY_REPO_ID, tasks: [] }).structuredContent.reason, 'NO_READY_WORK');
   assert.equal(mcpCall('plan_disjoint_lanes', { repositoryId: 1, tasks: [] }).structuredContent.reason, 'UNAUTHORIZED_REPOSITORY');
   assert.equal(mcpCall('plan_disjoint_lanes', { repositoryId: CONSUMER_REPO_ID, tasks: [] }, {}).structuredContent.reason, 'AUTHORIZATION_CONTEXT_INVALID');
@@ -57,9 +61,34 @@ test('new read-only tools enforce enrollment, trusted lanes, identities and stri
     stackProfile: 'baseline-95-90'
   };
   const onboarding = mcpCall('build_consumer_onboarding_plan', { repositoryId: CONSUMER_REPO_ID, discovery });
-  assert.equal(onboarding.isError, false);
-  assert.equal(onboarding.structuredContent.plan.reason, 'READ_ONLY_ONBOARDING_PLAN_READY');
-  assert.equal(onboarding.structuredContent.plan.policy.coverage.line, 97);
+  assert.equal(onboarding.isError, true);
+  assert.equal(onboarding.structuredContent.reason, 'LOCAL_GATE_BELOW_ENROLLMENT');
+  const factoryOnly = { authorizedRepositories: [{ repositoryId: FACTORY_REPO_ID, repository: 'Jamula/SoftwareFactory' }] };
+  assert.equal(mcpCall('build_consumer_onboarding_plan', { repositoryId: CONSUMER_REPO_ID, discovery }, factoryOnly).structuredContent.reason, 'UNAUTHORIZED_REPOSITORY');
+  assert.equal(mcpCall('build_consumer_onboarding_plan', {
+    repositoryId: CONSUMER_REPO_ID, discovery, authorizedRepositories: authorizedContext().authorizedRepositories
+  }, factoryOnly).structuredContent.reason, 'UNAUTHORIZED_REPOSITORY');
+  const strictProfile = mcpCall('build_consumer_onboarding_plan', {
+    repositoryId: CONSUMER_REPO_ID, discovery: { ...discovery, stackProfile: 'strict-up-to-date-migration-gated' }
+  });
+  assert.equal(strictProfile.isError, false);
+  assert.deepEqual(strictProfile.structuredContent.plan.policy.coverage, { line: 100, branch: 100 });
+  assert.equal(strictProfile.structuredContent.plan.localGates.minLineCoverage, 100);
+  assert.equal(strictProfile.structuredContent.plan.localGates.minBranchCoverage, 100);
+  const existing = mcpCall('build_consumer_onboarding_plan', {
+    repositoryId: CONSUMER_REPO_ID,
+    discovery: { ...discovery, discoveredRepository: {
+      defaultBranch: 'main', mergeMethod: 'squash', checks: [{ name: 'build-test', appId: 12345 }],
+      reviewers: ['synthetic-reviewer'], owners: [{ prefix: 'src/', owner: 'synthetic-owner' }],
+      coverage: { line: 99, branch: 93 }, maxConcurrency: 1, existingFiles: []
+    } }
+  });
+  assert.equal(existing.isError, false);
+  assert.deepEqual(existing.structuredContent.plan.policy.coverage, { line: 99, branch: 93 });
+  assert.equal(existing.structuredContent.plan.localGates.minBranchCoverage, 93);
+  const missingEvidence = structuredClone(discovery);
+  missingEvidence.stricterCoverageThresholds = { line: 98, branch: 95 };
+  assert.equal(mcpCall('build_consumer_onboarding_plan', { repositoryId: CONSUMER_REPO_ID, discovery: missingEvidence }).structuredContent.reason, 'LOCAL_GATE_BELOW_ENROLLMENT');
   assert.equal(mcpCall('build_consumer_onboarding_plan', { repositoryId: CONSUMER_REPO_ID, discovery: { ...discovery, repository: 'Other/Repo' } }).structuredContent.reason, 'INVALID_ONBOARDING_ARGUMENTS');
   assert.equal(mcpCall('build_consumer_onboarding_plan', { repositoryId: CONSUMER_REPO_ID, discovery: { ...discovery, stricterCoverageThresholds: { line: 95, branch: 90 } } }).structuredContent.reason, 'COVERAGE_FLOOR_VIOLATION');
   assert.equal(mcpCall('build_consumer_onboarding_plan', { repositoryId: CONSUMER_REPO_ID, discovery, success: {} }).isError, true);
@@ -78,6 +107,196 @@ test('new read-only tools enforce enrollment, trusted lanes, identities and stri
   assert.equal(mcpCall('select_scoped_guidance_and_lessons', { ...selection, guidanceEntries: [{ text: 'gh' + 'p_fake' }] }).structuredContent.reason, 'INVALID_OR_SECRET_ARGUMENTS');
   assert.equal(mcpCall('get_factory_board_snapshot', { repositoryId: FACTORY_REPO_ID }).structuredContent.reason, 'BOARD_TRANSPORT_REQUIRED');
   assert.equal(mcpCall('get_factory_board_snapshot', { repositoryId: FACTORY_REPO_ID, repository: 'Other/Repo' }).structuredContent.reason, 'INVALID_BOARD_ARGUMENTS');
+});
+
+test('all advertised array schemas declare item types', () => {
+  const visit = schema => {
+    if (schema.type === 'array') {
+      assert.ok(schema.items, 'array items are required by MCP clients');
+      visit(schema.items);
+    }
+    if (schema.properties) Object.values(schema.properties).forEach(visit);
+  };
+  for (const tool of MCP_CONNECTOR_TOOLS) visit(tool.inputSchema);
+});
+
+function syntheticOnboardingPackage(repository, repositoryId, localLine = 98, localBranch = 95) {
+  const plan = buildReadOnlyOnboardingPlan({
+    repository, repositoryId, pinnedFactorySha: 'afc3d223f287b029db32672908097efc67a259c9',
+    stackProfile: 'baseline-95-90', stricterCoverageThresholds: { line: 98, branch: 95 }
+  });
+  assert.equal(plan.valid, true);
+  const policy = structuredClone(plan.policy);
+  const candidate = {
+    policySource: 'trusted-default-branch', repository, issue: 10, pr: 20,
+    head: HEAD_SHA, observedHead: HEAD_SHA, base: BASE_SHA, observedBase: BASE_SHA,
+    baseBranch: policy.defaultBranch, rateLimited: false, remainingCredits: 25, activeCount: 0,
+    providerReady: true, risk: 'low', priority: 1, paths: [`${policy.owners[0].prefix}index.ts`],
+    dependencies: [], acceptanceComplete: true, baseCompatible: true, mainHealthy: true,
+    threadsResolved: true, securityClear: true,
+    coverage: { head: HEAD_SHA, line: 98, branch: 95, complete: true },
+    checks: policy.checks.map(check => ({ ...check, head: HEAD_SHA, status: 'completed', conclusion: 'success' })),
+    author: 'synthetic-author', agent: 'synthetic-agent',
+    reviews: [{ reviewer: policy.reviewers[0], head: HEAD_SHA, state: 'APPROVED' }]
+  };
+  const credentialId = plan.rollbackPlan.revokeCredentialId;
+  return {
+    contractVersion: plan.contractVersion, repositoryId, stackProfile: plan.stackProfile,
+    ownerAuthorized: true, migrationFreezeClear: true, autoActivate: false, productionDeployEnabled: false,
+    workflowPin: structuredClone(plan.workflowPin), policy,
+    localGates: { ...structuredClone(plan.localGates), minLineCoverage: localLine, minBranchCoverage: localBranch },
+    credentials: {
+      credentialId, scope: 'repo-read-only-shadow', allowedRepositories: [repository],
+      sharedAdminToken: false, persistedInCheckout: false
+    },
+    replaySuite: {
+      eligibleCandidate: candidate,
+      staleReview: { ...candidate, reviews: [{ reviewer: policy.reviewers[0], head: BASE_SHA, state: 'APPROVED' }] },
+      dismissedReview: { ...candidate, reviews: [{ reviewer: policy.reviewers[0], head: HEAD_SHA, state: 'DISMISSED' }] },
+      commentedBotReview: { ...candidate, reviews: [{ reviewer: 'copilot-pull-request-reviewer[bot]', head: HEAD_SHA, state: 'COMMENTED', summaryDisposition: 'clear' }] },
+      wrongRepository: { ...candidate, repository: 'Synthetic/Foreign' },
+      missingQuota: { ...candidate, remainingCredits: 0 },
+      killSwitchPolicy: { ...policy, mode: 'shadow', killSwitch: true }
+    },
+    rollback: {
+      disableMode: 'disabled', killSwitch: true, revokeCredentialId: credentialId,
+      revertWorkflowPinPrRequired: true, queuedLiveMutations: 0
+    }
+  };
+}
+
+function syntheticSuccess(pkg, peer) {
+  return {
+    synthetic: true, onboardingPrMerged: true,
+    usability: {
+      mandatorySettingsCount: 4, generatedFileCount: 2, discoveryAndPlanDurationMs: 15,
+      basicIntegrationDurationMs: 300000, overwrittenExistingFiles: 0, competingBacklogsCreated: 0,
+      mandatoryExternalServices: 0, incrementalBilledUsdCents: 0
+    },
+    governance: {
+      authoritativeBacklog: 'github-issues', allowCommentedBotApproval: false,
+      independentApprovedReviewRequired: true, perRepoAiCreditHardStop: true, paidOverageAllowed: false
+    },
+    existingGates: {
+      lineCoverage: 95, branchCoverage: 90, requiredChecks: pkg.localGates.requiredChecks, maxConcurrency: 1
+    },
+    onboardingPackage: pkg,
+    peerRegistry: [{ repository: peer.policy.repository, repositoryId: peer.repositoryId, credentialId: peer.credentials.credentialId }],
+    rollbackProof: {
+      commitsToRevert: 1, factoryRepositoryUntouched: true,
+      rollbackReceipt: {
+        repository: pkg.policy.repository, postPolicy: structuredClone(pkg.policy),
+        revokedCredentialId: pkg.credentials.credentialId, pinRevertedViaReviewedPr: true, queuedLiveMutations: 0
+      },
+      cohortPackages: [structuredClone(pkg), structuredClone(peer)]
+    }
+  };
+}
+
+test('onboarding success preserves enrolled local gates and accepts only safe credential metadata', () => {
+  const peer = syntheticOnboardingPackage('Synthetic/Peer', CONSUMER_REPO_ID + 1);
+  const weak = syntheticOnboardingPackage('Synthetic/Spellbook', CONSUMER_REPO_ID, 96, 91);
+  const success = syntheticSuccess(weak, peer);
+  assert.equal(evaluateConsumerOnboardingSuccess(success).valid, true);
+  const discovery = {
+    repository: weak.policy.repository, repositoryId: CONSUMER_REPO_ID,
+    pinnedFactorySha: 'afc3d223f287b029db32672908097efc67a259c9', stackProfile: 'strict-up-to-date-migration-gated'
+  };
+  const args = { repositoryId: CONSUMER_REPO_ID, discovery, success };
+  assert.equal(mcpCall('build_consumer_onboarding_plan', args).structuredContent.reason, 'ONBOARDING_IDENTITY_OR_COVERAGE_MISMATCH');
+  for (const [line, branch] of [[96, 92], [97, 91]]) {
+    const weakGate = syntheticOnboardingPackage('Synthetic/Spellbook', CONSUMER_REPO_ID, line, branch);
+    assert.equal(mcpCall('build_consumer_onboarding_plan', { ...args, success: syntheticSuccess(weakGate, peer) }).structuredContent.reason, 'ONBOARDING_IDENTITY_OR_COVERAGE_MISMATCH');
+    const partial = { ...syntheticSuccess(weakGate, peer), requireAutonomousAcceptance: true };
+    assert.equal(evaluateConsumerOnboardingSuccess(partial).shadowOnboarded, true);
+    assert.equal(mcpCall('build_consumer_onboarding_plan', { ...args, success: partial }).structuredContent.reason, 'ONBOARDING_IDENTITY_OR_COVERAGE_MISMATCH');
+  }
+  const good = syntheticOnboardingPackage('Synthetic/Spellbook', CONSUMER_REPO_ID, 97, 92);
+  const accepted = mcpCall('build_consumer_onboarding_plan', { ...args, success: syntheticSuccess(good, peer) });
+  assert.equal(accepted.isError, false);
+  assert.equal(accepted.structuredContent.success.valid, true);
+  assert.equal(accepted.structuredContent.success.accepted, false);
+  const validPartial = mcpCall('build_consumer_onboarding_plan', { ...args, success: {
+    ...syntheticSuccess(good, peer), requireAutonomousAcceptance: true
+  } });
+  assert.equal(validPartial.isError, true);
+  assert.equal(validPartial.structuredContent.success.shadowOnboarded, true);
+  assert.equal(validPartial.structuredContent.success.reason, 'AUTONOMOUS_PROOF_REQUIRED');
+  const other = syntheticOnboardingPackage('Synthetic/Other', CONSUMER_REPO_ID + 2, 97, 92);
+  assert.equal(mcpCall('build_consumer_onboarding_plan', { ...args, success: {
+    ...syntheticSuccess(other, peer), requireAutonomousAcceptance: true
+  } }).structuredContent.reason, 'ONBOARDING_IDENTITY_OR_COVERAGE_MISMATCH');
+  const bad = syntheticSuccess(good, peer);
+  bad.onboardingPackage.credentials.sharedAdminToken = true;
+  assert.equal(mcpCall('build_consumer_onboarding_plan', { ...args, success: bad }).structuredContent.reason, 'INVALID_OR_SECRET_ARGUMENTS');
+  const secret = syntheticSuccess(good, peer);
+  secret.onboardingPackage.credentials.credentialId = 'gh' + 'p_fake';
+  assert.equal(mcpCall('build_consumer_onboarding_plan', { ...args, success: secret }).structuredContent.reason, 'INVALID_OR_SECRET_ARGUMENTS');
+  const collision = syntheticSuccess(good, peer);
+  collision.onboardingPackage.credentialMetadata = { value: 'gh' + 'p_fake' };
+  assert.equal(mcpCall('build_consumer_onboarding_plan', { ...args, success: collision }).structuredContent.reason, 'INVALID_OR_SECRET_ARGUMENTS');
+});
+
+test('operator enrollment is structurally validated without weakening repository boundaries', () => {
+  const entries = authorizedContext().authorizedRepositories;
+  assert.equal(validateMcpConnectorEnrollment(entries), true);
+  assert.equal(validateMcpConnectorEnrollment(null), false);
+  assert.equal(validateMcpConnectorEnrollment([]), false);
+  assert.equal(validateMcpConnectorEnrollment([{ repositoryId: FACTORY_REPO_ID, repository: 'Synthetic/Other' }]), false);
+  assert.equal(validateMcpConnectorEnrollment([{ ...entries[1], coverage: { line: 94, branch: 90 } }]), false);
+  assert.equal(validateMcpConnectorEnrollment([{ ...entries[1], projectConfig: {} }]), false);
+  assert.equal(validateMcpConnectorEnrollment([{ ...entries[1], lanes: [{ id: 'api', specialist: 'api', owners: ['src/api'] }] }]), true);
+  assert.equal(validateMcpConnectorEnrollment([{ ...entries[1], lanes: [] }]), false);
+  assert.equal(validateMcpConnectorEnrollment([{ ...entries[1], projectConfig: { ...entries[1].projectConfig, project: { ...entries[1].projectConfig.project, repository: 'Synthetic/Other' } } }]), false);
+  assert.equal(validateMcpConnectorEnrollment([{ ...entries[1], revision: 'gh' + 'p_fake' }]), false);
+});
+
+test('CLI accepts only trusted bounded enrollment and rejects malformed configuration without leaking input', () => {
+  const variable = 'SOFTWAREFACTORY_MCP_AUTHORIZED_REPOSITORIES';
+  const invoke = (value, requests) => {
+    const env = { ...process.env };
+    delete env[variable];
+    if (value !== undefined) env[variable] = value;
+    return spawnSync(process.execPath, ['bin/softwarefactory-mcp.mjs'], {
+      env, encoding: 'utf8', input: requests.map(request => JSON.stringify(request)).join('\n') + '\n'
+    });
+  };
+  const discovery = {
+    repository: 'Synthetic/Spellbook', repositoryId: CONSUMER_REPO_ID,
+    pinnedFactorySha: 'afc3d223f287b029db32672908097efc67a259c9', stackProfile: 'strict-up-to-date-migration-gated'
+  };
+  const call = {
+    jsonrpc: '2.0', id: 1, method: 'tools/call',
+    params: { name: 'build_consumer_onboarding_plan', arguments: { repositoryId: CONSUMER_REPO_ID, discovery } }
+  };
+  const defaults = invoke(undefined, [call]);
+  assert.equal(defaults.status, 0);
+  assert.equal(defaults.stderr, '');
+  assert.equal(JSON.parse(defaults.stdout).result.structuredContent.reason, 'UNAUTHORIZED_REPOSITORY');
+  const entries = [{ repositoryId: CONSUMER_REPO_ID, repository: 'Synthetic/Spellbook', coverage: { line: 97, branch: 92 } }];
+  const enrolled = invoke(JSON.stringify(entries), [call]);
+  assert.equal(enrolled.status, 0);
+  assert.equal(enrolled.stderr, '');
+  assert.deepEqual(JSON.parse(enrolled.stdout).result.structuredContent.plan.policy.coverage, { line: 100, branch: 100 });
+  const injected = structuredClone(call);
+  injected.params.arguments.authorizedRepositories = entries;
+  assert.equal(JSON.parse(invoke(undefined, [injected]).stdout).result.structuredContent.reason, 'UNAUTHORIZED_REPOSITORY');
+  const confidential = 'gh' + 'p_fake';
+  for (const raw of [
+    '', '{' + confidential, 'null', '[]',
+    JSON.stringify([{ repositoryId: FACTORY_REPO_ID, repository: 'Synthetic/Other' }]),
+    JSON.stringify([entries[0], entries[0]]),
+    JSON.stringify([{ ...entries[0], projectConfig: {} }]),
+    JSON.stringify([{ ...entries[0], lanes: [] }]),
+    JSON.stringify([{ ...entries[0], credential: confidential }]),
+    'x'.repeat(MAX_MCP_REQUEST_BYTES + 1)
+  ]) {
+    const rejected = invoke(raw, [call]);
+    assert.equal(rejected.status, 1);
+    assert.equal(rejected.stdout, '');
+    assert.equal(rejected.stderr, 'Invalid MCP repository enrollment.\n');
+    assert.equal(rejected.stderr.includes(confidential), false);
+  }
 });
 
 test('stdio frames are ordered, bounded, UTF-8 checked, and use only an injected board transport', async () => {

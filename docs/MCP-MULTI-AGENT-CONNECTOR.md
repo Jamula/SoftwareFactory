@@ -39,9 +39,27 @@ authorization, entitlement, and budget checks remain separate.
 
 The CLI enrolls only `Jamula/SoftwareFactory` (repository ID `1471342715`);
 this is a read-only context, not permission to dispatch, merge, or access
-consumer repositories. Knowledge-map requests still require a revision and a
-freshness timestamp. Results are advisory and do not replace trusted evidence,
-independent review, or consumer-specific gates.
+consumer repositories. To use consumer tools, a trusted operator may set
+`SOFTWAREFACTORY_MCP_AUTHORIZED_REPOSITORIES` in the server process environment
+to a JSON array of authorized repository entries. This replaces the default
+list, so include the factory entry if it is also needed. Each consumer entry
+must carry its repository ID and name and any stricter coverage floors and
+trusted lane configuration applicable to it. Invalid enrollment prevents the
+server from starting; MCP requests cannot enroll repositories. Do not put
+credentials in enrollment metadata.
+
+For example, a launcher can supply synthetic entries like:
+
+```json
+[
+  { "repositoryId": 1471342715, "repository": "Jamula/SoftwareFactory" },
+  { "repositoryId": 22001100, "repository": "Synthetic/Consumer", "coverage": { "line": 97, "branch": 92 } }
+]
+```
+
+Knowledge-map requests still require a revision and a freshness timestamp.
+Results are advisory and do not replace trusted evidence, independent review,
+or consumer-specific gates.
 
 ---
 
