@@ -1,6 +1,14 @@
 name: .NET MAF specialist agents
 on:
   pull_request:
+    paths:
+      - 'src/**'
+      - 'tests/SoftwareFactory.Agents.Tests/**'
+      - 'apphost.cs'
+      - 'global.json'
+      - 'Directory.Build.props'
+      - 'Directory.Packages.props'
+      - '.github/workflows/dotnet-agents.yml'
   merge_group:
     types: [checks_requested]
   push:

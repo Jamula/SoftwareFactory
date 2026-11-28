@@ -50,22 +50,91 @@ jobs:
           if ((dotnet --version).Trim() -ne '10.0.404') { throw 'SDK version mismatch' }
           node tools/engineering-factory/aspire-smoke.mjs
           if ($LASTEXITCODE -ne 0) { throw 'Synthetic smoke failed' }
+      - name: Restore locked npm cache (read-only)
+        id: npm-cache-restore
+        if: github.event_name != 'push'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.npm
+          key: sf-npm-ci-v1-${{ runner.os }}-${{ runner.arch }}-node-26.13.1-ignore-scripts-${{ hashFiles('package.json', 'package-lock.json') }}
+      - name: Restore and save locked npm cache (protected main)
+        id: npm-cache-main
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.ref_protected == true && github.repository == 'Jamula/SoftwareFactory' && github.repository_id == '1471342715'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.npm
+          key: sf-npm-ci-v1-${{ runner.os }}-${{ runner.arch }}-node-26.13.1-ignore-scripts-${{ hashFiles('package.json', 'package-lock.json') }}
       - name: Restore locked Node dependencies
-        run: npm ci --ignore-scripts
-      - name: Restore pinned Aspire
+        env:
+          NPM_CACHE_HIT: ${{ steps.npm-cache-restore.outputs.cache-hit || steps.npm-cache-main.outputs.cache-hit || 'false' }}
         run: |
           $ErrorActionPreference = 'Stop'
+          $npmTimer = [System.Diagnostics.Stopwatch]::StartNew()
+          $env:NPM_CONFIG_CACHE = Join-Path $env:USERPROFILE '.npm'
+          npm ci --ignore-scripts
+          if ($LASTEXITCODE -ne 0) { throw 'Node dependency restore failed' }
+          $npmTimer.Stop()
+          $npmHit = if ($env:NPM_CACHE_HIT -eq 'true') { 'true' } else { 'false' }
+          Write-Host "windows-aspire stage timing: npm_cache_hit=$npmHit npm_ci_ms=$($npmTimer.ElapsedMilliseconds)"
+      - name: Restore locked NuGet and Aspire.Cli cache (read-only)
+        id: aspire-cache-restore
+        if: github.event_name != 'push'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ runner.temp }}/nuget-packages
+            ${{ runner.temp }}/softwarefactory-aspire-tools
+          key: sf-aspire-nuget-v1-${{ runner.os }}-${{ runner.arch }}-dotnet-10.0.404-aspire-17.0.0-release-${{ hashFiles('global.json', 'apphost.cs', 'src/SoftwareFactory.Agents/SoftwareFactory.Agents.csproj', '**/packages.lock.json', 'Directory.Build.props', 'Directory.Packages.props') }}
+      - name: Restore and save locked NuGet and Aspire.Cli cache (protected main)
+        id: aspire-cache-main
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.ref_protected == true && github.repository == 'Jamula/SoftwareFactory' && github.repository_id == '1471342715'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ runner.temp }}/nuget-packages
+            ${{ runner.temp }}/softwarefactory-aspire-tools
+          key: sf-aspire-nuget-v1-${{ runner.os }}-${{ runner.arch }}-dotnet-10.0.404-aspire-17.0.0-release-${{ hashFiles('global.json', 'apphost.cs', 'src/SoftwareFactory.Agents/SoftwareFactory.Agents.csproj', '**/packages.lock.json', 'Directory.Build.props', 'Directory.Packages.props') }}
+      - name: Restore pinned Aspire
+        env:
+          NUGET_PACKAGES: ${{ runner.temp }}/nuget-packages
+          ASPIRE_CACHE_HIT: ${{ steps.aspire-cache-restore.outputs.cache-hit || steps.aspire-cache-main.outputs.cache-hit || 'false' }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $stageTimer = [System.Diagnostics.Stopwatch]::StartNew()
           $env:ASPIRE_HOME = Join-Path $env:RUNNER_TEMP 'softwarefactory-aspire'
           $toolDir = Join-Path $env:RUNNER_TEMP 'softwarefactory-aspire-tools'
-          dotnet tool install Aspire.Cli --version 17.0.0 --tool-path $toolDir --source https://api.nuget.org/v3/index.json
-          if ($LASTEXITCODE -ne 0) { throw 'Aspire install failed' }
+          $aspireBin = Join-Path $toolDir 'aspire.exe'
+          $aspireReused = $false
+          if (Test-Path -LiteralPath $aspireBin) {
+            $cachedVersion = (& $aspireBin --version 2>$null | Out-String).Trim()
+            if ($LASTEXITCODE -eq 0 -and $cachedVersion -match '^17\.0\.0(?:\+[0-9a-f]+)?$') {
+              $aspireReused = $true
+            }
+          }
+          if (-not $aspireReused) {
+            if (Test-Path -LiteralPath $toolDir) {
+              Remove-Item -Recurse -Force -LiteralPath $toolDir
+            }
+            dotnet tool install Aspire.Cli --version 17.0.0 --tool-path $toolDir --source https://api.nuget.org/v3/index.json
+            if ($LASTEXITCODE -ne 0) { throw 'Aspire install failed' }
+          }
+          $verifiedVersion = (& $aspireBin --version | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0 -or $verifiedVersion -notmatch '^17\.0\.0(?:\+[0-9a-f]+)?$') {
+            throw 'Aspire version mismatch'
+          }
           Add-Content -Path $env:GITHUB_PATH -Value $toolDir
           Add-Content -Path $env:GITHUB_ENV -Value "ASPIRE_HOME=$env:ASPIRE_HOME"
           dotnet restore apphost.cs --source https://api.nuget.org/v3/index.json
           if ($LASTEXITCODE -ne 0) { throw 'Restore failed' }
           dotnet build apphost.cs --configuration Release --no-restore
           if ($LASTEXITCODE -ne 0) { throw 'Build failed' }
+          $stageTimer.Stop()
+          $cacheHit = if ($env:ASPIRE_CACHE_HIT -eq 'true') { 'true' } else { 'false' }
+          $reusedFlag = if ($aspireReused) { 'true' } else { 'false' }
+          Write-Host "windows-aspire stage timing: aspire_cache_hit=$cacheHit aspire_cli_reused=$reusedFlag restore_build_ms=$($stageTimer.ElapsedMilliseconds)"
       - name: Exercise isolated authenticated AppHost
+        env:
+          NUGET_PACKAGES: ${{ runner.temp }}/nuget-packages
         run: |
           $ErrorActionPreference = 'Stop'
           $tmp = Join-Path $env:RUNNER_TEMP ('aspire-smoke-' + [guid]::NewGuid())
@@ -158,8 +227,6 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw 'Dashboard trace/log readback failed' }
             $null = Invoke-Aspire @('stop','--apphost','apphost.cs','--non-interactive') 30
             $appHostStopped = $true
-            node --test tests/engineering-factory/verify-dashboard-api.test.mjs tests/engineering-factory/verify-dashboard-metric-receipt.test.mjs
-            if ($LASTEXITCODE -ne 0) { throw 'Dashboard verifier regression tests failed' }
             node tools/engineering-factory/verify-dashboard-metric-receipt.mjs $dataRoot
             if ($LASTEXITCODE -ne 0) { throw 'Dashboard metric persistence verification failed' }
             Write-Host 'Isolated Windows AppHost stopped'

@@ -33,8 +33,33 @@ jobs:
           echo "Candidate $EXPECTED_HEAD"
       - name: Runnable synthetic factory
         run: node tools/engineering-factory/run.mjs --smoke
+      - name: Restore locked npm cache (read-only)
+        id: npm-cache-restore
+        if: github.event_name != 'push'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.npm
+          key: sf-npm-ci-v1-${{ runner.os }}-${{ runner.arch }}-node-26.13.1-ignore-scripts-${{ hashFiles('package.json', 'package-lock.json') }}
+      - name: Restore and save locked npm cache (protected main)
+        id: npm-cache-main
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.ref_protected == true && github.repository == 'Jamula/SoftwareFactory' && github.repository_id == '1471342715'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.npm
+          key: sf-npm-ci-v1-${{ runner.os }}-${{ runner.arch }}-node-26.13.1-ignore-scripts-${{ hashFiles('package.json', 'package-lock.json') }}
       - name: Install locked dependencies
-        run: npm ci --ignore-scripts
+        env:
+          NPM_CACHE_HIT: ${{ steps.npm-cache-restore.outputs.cache-hit || steps.npm-cache-main.outputs.cache-hit || 'false' }}
+        run: |
+          set -euo pipefail
+          npm_start="$(date +%s%3N)"
+          NPM_CONFIG_CACHE="$HOME/.npm" npm ci --ignore-scripts
+          npm_end="$(date +%s%3N)"
+          npm_hit="false"
+          if [ "${NPM_CACHE_HIT:-false}" = "true" ]; then
+            npm_hit="true"
+          fi
+          printf 'validate stage timing: job=test-coverage npm_cache_hit=%s npm_ci_ms=%s\n' "$npm_hit" "$((npm_end - npm_start))"
       # One full test execution; the exact-head reporter independently enumerates
       # every tracked source component and rejects any missing or sub-98/95 row.
       - name: Full test suite and exact-source component coverage (98/95)
@@ -78,29 +103,94 @@ jobs:
           test "$(node --version)" = v26.13.1
           test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
           echo "Candidate $EXPECTED_HEAD"
-      - name: Test dashboard verifier fail-closed behavior
-        run: node --test tests/engineering-factory/verify-dashboard-api.test.mjs
+      - name: Restore locked npm cache (read-only)
+        id: npm-cache-restore
+        if: github.event_name != 'push'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.npm
+          key: sf-npm-ci-v1-${{ runner.os }}-${{ runner.arch }}-node-26.13.1-ignore-scripts-${{ hashFiles('package.json', 'package-lock.json') }}
+      - name: Restore and save locked npm cache (protected main)
+        id: npm-cache-main
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.ref_protected == true && github.repository == 'Jamula/SoftwareFactory' && github.repository_id == '1471342715'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.npm
+          key: sf-npm-ci-v1-${{ runner.os }}-${{ runner.arch }}-node-26.13.1-ignore-scripts-${{ hashFiles('package.json', 'package-lock.json') }}
       - name: Install locked dependencies for runtime
-        run: npm ci --ignore-scripts
+        env:
+          NPM_CACHE_HIT: ${{ steps.npm-cache-restore.outputs.cache-hit || steps.npm-cache-main.outputs.cache-hit || 'false' }}
+        run: |
+          set -euo pipefail
+          npm_start="$(date +%s%3N)"
+          NPM_CONFIG_CACHE="$HOME/.npm" npm ci --ignore-scripts
+          npm_end="$(date +%s%3N)"
+          npm_hit="false"
+          if [ "${NPM_CACHE_HIT:-false}" = "true" ]; then
+            npm_hit="true"
+          fi
+          printf 'validate stage timing: job=linux-aspire-runtime npm_cache_hit=%s npm_ci_ms=%s\n' "$npm_hit" "$((npm_end - npm_start))"
       - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
           dotnet-version: '10.0.404'
           cache: false
+      - name: Restore locked NuGet and Aspire.Cli cache (read-only)
+        id: aspire-cache-restore
+        if: github.event_name != 'push'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ runner.temp }}/nuget-packages
+            ${{ runner.temp }}/softwarefactory-aspire-tools
+          key: sf-aspire-nuget-v1-${{ runner.os }}-${{ runner.arch }}-dotnet-10.0.404-aspire-17.0.0-release-${{ hashFiles('global.json', 'apphost.cs', 'src/SoftwareFactory.Agents/SoftwareFactory.Agents.csproj', '**/packages.lock.json', 'Directory.Build.props', 'Directory.Packages.props') }}
+      - name: Restore and save locked NuGet and Aspire.Cli cache (protected main)
+        id: aspire-cache-main
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.ref_protected == true && github.repository == 'Jamula/SoftwareFactory' && github.repository_id == '1471342715'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ runner.temp }}/nuget-packages
+            ${{ runner.temp }}/softwarefactory-aspire-tools
+          key: sf-aspire-nuget-v1-${{ runner.os }}-${{ runner.arch }}-dotnet-10.0.404-aspire-17.0.0-release-${{ hashFiles('global.json', 'apphost.cs', 'src/SoftwareFactory.Agents/SoftwareFactory.Agents.csproj', '**/packages.lock.json', 'Directory.Build.props', 'Directory.Packages.props') }}
       - name: Restore and build the pinned Aspire AppHost
         env:
           DOTNET_CLI_TELEMETRY_OPTOUT: '1'
           ASPIRE_CLI_TELEMETRY_OPTOUT: 'true'
+          NUGET_PACKAGES: ${{ runner.temp }}/nuget-packages
+          ASPIRE_CACHE_HIT: ${{ steps.aspire-cache-restore.outputs.cache-hit || steps.aspire-cache-main.outputs.cache-hit || 'false' }}
         run: |
           set -euo pipefail
+          stage_start="$(date +%s%3N)"
           sdk_version="$(dotnet --version)"
           test "$sdk_version" = 10.0.404
           tool_dir="$RUNNER_TEMP/softwarefactory-aspire-tools"
           export ASPIRE_HOME="$RUNNER_TEMP/softwarefactory-aspire"
-          dotnet tool install Aspire.Cli --version 17.0.0 --tool-path "$tool_dir" --source https://api.nuget.org/v3/index.json
+          aspire_bin="$tool_dir/aspire"
+          aspire_reused="false"
+          if [ -x "$aspire_bin" ]; then
+            cached_version="$("$aspire_bin" --version 2>/dev/null || true)"
+            case "$cached_version" in
+              17.0.0|17.0.0+*) aspire_reused="true" ;;
+            esac
+          fi
+          if [ "$aspire_reused" != "true" ]; then
+            rm -rf -- "$tool_dir"
+            dotnet tool install Aspire.Cli --version 17.0.0 --tool-path "$tool_dir" --source https://api.nuget.org/v3/index.json
+          fi
           export PATH="$tool_dir:$PATH"
-          aspire --version
+          verified_aspire="$(aspire --version)"
+          case "$verified_aspire" in
+            17.0.0|17.0.0+*) ;;
+            *) echo "::error::Unexpected Aspire.Cli version"; exit 1 ;;
+          esac
           dotnet restore apphost.cs --source https://api.nuget.org/v3/index.json
           dotnet build apphost.cs --configuration Release --no-restore
+          stage_end="$(date +%s%3N)"
+          cache_hit="false"
+          if [ "${ASPIRE_CACHE_HIT:-false}" = "true" ]; then
+            cache_hit="true"
+          fi
+          printf 'validate stage timing: job=linux-aspire-runtime aspire_cache_hit=%s aspire_cli_reused=%s restore_build_ms=%s\n' "$cache_hit" "$aspire_reused" "$((stage_end - stage_start))"
       - name: Exercise the isolated Aspire AppHost
         env:
           DOTNET_CLI_TELEMETRY_OPTOUT: '1'
@@ -109,6 +199,7 @@ jobs:
           ASPIRE_DASHBOARD_UNSECURED_ALLOW_ANONYMOUS: 'false'
           ASPIRE_ALLOW_UNSECURED_TRANSPORT: 'false'
           ASPIRE_CLI_START_TIMEOUT: '60'
+          NUGET_PACKAGES: ${{ runner.temp }}/nuget-packages
         run: |
           set -euo pipefail
           export ASPIRE_HOME="$RUNNER_TEMP/softwarefactory-aspire"
@@ -172,12 +263,10 @@ jobs:
             exit 1
           fi
           node tools/engineering-factory/verify-dashboard-export.mjs "$archive"
-          node --test tests/engineering-factory/inspect-dashboard-metric-schema.test.mjs
           if ! timeout 30s aspire stop --apphost apphost.cs --non-interactive >"$output" 2>&1; then
             echo "::error::Aspire shutdown failed"
             exit 1
           fi
-          node --test tests/engineering-factory/verify-dashboard-metric-receipt.test.mjs
           node tools/engineering-factory/verify-dashboard-metric-receipt.mjs "$data_root"
           trap - EXIT
           rm -f -- "$output" "$certificate" "$archive"

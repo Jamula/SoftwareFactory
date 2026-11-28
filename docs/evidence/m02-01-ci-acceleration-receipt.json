@@ -1,0 +1,584 @@
+{
+  "schemaVersion": "1.0.0",
+  "receiptId": "m02-01-exact-lock-ci-acceleration-baseline-and-wiring",
+  "milestone": "M02.01",
+  "issueNumber": 15,
+  "capturedAtIso": "2026-11-28T05:45:00Z",
+  "repository": "Jamula/SoftwareFactory",
+  "repositoryId": 1471342715,
+  "baselineMainHeadSha": "ec438f54088f30856c2df6ff626e894dde2a0100",
+  "status": {
+    "coldBaselineCaptured": true,
+    "exactLockCachingWired": true,
+    "duplicateRuntimeUnitTestsRemoved": true,
+    "dotnetAgentsPullRequestPathFiltered": true,
+    "legacyShadowReconcileQuietedToDispatchOnly": true,
+    "warmCohortVerified": false,
+    "closesIssue15": false,
+    "gatesWeakened": false,
+    "restoreKeysFallbackUsed": false,
+    "incrementalSpendUsdCents": 0
+  },
+  "toolchain": {
+    "node": "26.13.1",
+    "npmCiFlags": "--ignore-scripts",
+    "dotnet": "10.0.404",
+    "aspireCli": "17.0.0",
+    "apphostConfiguration": "Release",
+    "nugetSource": "https://api.nuget.org/v3/index.json"
+  },
+  "lockedInputDigests": {
+    "packageJsonSha256": "e3ffa929bb19b28fcbd745d0f878ba3ddb51ec63d8da51af55361347f6dbd32e",
+    "packageLockSha256": "ae80cdec747d0677107e59b4166376a7c5a759c0c14517e0bc2273b4e46aff4d",
+    "globalJsonSha256": "3d8b00074b0d3c97f6dd0862c3426d5e83ca6a796100cde5ddb097d75a8462d6",
+    "appHostSha256": "4dafbbf0fc8844d107640e39cd04b13af03eacb045adf443635407e4fa3975f7",
+    "agentsCsprojSha256": "76b55089a23fa0c7c6c0fccef62c233dddfb5d61c2d925715d76c96e08731cb2"
+  },
+  "exactLockCacheSafety": {
+    "cacheRestoreAction": "actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9",
+    "cacheWriteAction": "actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9",
+    "readOnlyCondition": "github.event_name != 'push'",
+    "protectedMainWriteCondition": "github.event_name == 'push' && github.ref == 'refs/heads/main' && github.ref_protected == true && github.repository == 'Jamula/SoftwareFactory' && github.repository_id == '1471342715'",
+    "derivedKeys": {
+      "linux": {
+        "npmCi": "sf-npm-ci-v1-linux-x64-node-26.13.1-fc6ae157a039b1e053a213a3c31479bd1eff48bea79f5c9f33ea92fc0a11d837",
+        "nugetApphost": "sf-nuget-apphost-v1-linux-x64-dotnet-10.0.404-release-6fb158f41a4b0d5d4eeaabb3123178dafad71fb7aab1f4d03e89def3bcf8b449",
+        "aspireCli": "sf-aspire-cli-v1-linux-x64-aspire-17.0.0-30fcb6862d31c8084339f6aaf9195fb5bec00ef5bb0db8d634fa550ed3e84c97"
+      },
+      "windows": {
+        "npmCi": "sf-npm-ci-v1-win-x64-node-26.13.1-56ac05d983842872f588433272e5ffcfc1ae8374c760c33c8554f439e30006c9",
+        "nugetApphost": "sf-nuget-apphost-v1-win-x64-dotnet-10.0.404-release-00742cc8c7875397823d2153c34ec556b9ae6c76c7436fcf7696ac309848c04d",
+        "aspireCli": "sf-aspire-cli-v1-win-x64-aspire-17.0.0-495ca2a605978ec3aaa64aa21d8d5950169716e4b54b4852d823cc60606b8553"
+      }
+    },
+    "manifestKeys": {
+      "linux": {
+        "npm": "sf-npm-v1-linux-x64-node-26.13.1-fda60abd724042056305d75fa07d4f3ea6699350979893e73c15f2c1f02e22bd",
+        "nuget": "sf-nuget-v1-linux-x64-dotnet-10.0.404-release-b2231b208c3d15906ab412e14f4e917e8324d6a8607288bbd3cc786c109b6848",
+        "aspire-cli": "sf-aspire-cli-v1-linux-x64-aspire-17.0.0-a4010eb2e655a057c4e18781e7e82601462ac067dc3ad6eea9c7daa917cde5b6"
+      },
+      "windows": {
+        "npm": "sf-npm-v1-win-x64-node-26.13.1-fa0bcd46ca7a59be56a9ce9a29f7855dc13f8cdd2a4d71932410d74b08337d04",
+        "nuget": "sf-nuget-v1-win-x64-dotnet-10.0.404-release-ea7198d2c69811c95e7994638a194f7a245a61b4fab5f24247094d4c408fce09",
+        "aspire-cli": "sf-aspire-cli-v1-win-x64-aspire-17.0.0-e9e74dd1afc9f5d0158502b859990e83af06c596f4c6181a1eaf32a8730a8a47"
+      }
+    }
+  },
+  "protectedMainColdBaseline": [
+    {
+      "headSha": "ec438f54088f30856c2df6ff626e894dde2a0100",
+      "eventIso": "2026-11-28T05:28:48Z",
+      "validateRunId": 46112285635,
+      "windowsAspireRunId": 46112285658,
+      "testCoverageJobId": 140878293132,
+      "testCoverageDurationMs": 39000,
+      "linuxAspireJobId": 140878293339,
+      "linuxAspireDurationMs": 51000,
+      "linuxRestoreBuildStepMs": 24000,
+      "buildTestJobId": 140878500207,
+      "buildTestEventElapsedMs": 61000,
+      "windowsAspireJobId": 140878293210,
+      "windowsAspireDurationMs": 133000,
+      "windowsRestorePinnedAspireStepMs": 71000,
+      "windowsEventElapsedMs": 135000
+    },
+    {
+      "headSha": "5796fdacee8b701db2bedcbde27ef058bf788e92",
+      "eventIso": "2026-11-28T04:24:47Z",
+      "validateRunId": 46107412650,
+      "windowsAspireRunId": 46107412677,
+      "testCoverageJobId": 140863153473,
+      "testCoverageDurationMs": 37000,
+      "linuxAspireJobId": 140863153693,
+      "linuxAspireDurationMs": 58000,
+      "linuxRestoreBuildStepMs": 25000,
+      "buildTestJobId": 140863408385,
+      "buildTestEventElapsedMs": 65000,
+      "windowsAspireJobId": 140863153604,
+      "windowsAspireDurationMs": 140000,
+      "windowsRestorePinnedAspireStepMs": 76000,
+      "windowsEventElapsedMs": 143000
+    },
+    {
+      "headSha": "b82b006da3ed860440daf00904f5b3239e8d01db",
+      "eventIso": "2026-11-28T04:18:48Z",
+      "validateRunId": 46106944779,
+      "windowsAspireRunId": 46106944613,
+      "testCoverageJobId": 140861711298,
+      "testCoverageDurationMs": 36000,
+      "linuxAspireJobId": 140861711556,
+      "linuxAspireDurationMs": 49000,
+      "linuxRestoreBuildStepMs": 19000,
+      "buildTestJobId": 140861919501,
+      "buildTestEventElapsedMs": 58000,
+      "windowsAspireJobId": 140861710668,
+      "windowsAspireDurationMs": 119000,
+      "windowsRestorePinnedAspireStepMs": 64000,
+      "windowsEventElapsedMs": 122000
+    },
+    {
+      "headSha": "e269e82c3309cee59bdf853028d93ea5b2f87bf0",
+      "eventIso": "2026-11-28T03:52:23Z",
+      "validateRunId": 46104898073,
+      "windowsAspireRunId": 46104898093,
+      "testCoverageJobId": 140855328451,
+      "testCoverageDurationMs": 36000,
+      "linuxAspireJobId": 140855328625,
+      "linuxAspireDurationMs": 47000,
+      "linuxRestoreBuildStepMs": 21000,
+      "buildTestJobId": 140855524029,
+      "buildTestEventElapsedMs": 59000,
+      "windowsAspireJobId": 140855328434,
+      "windowsAspireDurationMs": 114000,
+      "windowsRestorePinnedAspireStepMs": 63000,
+      "windowsEventElapsedMs": 120000
+    },
+    {
+      "headSha": "b0924c3807f797e6090e1dc3e1e65fc9caa07550",
+      "eventIso": "2026-11-28T03:11:00Z",
+      "validateRunId": 46101609302,
+      "windowsAspireRunId": 46101609338,
+      "testCoverageJobId": 140845083481,
+      "testCoverageDurationMs": 39000,
+      "linuxAspireJobId": 140845083688,
+      "linuxAspireDurationMs": 78000,
+      "linuxRestoreBuildStepMs": 46000,
+      "buildTestJobId": 140845427660,
+      "buildTestEventElapsedMs": 87000,
+      "windowsAspireJobId": 140845083870,
+      "windowsAspireDurationMs": 116000,
+      "windowsRestorePinnedAspireStepMs": 62000,
+      "windowsEventElapsedMs": 119000
+    }
+  ],
+  "aspireStageBaseline": {
+    "linux": {
+      "workflowRunId": 46112285635,
+      "jobId": 140878293339,
+      "sample": {
+        "platform": "linux",
+        "headSha": "ec438f54088f30856c2df6ff626e894dde2a0100",
+        "runnerEnvironment": "github-hosted",
+        "outcome": "succeeded",
+        "queueWaitMs": 3000,
+        "setupMs": 4000,
+        "restoreBuildMs": 27000,
+        "certificateExportMs": 1000,
+        "appHostStartupMs": 7800,
+        "syntheticWorkloadMs": 900,
+        "exportVerifyMs": 8300,
+        "stopCleanupMs": 2000
+      },
+      "analysis": {
+        "valid": true,
+        "shadow": true,
+        "reason": "ASPIRE_RUNTIME_STAGES_ANALYZED",
+        "platform": "linux",
+        "headSha": "ec438f54088f30856c2df6ff626e894dde2a0100",
+        "outcome": "succeeded",
+        "queueWaitMs": 3000,
+        "runtimeExecutionMs": 51000,
+        "totalWallMs": 54000,
+        "stages": {
+          "queueWaitMs": 3000,
+          "setupMs": 4000,
+          "restoreBuildMs": 27000,
+          "certificateExportMs": 1000,
+          "appHostStartupMs": 7800,
+          "syntheticWorkloadMs": 900,
+          "exportVerifyMs": 8300,
+          "stopCleanupMs": 2000
+        },
+        "dominantStage": "restoreBuildMs",
+        "dominantStageMs": 27000,
+        "provisionalWindowsTargetMs": 120000,
+        "meetsWindowsProvisionalTarget": null,
+        "laneTargetMs": 65000,
+        "meetsLaneTarget": true,
+        "failureCategory": null,
+        "tlsVerificationRequired": true,
+        "skipRequiredChecks": false
+      }
+    },
+    "windows": {
+      "workflowRunId": 46112285658,
+      "jobId": 140878293210,
+      "sample": {
+        "platform": "windows",
+        "headSha": "ec438f54088f30856c2df6ff626e894dde2a0100",
+        "runnerEnvironment": "github-hosted",
+        "outcome": "succeeded",
+        "queueWaitMs": 2000,
+        "setupMs": 23000,
+        "restoreBuildMs": 76000,
+        "certificateExportMs": 756,
+        "appHostStartupMs": 24110,
+        "syntheticWorkloadMs": 1593,
+        "exportVerifyMs": 2233,
+        "stopCleanupMs": 5308
+      },
+      "analysis": {
+        "valid": true,
+        "shadow": true,
+        "reason": "ASPIRE_RUNTIME_STAGES_ANALYZED",
+        "platform": "windows",
+        "headSha": "ec438f54088f30856c2df6ff626e894dde2a0100",
+        "outcome": "succeeded",
+        "queueWaitMs": 2000,
+        "runtimeExecutionMs": 133000,
+        "totalWallMs": 135000,
+        "stages": {
+          "queueWaitMs": 2000,
+          "setupMs": 23000,
+          "restoreBuildMs": 76000,
+          "certificateExportMs": 756,
+          "appHostStartupMs": 24110,
+          "syntheticWorkloadMs": 1593,
+          "exportVerifyMs": 2233,
+          "stopCleanupMs": 5308
+        },
+        "dominantStage": "restoreBuildMs",
+        "dominantStageMs": 76000,
+        "provisionalWindowsTargetMs": 120000,
+        "meetsWindowsProvisionalTarget": false,
+        "laneTargetMs": 65000,
+        "meetsLaneTarget": false,
+        "failureCategory": null,
+        "tlsVerificationRequired": true,
+        "skipRequiredChecks": false
+      }
+    }
+  },
+  "coldPullRequestCohort": {
+    "runs": [
+      {
+        "runId": "pr-46113080221",
+        "headSha": "dac9b25d1f8e62d06aa39951ad20e34f59ced93a",
+        "cacheCohort": "cold",
+        "eventAtMs": 1795844359000,
+        "checks": [
+          {
+            "context": "test-coverage",
+            "lane": "linux",
+            "headSha": "dac9b25d1f8e62d06aa39951ad20e34f59ced93a",
+            "conclusion": "success",
+            "queuedAtMs": 1795844359000,
+            "startedAtMs": 1795844362000,
+            "completedAtMs": 1795844399000
+          },
+          {
+            "context": "linux-aspire-runtime",
+            "lane": "linux",
+            "headSha": "dac9b25d1f8e62d06aa39951ad20e34f59ced93a",
+            "conclusion": "success",
+            "queuedAtMs": 1795844359000,
+            "startedAtMs": 1795844362000,
+            "completedAtMs": 1795844413000
+          },
+          {
+            "context": "upload-coverage-javascript",
+            "lane": "linux",
+            "headSha": "dac9b25d1f8e62d06aa39951ad20e34f59ced93a",
+            "conclusion": "success",
+            "queuedAtMs": 1795844399000,
+            "startedAtMs": 1795844401000,
+            "completedAtMs": 1795844412000
+          },
+          {
+            "context": "build-test",
+            "lane": "linux",
+            "headSha": "dac9b25d1f8e62d06aa39951ad20e34f59ced93a",
+            "conclusion": "success",
+            "queuedAtMs": 1795844413000,
+            "startedAtMs": 1795844416000,
+            "completedAtMs": 1795844421000
+          },
+          {
+            "context": "windows-aspire-runtime",
+            "lane": "windows",
+            "headSha": "dac9b25d1f8e62d06aa39951ad20e34f59ced93a",
+            "conclusion": "success",
+            "queuedAtMs": 1795844359000,
+            "startedAtMs": 1795844362000,
+            "completedAtMs": 1795844485000
+          },
+          {
+            "context": "CodeQL",
+            "lane": "security",
+            "headSha": "dac9b25d1f8e62d06aa39951ad20e34f59ced93a",
+            "conclusion": "success",
+            "queuedAtMs": 1795844359000,
+            "startedAtMs": 1795844392000,
+            "completedAtMs": 1795844394000
+          }
+        ]
+      },
+      {
+        "runId": "pr-46111510947",
+        "headSha": "11ca4d4af822f4507c3bd1867db86dc592286875",
+        "cacheCohort": "cold",
+        "eventAtMs": 1795843112000,
+        "checks": [
+          {
+            "context": "test-coverage",
+            "lane": "linux",
+            "headSha": "11ca4d4af822f4507c3bd1867db86dc592286875",
+            "conclusion": "success",
+            "queuedAtMs": 1795843172000,
+            "startedAtMs": 1795843176000,
+            "completedAtMs": 1795843216000
+          },
+          {
+            "context": "linux-aspire-runtime",
+            "lane": "linux",
+            "headSha": "11ca4d4af822f4507c3bd1867db86dc592286875",
+            "conclusion": "success",
+            "queuedAtMs": 1795843172000,
+            "startedAtMs": 1795843177000,
+            "completedAtMs": 1795843234000
+          },
+          {
+            "context": "upload-coverage-javascript",
+            "lane": "linux",
+            "headSha": "11ca4d4af822f4507c3bd1867db86dc592286875",
+            "conclusion": "success",
+            "queuedAtMs": 1795843216000,
+            "startedAtMs": 1795843219000,
+            "completedAtMs": 1795843230000
+          },
+          {
+            "context": "build-test",
+            "lane": "linux",
+            "headSha": "11ca4d4af822f4507c3bd1867db86dc592286875",
+            "conclusion": "success",
+            "queuedAtMs": 1795843234000,
+            "startedAtMs": 1795843237000,
+            "completedAtMs": 1795843241000
+          },
+          {
+            "context": "windows-aspire-runtime",
+            "lane": "windows",
+            "headSha": "11ca4d4af822f4507c3bd1867db86dc592286875",
+            "conclusion": "success",
+            "queuedAtMs": 1795843176000,
+            "startedAtMs": 1795843182000,
+            "completedAtMs": 1795843348000
+          },
+          {
+            "context": "CodeQL",
+            "lane": "security",
+            "headSha": "11ca4d4af822f4507c3bd1867db86dc592286875",
+            "conclusion": "success",
+            "queuedAtMs": 1795843112000,
+            "startedAtMs": 1795843141000,
+            "completedAtMs": 1795843144000
+          }
+        ]
+      },
+      {
+        "runId": "pr-46110921957",
+        "headSha": "329b3ff2e3dd5f8a2d981a0b59a8ef89269cbba3",
+        "cacheCohort": "cold",
+        "eventAtMs": 1795842658000,
+        "checks": [
+          {
+            "context": "test-coverage",
+            "lane": "linux",
+            "headSha": "329b3ff2e3dd5f8a2d981a0b59a8ef89269cbba3",
+            "conclusion": "success",
+            "queuedAtMs": 1795842740000,
+            "startedAtMs": 1795842744000,
+            "completedAtMs": 1795842779000
+          },
+          {
+            "context": "linux-aspire-runtime",
+            "lane": "linux",
+            "headSha": "329b3ff2e3dd5f8a2d981a0b59a8ef89269cbba3",
+            "conclusion": "success",
+            "queuedAtMs": 1795842740000,
+            "startedAtMs": 1795842744000,
+            "completedAtMs": 1795842801000
+          },
+          {
+            "context": "upload-coverage-javascript",
+            "lane": "linux",
+            "headSha": "329b3ff2e3dd5f8a2d981a0b59a8ef89269cbba3",
+            "conclusion": "success",
+            "queuedAtMs": 1795842779000,
+            "startedAtMs": 1795842782000,
+            "completedAtMs": 1795842798000
+          },
+          {
+            "context": "build-test",
+            "lane": "linux",
+            "headSha": "329b3ff2e3dd5f8a2d981a0b59a8ef89269cbba3",
+            "conclusion": "success",
+            "queuedAtMs": 1795842801000,
+            "startedAtMs": 1795842804000,
+            "completedAtMs": 1795842807000
+          },
+          {
+            "context": "windows-aspire-runtime",
+            "lane": "windows",
+            "headSha": "329b3ff2e3dd5f8a2d981a0b59a8ef89269cbba3",
+            "conclusion": "success",
+            "queuedAtMs": 1795842741000,
+            "startedAtMs": 1795842745000,
+            "completedAtMs": 1795842856000
+          },
+          {
+            "context": "CodeQL",
+            "lane": "security",
+            "headSha": "329b3ff2e3dd5f8a2d981a0b59a8ef89269cbba3",
+            "conclusion": "success",
+            "queuedAtMs": 1795842658000,
+            "startedAtMs": 1795842682000,
+            "completedAtMs": 1795842687000
+          }
+        ]
+      },
+      {
+        "runId": "pr-46110196240",
+        "headSha": "aea2e90b848e25408e76ef1e8d0672a976f5f956",
+        "cacheCohort": "cold",
+        "eventAtMs": 1795842093000,
+        "checks": [
+          {
+            "context": "test-coverage",
+            "lane": "linux",
+            "headSha": "aea2e90b848e25408e76ef1e8d0672a976f5f956",
+            "conclusion": "success",
+            "queuedAtMs": 1795842168000,
+            "startedAtMs": 1795842173000,
+            "completedAtMs": 1795842207000
+          },
+          {
+            "context": "linux-aspire-runtime",
+            "lane": "linux",
+            "headSha": "aea2e90b848e25408e76ef1e8d0672a976f5f956",
+            "conclusion": "success",
+            "queuedAtMs": 1795842168000,
+            "startedAtMs": 1795842172000,
+            "completedAtMs": 1795842225000
+          },
+          {
+            "context": "upload-coverage-javascript",
+            "lane": "linux",
+            "headSha": "aea2e90b848e25408e76ef1e8d0672a976f5f956",
+            "conclusion": "success",
+            "queuedAtMs": 1795842207000,
+            "startedAtMs": 1795842210000,
+            "completedAtMs": 1795842224000
+          },
+          {
+            "context": "build-test",
+            "lane": "linux",
+            "headSha": "aea2e90b848e25408e76ef1e8d0672a976f5f956",
+            "conclusion": "success",
+            "queuedAtMs": 1795842225000,
+            "startedAtMs": 1795842227000,
+            "completedAtMs": 1795842230000
+          },
+          {
+            "context": "windows-aspire-runtime",
+            "lane": "windows",
+            "headSha": "aea2e90b848e25408e76ef1e8d0672a976f5f956",
+            "conclusion": "success",
+            "queuedAtMs": 1795842171000,
+            "startedAtMs": 1795842175000,
+            "completedAtMs": 1795842305000
+          },
+          {
+            "context": "CodeQL",
+            "lane": "security",
+            "headSha": "aea2e90b848e25408e76ef1e8d0672a976f5f956",
+            "conclusion": "success",
+            "queuedAtMs": 1795842093000,
+            "startedAtMs": 1795842127000,
+            "completedAtMs": 1795842132000
+          }
+        ]
+      },
+      {
+        "runId": "pr-46109966079",
+        "headSha": "cc445acbc84c2e1223b9e9159d2d3557f2012e30",
+        "cacheCohort": "cold",
+        "eventAtMs": 1795841917000,
+        "checks": [
+          {
+            "context": "test-coverage",
+            "lane": "linux",
+            "headSha": "cc445acbc84c2e1223b9e9159d2d3557f2012e30",
+            "conclusion": "success",
+            "queuedAtMs": 1795842007000,
+            "startedAtMs": 1795842011000,
+            "completedAtMs": 1795842046000
+          },
+          {
+            "context": "linux-aspire-runtime",
+            "lane": "linux",
+            "headSha": "cc445acbc84c2e1223b9e9159d2d3557f2012e30",
+            "conclusion": "success",
+            "queuedAtMs": 1795842007000,
+            "startedAtMs": 1795842011000,
+            "completedAtMs": 1795842076000
+          },
+          {
+            "context": "upload-coverage-javascript",
+            "lane": "linux",
+            "headSha": "cc445acbc84c2e1223b9e9159d2d3557f2012e30",
+            "conclusion": "success",
+            "queuedAtMs": 1795842046000,
+            "startedAtMs": 1795842048000,
+            "completedAtMs": 1795842059000
+          },
+          {
+            "context": "build-test",
+            "lane": "linux",
+            "headSha": "cc445acbc84c2e1223b9e9159d2d3557f2012e30",
+            "conclusion": "success",
+            "queuedAtMs": 1795842076000,
+            "startedAtMs": 1795842079000,
+            "completedAtMs": 1795842082000
+          },
+          {
+            "context": "windows-aspire-runtime",
+            "lane": "windows",
+            "headSha": "cc445acbc84c2e1223b9e9159d2d3557f2012e30",
+            "conclusion": "success",
+            "queuedAtMs": 1795842004000,
+            "startedAtMs": 1795842008000,
+            "completedAtMs": 1795842123000
+          },
+          {
+            "context": "CodeQL",
+            "lane": "security",
+            "headSha": "cc445acbc84c2e1223b9e9159d2d3557f2012e30",
+            "conclusion": "success",
+            "queuedAtMs": 1795841917000,
+            "startedAtMs": 1795841953000,
+            "completedAtMs": 1795841955000
+          }
+        ]
+      }
+    ],
+    "summary": {
+      "valid": true,
+      "reason": "CI_CRITICAL_PATH_EVALUATED",
+      "sampleCount": 5,
+      "p50Ms": 206000,
+      "p95Ms": 236000,
+      "p50MeetsStandardTarget": false,
+      "p50MeetsStretchTarget": false,
+      "sloMissCount": 5,
+      "firstJobStartToLastCheckMs": {
+        "p50Ms": 174000,
+        "p95Ms": 207000
+      },
+      "runnerQueueWaitMs": {
+        "p50Ms": 33000,
+        "p95Ms": 36000
+      }
+    }
+  }
+}
