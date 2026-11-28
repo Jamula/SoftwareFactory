@@ -1,0 +1,535 @@
+{
+  "schemaVersion": "1.0.0",
+  "issue": 4,
+  "milestone": "M01.01",
+  "auditedAt": "2026-11-27T10:00:12Z",
+  "repository": "Jamula/SoftwareFactory",
+  "repositoryId": 1471342715,
+  "branch": "main",
+  "auditedHead": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
+  "mainHealthy": false,
+  "statusSummary": {
+    "mainHealthy": false,
+    "blockingWorkflow": "CodeQL",
+    "blockingRunName": "Push on main",
+    "blockingRunId": 45975773999,
+    "blockingJobName": "Analyze (python)",
+    "blockingJobId": 140426999433,
+    "blockingExitCode": 32,
+    "blockingDiagnostic": "CodeQL CLI 2.27.6 exited 32 (no Python source code detected after #118 replaced Python verifiers with pinned Node.js 26.13.1 while repository CodeQL default-setup still listed python).",
+    "javascriptCoverage": {
+      "ciRunId": 45975774012,
+      "ciJobId": 140426990061,
+      "artifactId": 15187406552,
+      "componentCount": 57,
+      "lines": 20664,
+      "lineTotal": 20676,
+      "linePercent": "99.94%",
+      "branches": 12645,
+      "branchTotal": 12784,
+      "branchPercent": "98.91%"
+    },
+    "dotnetCoverage": {
+      "ciRunId": 45975773949,
+      "linuxJobId": 140426990405,
+      "windowsJobId": 140426989874,
+      "sdkVersion": "10.0.404",
+      "targetFramework": "net10.0",
+      "assembly": "SoftwareFactory.Agents",
+      "xunitTestsPassed": 18,
+      "componentCount": 1,
+      "lines": 1737,
+      "lineTotal": 1739,
+      "linePercent": "99.88%",
+      "branches": 786,
+      "branchTotal": 798,
+      "branchPercent": "98.50%"
+    }
+  },
+  "mergeQueueReceipt": {
+    "mergedPullRequest": 143,
+    "mergeGroupBranch": "gh-readonly-queue/main/pr-143-824031eb8d9d79c5dec03043a96ee575293978c0",
+    "mergeGroupHead": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
+    "runs": [
+      {
+        "workflow": "Factory validation",
+        "workflowId": 429969395,
+        "runId": 45975370484,
+        "event": "merge_group",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "workflow": "Windows Aspire runtime",
+        "workflowId": 431078413,
+        "runId": 45975370495,
+        "event": "merge_group",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "workflow": ".NET MAF specialist agents",
+        "workflowId": 432407823,
+        "runId": 45975370444,
+        "event": "merge_group",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "workflow": "Reusable replay smoke",
+        "workflowId": 430043906,
+        "runId": 45975370960,
+        "event": "merge_group",
+        "status": "completed",
+        "conclusion": "success"
+      }
+    ]
+  },
+  "effectiveRulesets": [
+    {
+      "id": 16162572,
+      "name": "Default-Org-Ruleset",
+      "sourceType": "Organization",
+      "enforcement": "active"
+    },
+    {
+      "id": 28054442,
+      "name": "Default-Branch-Ruleset",
+      "sourceType": "Repository",
+      "enforcement": "active"
+    }
+  ],
+  "auditInput": {
+    "repository": "Jamula/SoftwareFactory",
+    "repositoryId": 1471342715,
+    "branch": "main",
+    "ruleset": {
+      "strictRequiredStatusChecks": true,
+      "requiredStatusChecks": [
+        {"context": "build-test", "integrationId": 15368},
+        {"context": "upload-coverage-javascript", "integrationId": 15368},
+        {"context": "windows-aspire-runtime", "integrationId": 15368}
+      ],
+      "minimumCoverage": 98,
+      "maxCoverageDrop": 0,
+      "requiredApprovingReviewCount": 0,
+      "copilotCodeReviewOnPush": true,
+      "requiredReviewThreadResolution": true,
+      "allowedMergeMethods": ["squash"],
+      "mergeQueueMergeMethod": "SQUASH",
+      "mergeQueueGrouping": "ALLGREEN",
+      "bypassActorsCount": 0,
+      "secretScanningRequired": true,
+      "codeScanningTools": []
+    },
+    "main": {
+      "head": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
+      "protected": true,
+      "security": {
+        "secretScanningClear": true,
+        "openCodeScanningAlerts": 0
+      },
+      "workflowRuns": [
+        {
+          "workflow": "Factory validation",
+          "runName": "Factory validation",
+          "runId": 45975774012,
+          "event": "push",
+          "headSha": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
+          "status": "completed",
+          "conclusion": "success",
+          "jobs": [
+            {
+              "name": "test-coverage",
+              "jobId": 140426990061,
+              "appId": 15368,
+              "headSha": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
+              "status": "completed",
+              "conclusion": "success"
+            },
+            {
+              "name": "linux-aspire-runtime",
+              "jobId": 140426990428,
+              "appId": 15368,
+              "headSha": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
+              "status": "completed",
+              "conclusion": "success"
+            },
+            {
+              "name": "upload-coverage-javascript",
+              "jobId": 140427292828,
+              "appId": 15368,
+              "headSha": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
+              "status": "completed",
+              "conclusion": "success"
+            },
+            {
+              "name": "build-test",
+              "jobId": 140427422272,
+              "appId": 15368,
+              "headSha": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
+              "status": "completed",
+              "conclusion": "success"
+            }
+          ]
+        },
+        {
+          "workflow": "Windows Aspire runtime",
+          "runName": "Windows Aspire runtime",
+          "runId": 45975774125,
+          "event": "push",
+          "headSha": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
+          "status": "completed",
+          "conclusion": "success",
+          "jobs": [
+            {
+              "name": "windows-aspire-runtime",
+              "jobId": 140426992317,
+              "appId": 15368,
+              "headSha": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
+              "status": "completed",
+              "conclusion": "success"
+            }
+          ]
+        },
+        {
+          "workflow": ".NET MAF specialist agents",
+          "runName": ".NET MAF specialist agents",
+          "runId": 45975773949,
+          "event": "push",
+          "headSha": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
+          "status": "completed",
+          "conclusion": "success",
+          "jobs": [
+            {
+              "name": "linux-dotnet-agents",
+              "jobId": 140426990405,
+              "appId": 15368,
+              "headSha": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
+              "status": "completed",
+              "conclusion": "success"
+            },
+            {
+              "name": "windows-dotnet-agents",
+              "jobId": 140426989874,
+              "appId": 15368,
+              "headSha": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
+              "status": "completed",
+              "conclusion": "success"
+            }
+          ]
+        },
+        {
+          "workflow": "Reusable replay smoke",
+          "runName": "Reusable replay smoke",
+          "runId": 45975774227,
+          "event": "push",
+          "headSha": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
+          "status": "completed",
+          "conclusion": "success",
+          "jobs": [
+            {
+              "name": "pinned-synthetic-replay / replay",
+              "jobId": 140426990544,
+              "appId": 15368,
+              "headSha": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
+              "status": "completed",
+              "conclusion": "success"
+            }
+          ]
+        },
+        {
+          "workflow": "CodeQL",
+          "runName": "Push on main",
+          "runId": 45975773999,
+          "event": "dynamic",
+          "headSha": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
+          "status": "completed",
+          "conclusion": "failure",
+          "jobs": [
+            {
+              "name": "Analyze (actions)",
+              "jobId": 140426999431,
+              "appId": 15368,
+              "headSha": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
+              "status": "completed",
+              "conclusion": "success"
+            },
+            {
+              "name": "Analyze (csharp)",
+              "jobId": 140426999412,
+              "appId": 15368,
+              "headSha": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
+              "status": "completed",
+              "conclusion": "success"
+            },
+            {
+              "name": "Analyze (javascript-typescript)",
+              "jobId": 140426998986,
+              "appId": 15368,
+              "headSha": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
+              "status": "completed",
+              "conclusion": "success"
+            },
+            {
+              "name": "Analyze (python)",
+              "jobId": 140426999433,
+              "appId": 15368,
+              "headSha": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
+              "status": "completed",
+              "conclusion": "failure"
+            }
+          ]
+        },
+        {
+          "workflow": "CodeQL - Code Quality",
+          "runName": "Code Quality: Push on main",
+          "runId": 45975774428,
+          "event": "dynamic",
+          "headSha": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
+          "status": "completed",
+          "conclusion": "success",
+          "jobs": [
+            {
+              "name": "Analyze (csharp)",
+              "jobId": 140426999388,
+              "appId": 15368,
+              "headSha": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
+              "status": "completed",
+              "conclusion": "success"
+            },
+            {
+              "name": "Analyze (javascript-typescript)",
+              "jobId": 140426999735,
+              "appId": 15368,
+              "headSha": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
+              "status": "completed",
+              "conclusion": "success"
+            }
+          ]
+        },
+        {
+          "workflow": "Factory shadow reconciliation",
+          "runName": "Factory shadow reconciliation",
+          "runId": 45975773890,
+          "event": "push",
+          "defaultOff": true,
+          "headSha": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
+          "status": "completed",
+          "conclusion": "skipped",
+          "jobs": [
+            {
+              "name": "inventory",
+              "jobId": 140426991021,
+              "appId": 15368,
+              "headSha": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
+              "status": "completed",
+              "conclusion": "skipped"
+            }
+          ]
+        }
+      ],
+      "jsCoverage": {
+        "head": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
+        "expectedComponents": [
+          "engineering-coordinator.coordinator",
+          "engineering-coordinator.event-journal",
+          "engineering-coordinator.planner",
+          "engineering-coordinator.project-config",
+          "engineering-coordinator.provider-adapters",
+          "engineering-coordinator.retry",
+          "engineering-coordinator.review-intent-store",
+          "engineering-coordinator.review-provider",
+          "engineering-coordinator.sqlite-state-store",
+          "engineering-coordinator.work-queue-cas",
+          "engineering-factory.ai-credit-scorecard",
+          "engineering-factory.anti-rogue-audit",
+          "engineering-factory.aspire-smoke",
+          "engineering-factory.aspire-telemetry-smoke",
+          "engineering-factory.budget",
+          "engineering-factory.capacity-scale",
+          "engineering-factory.ci-stage-benchmark",
+          "engineering-factory.cloud-agent-admission",
+          "engineering-factory.consumer-onboarding",
+          "engineering-factory.contract-routing",
+          "engineering-factory.core",
+          "engineering-factory.coverage-evidence",
+          "engineering-factory.dispatch-intent",
+          "engineering-factory.event-envelope",
+          "engineering-factory.factory-board",
+          "engineering-factory.gh-aw-lock-verifier",
+          "engineering-factory.inspect-dashboard-metric-schema",
+          "engineering-factory.integration-train",
+          "engineering-factory.issue-event",
+          "engineering-factory.lease-transition",
+          "engineering-factory.local-otel-sdk",
+          "engineering-factory.local-shadow-host",
+          "engineering-factory.locked-build-cache",
+          "engineering-factory.mcp-agent-connector",
+          "engineering-factory.no-python-guard",
+          "engineering-factory.optimistic-improver",
+          "engineering-factory.outcome-measurement",
+          "engineering-factory.pilot-readiness",
+          "engineering-factory.platform-merge-gates",
+          "engineering-factory.pr-iterations",
+          "engineering-factory.pr-lifecycle",
+          "engineering-factory.protected-squash",
+          "engineering-factory.pull-signals",
+          "engineering-factory.queue-inspection",
+          "engineering-factory.queue-reread",
+          "engineering-factory.review-batch",
+          "engineering-factory.review-history",
+          "engineering-factory.run",
+          "engineering-factory.shadow-dispatch-ledger",
+          "engineering-factory.shadow-runtime",
+          "engineering-factory.stage-aggregate",
+          "engineering-factory.stage-latency",
+          "engineering-factory.telemetry",
+          "engineering-factory.validation-diagnosis",
+          "engineering-factory.verify-dashboard-api",
+          "engineering-factory.verify-dashboard-export",
+          "engineering-factory.verify-dashboard-metric-receipt"
+        ],
+        "components": [
+          {"component": "engineering-coordinator.coordinator", "head": "cec2745b7b8a21e77ad9f2839d4255d42305d419", "lines": 175, "lineTotal": 175, "branches": 140, "branchTotal": 143},
+          {"component": "engineering-coordinator.event-journal", "head": "cec2745b7b8a21e77ad9f2839d4255d42305d419", "lines": 379, "lineTotal": 379, "branches": 218, "branchTotal": 222},
+          {"component": "engineering-coordinator.planner", "head": "cec2745b7b8a21e77ad9f2839d4255d42305d419", "lines": 251, "lineTotal": 251, "branches": 218, "branchTotal": 219},
+          {"component": "engineering-coordinator.project-config", "head": "cec2745b7b8a21e77ad9f2839d4255d42305d419", "lines": 235, "lineTotal": 235, "branches": 252, "branchTotal": 252},
+          {"component": "engineering-coordinator.provider-adapters", "head": "cec2745b7b8a21e77ad9f2839d4255d42305d419", "lines": 45, "lineTotal": 45, "branches": 39, "branchTotal": 39},
+          {"component": "engineering-coordinator.retry", "head": "cec2745b7b8a21e77ad9f2839d4255d42305d419", "lines": 53, "lineTotal": 53, "branches": 61, "branchTotal": 62},
+          {"component": "engineering-coordinator.review-intent-store", "head": "cec2745b7b8a21e77ad9f2839d4255d42305d419", "lines": 24, "lineTotal": 24, "branches": 10, "branchTotal": 10},
+          {"component": "engineering-coordinator.review-provider", "head": "cec2745b7b8a21e77ad9f2839d4255d42305d419", "lines": 67, "lineTotal": 67, "branches": 73, "branchTotal": 73},
+          {"component": "engineering-coordinator.sqlite-state-store", "head": "cec2745b7b8a21e77ad9f2839d4255d42305d419", "lines": 547, "lineTotal": 547, "branches": 381, "branchTotal": 383},
+          {"component": "engineering-coordinator.work-queue-cas", "head": "cec2745b7b8a21e77ad9f2839d4255d42305d419", "lines": 1192, "lineTotal": 1192, "branches": 622, "branchTotal": 627},
+          {"component": "engineering-factory.ai-credit-scorecard", "head": "cec2745b7b8a21e77ad9f2839d4255d42305d419", "lines": 652, "lineTotal": 652, "branches": 277, "branchTotal": 280},
+          {"component": "engineering-factory.anti-rogue-audit", "head": "cec2745b7b8a21e77ad9f2839d4255d42305d419", "lines": 580, "lineTotal": 580, "branches": 353, "branchTotal": 354},
+          {"component": "engineering-factory.aspire-smoke", "head": "cec2745b7b8a21e77ad9f2839d4255d42305d419", "lines": 14, "lineTotal": 14, "branches": 1, "branchTotal": 1},
+          {"component": "engineering-factory.aspire-telemetry-smoke", "head": "cec2745b7b8a21e77ad9f2839d4255d42305d419", "lines": 24, "lineTotal": 24, "branches": 20, "branchTotal": 20},
+          {"component": "engineering-factory.budget", "head": "cec2745b7b8a21e77ad9f2839d4255d42305d419", "lines": 92, "lineTotal": 92, "branches": 111, "branchTotal": 111},
+          {"component": "engineering-factory.capacity-scale", "head": "cec2745b7b8a21e77ad9f2839d4255d42305d419", "lines": 143, "lineTotal": 143, "branches": 119, "branchTotal": 119},
+          {"component": "engineering-factory.ci-stage-benchmark", "head": "cec2745b7b8a21e77ad9f2839d4255d42305d419", "lines": 1015, "lineTotal": 1015, "branches": 312, "branchTotal": 312},
+          {"component": "engineering-factory.cloud-agent-admission", "head": "cec2745b7b8a21e77ad9f2839d4255d42305d419", "lines": 586, "lineTotal": 586, "branches": 324, "branchTotal": 324},
+          {"component": "engineering-factory.consumer-onboarding", "head": "cec2745b7b8a21e77ad9f2839d4255d42305d419", "lines": 549, "lineTotal": 549, "branches": 298, "branchTotal": 298},
+          {"component": "engineering-factory.contract-routing", "head": "cec2745b7b8a21e77ad9f2839d4255d42305d419", "lines": 360, "lineTotal": 360, "branches": 219, "branchTotal": 220},
+          {"component": "engineering-factory.core", "head": "cec2745b7b8a21e77ad9f2839d4255d42305d419", "lines": 103, "lineTotal": 103, "branches": 170, "branchTotal": 171},
+          {"component": "engineering-factory.coverage-evidence", "head": "cec2745b7b8a21e77ad9f2839d4255d42305d419", "lines": 286, "lineTotal": 286, "branches": 286, "branchTotal": 286},
+          {"component": "engineering-factory.dispatch-intent", "head": "cec2745b7b8a21e77ad9f2839d4255d42305d419", "lines": 76, "lineTotal": 76, "branches": 103, "branchTotal": 103},
+          {"component": "engineering-factory.event-envelope", "head": "cec2745b7b8a21e77ad9f2839d4255d42305d419", "lines": 672, "lineTotal": 672, "branches": 458, "branchTotal": 467},
+          {"component": "engineering-factory.factory-board", "head": "cec2745b7b8a21e77ad9f2839d4255d42305d419", "lines": 3101, "lineTotal": 3113, "branches": 1008, "branchTotal": 1050},
+          {"component": "engineering-factory.gh-aw-lock-verifier", "head": "cec2745b7b8a21e77ad9f2839d4255d42305d419", "lines": 1306, "lineTotal": 1306, "branches": 920, "branchTotal": 942},
+          {"component": "engineering-factory.inspect-dashboard-metric-schema", "head": "cec2745b7b8a21e77ad9f2839d4255d42305d419", "lines": 63, "lineTotal": 63, "branches": 32, "branchTotal": 32},
+          {"component": "engineering-factory.integration-train", "head": "cec2745b7b8a21e77ad9f2839d4255d42305d419", "lines": 409, "lineTotal": 409, "branches": 320, "branchTotal": 322},
+          {"component": "engineering-factory.issue-event", "head": "cec2745b7b8a21e77ad9f2839d4255d42305d419", "lines": 83, "lineTotal": 83, "branches": 46, "branchTotal": 47},
+          {"component": "engineering-factory.lease-transition", "head": "cec2745b7b8a21e77ad9f2839d4255d42305d419", "lines": 70, "lineTotal": 70, "branches": 68, "branchTotal": 69},
+          {"component": "engineering-factory.local-otel-sdk", "head": "cec2745b7b8a21e77ad9f2839d4255d42305d419", "lines": 179, "lineTotal": 179, "branches": 112, "branchTotal": 114},
+          {"component": "engineering-factory.local-shadow-host", "head": "cec2745b7b8a21e77ad9f2839d4255d42305d419", "lines": 171, "lineTotal": 171, "branches": 78, "branchTotal": 81},
+          {"component": "engineering-factory.locked-build-cache", "head": "cec2745b7b8a21e77ad9f2839d4255d42305d419", "lines": 121, "lineTotal": 121, "branches": 87, "branchTotal": 87},
+          {"component": "engineering-factory.mcp-agent-connector", "head": "cec2745b7b8a21e77ad9f2839d4255d42305d419", "lines": 1263, "lineTotal": 1263, "branches": 539, "branchTotal": 541},
+          {"component": "engineering-factory.no-python-guard", "head": "cec2745b7b8a21e77ad9f2839d4255d42305d419", "lines": 68, "lineTotal": 68, "branches": 49, "branchTotal": 49},
+          {"component": "engineering-factory.optimistic-improver", "head": "cec2745b7b8a21e77ad9f2839d4255d42305d419", "lines": 609, "lineTotal": 609, "branches": 257, "branchTotal": 260},
+          {"component": "engineering-factory.outcome-measurement", "head": "cec2745b7b8a21e77ad9f2839d4255d42305d419", "lines": 821, "lineTotal": 821, "branches": 577, "branchTotal": 577},
+          {"component": "engineering-factory.pilot-readiness", "head": "cec2745b7b8a21e77ad9f2839d4255d42305d419", "lines": 105, "lineTotal": 105, "branches": 155, "branchTotal": 156},
+          {"component": "engineering-factory.platform-merge-gates", "head": "cec2745b7b8a21e77ad9f2839d4255d42305d419", "lines": 47, "lineTotal": 47, "branches": 72, "branchTotal": 73},
+          {"component": "engineering-factory.pr-iterations", "head": "cec2745b7b8a21e77ad9f2839d4255d42305d419", "lines": 34, "lineTotal": 34, "branches": 56, "branchTotal": 58},
+          {"component": "engineering-factory.pr-lifecycle", "head": "cec2745b7b8a21e77ad9f2839d4255d42305d419", "lines": 23, "lineTotal": 23, "branches": 54, "branchTotal": 55},
+          {"component": "engineering-factory.protected-squash", "head": "cec2745b7b8a21e77ad9f2839d4255d42305d419", "lines": 432, "lineTotal": 432, "branches": 355, "branchTotal": 363},
+          {"component": "engineering-factory.pull-signals", "head": "cec2745b7b8a21e77ad9f2839d4255d42305d419", "lines": 579, "lineTotal": 579, "branches": 437, "branchTotal": 441},
+          {"component": "engineering-factory.queue-inspection", "head": "cec2745b7b8a21e77ad9f2839d4255d42305d419", "lines": 15, "lineTotal": 15, "branches": 25, "branchTotal": 25},
+          {"component": "engineering-factory.queue-reread", "head": "cec2745b7b8a21e77ad9f2839d4255d42305d419", "lines": 50, "lineTotal": 50, "branches": 60, "branchTotal": 61},
+          {"component": "engineering-factory.review-batch", "head": "cec2745b7b8a21e77ad9f2839d4255d42305d419", "lines": 64, "lineTotal": 64, "branches": 76, "branchTotal": 76},
+          {"component": "engineering-factory.review-history", "head": "cec2745b7b8a21e77ad9f2839d4255d42305d419", "lines": 192, "lineTotal": 192, "branches": 194, "branchTotal": 198},
+          {"component": "engineering-factory.run", "head": "cec2745b7b8a21e77ad9f2839d4255d42305d419", "lines": 733, "lineTotal": 733, "branches": 455, "branchTotal": 460},
+          {"component": "engineering-factory.shadow-dispatch-ledger", "head": "cec2745b7b8a21e77ad9f2839d4255d42305d419", "lines": 489, "lineTotal": 489, "branches": 287, "branchTotal": 287},
+          {"component": "engineering-factory.shadow-runtime", "head": "cec2745b7b8a21e77ad9f2839d4255d42305d419", "lines": 112, "lineTotal": 112, "branches": 125, "branchTotal": 125},
+          {"component": "engineering-factory.stage-aggregate", "head": "cec2745b7b8a21e77ad9f2839d4255d42305d419", "lines": 298, "lineTotal": 298, "branches": 277, "branchTotal": 277},
+          {"component": "engineering-factory.stage-latency", "head": "cec2745b7b8a21e77ad9f2839d4255d42305d419", "lines": 66, "lineTotal": 66, "branches": 100, "branchTotal": 101},
+          {"component": "engineering-factory.telemetry", "head": "cec2745b7b8a21e77ad9f2839d4255d42305d419", "lines": 400, "lineTotal": 400, "branches": 313, "branchTotal": 314},
+          {"component": "engineering-factory.validation-diagnosis", "head": "cec2745b7b8a21e77ad9f2839d4255d42305d419", "lines": 118, "lineTotal": 118, "branches": 96, "branchTotal": 96},
+          {"component": "engineering-factory.verify-dashboard-api", "head": "cec2745b7b8a21e77ad9f2839d4255d42305d419", "lines": 181, "lineTotal": 181, "branches": 113, "branchTotal": 114},
+          {"component": "engineering-factory.verify-dashboard-export", "head": "cec2745b7b8a21e77ad9f2839d4255d42305d419", "lines": 154, "lineTotal": 154, "branches": 109, "branchTotal": 109},
+          {"component": "engineering-factory.verify-dashboard-metric-receipt", "head": "cec2745b7b8a21e77ad9f2839d4255d42305d419", "lines": 188, "lineTotal": 188, "branches": 128, "branchTotal": 128}
+        ]
+      },
+      "dotnetCoverage": {
+        "head": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
+        "sdkVersion": "10.0.404",
+        "expectedComponents": [
+          "SoftwareFactory.Agents"
+        ],
+        "components": [
+          {
+            "component": "SoftwareFactory.Agents",
+            "head": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
+            "lines": 1737,
+            "lineTotal": 1739,
+            "branches": 786,
+            "branchTotal": 798
+          }
+        ]
+      }
+    }
+  },
+  "auditResult": {
+    "shadow": true,
+    "liveMerge": false,
+    "liveDispatch": false,
+    "valid": false,
+    "eligible": false,
+    "mainHealthy": false,
+    "dependentWorkAllowed": false,
+    "candidateEvaluated": false,
+    "candidateHealthy": null,
+    "reason": "MAIN_WORKFLOW_FAILED",
+    "failureReasons": [
+      "MAIN_WORKFLOW_FAILED",
+      "RULESET_INCOMPLETE"
+    ],
+    "repository": "Jamula/SoftwareFactory",
+    "repositoryId": 1471342715,
+    "branch": "main",
+    "mainHead": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
+    "candidateHead": null,
+    "mergeGroupHead": null,
+    "failedMainWorkflows": [
+      "CodeQL"
+    ],
+    "failedMainJobs": [
+      {
+        "workflow": "CodeQL",
+        "runName": "Push on main",
+        "runId": 45975773999,
+        "jobName": "Analyze (python)",
+        "jobId": 140426999433,
+        "status": "completed",
+        "conclusion": "failure"
+      }
+    ],
+    "coverageSummary": {
+      "mainJs": {
+        "componentCount": 57,
+        "lines": 20664,
+        "lineTotal": 20676,
+        "linePct": 99.94,
+        "linePercent": "99.94%",
+        "branches": 12645,
+        "branchTotal": 12784,
+        "branchPct": 98.91,
+        "branchPercent": "98.91%"
+      },
+      "mainDotnet": {
+        "componentCount": 1,
+        "lines": 1737,
+        "lineTotal": 1739,
+        "linePct": 99.88,
+        "linePercent": "99.88%",
+        "branches": 786,
+        "branchTotal": 798,
+        "branchPct": 98.5,
+        "branchPercent": "98.50%",
+        "sdkVersion": "10.0.404"
+      },
+      "candidateJs": null,
+      "candidateDotnet": null
+    }
+  }
+}
