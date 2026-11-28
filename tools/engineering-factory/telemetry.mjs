@@ -455,17 +455,15 @@ const HYPHENATED_UUID=
 const SESSION_ID_SAFE=/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const SHA256_HEX=/^(?!0{64})[0-9a-f]{64}$/;
 const SECRET_LIKE_VALUE=new RegExp(
-  '(?:^|[^A-Za-z0-9])(?:'+
-  'gh[pousr]_[A-Za-z0-9_]{8,}|'+
-  'github_pat_[A-Za-z0-9_]{8,}|'+
-  'glpat-[A-Za-z0-9_-]{8,}|'+
-  'sk-[A-Za-z0-9_-]{8,}|'+
-  'xox[baprs]-[A-Za-z0-9-]{8,}|'+
-  'AKIA[0-9A-Z]{12,}|'+
-  'AIza[0-9A-Za-z_-]{16,}|'+
-  'eyJ[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}|'+
-  'bearer\\s+[A-Za-z0-9._~+/=-]{6,}'+
-  ')',
+  'gh[pousr]_[A-Za-z0-9_]{16,}|'+
+  'github_pat_[A-Za-z0-9_]{16,}|'+
+  'glpat-[A-Za-z0-9_-]{12,}|'+
+  'sk-(?:proj-|ant-|live-|test-)?[A-Za-z0-9]{16,}|'+
+  'xox[baprs]-[A-Za-z0-9-]{10,}|'+
+  'AKIA[0-9A-Z]{16}|'+
+  'AIza[0-9A-Za-z_-]{20,}|'+
+  'eyJ[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}|'+
+  'bearer\\s+[A-Za-z0-9._~+/=-]{8,}',
   'i'
 );
 const hasSecretOrOversizedText=value=>
@@ -480,7 +478,9 @@ const AUTONOMOUS_TOP_REQUIRED_KEYS=['traceparent','receipt','aiCreditAccounting'
 const AUTONOMOUS_TOP_ALLOWED_KEYS=new Set([
   ...AUTONOMOUS_TOP_REQUIRED_KEYS,'parentSpanId','laptopCollectorRequired','shadow','liveDispatch','liveMerge'
 ]);
-const ACCOUNTING_REQUIRED_KEYS=['accountingSource','aiCreditsUsed','maxAiCredits','incrementalBilledUsdCents'];
+const ACCOUNTING_REQUIRED_KEYS=[
+  'accountingSource','aiCreditsUsed','maxAiCredits','incrementalBilledUsdCents'
+];
 const ACCOUNTING_ALLOWED_KEYS=new Set([
   ...ACCOUNTING_REQUIRED_KEYS,'aiCreditUnitUsdCents','isEstimated','includedQuotaAttributed'
 ]);
@@ -554,25 +554,35 @@ export function correlateAutonomousExecutionReceipt(input) {
   if(!tpMatch) return autonomousDeny('INVALID_TRACEPARENT','SECURITY');
   const [,traceId,spanId,traceFlags]=tpMatch;
   const parentSpanId=input.parentSpanId===undefined?null:input.parentSpanId;
+  if(hasSecretOrOversizedText(parentSpanId))
+    return autonomousDeny('UNSAFE_TELEMETRY_PAYLOAD','SECURITY');
   if(parentSpanId!==null&&(!spanHex(parentSpanId)||parentSpanId===spanId))
     return autonomousDeny('INVALID_TRACEPARENT','SECURITY');
 
   const accountingCheck=inspectRecordKeys(input.aiCreditAccounting,ACCOUNTING_REQUIRED_KEYS,ACCOUNTING_ALLOWED_KEYS);
   if(accountingCheck!=='OK')
     return autonomousDeny(accountingCheck,accountingCheck==='UNSAFE_TELEMETRY_PAYLOAD'?'SECURITY':'INVALID_EVIDENCE');
-  const {accountingSource,aiCreditsUsed,maxAiCredits,incrementalBilledUsdCents}=input.aiCreditAccounting;
-  const isEstimated=input.aiCreditAccounting.isEstimated===undefined?false:input.aiCreditAccounting.isEstimated;
-  if(accountingSource!=='authoritative'||isEstimated!==false)
+  const {
+    accountingSource,
+    isEstimated,
+    includedQuotaAttributed,
+    aiCreditsUsed,
+    maxAiCredits,
+    incrementalBilledUsdCents
+  }=input.aiCreditAccounting;
+  if(!Object.hasOwn(input.aiCreditAccounting,'isEstimated')||
+     !Object.hasOwn(input.aiCreditAccounting,'includedQuotaAttributed')||
+     typeof isEstimated!=='boolean'||
+     typeof includedQuotaAttributed!=='boolean'||
+     accountingSource!=='authoritative'||
+     isEstimated!==false)
     return autonomousDeny('AI_CREDIT_ACCOUNTING_UNVERIFIED','QUOTA');
   const unitCents=input.aiCreditAccounting.aiCreditUnitUsdCents===undefined
     ?AI_CREDIT_USD_CENTS
     :input.aiCreditAccounting.aiCreditUnitUsdCents;
   if(unitCents!==AI_CREDIT_USD_CENTS)
     return autonomousDeny('INVALID_POLICY','POLICY');
-  const includedAttributed=input.aiCreditAccounting.includedQuotaAttributed===undefined
-    ?true
-    :input.aiCreditAccounting.includedQuotaAttributed;
-  if(includedAttributed!==true)
+  if(includedQuotaAttributed!==true)
     return autonomousDeny('INCLUDED_QUOTA_NOT_ATTRIBUTED','QUOTA');
   if(!safeBoundedCredits(aiCreditsUsed)||!safeBoundedCredits(maxAiCredits)||
      !Number.isSafeInteger(incrementalBilledUsdCents)||Object.is(incrementalBilledUsdCents,-0))
@@ -586,7 +596,7 @@ export function correlateAutonomousExecutionReceipt(input) {
   if(mcCheck!=='OK')
     return autonomousDeny(mcCheck,mcCheck==='UNSAFE_TELEMETRY_PAYLOAD'?'SECURITY':'INVALID_EVIDENCE');
   const {taskId,sessionId,taskState,lockSha256,casLeaseGeneration}=input.missionControl;
-  const actor=input.missionControl.actor===undefined?NATIVE_CLOUD_AGENT_ACTOR:input.missionControl.actor;
+  const actor=input.missionControl.actor===undefined?null:input.missionControl.actor;
   if([taskId,sessionId,taskState,lockSha256,actor].some(hasSecretOrOversizedText))
     return autonomousDeny('UNSAFE_TELEMETRY_PAYLOAD','SECURITY');
   if(typeof taskId!=='string'||!HYPHENATED_UUID.test(taskId)||
@@ -597,7 +607,7 @@ export function correlateAutonomousExecutionReceipt(input) {
     return autonomousDeny('INVALID_GH_AW_LOCK_HASH','SECURITY');
   if(!positive(casLeaseGeneration)||casLeaseGeneration>MAX_LEASE_GENERATION)
     return autonomousDeny('INVALID_CAS_LEASE','LEASE');
-  if(actor!==NATIVE_CLOUD_AGENT_ACTOR)
+  if(actor!==null&&actor!==NATIVE_CLOUD_AGENT_ACTOR)
     return autonomousDeny('PROVENANCE_MISMATCH','SECURITY');
 
   const receiptContainerCheck=inspectReceiptContainer(input.receipt);

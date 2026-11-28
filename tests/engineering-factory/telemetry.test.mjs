@@ -651,8 +651,11 @@ test('correlateAutonomousExecutionReceipt correlates OTel traceparent, authorita
  const lockSha256='ab'.repeat(32);
  const taskIdUpper='01936D8E-7F2A-7B00-8A11-3C4D5E6F7081';
  const runtimeToken=['gh','p_','x'.repeat(24)].join('');
+ const runtimeOauthToken=['gh','o_','o'.repeat(24)].join('');
  const runtimeFinePat=['github','_pat_','y'.repeat(24)].join('');
  const runtimeSkKey=['s','k-','z'.repeat(24)].join('');
+ const runtimeAkia=['AK','IA','0123456789ABCDEF'].join('');
+ const runtimeXox=['xo','xb-','123456789012'].join('');
  const runtimeJwt=['ey','JhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0'].join('');
 
  // 1. Raw receipt input with untrusted result payload stripped + sampled W3C traceparent + authoritative AI credits
@@ -768,7 +771,7 @@ test('correlateAutonomousExecutionReceipt correlates OTel traceparent, authorita
   ]
  });
 
- // 2. Pre-created createExecutionReceipt with exhausted quota (aiCreditsUsed === maxAiCredits), unsampled traceparent, omitted optional defaults, blocked stage
+ // 2. Pre-created createExecutionReceipt with exhausted quota (aiCreditsUsed === maxAiCredits), unsampled traceparent, explicit accounting flags, omitted optional actor/unitCents, blocked stage
  const storedBlockedReceipt=createExecutionReceipt({
   source:'github-hosted',
   repositoryId:1471342715,
@@ -787,6 +790,8 @@ test('correlateAutonomousExecutionReceipt correlates OTel traceparent, authorita
    receipt:storedBlockedReceipt,
    aiCreditAccounting:{
     accountingSource:'authoritative',
+    isEstimated:false,
+    includedQuotaAttributed:true,
     aiCreditsUsed:25,
     maxAiCredits:25,
     incrementalBilledUsdCents:0
@@ -807,12 +812,18 @@ test('correlateAutonomousExecutionReceipt correlates OTel traceparent, authorita
   assert.equal(res.telemetry.parentSpanId,null);
   assert.equal(res.receipt.quota.state,'exhausted');
   assert.equal(res.aiCreditAccounting.remainingAiCredits,0);
-  assert.equal(res.missionControl.actor,'copilot-swe-agent[bot]');
+  assert.equal(res.missionControl.actor,null);
   assert.deepEqual(telemetrySummary(res),{outcome:'blocked',reason:'REVIEW'});
  }
 
- // 3. Estimated / unknown / unverified accounting fails closed with AI_CREDIT_ACCOUNTING_UNVERIFIED -> QUOTA
+ // 3. Missing/non-boolean flags, estimated / unknown / unverified accounting fail closed with AI_CREDIT_ACCOUNTING_UNVERIFIED -> QUOTA
+ const missingIsEstimated={...baseInput.aiCreditAccounting};
+ delete missingIsEstimated.isEstimated;
+ const missingIncludedQuota={...baseInput.aiCreditAccounting};
+ delete missingIncludedQuota.includedQuotaAttributed;
  for(const badAccounting of [
+  missingIsEstimated,
+  missingIncludedQuota,
   {...baseInput.aiCreditAccounting,accountingSource:'estimated'},
   {...baseInput.aiCreditAccounting,accountingSource:'unknown'},
   {...baseInput.aiCreditAccounting,accountingSource:'verified'},
@@ -820,6 +831,7 @@ test('correlateAutonomousExecutionReceipt correlates OTel traceparent, authorita
   {...baseInput.aiCreditAccounting,accountingSource:null},
   {...baseInput.aiCreditAccounting,isEstimated:true},
   {...baseInput.aiCreditAccounting,isEstimated:'false'},
+  {...baseInput.aiCreditAccounting,includedQuotaAttributed:'true'},
   {...baseInput.aiCreditAccounting,aiCreditsUsed:-1},
   {...baseInput.aiCreditAccounting,aiCreditsUsed:-0},
   {...baseInput.aiCreditAccounting,aiCreditsUsed:MAX_AI_CREDITS+1},
@@ -893,13 +905,21 @@ test('correlateAutonomousExecutionReceipt correlates OTel traceparent, authorita
   {...baseInput,aiCreditAccounting:{...baseInput.aiCreditAccounting,apiKey:runtimeSkKey}},
   {...baseInput,missionControl:{...baseInput.missionControl,rawPrompt:'system instructions'}},
   {...baseInput,missionControl:{...baseInput.missionControl,dimensions:{unbounded:'x'}}},
+  {...baseInput,parentSpanId:`mc${runtimeToken}`},
   {...baseInput,missionControl:{...baseInput.missionControl,sessionId:runtimeToken}},
+  {...baseInput,missionControl:{...baseInput.missionControl,sessionId:`mc${runtimeToken}`}},
+  {...baseInput,missionControl:{...baseInput.missionControl,sessionId:`mc${runtimeOauthToken}`}},
+  {...baseInput,missionControl:{...baseInput.missionControl,sessionId:`sess${runtimeFinePat}`}},
+  {...baseInput,missionControl:{...baseInput.missionControl,sessionId:`mc${runtimeSkKey}`}},
+  {...baseInput,missionControl:{...baseInput.missionControl,sessionId:`mc${runtimeAkia}`}},
+  {...baseInput,missionControl:{...baseInput.missionControl,sessionId:`mc${runtimeXox}`}},
   {...baseInput,missionControl:{...baseInput.missionControl,sessionId:runtimeFinePat}},
   {...baseInput,missionControl:{...baseInput.missionControl,sessionId:runtimeSkKey}},
   {...baseInput,missionControl:{...baseInput.missionControl,taskState:`Bearer ${runtimeJwt}`}},
   {...baseInput,missionControl:{...baseInput.missionControl,sessionId:'s'.repeat(513)}},
   {...baseInput,receipt:{...baseInput.receipt,secret:'top-secret'}},
-  {...baseInput,receipt:{...baseInput.receipt,receiptId:runtimeSkKey}}
+  {...baseInput,receipt:{...baseInput.receipt,receiptId:runtimeSkKey}},
+  {...baseInput,receipt:{...baseInput.receipt,receiptId:`id${runtimeToken}`}}
  ]){
   const denied=correlateAutonomousExecutionReceipt(unsafePayload);
   assert.equal(denied.valid,false);
@@ -929,7 +949,7 @@ test('correlateAutonomousExecutionReceipt correlates OTel traceparent, authorita
   [{...baseInput,aiCreditAccounting:null},'INVALID_EVIDENCE','INVALID_EVIDENCE'],
   [{...baseInput,aiCreditAccounting:symbolAccounting},'INVALID_EVIDENCE','INVALID_EVIDENCE'],
   [{...baseInput,aiCreditAccounting:{...baseInput.aiCreditAccounting,unknownKey:1}},'INVALID_EVIDENCE','INVALID_EVIDENCE'],
-  [{...baseInput,aiCreditAccounting:{accountingSource:'authoritative',aiCreditsUsed:1,maxAiCredits:2}},'INVALID_EVIDENCE','INVALID_EVIDENCE'],
+  [{...baseInput,aiCreditAccounting:{accountingSource:'authoritative',isEstimated:false,includedQuotaAttributed:true,aiCreditsUsed:1,maxAiCredits:2}},'INVALID_EVIDENCE','INVALID_EVIDENCE'],
   [{...baseInput,missionControl:nonEnumMc},'INVALID_EVIDENCE','INVALID_EVIDENCE'],
   [{...baseInput,missionControl:{...baseInput.missionControl,extraMc:1}},'INVALID_EVIDENCE','INVALID_EVIDENCE'],
   [{...baseInput,missionControl:{...baseInput.missionControl,taskId:123}},'INVALID_MISSION_CONTROL_TASK','INVALID_EVIDENCE'],

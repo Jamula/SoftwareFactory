@@ -139,7 +139,7 @@
       "issue": 9,
       "pullRequest": 141,
       "mergeCommit": "ff5aaba259220455020bd765509276f35d37fe3e",
-      "evidence": "Enforced 9-link W3C traceparent causal provenance verification, correlated authoritative gh-aw AI-credit and Mission Control receipts in tools/engineering-factory/telemetry.mjs, and external deterministic circuit breakers blocking self-modification of protected control-plane paths, out-of-lane edits, retry-cap breaches, AI-credit burn spikes, safe-outputs threat flags, and post-merge main failures via tools/engineering-factory/anti-rogue-audit.mjs."
+      "evidence": "Enforced 9-link W3C traceparent causal provenance verification and external deterministic circuit breakers blocking self-modification of protected control-plane paths, out-of-lane edits, retry-cap breaches, AI-credit burn spikes, safe-outputs threat flags, and post-merge main failures via tools/engineering-factory/anti-rogue-audit.mjs."
     },
     {
       "prerequisite": "crossOsAspireRuntimeVerified",
@@ -269,7 +269,7 @@
       "checklistState": "[ ]",
       "category": "owner-live-authorization",
       "issue": 10,
-      "requiredAction": "After #105 (hardStopBillingVerified and nativeCloudSmokeVerified) is recorded and protected refs/heads/work-queue branch is created on Jamula/SoftwareFactory, record explicit owner repository-scoped live pilot dispatch authorization and set FACTORY_GHAW_ENABLED=true."
+      "requiredAction": "After #105 (hardStopBillingVerified and nativeCloudSmokeVerified) is recorded, protected refs/heads/work-queue is created, and hosted shadow/lock verification via FACTORY_GHAW_ENABLED=true succeeds, verify live dispatch/admission/receipt-correlation wiring plus live cross-run work-queue state and laptop-offline recovery before recording explicit owner repository-scoped live pilot dispatch authorization."
     },
     {
       "id": "m01-08-three-live-unattended-cycles",
