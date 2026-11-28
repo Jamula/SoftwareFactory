@@ -1940,7 +1940,11 @@ test('validate.yml, windows-aspire.yml, and shadow-reconcile.yml enforce poison-
   assert.equal(windowsContent.split(aspireKeyExpr).length - 1, 2);
   assert.equal(windowsContent.includes('node tools/engineering-factory/verify-dashboard-api.mjs'), true);
   assert.equal(windowsContent.includes('node tools/engineering-factory/verify-dashboard-metric-receipt.mjs $dataRoot'), true);
-  assert.equal(windowsContent.includes('node --test'), false);
+  assert.equal(
+    windowsContent.includes('node --test tests/engineering-factory/verify-dashboard-metric-receipt.test.mjs'),
+    true
+  );
+  assert.equal(windowsContent.includes('verify-dashboard-api.test.mjs'), false);
   assert.match(windowsContent, /\^17\\\.0\\\.0\(\?:\\\+\[0-9a-f\]\+\)\?\$/);
 
   // shadow-reconcile.yml invariants: restricted to workflow_dispatch only under on:

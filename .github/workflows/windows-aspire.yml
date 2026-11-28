@@ -102,11 +102,13 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $stageTimer = [System.Diagnostics.Stopwatch]::StartNew()
           $env:ASPIRE_HOME = Join-Path $env:RUNNER_TEMP 'softwarefactory-aspire'
-          $toolDir = Join-Path $env:RUNNER_TEMP 'softwarefactory-aspire-tools'
-          $aspireBin = Join-Path $toolDir 'aspire.exe'
+          $toolDir = [System.IO.Path]::GetFullPath((Join-Path $env:RUNNER_TEMP 'softwarefactory-aspire-tools')).TrimEnd('\', '/')
+          $toolPrefix = $toolDir + [System.IO.Path]::DirectorySeparatorChar
+          $env:PATH = "$toolDir$([System.IO.Path]::PathSeparator)$env:PATH"
           $aspireReused = $false
-          if (Test-Path -LiteralPath $aspireBin) {
-            $cachedVersion = (& $aspireBin --version 2>$null | Out-String).Trim()
+          $aspireCmd = Get-Command aspire -ErrorAction SilentlyContinue
+          if ($null -ne $aspireCmd -and [System.IO.Path]::GetFullPath($aspireCmd.Source).StartsWith($toolPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+            $cachedVersion = (& $aspireCmd.Source --version 2>$null | Out-String).Trim()
             if ($LASTEXITCODE -eq 0 -and $cachedVersion -match '^17\.0\.0(?:\+[0-9a-f]+)?$') {
               $aspireReused = $true
             }
@@ -118,7 +120,11 @@ jobs:
             dotnet tool install Aspire.Cli --version 17.0.0 --tool-path $toolDir --source https://api.nuget.org/v3/index.json
             if ($LASTEXITCODE -ne 0) { throw 'Aspire install failed' }
           }
-          $verifiedVersion = (& $aspireBin --version | Out-String).Trim()
+          $aspireCmd = Get-Command aspire -ErrorAction Stop
+          if (-not [System.IO.Path]::GetFullPath($aspireCmd.Source).StartsWith($toolPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Aspire tool path mismatch'
+          }
+          $verifiedVersion = (& $aspireCmd.Source --version | Out-String).Trim()
           if ($LASTEXITCODE -ne 0 -or $verifiedVersion -notmatch '^17\.0\.0(?:\+[0-9a-f]+)?$') {
             throw 'Aspire version mismatch'
           }
@@ -227,6 +233,8 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw 'Dashboard trace/log readback failed' }
             $null = Invoke-Aspire @('stop','--apphost','apphost.cs','--non-interactive') 30
             $appHostStopped = $true
+            node --test tests/engineering-factory/verify-dashboard-metric-receipt.test.mjs
+            if ($LASTEXITCODE -ne 0) { throw 'Dashboard metric receipt regression test failed' }
             node tools/engineering-factory/verify-dashboard-metric-receipt.mjs $dataRoot
             if ($LASTEXITCODE -ne 0) { throw 'Dashboard metric persistence verification failed' }
             Write-Host 'Isolated Windows AppHost stopped'
