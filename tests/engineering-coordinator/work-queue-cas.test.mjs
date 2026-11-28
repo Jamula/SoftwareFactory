@@ -1,5 +1,10 @@
 import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
 import test from 'node:test';
+import {runTick} from '../../tools/engineering-coordinator/coordinator.mjs';
+import {openEventJournal} from '../../tools/engineering-coordinator/event-journal.mjs';
+import {pathsOverlap} from '../../tools/engineering-coordinator/planner.mjs';
+import {createSQLiteStateStore} from '../../tools/engineering-coordinator/sqlite-state-store.mjs';
 import {
   MAX_LEASE_TTL_MS,
   PROTECTED_WORK_QUEUE_REF,
@@ -12,6 +17,7 @@ import {
   settleWorkQueueLease,
   simulateDurableCasLifecycle
 } from '../../tools/engineering-coordinator/work-queue-cas.mjs';
+import {PINNED_GHAW_RELEASE} from '../../tools/engineering-factory/gh-aw-lock-verifier.mjs';
 
 const REPO = 'Jamula/SoftwareFactory';
 const REPO_ID = 1471342715;
@@ -2904,4 +2910,258 @@ test('simulateDurableCasLifecycle handles seeded initialState compaction, replay
   assert.equal(disabledCfgRes.metrics.stopBlocks, 2);
   assert.equal(disabledCfgRes.finalOid, ZERO_GIT_OID);
 });
+
+test('m01-04-durable-cas-recovery.json deterministically replays protocol v3 git-ref CAS lifecycle, crash recovery, and sqlite comparison (#6)', async () => {
+  const receiptUrl = new URL('../../docs/evidence/m01-04-durable-cas-recovery.json', import.meta.url);
+  const receipt = JSON.parse(readFileSync(receiptUrl, 'utf8'));
+
+  // 1. Metadata, pinned github/gh-aw v1.2.2 protocol v3 contract, and fail-closed provenance disclosures
+  assert.equal(receipt.schemaVersion, '1.0.0');
+  assert.equal(receipt.issue.number, 6);
+  assert.equal(receipt.issue.milestone, 'M01.04');
+  assert.equal(receipt.issue.closesIssue, false);
+  assert.equal(receipt.scope.repository, REPO);
+  assert.equal(receipt.scope.repositoryId, REPO_ID);
+  assert.equal(receipt.scope.evaluatedBranch, 'main');
+  assert.equal(receipt.scope.evaluatedCommit, 'ec438f54088f30856c2df6ff626e894dde2a0100');
+
+  assert.equal(receipt.ghAwContract.repository, PINNED_GHAW_RELEASE.repository);
+  assert.equal(receipt.ghAwContract.version, PINNED_GHAW_RELEASE.version);
+  assert.equal(receipt.ghAwContract.commit, PINNED_GHAW_RELEASE.commit);
+  assert.equal(receipt.ghAwContract.workQueueProtocol, 'v3');
+  assert.equal(receipt.ghAwContract.protectedRef, PROTECTED_WORK_QUEUE_REF);
+  assert.equal(receipt.ghAwContract.zeroGitOid, ZERO_GIT_OID);
+  assert.equal(receipt.ghAwContract.maxLeaseTtlMs, MAX_LEASE_TTL_MS);
+
+  assert.equal(receipt.provenance.shadow, true);
+  assert.equal(receipt.provenance.liveDispatch, false);
+  assert.equal(receipt.provenance.liveMerge, false);
+  assert.equal(receipt.provenance.liveWorkQueueRefProvisioned, false);
+  assert.equal(receipt.provenance.factoryGhawEnabled, false);
+  assert.equal(receipt.provenance.liveRefProvisioningStatus, 'optional-deferred-until-factory-ghaw-enabled');
+  assert.equal(receipt.provenance.blocksDirectCopilotDispatchIssue10, false);
+
+  // 2. Deterministic replay of simulateDurableCasLifecycle matches committed acceptance receipt exactly
+  const replayed = await simulateDurableCasLifecycle(receipt.lifecycleScenario);
+  assert.equal(replayed.ok, true);
+  assert.equal(replayed.shadow, true);
+  assert.equal(replayed.liveDispatch, false);
+  assert.equal(replayed.liveMerge, false);
+  assert.equal(replayed.reason, 'LIFECYCLE_VERIFIED');
+  assert.equal(replayed.ref, PROTECTED_WORK_QUEUE_REF);
+  assert.equal(replayed.finalState.protocol, 'v3');
+  assert.deepEqual(JSON.parse(JSON.stringify(replayed)), receipt.lifecycleResult);
+
+  // 3. Atomic non-force CAS acquisition, force rejection, and unprotected ref rejection
+  assert.equal(replayed.steps[0].oid, ZERO_GIT_OID);
+  assert.equal(replayed.steps[2].outcomes[0].reason, 'UNPROTECTED_WORK_QUEUE_REF');
+  assert.equal(replayed.steps[3].outcomes[0].reason, 'FORCE_UPDATE_FORBIDDEN');
+  assert.equal(replayed.steps[4].outcomes[0].reason, 'MAIN_UNHEALTHY');
+  assert.equal(replayed.finalOid, receipt.verifiedInvariants.atomicNonForceCasAcquisition.finalOid);
+  assert.equal(replayed.metrics.casApplied, receipt.verifiedInvariants.atomicNonForceCasAcquisition.casAppliedCount);
+  assert.equal(replayed.metrics.forceRejected, receipt.verifiedInvariants.atomicNonForceCasAcquisition.forceRejectedCount);
+  assert.equal(replayed.metrics.unprotectedRefRejected, receipt.verifiedInvariants.atomicNonForceCasAcquisition.unprotectedRefRejectedCount);
+  assert.notEqual(replayed.finalOid, ZERO_GIT_OID);
+
+  // 4. Concurrent worker contention (CAS_REF_MISMATCH -> CAS_CONFLICT serialization + CAS_CONFLICT_EXHAUSTED)
+  assert.equal(receipt.verifiedInvariants.concurrentWorkerContention.contentionCategory, 'CAS_REF_MISMATCH');
+  assert.equal(receipt.verifiedInvariants.concurrentWorkerContention.storeConflictReason, 'CAS_CONFLICT');
+  assert.equal(receipt.verifiedInvariants.concurrentWorkerContention.exhaustedRetryReason, 'CAS_CONFLICT_EXHAUSTED');
+  assert.equal(replayed.metrics.casConflicts, receipt.verifiedInvariants.concurrentWorkerContention.casConflictsObserved);
+  const contentionWave = replayed.steps[receipt.verifiedInvariants.concurrentWorkerContention.serializedContentionWaveStepIndex].outcomes;
+  const waveGranted = contentionWave.filter(item => item.ok);
+  assert.deepEqual(waveGranted.map(item => item.casAttempts), [1, 2, 3, 4]);
+  assert.ok(replayed.metrics.casConflicts >= 11);
+  assert.equal(contentionWave.find(item => item.workerId === 'worker-dup-101').reason, 'DUPLICATE_ACTIVE_CLAIM');
+  const exhaustedStep = replayed.steps[receipt.verifiedInvariants.concurrentWorkerContention.exhaustedContentionWaveStepIndex];
+  assert.equal(exhaustedStep.outcomes[0].reason, 'LEASE_CLAIMED');
+  assert.equal(exhaustedStep.outcomes[1].reason, 'CAS_CONFLICT_EXHAUSTED');
+
+  // Replay direct low-level CAS ref-mismatch probe
+  const mismatchStore = createInMemoryWorkQueueRefStore();
+  const winnerRes = await claimWorkQueueLease({
+    refStore: mismatchStore,
+    config: receipt.lifecycleScenario.config,
+    candidate: {
+      targetType: 'issue',
+      repository: REPO,
+      repositoryId: REPO_ID,
+      issueNumber: 501,
+      lane: 'factory',
+      ownedPaths: ['tools/engineering-factory/run.mjs'],
+      workerId: 'worker-cas-winner',
+      runId: 8501,
+      leaseTtlMs: 60000,
+      maxExecutionMs: 180000
+    },
+    nowMs: 1000
+  });
+  assert.equal(winnerRes.oid, receipt.directCasRefMismatchProbe.committedOidAfterWinner);
+  const mismatchActual = mismatchStore.compareAndSwapRef({
+    ref: PROTECTED_WORK_QUEUE_REF,
+    expectedOid: receipt.directCasRefMismatchProbe.staleWriterAttempt.expectedOid,
+    nextState: mismatchStore.readRef().state,
+    force: receipt.directCasRefMismatchProbe.staleWriterAttempt.force
+  });
+  assert.deepEqual(JSON.parse(JSON.stringify(mismatchActual)), receipt.directCasRefMismatchProbe.staleWriterAttempt.result);
+  assert.equal(mismatchActual.reason, 'CAS_CONFLICT');
+
+  // 5. Non-overlapping file-set ownership via planner.mjs & planUnifiedWorkQueue
+  assert.equal(pathsOverlap('docs/evidence/m01-04-durable-cas-recovery.json', 'docs/evidence'), true);
+  assert.equal(pathsOverlap('tools/engineering-factory/run.mjs', 'docs/evidence'), false);
+  assert.equal(contentionWave.find(item => item.workerId === 'worker-path-clash').reason, 'OWNED_PATHS_OVERLAP');
+  assert.equal(contentionWave.find(item => item.workerId === 'worker-lane-clash').reason, 'LANE_RESERVED');
+  const replayedPlan = planUnifiedWorkQueue(receipt.plannerOwnershipProbe.input);
+  assert.deepEqual(JSON.parse(JSON.stringify(replayedPlan)), receipt.plannerOwnershipProbe.expectedPlan);
+  const roguePathClaim = await claimWorkQueueLease({
+    refStore: mismatchStore,
+    config: receipt.lifecycleScenario.config,
+    candidate: {
+      targetType: 'issue',
+      repository: REPO,
+      repositoryId: REPO_ID,
+      issueNumber: 502,
+      lane: 'factory',
+      ownedPaths: ['.github/workflows/factory-orchestrator.lock.yml'],
+      workerId: 'worker-rogue-path',
+      runId: 8502,
+      leaseTtlMs: 60000,
+      maxExecutionMs: 180000
+    },
+    nowMs: 2000
+  });
+  assert.deepEqual(JSON.parse(JSON.stringify(roguePathClaim)), receipt.plannerOwnershipProbe.protectedWorkflowClaimAttempt);
+  assert.equal(roguePathClaim.reason, 'LANE_OWNERSHIP_VIOLATION');
+
+  // 6. Bounded execution TTL (<= 3,600,000 ms), renewal clamping, EXECUTION_TTL_EXCEEDED, and coordinator.mjs EXECUTION_TIMEOUT
+  assert.equal(contentionWave.find(item => item.workerId === 'worker-ttl-breach').reason, 'INVALID_LEASE_TTL');
+  assert.equal(replayed.steps[7].reason, 'LEASE_RENEWED');
+  assert.equal(replayed.steps[7].lease.leaseExpiresAtMs, 91000);
+  assert.equal(replayed.steps[7].lease.executionDeadlineMs, 91000);
+  assert.equal(replayed.steps[12].reason, 'LEASE_RENEWED');
+  assert.equal(replayed.steps[12].lease.leaseExpiresAtMs, 50000);
+  assert.equal(replayed.steps[13].ok, false);
+  assert.equal(replayed.steps[13].reason, 'EXECUTION_TTL_EXCEEDED');
+
+  const tickStore = createSQLiteStateStore(':memory:');
+  try {
+    let clockReads = 0;
+    const tickRes = await runTick({
+      config: receipt.lifecycleScenario.config,
+      tasks: [{
+        id: 101,
+        lane: 'factory',
+        state: 'approved',
+        priority: 0,
+        dependencies: [],
+        paths: ['tools/engineering-factory/run.mjs']
+      }],
+      store: tickStore,
+      tracker: {
+        readTask: id => ({accepted: true, task: {id, state: 'approved'}})
+      },
+      agent: {
+        inspect: () => ({accepted: true, shadow: true, findings: []})
+      },
+      workerId: 'worker-ttl-tick',
+      now: 1000,
+      maxExecutionMs: MAX_LEASE_TTL_MS,
+      clock: () => {
+        clockReads += 1;
+        return clockReads === 1 ? 2000 : 1000 + MAX_LEASE_TTL_MS;
+      }
+    });
+    assert.equal(tickRes.completed[0].state, 'blocked');
+    assert.equal(
+      tickRes.completed[0].reason,
+      receipt.verifiedInvariants.leaseRenewalAndBoundedExecutionTtl.coordinatorRunTickTimeoutReason
+    );
+  } finally {
+    tickStore.close();
+  }
+
+  // 7. Fenced generation rejection & crash/orphan recovery across launch_failed, worker_terminated, run_terminal, run_missing, and lease_expired
+  assert.equal(replayed.steps[8].oid, replayed.steps[7].oid);
+  assert.equal(replayed.steps[8].preservedEntries, 4);
+  assert.deepEqual(replayed.metrics.reclaimedByRunState, {
+    launch_failed: 1,
+    worker_terminated: 1,
+    run_terminal: 2,
+    run_missing: 1,
+    lease_expired: 1
+  });
+  const receiptsByState = new Map(replayed.finalState.recoveryReceipts.map(r => [`${r.runState}:${r.conclusion ?? 'null'}`, r]));
+  assert.equal(receiptsByState.get('launch_failed:null').outcome, 'requeued');
+  assert.equal(receiptsByState.get('worker_terminated:null').outcome, 'requeued');
+  assert.equal(receiptsByState.get('run_missing:null').outcome, 'requeued');
+  assert.equal(receiptsByState.get('run_terminal:success').outcome, 'completed');
+  assert.equal(receiptsByState.get('run_terminal:timed_out').outcome, 'exhausted');
+  assert.equal(receiptsByState.get('lease_expired:null').outcome, 'exhausted');
+
+  assert.equal(replayed.steps[15].reason, 'STALE_GENERATION');
+  assert.equal(replayed.steps[16].reason, 'STALE_GENERATION');
+  assert.equal(replayed.steps[17].reason, 'LEASE_NOT_HELD');
+  assert.equal(replayed.metrics.staleRunObservationsSkipped, 1);
+  assert.equal(replayed.steps[20].outcomes[0].reason, 'DUPLICATE_RUN_ATTEMPT');
+  assert.equal(replayed.steps[20].outcomes[1].reason, 'RETRY_CEILING_EXHAUSTED');
+  assert.equal(replayed.steps[20].outcomes[2].reason, 'DUPLICATE_ACTIVE_CLAIM');
+
+  // Emergency stop blocks all 5 operation kinds without mutating refs/heads/work-queue OID
+  const stopOid = replayed.steps[receipt.verifiedInvariants.emergencyStopPreservation.engagedStepIndex].oid;
+  assert.equal(stopOid, receipt.verifiedInvariants.emergencyStopPreservation.preservedOidDuringStop);
+  for (let stepIdx = 22; stepIdx <= 26; stepIdx++) {
+    assert.equal(replayed.steps[stepIdx].oid, stopOid);
+  }
+  assert.equal(replayed.metrics.stopBlocks, receipt.verifiedInvariants.emergencyStopPreservation.stopBlocksCount);
+  assert.equal(replayed.steps[28].reason, 'LEASE_SETTLED');
+
+  // 8. Ephemeral runner-local node:sqlite reset vs. $0 cross-run git-ref CAS comparison
+  const comparison = receipt.storageArchitectureComparison;
+  assert.equal(comparison.ephemeralRunnerLocalSqlite.backingEngine, 'node:sqlite');
+  assert.equal(comparison.ephemeralRunnerLocalSqlite.crossRunHostedDurable, false);
+  assert.equal(comparison.ephemeralRunnerLocalSqlite.preventsFreshRunnerSplitBrainAlone, false);
+  assert.equal(comparison.gitRefWorkQueueCas.incrementalMonthlyCostUsd, 0);
+  assert.equal(comparison.gitRefWorkQueueCas.crossRunHostedDurable, true);
+  assert.equal(comparison.gitRefWorkQueueCas.preventsFreshRunnerSplitBrainAlone, true);
+  assert.deepEqual(comparison.gitRefWorkQueueCas.crossRunRehydrationDemonstration, {
+    runnerEpochs: replayed.runnerEpochs,
+    oidBeforeEpoch3Restart: replayed.steps[7].oid,
+    oidAfterEpoch3Restart: replayed.steps[8].oid,
+    preservedActiveEntriesAcrossRestart: replayed.steps[8].preservedEntries,
+    postRestartDuplicateRunAttemptReason: replayed.steps[20].outcomes[0].reason,
+    postRestartExhaustedWorkReason: replayed.steps[20].outcomes[1].reason,
+    postRestartActivePrDuplicateReason: replayed.steps[20].outcomes[2].reason
+  });
+  assert.equal(comparison.liveBranchProvisioningDisposition.targetRef, PROTECTED_WORK_QUEUE_REF);
+  assert.equal(comparison.liveBranchProvisioningDisposition.liveBranchProvisioned, false);
+  assert.equal(comparison.liveBranchProvisioningDisposition.factoryGhawEnabled, false);
+  assert.equal(comparison.liveBranchProvisioningDisposition.disposition, 'optional_deferred');
+
+  const receiptPrHead = 'a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4';
+  const runner1Sqlite = createSQLiteStateStore(':memory:');
+  const runner1Journal = openEventJournal(':memory:');
+  const runner2Sqlite = createSQLiteStateStore(':memory:');
+  const runner2Journal = openEventJournal(':memory:');
+  try {
+    const c1 = runner1Sqlite.claim('factory', 'worker-ephemeral-1', 1000, 60000, 4, 'jamula/softwarefactory#6');
+    runner1Journal.enqueue({repositoryId: REPO_ID, deliveryId: 'deliv-ephemeral-6', kind: 'issue', subject: 6, head: receiptPrHead});
+    const j1 = runner1Journal.claim(REPO_ID, 'worker-ephemeral-1', 1000, 60000);
+    const c2 = runner2Sqlite.claim('factory', 'worker-ephemeral-2', 2000, 60000, 4, 'jamula/softwarefactory#6');
+    const j2 = runner2Journal.claim(REPO_ID, 'worker-ephemeral-2', 2000, 60000);
+
+    assert.deepEqual({
+      runnerEpoch1ClaimGeneration: c1.generation,
+      runnerEpoch1WorkGeneration: c1.workGeneration,
+      runnerEpoch1JournalGeneration: j1.generation,
+      runnerEpoch2FreshStoreDuplicateClaimGeneration: c2.generation,
+      runnerEpoch2JournalLostPendingEntry: j2 === null
+    }, comparison.ephemeralRunnerLocalSqlite.ephemeralResetDemonstration);
+  } finally {
+    runner1Sqlite.close();
+    runner1Journal.close();
+    runner2Sqlite.close();
+    runner2Journal.close();
+  }
+});
+
 

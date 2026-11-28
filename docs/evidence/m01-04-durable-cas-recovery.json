@@ -1,0 +1,2107 @@
+{
+  "schemaVersion": "1.0.0",
+  "receiptId": "m01-04-durable-git-ref-cas-recovery-2026-11-28",
+  "issue": {
+    "number": 6,
+    "title": "[M01.04 P0] Durable scheduling, worker isolation and restart recovery",
+    "url": "https://github.com/Jamula/SoftwareFactory/issues/6",
+    "milestone": "M01.04",
+    "priority": "P0",
+    "state": "OPEN",
+    "closesIssue": false
+  },
+  "scope": {
+    "repository": "Jamula/SoftwareFactory",
+    "repositoryId": 1471342715,
+    "evaluatedBranch": "main",
+    "evaluatedCommit": "ec438f54088f30856c2df6ff626e894dde2a0100"
+  },
+  "generatedAtIso": "2026-11-28T05:45:00.000Z",
+  "ghAwContract": {
+    "repository": "github/gh-aw",
+    "version": "v1.2.2",
+    "commit": "399a445fe2d8926c616b54b1b82a16b5b2be4445",
+    "workQueueProtocol": "v3",
+    "protectedRef": "refs/heads/work-queue",
+    "zeroGitOid": "0000000000000000000000000000000000000000",
+    "maxLeaseTtlMs": 3600000,
+    "lockWorkflowPath": ".github/workflows/factory-orchestrator.lock.yml",
+    "evaluatedCommitLockSha256": "9c1b723d338fff43d64c3b518616f7a635b9dce330e72aa2e29f7c8b67bb445f"
+  },
+  "provenance": {
+    "captureKind": "deterministic-offline-cas-simulation",
+    "syntheticSimulationFixtures": true,
+    "shadow": true,
+    "liveDispatch": false,
+    "liveMerge": false,
+    "liveWorkQueueRefProvisioned": false,
+    "factoryGhawEnabled": false,
+    "liveRefProvisioningStatus": "optional-deferred-until-factory-ghaw-enabled",
+    "blocksDirectCopilotDispatchIssue10": false,
+    "disclosure": "Deterministic offline acceptance receipt generated from tools/engineering-coordinator/work-queue-cas.mjs (simulateDurableCasLifecycle, claimWorkQueueLease, renewWorkQueueLease, settleWorkQueueLease, reconcileWorkQueueRunStates, planUnifiedWorkQueue) and tools/engineering-coordinator/planner.mjs on main @ ec438f54088f30856c2df6ff626e894dde2a0100. Per owner-approved M01 streamlined exit update (2026-11-28 UTC on #6), live ruleset-protected refs/heads/work-queue branch provisioning and live hosted CAS contention runs are optional/deferred until unattended gh-aw cron/event scheduling (FACTORY_GHAW_ENABLED=true) is enabled and do not block direct @copilot issue dispatch in #10."
+  },
+  "verifiedInvariants": {
+    "atomicNonForceCasAcquisition": {
+      "verified": true,
+      "protectedRef": "refs/heads/work-queue",
+      "protocol": "v3",
+      "initialOid": "0000000000000000000000000000000000000000",
+      "finalOid": "ec7da135267ae7f48b31a07b969e0ea1e648abe5",
+      "casAppliedCount": 13,
+      "forceRejectedCount": 1,
+      "unprotectedRefRejectedCount": 1
+    },
+    "leaseRenewalAndBoundedExecutionTtl": {
+      "verified": true,
+      "maxLeaseTtlMs": 3600000,
+      "maxClaimedExecutionMsInScenario": 3600000,
+      "overCeilingReason": "INVALID_LEASE_TTL",
+      "renewalClampedStepIndex": 7,
+      "renewalClampedExpiresAtMs": 91000,
+      "executionTtlExceededStepIndex": 13,
+      "executionTtlExceededReason": "EXECUTION_TTL_EXCEEDED",
+      "coordinatorRunTickTimeoutReason": "EXECUTION_TIMEOUT"
+    },
+    "fencedGenerationRejection": {
+      "verified": true,
+      "staleWorkerRejections": 3,
+      "staleRunObservationsSkipped": 1,
+      "rejectionReasons": [
+        "STALE_GENERATION",
+        "LEASE_NOT_HELD",
+        "STALE_OR_INACTIVE_RUN",
+        "DUPLICATE_RUN_ATTEMPT"
+      ]
+    },
+    "concurrentWorkerContention": {
+      "verified": true,
+      "contentionCategory": "CAS_REF_MISMATCH",
+      "storeConflictReason": "CAS_CONFLICT",
+      "exhaustedRetryReason": "CAS_CONFLICT_EXHAUSTED",
+      "note": "work-queue-cas.mjs surfaces git-ref expectedOid mismatch (CAS_REF_MISMATCH contention) as reason \"CAS_CONFLICT\" on compareAndSwapRef and reason \"CAS_CONFLICT_EXHAUSTED\" when maxCasAttempts is exhausted.",
+      "casConflictsObserved": 11,
+      "serializedContentionWaveStepIndex": 5,
+      "exhaustedContentionWaveStepIndex": 10
+    },
+    "nonOverlappingFileSetOwnership": {
+      "verified": true,
+      "evaluatorModule": "tools/engineering-coordinator/planner.mjs",
+      "nestedPathOverlapDetected": true,
+      "disjointPathsAllowed": true,
+      "claimOverlapReason": "OWNED_PATHS_OVERLAP",
+      "laneConflictReason": "LANE_RESERVED",
+      "outOfLaneProtectedPathReason": "LANE_OWNERSHIP_VIOLATION"
+    },
+    "crashAndOrphanRecovery": {
+      "verified": true,
+      "runnerEpochsSimulated": 4,
+      "reclaimedByRunState": {
+        "launch_failed": 1,
+        "worker_terminated": 1,
+        "run_terminal": 2,
+        "run_missing": 1,
+        "lease_expired": 1
+      },
+      "recoveredRunStates": [
+        "launch_failed",
+        "worker_terminated",
+        "run_terminal",
+        "run_missing",
+        "lease_expired"
+      ],
+      "runTerminalConclusionsVerified": [
+        {
+          "conclusion": "success",
+          "outcome": "completed"
+        },
+        {
+          "conclusion": "timed_out",
+          "outcome": "exhausted"
+        }
+      ]
+    },
+    "emergencyStopPreservation": {
+      "verified": true,
+      "engagedStepIndex": 21,
+      "clearedStepIndex": 27,
+      "stopBlocksCount": 5,
+      "preservedOidDuringStop": "685a9fd7c67feb046da4db0beeb88f1398010830"
+    }
+  },
+  "directCasRefMismatchProbe": {
+    "contentionCategory": "CAS_REF_MISMATCH",
+    "protectedRef": "refs/heads/work-queue",
+    "initialOid": "0000000000000000000000000000000000000000",
+    "committedOidAfterWinner": "962ca0d9927cf88348c85474a89b8941009a4de5",
+    "staleWriterAttempt": {
+      "expectedOid": "0000000000000000000000000000000000000000",
+      "force": false,
+      "result": {
+        "ok": false,
+        "reason": "CAS_CONFLICT",
+        "currentOid": "962ca0d9927cf88348c85474a89b8941009a4de5"
+      }
+    }
+  },
+  "plannerOwnershipProbe": {
+    "input": {
+      "config": {
+        "schemaVersion": 1,
+        "project": {
+          "key": "software-factory",
+          "repository": "Jamula/SoftwareFactory",
+          "defaultBranch": "main"
+        },
+        "execution": {
+          "enabled": true,
+          "mode": "shadow",
+          "stop": false
+        },
+        "limits": {
+          "maxConcurrentLanes": 4,
+          "leaseMs": 60000,
+          "maxAttempts": 2,
+          "baseDelayMs": 100,
+          "maxDelayMs": 1000
+        },
+        "adapters": {
+          "workTracker": "injected-read-only",
+          "engineeringAgent": "injected-read-only",
+          "state": "sqlite"
+        },
+        "lanes": [
+          {
+            "id": "factory",
+            "owners": [
+              "tools/engineering-factory"
+            ],
+            "prompt": "docs/prompts/factory.md",
+            "specialist": "infra"
+          },
+          {
+            "id": "coordinator",
+            "owners": [
+              "tools/engineering-coordinator"
+            ],
+            "prompt": "docs/prompts/coordinator.md",
+            "specialist": "coordinator"
+          },
+          {
+            "id": "docs",
+            "owners": [
+              "docs"
+            ],
+            "prompt": "docs/prompts/docs.md",
+            "specialist": "docs"
+          },
+          {
+            "id": "apphost",
+            "owners": [
+              "src/AppHost"
+            ],
+            "prompt": "docs/prompts/apphost.md",
+            "specialist": "infra"
+          }
+        ]
+      },
+      "shadowInput": {
+        "enabled": true,
+        "stop": false,
+        "capacity": 4,
+        "quotaVerified": true,
+        "tasks": [
+          {
+            "id": 301,
+            "priority": 0,
+            "state": "approved",
+            "dependencies": [],
+            "paths": [
+              "tools/engineering-factory/run.mjs"
+            ]
+          },
+          {
+            "id": 302,
+            "priority": 1,
+            "state": "approved",
+            "dependencies": [],
+            "paths": [
+              "docs/evidence/m01-04-durable-cas-recovery.json"
+            ]
+          }
+        ]
+      },
+      "activeLeases": [
+        {
+          "workId": "1471342715:issue:501",
+          "targetType": "issue",
+          "repository": "Jamula/SoftwareFactory",
+          "repositoryId": 1471342715,
+          "issueNumber": 501,
+          "pullNumber": null,
+          "headSha": null,
+          "lane": "factory",
+          "ownedPaths": [
+            "tools/engineering-factory/run.mjs"
+          ],
+          "status": "leased",
+          "generation": 1,
+          "attempts": 1,
+          "maxAttempts": 2,
+          "workerId": "worker-cas-winner",
+          "runId": 8501,
+          "runAttempt": 1,
+          "claimedAtMs": 1000,
+          "leaseTtlMs": 60000,
+          "leaseExpiresAtMs": 61000,
+          "maxExecutionMs": 180000,
+          "executionDeadlineMs": 181000
+        }
+      ],
+      "nowMs": 2000,
+      "policy": {
+        "now": 2000,
+        "agingMs": 1000,
+        "riskCeiling": "medium",
+        "ready": [
+          {
+            "id": 301,
+            "readySince": 1000,
+            "risk": "low"
+          },
+          {
+            "id": 302,
+            "readySince": 1000,
+            "risk": "low"
+          }
+        ]
+      }
+    },
+    "expectedPlan": {
+      "shadow": true,
+      "liveDispatch": false,
+      "scheduled": [
+        {
+          "id": 302,
+          "lane": "docs",
+          "paths": [
+            "docs/evidence/m01-04-durable-cas-recovery.json"
+          ]
+        }
+      ],
+      "readyIds": [
+        302
+      ],
+      "reason": "SHADOW_PLAN",
+      "blockedTasks": [
+        {
+          "id": 301,
+          "reason": "LANE_OR_PATH_RESERVED"
+        }
+      ]
+    },
+    "protectedWorkflowClaimAttempt": {
+      "shadow": true,
+      "ok": false,
+      "liveDispatch": false,
+      "liveMerge": false,
+      "reason": "LANE_OWNERSHIP_VIOLATION"
+    }
+  },
+  "storageArchitectureComparison": {
+    "ephemeralRunnerLocalSqlite": {
+      "modules": [
+        "tools/engineering-coordinator/sqlite-state-store.mjs",
+        "tools/engineering-coordinator/event-journal.mjs",
+        "tools/engineering-factory/shadow-dispatch-ledger.mjs"
+      ],
+      "backingEngine": "node:sqlite",
+      "incrementalMonthlyCostUsd": 0,
+      "singleHostTransactional": true,
+      "crossRunHostedDurable": false,
+      "preventsFreshRunnerSplitBrainAlone": false,
+      "retainedRole": "Local single-host Aspire orchestration, OTLP correlation, and bounded shadow reconciliation hints; ephemeral GitHub-hosted runner disks reset after each job and cannot act as an authoritative cross-run lease store on their own.",
+      "ephemeralResetDemonstration": {
+        "runnerEpoch1ClaimGeneration": 1,
+        "runnerEpoch1WorkGeneration": 1,
+        "runnerEpoch1JournalGeneration": 1,
+        "runnerEpoch2FreshStoreDuplicateClaimGeneration": 1,
+        "runnerEpoch2JournalLostPendingEntry": true
+      }
+    },
+    "gitRefWorkQueueCas": {
+      "modules": [
+        "tools/engineering-coordinator/work-queue-cas.mjs",
+        "tools/engineering-coordinator/planner.mjs",
+        "tools/engineering-coordinator/coordinator.mjs"
+      ],
+      "backingEngine": "Git object database + non-force Compare-and-Swap on ruleset-protected refs/heads/work-queue (gh-aw tools.work-queue protocol v3)",
+      "incrementalMonthlyCostUsd": 0,
+      "zeroExternalDatabaseOrDaemon": true,
+      "laptopOfflineSafe": true,
+      "crossRunHostedDurable": true,
+      "preventsFreshRunnerSplitBrainAlone": true,
+      "escalationContingency": "Cloudflare Durable Objects (Free plan) only under separate owner approval if git-ref CAS contention ever warrants it; Temporal and LangGraph excluded.",
+      "crossRunRehydrationDemonstration": {
+        "runnerEpochs": 4,
+        "oidBeforeEpoch3Restart": "1ce39fa66deae5efdbd1ee79702cfc1c72074b54",
+        "oidAfterEpoch3Restart": "1ce39fa66deae5efdbd1ee79702cfc1c72074b54",
+        "preservedActiveEntriesAcrossRestart": 4,
+        "postRestartDuplicateRunAttemptReason": "DUPLICATE_RUN_ATTEMPT",
+        "postRestartExhaustedWorkReason": "RETRY_CEILING_EXHAUSTED",
+        "postRestartActivePrDuplicateReason": "DUPLICATE_ACTIVE_CLAIM"
+      }
+    },
+    "liveBranchProvisioningDisposition": {
+      "targetRef": "refs/heads/work-queue",
+      "liveBranchProvisioned": false,
+      "factoryGhawEnabled": false,
+      "disposition": "optional_deferred",
+      "activationCondition": "Deferred until unattended gh-aw cron/event scheduling (vars.FACTORY_GHAW_ENABLED == \"true\") is enabled under separate live operational authorization; does not block direct @copilot issue dispatch in #10."
+    }
+  },
+  "lifecycleScenario": {
+    "config": {
+      "schemaVersion": 1,
+      "project": {
+        "key": "software-factory",
+        "repository": "Jamula/SoftwareFactory",
+        "defaultBranch": "main"
+      },
+      "execution": {
+        "enabled": true,
+        "mode": "shadow",
+        "stop": false
+      },
+      "limits": {
+        "maxConcurrentLanes": 4,
+        "leaseMs": 60000,
+        "maxAttempts": 2,
+        "baseDelayMs": 100,
+        "maxDelayMs": 1000
+      },
+      "adapters": {
+        "workTracker": "injected-read-only",
+        "engineeringAgent": "injected-read-only",
+        "state": "sqlite"
+      },
+      "lanes": [
+        {
+          "id": "factory",
+          "owners": [
+            "tools/engineering-factory"
+          ],
+          "prompt": "docs/prompts/factory.md",
+          "specialist": "infra"
+        },
+        {
+          "id": "coordinator",
+          "owners": [
+            "tools/engineering-coordinator"
+          ],
+          "prompt": "docs/prompts/coordinator.md",
+          "specialist": "coordinator"
+        },
+        {
+          "id": "docs",
+          "owners": [
+            "docs"
+          ],
+          "prompt": "docs/prompts/docs.md",
+          "specialist": "docs"
+        },
+        {
+          "id": "apphost",
+          "owners": [
+            "src/AppHost"
+          ],
+          "prompt": "docs/prompts/apphost.md",
+          "specialist": "infra"
+        }
+      ]
+    },
+    "steps": [
+      {
+        "kind": "runner_restart",
+        "nowMs": 100
+      },
+      {
+        "kind": "plan",
+        "nowMs": 500,
+        "shadowInput": {
+          "enabled": true,
+          "stop": false,
+          "capacity": 4,
+          "quotaVerified": true,
+          "tasks": [
+            {
+              "id": 101,
+              "priority": 1,
+              "state": "approved",
+              "dependencies": [],
+              "paths": [
+                "tools/engineering-factory/run.mjs"
+              ]
+            },
+            {
+              "id": 102,
+              "priority": 2,
+              "state": "approved",
+              "dependencies": [],
+              "paths": [
+                "tools/engineering-coordinator/work-queue-cas.mjs"
+              ]
+            },
+            {
+              "id": 103,
+              "priority": 0,
+              "state": "approved",
+              "dependencies": [
+                101
+              ],
+              "paths": [
+                "docs/evidence/m01-04-durable-cas-recovery.json"
+              ]
+            },
+            {
+              "id": 105,
+              "priority": 3,
+              "state": "approved",
+              "dependencies": [],
+              "paths": [
+                "tools/engineering-factory/telemetry.mjs"
+              ]
+            },
+            {
+              "id": 106,
+              "priority": 0,
+              "state": "approved",
+              "dependencies": [],
+              "paths": [
+                "src/AppHost/Program.cs"
+              ]
+            }
+          ]
+        },
+        "policy": {
+          "now": 500,
+          "agingMs": 1000,
+          "riskCeiling": "medium",
+          "ready": [
+            {
+              "id": 101,
+              "readySince": 100,
+              "risk": "low"
+            },
+            {
+              "id": 102,
+              "readySince": 200,
+              "risk": "low"
+            },
+            {
+              "id": 103,
+              "readySince": 150,
+              "risk": "low"
+            },
+            {
+              "id": 105,
+              "readySince": 250,
+              "risk": "low"
+            },
+            {
+              "id": 106,
+              "readySince": 120,
+              "risk": "high"
+            }
+          ]
+        }
+      },
+      {
+        "kind": "concurrent_claims",
+        "nowMs": 600,
+        "targetRef": "refs/heads/main",
+        "claims": [
+          {
+            "candidate": {
+              "targetType": "issue",
+              "repository": "Jamula/SoftwareFactory",
+              "repositoryId": 1471342715,
+              "issueNumber": 101,
+              "lane": "factory",
+              "ownedPaths": [
+                "tools/engineering-factory/run.mjs"
+              ],
+              "workerId": "worker-unprotected-ref",
+              "runId": 6901,
+              "leaseTtlMs": 60000,
+              "maxExecutionMs": 180000
+            }
+          }
+        ]
+      },
+      {
+        "kind": "concurrent_claims",
+        "nowMs": 700,
+        "force": true,
+        "claims": [
+          {
+            "candidate": {
+              "targetType": "issue",
+              "repository": "Jamula/SoftwareFactory",
+              "repositoryId": 1471342715,
+              "issueNumber": 101,
+              "lane": "factory",
+              "ownedPaths": [
+                "tools/engineering-factory/run.mjs"
+              ],
+              "workerId": "worker-force-push",
+              "runId": 6902,
+              "leaseTtlMs": 60000,
+              "maxExecutionMs": 180000
+            }
+          }
+        ]
+      },
+      {
+        "kind": "concurrent_claims",
+        "nowMs": 800,
+        "mainHealthy": false,
+        "claims": [
+          {
+            "candidate": {
+              "targetType": "issue",
+              "repository": "Jamula/SoftwareFactory",
+              "repositoryId": 1471342715,
+              "issueNumber": 101,
+              "lane": "factory",
+              "ownedPaths": [
+                "tools/engineering-factory/run.mjs"
+              ],
+              "workerId": "worker-unhealthy-main",
+              "runId": 6903,
+              "leaseTtlMs": 60000,
+              "maxExecutionMs": 180000
+            }
+          }
+        ]
+      },
+      {
+        "kind": "concurrent_claims",
+        "nowMs": 1000,
+        "maxCasAttempts": 5,
+        "claims": [
+          {
+            "readyAtMs": 100,
+            "candidate": {
+              "targetType": "issue",
+              "repository": "Jamula/SoftwareFactory",
+              "repositoryId": 1471342715,
+              "issueNumber": 101,
+              "lane": "factory",
+              "ownedPaths": [
+                "tools/engineering-factory/run.mjs"
+              ],
+              "workerId": "worker-factory-1",
+              "runId": 7001,
+              "leaseTtlMs": 60000,
+              "maxExecutionMs": 3600000,
+              "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+              "lockSha256": "9c1b723d338fff43d64c3b518616f7a635b9dce330e72aa2e29f7c8b67bb445f"
+            }
+          },
+          {
+            "candidate": {
+              "targetType": "issue",
+              "repository": "Jamula/SoftwareFactory",
+              "repositoryId": 1471342715,
+              "issueNumber": 101,
+              "lane": "factory",
+              "ownedPaths": [
+                "tools/engineering-factory/run.mjs"
+              ],
+              "workerId": "worker-dup-101",
+              "runId": 7009,
+              "leaseTtlMs": 60000,
+              "maxExecutionMs": 180000
+            }
+          },
+          {
+            "readyAtMs": 200,
+            "candidate": {
+              "targetType": "issue",
+              "repository": "Jamula/SoftwareFactory",
+              "repositoryId": 1471342715,
+              "issueNumber": 103,
+              "lane": "docs",
+              "ownedPaths": [
+                "docs/evidence"
+              ],
+              "workerId": "worker-docs-1",
+              "runId": 7003,
+              "leaseTtlMs": 60000,
+              "maxExecutionMs": 180000,
+              "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+              "lockSha256": "9c1b723d338fff43d64c3b518616f7a635b9dce330e72aa2e29f7c8b67bb445f"
+            }
+          },
+          {
+            "candidate": {
+              "targetType": "issue",
+              "repository": "Jamula/SoftwareFactory",
+              "repositoryId": 1471342715,
+              "issueNumber": 107,
+              "lane": "docs",
+              "ownedPaths": [
+                "docs/evidence/m01-04-durable-cas-recovery.json"
+              ],
+              "workerId": "worker-path-clash",
+              "runId": 7011,
+              "leaseTtlMs": 60000,
+              "maxExecutionMs": 180000
+            }
+          },
+          {
+            "candidate": {
+              "targetType": "issue",
+              "repository": "Jamula/SoftwareFactory",
+              "repositoryId": 1471342715,
+              "issueNumber": 108,
+              "lane": "factory",
+              "ownedPaths": [
+                "tools/engineering-factory/telemetry.mjs"
+              ],
+              "workerId": "worker-lane-clash",
+              "runId": 7012,
+              "leaseTtlMs": 60000,
+              "maxExecutionMs": 180000
+            }
+          },
+          {
+            "readyAtMs": 250,
+            "candidate": {
+              "targetType": "issue",
+              "repository": "Jamula/SoftwareFactory",
+              "repositoryId": 1471342715,
+              "issueNumber": 102,
+              "lane": "coordinator",
+              "ownedPaths": [
+                "tools/engineering-coordinator/work-queue-cas.mjs"
+              ],
+              "workerId": "worker-coord-1",
+              "runId": 7002,
+              "leaseTtlMs": 60000,
+              "maxExecutionMs": 180000,
+              "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+              "lockSha256": "9c1b723d338fff43d64c3b518616f7a635b9dce330e72aa2e29f7c8b67bb445f"
+            }
+          },
+          {
+            "readyAtMs": 300,
+            "candidate": {
+              "targetType": "pull_request",
+              "repository": "Jamula/SoftwareFactory",
+              "repositoryId": 1471342715,
+              "pullNumber": 201,
+              "headSha": "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4",
+              "lane": "apphost",
+              "ownedPaths": [
+                "src/AppHost/Program.cs"
+              ],
+              "workerId": "worker-apphost-1",
+              "runId": 7004,
+              "leaseTtlMs": 30000,
+              "maxExecutionMs": 90000,
+              "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+              "lockSha256": "9c1b723d338fff43d64c3b518616f7a635b9dce330e72aa2e29f7c8b67bb445f"
+            }
+          },
+          {
+            "candidate": {
+              "targetType": "issue",
+              "repository": "Jamula/SoftwareFactory",
+              "repositoryId": 1471342715,
+              "issueNumber": 110,
+              "lane": "docs",
+              "ownedPaths": [
+                "docs/ROADMAP.md"
+              ],
+              "workerId": "worker-ttl-breach",
+              "runId": 7013,
+              "leaseTtlMs": 60000,
+              "maxExecutionMs": 3600001
+            }
+          }
+        ]
+      },
+      {
+        "kind": "plan",
+        "nowMs": 1500,
+        "shadowInput": {
+          "enabled": true,
+          "stop": false,
+          "capacity": 4,
+          "quotaVerified": true,
+          "tasks": [
+            {
+              "id": 109,
+              "priority": 0,
+              "state": "approved",
+              "dependencies": [],
+              "paths": [
+                "tools/engineering-factory/telemetry.mjs"
+              ]
+            }
+          ]
+        },
+        "policy": {
+          "now": 1500,
+          "agingMs": 1000,
+          "riskCeiling": "high",
+          "ready": [
+            {
+              "id": 109,
+              "readySince": 500,
+              "risk": "low"
+            }
+          ]
+        }
+      },
+      {
+        "kind": "worker_action",
+        "action": "renew",
+        "workId": "1471342715:pr:201:a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4",
+        "workerId": "worker-apphost-1",
+        "generation": 4,
+        "leaseTtlMs": 80000,
+        "nowMs": 20000
+      },
+      {
+        "kind": "runner_restart",
+        "nowMs": 25000
+      },
+      {
+        "kind": "reconcile_runs",
+        "nowMs": 30000,
+        "observedRuns": [
+          {
+            "workId": "1471342715:issue:101",
+            "runId": 7001,
+            "runAttempt": 1,
+            "leaseGeneration": 1,
+            "runState": "launch_failed"
+          },
+          {
+            "workId": "1471342715:issue:103",
+            "runId": 7003,
+            "runAttempt": 1,
+            "leaseGeneration": 2,
+            "runState": "run_missing"
+          },
+          {
+            "workId": "1471342715:issue:102",
+            "runId": 7002,
+            "runAttempt": 1,
+            "leaseGeneration": 3,
+            "runState": "worker_terminated"
+          },
+          {
+            "workId": "1471342715:pr:201:a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4",
+            "runId": 7004,
+            "runAttempt": 1,
+            "leaseGeneration": 4,
+            "runState": "run_terminal",
+            "conclusion": "success"
+          }
+        ]
+      },
+      {
+        "kind": "concurrent_claims",
+        "nowMs": 32000,
+        "maxCasAttempts": 1,
+        "claims": [
+          {
+            "readyAtMs": 31000,
+            "candidate": {
+              "targetType": "issue",
+              "repository": "Jamula/SoftwareFactory",
+              "repositoryId": 1471342715,
+              "issueNumber": 102,
+              "lane": "coordinator",
+              "ownedPaths": [
+                "tools/engineering-coordinator/work-queue-cas.mjs"
+              ],
+              "workerId": "worker-coord-retry",
+              "runId": 7102,
+              "runAttempt": 2,
+              "leaseTtlMs": 60000,
+              "maxExecutionMs": 180000,
+              "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+              "lockSha256": "9c1b723d338fff43d64c3b518616f7a635b9dce330e72aa2e29f7c8b67bb445f"
+            }
+          },
+          {
+            "candidate": {
+              "targetType": "issue",
+              "repository": "Jamula/SoftwareFactory",
+              "repositoryId": 1471342715,
+              "issueNumber": 103,
+              "lane": "docs",
+              "ownedPaths": [
+                "docs/evidence"
+              ],
+              "workerId": "worker-docs-cas-exhausted",
+              "runId": 7103,
+              "runAttempt": 2,
+              "leaseTtlMs": 60000,
+              "maxExecutionMs": 180000
+            }
+          }
+        ]
+      },
+      {
+        "kind": "replay_events",
+        "nowMs": 35000,
+        "events": [
+          {
+            "deliveryId": "deliv-101-retry",
+            "eventSequence": 10,
+            "readyAtMs": 31500,
+            "candidate": {
+              "targetType": "issue",
+              "repository": "Jamula/SoftwareFactory",
+              "repositoryId": 1471342715,
+              "issueNumber": 101,
+              "lane": "factory",
+              "ownedPaths": [
+                "tools/engineering-factory/run.mjs"
+              ],
+              "workerId": "worker-factory-retry",
+              "runId": 7101,
+              "runAttempt": 2,
+              "leaseTtlMs": 10000,
+              "maxExecutionMs": 15000,
+              "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+              "lockSha256": "9c1b723d338fff43d64c3b518616f7a635b9dce330e72aa2e29f7c8b67bb445f"
+            }
+          },
+          {
+            "deliveryId": "deliv-101-retry",
+            "eventSequence": 11,
+            "candidate": {
+              "targetType": "issue",
+              "repository": "Jamula/SoftwareFactory",
+              "repositoryId": 1471342715,
+              "issueNumber": 103,
+              "lane": "docs",
+              "ownedPaths": [
+                "docs/evidence"
+              ],
+              "workerId": "worker-conflict",
+              "runId": 7199,
+              "leaseTtlMs": 60000,
+              "maxExecutionMs": 180000
+            }
+          },
+          {
+            "deliveryId": "deliv-pr201-completed",
+            "eventSequence": 20,
+            "authoritativeHeadSha": "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4",
+            "candidate": {
+              "targetType": "pull_request",
+              "repository": "Jamula/SoftwareFactory",
+              "repositoryId": 1471342715,
+              "pullNumber": 201,
+              "headSha": "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4",
+              "lane": "apphost",
+              "ownedPaths": [
+                "src/AppHost/Program.cs"
+              ],
+              "workerId": "worker-pr201-dup",
+              "runId": 7104,
+              "leaseTtlMs": 30000,
+              "maxExecutionMs": 90000
+            }
+          },
+          {
+            "deliveryId": "deliv-pr202-stale",
+            "eventSequence": 5,
+            "authoritativeHeadSha": "b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5",
+            "candidate": {
+              "targetType": "pull_request",
+              "repository": "Jamula/SoftwareFactory",
+              "repositoryId": 1471342715,
+              "pullNumber": 202,
+              "headSha": "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4",
+              "lane": "apphost",
+              "ownedPaths": [
+                "src/AppHost/Program.cs"
+              ],
+              "workerId": "worker-pr202-stale",
+              "runId": 7105,
+              "leaseTtlMs": 30000,
+              "maxExecutionMs": 90000
+            }
+          },
+          {
+            "deliveryId": "deliv-pr202-fresh",
+            "eventSequence": 8,
+            "readyAtMs": 34500,
+            "authoritativeHeadSha": "b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5",
+            "candidate": {
+              "targetType": "pull_request",
+              "repository": "Jamula/SoftwareFactory",
+              "repositoryId": 1471342715,
+              "pullNumber": 202,
+              "headSha": "b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5",
+              "lane": "apphost",
+              "ownedPaths": [
+                "src/AppHost/Program.cs"
+              ],
+              "workerId": "worker-pr202-fresh",
+              "runId": 7106,
+              "leaseTtlMs": 40000,
+              "maxExecutionMs": 120000,
+              "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+              "lockSha256": "9c1b723d338fff43d64c3b518616f7a635b9dce330e72aa2e29f7c8b67bb445f"
+            }
+          },
+          {
+            "deliveryId": "deliv-pr202-late",
+            "eventSequence": 6,
+            "authoritativeHeadSha": "c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6",
+            "candidate": {
+              "targetType": "pull_request",
+              "repository": "Jamula/SoftwareFactory",
+              "repositoryId": 1471342715,
+              "pullNumber": 202,
+              "headSha": "c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6",
+              "lane": "apphost",
+              "ownedPaths": [
+                "src/AppHost/Program.cs"
+              ],
+              "workerId": "worker-pr202-late",
+              "runId": 7107,
+              "leaseTtlMs": 30000,
+              "maxExecutionMs": 90000
+            }
+          }
+        ]
+      },
+      {
+        "kind": "worker_action",
+        "action": "renew",
+        "workId": "1471342715:issue:101",
+        "workerId": "worker-factory-retry",
+        "generation": 10,
+        "leaseTtlMs": 15000,
+        "nowMs": 40000
+      },
+      {
+        "kind": "worker_action",
+        "action": "renew",
+        "workId": "1471342715:issue:101",
+        "workerId": "worker-factory-retry",
+        "generation": 10,
+        "leaseTtlMs": 10000,
+        "nowMs": 50000
+      },
+      {
+        "kind": "concurrent_claims",
+        "nowMs": 55000,
+        "claims": [
+          {
+            "readyAtMs": 54000,
+            "candidate": {
+              "targetType": "issue",
+              "repository": "Jamula/SoftwareFactory",
+              "repositoryId": 1471342715,
+              "issueNumber": 104,
+              "lane": "factory",
+              "ownedPaths": [
+                "tools/engineering-factory/telemetry.mjs"
+              ],
+              "workerId": "worker-factory-takeover",
+              "runId": 7201,
+              "leaseTtlMs": 30000,
+              "maxExecutionMs": 90000,
+              "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+              "lockSha256": "9c1b723d338fff43d64c3b518616f7a635b9dce330e72aa2e29f7c8b67bb445f"
+            }
+          }
+        ]
+      },
+      {
+        "kind": "worker_action",
+        "action": "renew",
+        "workId": "1471342715:issue:101",
+        "workerId": "worker-factory-retry",
+        "generation": 10,
+        "leaseTtlMs": 5000,
+        "nowMs": 56000
+      },
+      {
+        "kind": "worker_action",
+        "action": "settle",
+        "workId": "1471342715:issue:101",
+        "workerId": "worker-factory-1",
+        "generation": 1,
+        "outcome": "completed",
+        "nowMs": 56500
+      },
+      {
+        "kind": "worker_action",
+        "action": "renew",
+        "workId": "1471342715:issue:104",
+        "workerId": "impostor-worker",
+        "generation": 13,
+        "leaseTtlMs": 5000,
+        "nowMs": 57000
+      },
+      {
+        "kind": "reconcile_runs",
+        "nowMs": 57500,
+        "observedRuns": [
+          {
+            "workId": "1471342715:issue:101",
+            "runId": 7001,
+            "runAttempt": 1,
+            "leaseGeneration": 1,
+            "runState": "worker_terminated"
+          },
+          {
+            "workId": "1471342715:issue:102",
+            "runId": 7102,
+            "runAttempt": 2,
+            "leaseGeneration": 9,
+            "runState": "run_terminal",
+            "conclusion": "timed_out"
+          }
+        ]
+      },
+      {
+        "kind": "runner_restart",
+        "nowMs": 60000
+      },
+      {
+        "kind": "replay_events",
+        "nowMs": 61000,
+        "events": [
+          {
+            "deliveryId": "post-restart-103-dup-run",
+            "eventSequence": 1,
+            "candidate": {
+              "targetType": "issue",
+              "repository": "Jamula/SoftwareFactory",
+              "repositoryId": 1471342715,
+              "issueNumber": 103,
+              "lane": "docs",
+              "ownedPaths": [
+                "docs/evidence"
+              ],
+              "workerId": "worker-docs-dup-run",
+              "runId": 7003,
+              "runAttempt": 1,
+              "leaseTtlMs": 60000,
+              "maxExecutionMs": 180000
+            }
+          },
+          {
+            "deliveryId": "post-restart-101-exhausted",
+            "eventSequence": 1,
+            "candidate": {
+              "targetType": "issue",
+              "repository": "Jamula/SoftwareFactory",
+              "repositoryId": 1471342715,
+              "issueNumber": 101,
+              "lane": "factory",
+              "ownedPaths": [
+                "tools/engineering-factory/run.mjs"
+              ],
+              "workerId": "worker-after-restart",
+              "runId": 7301,
+              "leaseTtlMs": 60000,
+              "maxExecutionMs": 180000
+            }
+          },
+          {
+            "deliveryId": "post-restart-pr202-active",
+            "eventSequence": 1,
+            "authoritativeHeadSha": "b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5",
+            "candidate": {
+              "targetType": "pull_request",
+              "repository": "Jamula/SoftwareFactory",
+              "repositoryId": 1471342715,
+              "pullNumber": 202,
+              "headSha": "b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5",
+              "lane": "apphost",
+              "ownedPaths": [
+                "src/AppHost/Program.cs"
+              ],
+              "workerId": "worker-after-restart",
+              "runId": 7302,
+              "leaseTtlMs": 30000,
+              "maxExecutionMs": 90000
+            }
+          }
+        ]
+      },
+      {
+        "kind": "emergency_stop",
+        "nowMs": 65000,
+        "stop": true
+      },
+      {
+        "kind": "plan",
+        "nowMs": 65500,
+        "shadowInput": {
+          "enabled": true,
+          "stop": false,
+          "capacity": 4,
+          "quotaVerified": true,
+          "tasks": [
+            {
+              "id": 103,
+              "priority": 0,
+              "state": "approved",
+              "dependencies": [],
+              "paths": [
+                "docs/evidence/m01-04-durable-cas-recovery.json"
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "kind": "concurrent_claims",
+        "nowMs": 66000,
+        "claims": [
+          {
+            "candidate": {
+              "targetType": "issue",
+              "repository": "Jamula/SoftwareFactory",
+              "repositoryId": 1471342715,
+              "issueNumber": 103,
+              "lane": "docs",
+              "ownedPaths": [
+                "docs/evidence"
+              ],
+              "workerId": "worker-stopped",
+              "runId": 7401,
+              "leaseTtlMs": 60000,
+              "maxExecutionMs": 180000
+            }
+          }
+        ]
+      },
+      {
+        "kind": "replay_events",
+        "nowMs": 66500,
+        "events": [
+          {
+            "deliveryId": "stopped-event",
+            "eventSequence": 1,
+            "candidate": {
+              "targetType": "issue",
+              "repository": "Jamula/SoftwareFactory",
+              "repositoryId": 1471342715,
+              "issueNumber": 103,
+              "lane": "docs",
+              "ownedPaths": [
+                "docs/evidence"
+              ],
+              "workerId": "worker-stopped",
+              "runId": 7402,
+              "leaseTtlMs": 60000,
+              "maxExecutionMs": 180000
+            }
+          }
+        ]
+      },
+      {
+        "kind": "worker_action",
+        "action": "settle",
+        "workId": "1471342715:issue:104",
+        "workerId": "worker-factory-takeover",
+        "generation": 13,
+        "outcome": "completed",
+        "nowMs": 67000
+      },
+      {
+        "kind": "reconcile_runs",
+        "nowMs": 67500,
+        "observedRuns": [
+          {
+            "workId": "1471342715:issue:104",
+            "runId": 7201,
+            "runAttempt": 1,
+            "leaseGeneration": 13,
+            "runState": "worker_terminated"
+          }
+        ]
+      },
+      {
+        "kind": "emergency_stop",
+        "nowMs": 70000,
+        "stop": false
+      },
+      {
+        "kind": "worker_action",
+        "action": "settle",
+        "workId": "1471342715:issue:104",
+        "workerId": "worker-factory-takeover",
+        "generation": 13,
+        "outcome": "completed",
+        "nowMs": 72000
+      }
+    ]
+  },
+  "lifecycleResult": {
+    "shadow": true,
+    "ok": true,
+    "liveDispatch": false,
+    "liveMerge": false,
+    "reason": "LIFECYCLE_VERIFIED",
+    "ref": "refs/heads/work-queue",
+    "finalOid": "ec7da135267ae7f48b31a07b969e0ea1e648abe5",
+    "finalState": {
+      "schemaVersion": 1,
+      "protocol": "v3",
+      "sequence": 13,
+      "nextGeneration": 15,
+      "entries": [
+        {
+          "workId": "1471342715:issue:101",
+          "targetType": "issue",
+          "repository": "Jamula/SoftwareFactory",
+          "repositoryId": 1471342715,
+          "issueNumber": 101,
+          "pullNumber": null,
+          "headSha": null,
+          "lane": "factory",
+          "ownedPaths": [
+            "tools/engineering-factory/run.mjs"
+          ],
+          "status": "exhausted",
+          "generation": 12,
+          "attempts": 2,
+          "maxAttempts": 2,
+          "workerId": "worker-factory-retry",
+          "runId": 7101,
+          "runAttempt": 2,
+          "claimedAtMs": 35000,
+          "leaseTtlMs": 15000,
+          "leaseExpiresAtMs": 50000,
+          "maxExecutionMs": 15000,
+          "executionDeadlineMs": 50000,
+          "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+          "lockSha256": "9c1b723d338fff43d64c3b518616f7a635b9dce330e72aa2e29f7c8b67bb445f",
+          "priorRuns": [
+            {
+              "runId": 7001,
+              "runAttempt": 1
+            }
+          ]
+        },
+        {
+          "workId": "1471342715:issue:103",
+          "targetType": "issue",
+          "repository": "Jamula/SoftwareFactory",
+          "repositoryId": 1471342715,
+          "issueNumber": 103,
+          "pullNumber": null,
+          "headSha": null,
+          "lane": "docs",
+          "ownedPaths": [
+            "docs/evidence"
+          ],
+          "status": "requeued",
+          "generation": 6,
+          "attempts": 1,
+          "maxAttempts": 2,
+          "workerId": "worker-docs-1",
+          "runId": 7003,
+          "runAttempt": 1,
+          "claimedAtMs": 1000,
+          "leaseTtlMs": 60000,
+          "leaseExpiresAtMs": 30000,
+          "maxExecutionMs": 180000,
+          "executionDeadlineMs": 181000,
+          "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+          "lockSha256": "9c1b723d338fff43d64c3b518616f7a635b9dce330e72aa2e29f7c8b67bb445f"
+        },
+        {
+          "workId": "1471342715:issue:102",
+          "targetType": "issue",
+          "repository": "Jamula/SoftwareFactory",
+          "repositoryId": 1471342715,
+          "issueNumber": 102,
+          "pullNumber": null,
+          "headSha": null,
+          "lane": "coordinator",
+          "ownedPaths": [
+            "tools/engineering-coordinator/work-queue-cas.mjs"
+          ],
+          "status": "exhausted",
+          "generation": 14,
+          "attempts": 2,
+          "maxAttempts": 2,
+          "workerId": "worker-coord-retry",
+          "runId": 7102,
+          "runAttempt": 2,
+          "claimedAtMs": 32000,
+          "leaseTtlMs": 60000,
+          "leaseExpiresAtMs": 57500,
+          "maxExecutionMs": 180000,
+          "executionDeadlineMs": 212000,
+          "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+          "lockSha256": "9c1b723d338fff43d64c3b518616f7a635b9dce330e72aa2e29f7c8b67bb445f",
+          "priorRuns": [
+            {
+              "runId": 7002,
+              "runAttempt": 1
+            }
+          ]
+        },
+        {
+          "workId": "1471342715:pr:201:a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4",
+          "targetType": "pull_request",
+          "repository": "Jamula/SoftwareFactory",
+          "repositoryId": 1471342715,
+          "issueNumber": null,
+          "pullNumber": 201,
+          "headSha": "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4",
+          "lane": "apphost",
+          "ownedPaths": [
+            "src/AppHost/Program.cs"
+          ],
+          "status": "completed",
+          "generation": 8,
+          "attempts": 1,
+          "maxAttempts": 2,
+          "workerId": "worker-apphost-1",
+          "runId": 7004,
+          "runAttempt": 1,
+          "claimedAtMs": 1000,
+          "leaseTtlMs": 80000,
+          "leaseExpiresAtMs": 30000,
+          "maxExecutionMs": 90000,
+          "executionDeadlineMs": 91000,
+          "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+          "lockSha256": "9c1b723d338fff43d64c3b518616f7a635b9dce330e72aa2e29f7c8b67bb445f"
+        },
+        {
+          "workId": "1471342715:pr:202:b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5",
+          "targetType": "pull_request",
+          "repository": "Jamula/SoftwareFactory",
+          "repositoryId": 1471342715,
+          "issueNumber": null,
+          "pullNumber": 202,
+          "headSha": "b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5",
+          "lane": "apphost",
+          "ownedPaths": [
+            "src/AppHost/Program.cs"
+          ],
+          "status": "leased",
+          "generation": 11,
+          "attempts": 1,
+          "maxAttempts": 2,
+          "workerId": "worker-pr202-fresh",
+          "runId": 7106,
+          "runAttempt": 1,
+          "claimedAtMs": 35000,
+          "leaseTtlMs": 40000,
+          "leaseExpiresAtMs": 75000,
+          "maxExecutionMs": 120000,
+          "executionDeadlineMs": 155000,
+          "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+          "lockSha256": "9c1b723d338fff43d64c3b518616f7a635b9dce330e72aa2e29f7c8b67bb445f"
+        },
+        {
+          "workId": "1471342715:issue:104",
+          "targetType": "issue",
+          "repository": "Jamula/SoftwareFactory",
+          "repositoryId": 1471342715,
+          "issueNumber": 104,
+          "pullNumber": null,
+          "headSha": null,
+          "lane": "factory",
+          "ownedPaths": [
+            "tools/engineering-factory/telemetry.mjs"
+          ],
+          "status": "completed",
+          "generation": 13,
+          "attempts": 1,
+          "maxAttempts": 2,
+          "workerId": "worker-factory-takeover",
+          "runId": 7201,
+          "runAttempt": 1,
+          "claimedAtMs": 55000,
+          "leaseTtlMs": 30000,
+          "leaseExpiresAtMs": 72000,
+          "maxExecutionMs": 90000,
+          "executionDeadlineMs": 145000,
+          "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+          "lockSha256": "9c1b723d338fff43d64c3b518616f7a635b9dce330e72aa2e29f7c8b67bb445f"
+        }
+      ],
+      "recoveryReceipts": [
+        {
+          "workId": "1471342715:issue:101",
+          "repositoryId": 1471342715,
+          "targetType": "issue",
+          "runState": "launch_failed",
+          "conclusion": null,
+          "previousRunId": 7001,
+          "previousRunAttempt": 1,
+          "previousGeneration": 1,
+          "reclaimedGeneration": 5,
+          "attempts": 1,
+          "maxAttempts": 2,
+          "outcome": "requeued",
+          "reclaimedAtMs": 30000
+        },
+        {
+          "workId": "1471342715:issue:103",
+          "repositoryId": 1471342715,
+          "targetType": "issue",
+          "runState": "run_missing",
+          "conclusion": null,
+          "previousRunId": 7003,
+          "previousRunAttempt": 1,
+          "previousGeneration": 2,
+          "reclaimedGeneration": 6,
+          "attempts": 1,
+          "maxAttempts": 2,
+          "outcome": "requeued",
+          "reclaimedAtMs": 30000
+        },
+        {
+          "workId": "1471342715:issue:102",
+          "repositoryId": 1471342715,
+          "targetType": "issue",
+          "runState": "worker_terminated",
+          "conclusion": null,
+          "previousRunId": 7002,
+          "previousRunAttempt": 1,
+          "previousGeneration": 3,
+          "reclaimedGeneration": 7,
+          "attempts": 1,
+          "maxAttempts": 2,
+          "outcome": "requeued",
+          "reclaimedAtMs": 30000
+        },
+        {
+          "workId": "1471342715:pr:201:a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4",
+          "repositoryId": 1471342715,
+          "targetType": "pull_request",
+          "runState": "run_terminal",
+          "conclusion": "success",
+          "previousRunId": 7004,
+          "previousRunAttempt": 1,
+          "previousGeneration": 4,
+          "reclaimedGeneration": 8,
+          "attempts": 1,
+          "maxAttempts": 2,
+          "outcome": "completed",
+          "reclaimedAtMs": 30000
+        },
+        {
+          "workId": "1471342715:issue:101",
+          "repositoryId": 1471342715,
+          "targetType": "issue",
+          "runState": "lease_expired",
+          "conclusion": null,
+          "previousRunId": 7101,
+          "previousRunAttempt": 2,
+          "previousGeneration": 10,
+          "reclaimedGeneration": 12,
+          "attempts": 2,
+          "maxAttempts": 2,
+          "outcome": "exhausted",
+          "reclaimedAtMs": 55000
+        },
+        {
+          "workId": "1471342715:issue:102",
+          "repositoryId": 1471342715,
+          "targetType": "issue",
+          "runState": "run_terminal",
+          "conclusion": "timed_out",
+          "previousRunId": 7102,
+          "previousRunAttempt": 2,
+          "previousGeneration": 9,
+          "reclaimedGeneration": 14,
+          "attempts": 2,
+          "maxAttempts": 2,
+          "outcome": "exhausted",
+          "reclaimedAtMs": 57500
+        }
+      ]
+    },
+    "runnerEpochs": 4,
+    "steps": [
+      {
+        "index": 0,
+        "kind": "runner_restart",
+        "runnerEpoch": 2,
+        "nowMs": 100,
+        "reason": "RUNNER_RESTARTED",
+        "oid": "0000000000000000000000000000000000000000",
+        "preservedEntries": 0
+      },
+      {
+        "index": 1,
+        "kind": "plan",
+        "runnerEpoch": 2,
+        "nowMs": 500,
+        "reason": "SHADOW_PLAN",
+        "readyIds": [
+          101,
+          102
+        ],
+        "blockedCount": 3,
+        "maxBlockedWaitMs": 380,
+        "oid": "0000000000000000000000000000000000000000"
+      },
+      {
+        "index": 2,
+        "kind": "concurrent_claims",
+        "runnerEpoch": 2,
+        "nowMs": 600,
+        "outcomes": [
+          {
+            "ok": false,
+            "reason": "UNPROTECTED_WORK_QUEUE_REF",
+            "workerId": "worker-unprotected-ref"
+          }
+        ],
+        "oid": "0000000000000000000000000000000000000000"
+      },
+      {
+        "index": 3,
+        "kind": "concurrent_claims",
+        "runnerEpoch": 2,
+        "nowMs": 700,
+        "outcomes": [
+          {
+            "ok": false,
+            "reason": "FORCE_UPDATE_FORBIDDEN",
+            "workerId": "worker-force-push"
+          }
+        ],
+        "oid": "0000000000000000000000000000000000000000"
+      },
+      {
+        "index": 4,
+        "kind": "concurrent_claims",
+        "runnerEpoch": 2,
+        "nowMs": 800,
+        "outcomes": [
+          {
+            "ok": false,
+            "reason": "MAIN_UNHEALTHY",
+            "workerId": "worker-unhealthy-main"
+          }
+        ],
+        "oid": "0000000000000000000000000000000000000000"
+      },
+      {
+        "index": 5,
+        "kind": "concurrent_claims",
+        "runnerEpoch": 2,
+        "nowMs": 1000,
+        "outcomes": [
+          {
+            "ok": true,
+            "reason": "LEASE_CLAIMED",
+            "workId": "1471342715:issue:101",
+            "workerId": "worker-factory-1",
+            "generation": 1,
+            "casAttempts": 1
+          },
+          {
+            "ok": false,
+            "reason": "DUPLICATE_ACTIVE_CLAIM",
+            "workerId": "worker-dup-101"
+          },
+          {
+            "ok": true,
+            "reason": "LEASE_CLAIMED",
+            "workId": "1471342715:issue:103",
+            "workerId": "worker-docs-1",
+            "generation": 2,
+            "casAttempts": 2
+          },
+          {
+            "ok": false,
+            "reason": "OWNED_PATHS_OVERLAP",
+            "workerId": "worker-path-clash"
+          },
+          {
+            "ok": false,
+            "reason": "LANE_RESERVED",
+            "workerId": "worker-lane-clash"
+          },
+          {
+            "ok": true,
+            "reason": "LEASE_CLAIMED",
+            "workId": "1471342715:issue:102",
+            "workerId": "worker-coord-1",
+            "generation": 3,
+            "casAttempts": 3
+          },
+          {
+            "ok": true,
+            "reason": "LEASE_CLAIMED",
+            "workId": "1471342715:pr:201:a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4",
+            "workerId": "worker-apphost-1",
+            "generation": 4,
+            "casAttempts": 4
+          },
+          {
+            "ok": false,
+            "reason": "INVALID_LEASE_TTL",
+            "workerId": "worker-ttl-breach"
+          }
+        ],
+        "oid": "6ecef4c1f29d6ca683f0a5e6298889dc8387bb27"
+      },
+      {
+        "index": 6,
+        "kind": "plan",
+        "runnerEpoch": 2,
+        "nowMs": 1500,
+        "reason": "NO_READY_WORK",
+        "readyIds": [],
+        "blockedCount": 1,
+        "maxBlockedWaitMs": 1000,
+        "oid": "6ecef4c1f29d6ca683f0a5e6298889dc8387bb27"
+      },
+      {
+        "index": 7,
+        "kind": "worker_action",
+        "action": "renew",
+        "runnerEpoch": 2,
+        "nowMs": 20000,
+        "ok": true,
+        "reason": "LEASE_RENEWED",
+        "lease": {
+          "workId": "1471342715:pr:201:a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4",
+          "targetType": "pull_request",
+          "repository": "Jamula/SoftwareFactory",
+          "repositoryId": 1471342715,
+          "issueNumber": null,
+          "pullNumber": 201,
+          "headSha": "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4",
+          "lane": "apphost",
+          "ownedPaths": [
+            "src/AppHost/Program.cs"
+          ],
+          "status": "leased",
+          "generation": 4,
+          "attempts": 1,
+          "maxAttempts": 2,
+          "workerId": "worker-apphost-1",
+          "runId": 7004,
+          "runAttempt": 1,
+          "claimedAtMs": 1000,
+          "leaseTtlMs": 80000,
+          "leaseExpiresAtMs": 91000,
+          "maxExecutionMs": 90000,
+          "executionDeadlineMs": 91000,
+          "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+          "lockSha256": "9c1b723d338fff43d64c3b518616f7a635b9dce330e72aa2e29f7c8b67bb445f"
+        },
+        "oid": "1ce39fa66deae5efdbd1ee79702cfc1c72074b54"
+      },
+      {
+        "index": 8,
+        "kind": "runner_restart",
+        "runnerEpoch": 3,
+        "nowMs": 25000,
+        "reason": "RUNNER_RESTARTED",
+        "oid": "1ce39fa66deae5efdbd1ee79702cfc1c72074b54",
+        "preservedEntries": 4
+      },
+      {
+        "index": 9,
+        "kind": "reconcile_runs",
+        "runnerEpoch": 3,
+        "nowMs": 30000,
+        "ok": true,
+        "reason": "ORPHANS_RECLAIMED",
+        "reclaimed": [
+          "1471342715:issue:101",
+          "1471342715:issue:103",
+          "1471342715:issue:102",
+          "1471342715:pr:201:a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4"
+        ],
+        "receiptCount": 4,
+        "oid": "ac776dc55c9a2659bb8e06dd651efa538c628348"
+      },
+      {
+        "index": 10,
+        "kind": "concurrent_claims",
+        "runnerEpoch": 3,
+        "nowMs": 32000,
+        "outcomes": [
+          {
+            "ok": true,
+            "reason": "LEASE_CLAIMED",
+            "workId": "1471342715:issue:102",
+            "workerId": "worker-coord-retry",
+            "generation": 9,
+            "casAttempts": 1
+          },
+          {
+            "ok": false,
+            "reason": "CAS_CONFLICT_EXHAUSTED",
+            "workerId": "worker-docs-cas-exhausted"
+          }
+        ],
+        "oid": "888434b362c20c244ca69fcb75832aa5ad2fd379"
+      },
+      {
+        "index": 11,
+        "kind": "replay_events",
+        "runnerEpoch": 3,
+        "nowMs": 35000,
+        "outcomes": [
+          {
+            "deliveryId": "deliv-101-retry",
+            "workId": "1471342715:issue:101",
+            "ok": true,
+            "reason": "LEASE_CLAIMED",
+            "generation": 10
+          },
+          {
+            "deliveryId": "deliv-101-retry",
+            "workId": "1471342715:issue:103",
+            "ok": false,
+            "reason": "DELIVERY_CONFLICT"
+          },
+          {
+            "deliveryId": "deliv-pr201-completed",
+            "workId": "1471342715:pr:201:a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4",
+            "ok": false,
+            "reason": "WORK_ALREADY_COMPLETED"
+          },
+          {
+            "deliveryId": "deliv-pr202-stale",
+            "workId": "1471342715:pr:202:a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4",
+            "ok": false,
+            "reason": "STALE_HEAD_SUPERSEDED"
+          },
+          {
+            "deliveryId": "deliv-pr202-fresh",
+            "workId": "1471342715:pr:202:b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5",
+            "ok": true,
+            "reason": "LEASE_CLAIMED",
+            "generation": 11
+          },
+          {
+            "deliveryId": "deliv-pr202-late",
+            "workId": "1471342715:pr:202:c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6",
+            "ok": false,
+            "reason": "OUT_OF_ORDER_EVENT"
+          }
+        ],
+        "oid": "25964fa192b36daacfffeaab31c1e8db90a86fa0"
+      },
+      {
+        "index": 12,
+        "kind": "worker_action",
+        "action": "renew",
+        "runnerEpoch": 3,
+        "nowMs": 40000,
+        "ok": true,
+        "reason": "LEASE_RENEWED",
+        "lease": {
+          "workId": "1471342715:issue:101",
+          "targetType": "issue",
+          "repository": "Jamula/SoftwareFactory",
+          "repositoryId": 1471342715,
+          "issueNumber": 101,
+          "pullNumber": null,
+          "headSha": null,
+          "lane": "factory",
+          "ownedPaths": [
+            "tools/engineering-factory/run.mjs"
+          ],
+          "status": "leased",
+          "generation": 10,
+          "attempts": 2,
+          "maxAttempts": 2,
+          "workerId": "worker-factory-retry",
+          "runId": 7101,
+          "runAttempt": 2,
+          "claimedAtMs": 35000,
+          "leaseTtlMs": 15000,
+          "leaseExpiresAtMs": 50000,
+          "maxExecutionMs": 15000,
+          "executionDeadlineMs": 50000,
+          "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+          "lockSha256": "9c1b723d338fff43d64c3b518616f7a635b9dce330e72aa2e29f7c8b67bb445f",
+          "priorRuns": [
+            {
+              "runId": 7001,
+              "runAttempt": 1
+            }
+          ]
+        },
+        "oid": "b9d59f49c7de390c0cdf6f3734dd7a449e5528f0"
+      },
+      {
+        "index": 13,
+        "kind": "worker_action",
+        "action": "renew",
+        "runnerEpoch": 3,
+        "nowMs": 50000,
+        "ok": false,
+        "reason": "EXECUTION_TTL_EXCEEDED",
+        "lease": null,
+        "oid": "b9d59f49c7de390c0cdf6f3734dd7a449e5528f0"
+      },
+      {
+        "index": 14,
+        "kind": "concurrent_claims",
+        "runnerEpoch": 3,
+        "nowMs": 55000,
+        "outcomes": [
+          {
+            "ok": true,
+            "reason": "LEASE_CLAIMED",
+            "workId": "1471342715:issue:104",
+            "workerId": "worker-factory-takeover",
+            "generation": 13,
+            "casAttempts": 1
+          }
+        ],
+        "oid": "a43d612d07ad9c31cf95eff38fd50f520f6e0069"
+      },
+      {
+        "index": 15,
+        "kind": "worker_action",
+        "action": "renew",
+        "runnerEpoch": 3,
+        "nowMs": 56000,
+        "ok": false,
+        "reason": "STALE_GENERATION",
+        "lease": null,
+        "oid": "a43d612d07ad9c31cf95eff38fd50f520f6e0069"
+      },
+      {
+        "index": 16,
+        "kind": "worker_action",
+        "action": "settle",
+        "runnerEpoch": 3,
+        "nowMs": 56500,
+        "ok": false,
+        "reason": "STALE_GENERATION",
+        "lease": null,
+        "oid": "a43d612d07ad9c31cf95eff38fd50f520f6e0069"
+      },
+      {
+        "index": 17,
+        "kind": "worker_action",
+        "action": "renew",
+        "runnerEpoch": 3,
+        "nowMs": 57000,
+        "ok": false,
+        "reason": "LEASE_NOT_HELD",
+        "lease": null,
+        "oid": "a43d612d07ad9c31cf95eff38fd50f520f6e0069"
+      },
+      {
+        "index": 18,
+        "kind": "reconcile_runs",
+        "runnerEpoch": 3,
+        "nowMs": 57500,
+        "ok": true,
+        "reason": "ORPHANS_RECLAIMED",
+        "reclaimed": [
+          "1471342715:issue:102"
+        ],
+        "receiptCount": 1,
+        "oid": "685a9fd7c67feb046da4db0beeb88f1398010830"
+      },
+      {
+        "index": 19,
+        "kind": "runner_restart",
+        "runnerEpoch": 4,
+        "nowMs": 60000,
+        "reason": "RUNNER_RESTARTED",
+        "oid": "685a9fd7c67feb046da4db0beeb88f1398010830",
+        "preservedEntries": 6
+      },
+      {
+        "index": 20,
+        "kind": "replay_events",
+        "runnerEpoch": 4,
+        "nowMs": 61000,
+        "outcomes": [
+          {
+            "deliveryId": "post-restart-103-dup-run",
+            "workId": "1471342715:issue:103",
+            "ok": false,
+            "reason": "DUPLICATE_RUN_ATTEMPT"
+          },
+          {
+            "deliveryId": "post-restart-101-exhausted",
+            "workId": "1471342715:issue:101",
+            "ok": false,
+            "reason": "RETRY_CEILING_EXHAUSTED"
+          },
+          {
+            "deliveryId": "post-restart-pr202-active",
+            "workId": "1471342715:pr:202:b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5",
+            "ok": false,
+            "reason": "DUPLICATE_ACTIVE_CLAIM"
+          }
+        ],
+        "oid": "685a9fd7c67feb046da4db0beeb88f1398010830"
+      },
+      {
+        "index": 21,
+        "kind": "emergency_stop",
+        "runnerEpoch": 4,
+        "nowMs": 65000,
+        "stop": true,
+        "reason": "EMERGENCY_STOP_ENGAGED",
+        "oid": "685a9fd7c67feb046da4db0beeb88f1398010830"
+      },
+      {
+        "index": 22,
+        "kind": "plan",
+        "runnerEpoch": 4,
+        "nowMs": 65500,
+        "reason": "STOPPED",
+        "readyIds": [],
+        "blockedCount": 0,
+        "maxBlockedWaitMs": 0,
+        "oid": "685a9fd7c67feb046da4db0beeb88f1398010830"
+      },
+      {
+        "index": 23,
+        "kind": "concurrent_claims",
+        "runnerEpoch": 4,
+        "nowMs": 66000,
+        "outcomes": [
+          {
+            "ok": false,
+            "reason": "STOPPED",
+            "workerId": "worker-stopped"
+          }
+        ],
+        "oid": "685a9fd7c67feb046da4db0beeb88f1398010830"
+      },
+      {
+        "index": 24,
+        "kind": "replay_events",
+        "runnerEpoch": 4,
+        "nowMs": 66500,
+        "outcomes": [
+          {
+            "deliveryId": "stopped-event",
+            "ok": false,
+            "reason": "STOPPED"
+          }
+        ],
+        "oid": "685a9fd7c67feb046da4db0beeb88f1398010830"
+      },
+      {
+        "index": 25,
+        "kind": "worker_action",
+        "action": "settle",
+        "runnerEpoch": 4,
+        "nowMs": 67000,
+        "ok": false,
+        "reason": "STOPPED",
+        "lease": null,
+        "oid": "685a9fd7c67feb046da4db0beeb88f1398010830"
+      },
+      {
+        "index": 26,
+        "kind": "reconcile_runs",
+        "runnerEpoch": 4,
+        "nowMs": 67500,
+        "ok": false,
+        "reason": "STOPPED",
+        "reclaimed": [],
+        "receiptCount": 0,
+        "oid": "685a9fd7c67feb046da4db0beeb88f1398010830"
+      },
+      {
+        "index": 27,
+        "kind": "emergency_stop",
+        "runnerEpoch": 4,
+        "nowMs": 70000,
+        "stop": false,
+        "reason": "EMERGENCY_STOP_CLEARED",
+        "oid": "685a9fd7c67feb046da4db0beeb88f1398010830"
+      },
+      {
+        "index": 28,
+        "kind": "worker_action",
+        "action": "settle",
+        "runnerEpoch": 4,
+        "nowMs": 72000,
+        "ok": true,
+        "reason": "LEASE_SETTLED",
+        "lease": {
+          "workId": "1471342715:issue:104",
+          "targetType": "issue",
+          "repository": "Jamula/SoftwareFactory",
+          "repositoryId": 1471342715,
+          "issueNumber": 104,
+          "pullNumber": null,
+          "headSha": null,
+          "lane": "factory",
+          "ownedPaths": [
+            "tools/engineering-factory/telemetry.mjs"
+          ],
+          "status": "completed",
+          "generation": 13,
+          "attempts": 1,
+          "maxAttempts": 2,
+          "workerId": "worker-factory-takeover",
+          "runId": 7201,
+          "runAttempt": 1,
+          "claimedAtMs": 55000,
+          "leaseTtlMs": 30000,
+          "leaseExpiresAtMs": 72000,
+          "maxExecutionMs": 90000,
+          "executionDeadlineMs": 145000,
+          "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+          "lockSha256": "9c1b723d338fff43d64c3b518616f7a635b9dce330e72aa2e29f7c8b67bb445f"
+        },
+        "oid": "ec7da135267ae7f48b31a07b969e0ea1e648abe5"
+      }
+    ],
+    "metrics": {
+      "casReads": 38,
+      "casApplied": 13,
+      "casConflicts": 11,
+      "forceRejected": 1,
+      "unprotectedRefRejected": 1,
+      "claimsGranted": 8,
+      "duplicateClaimsRejected": 5,
+      "staleHeadRejected": 1,
+      "outOfOrderRejected": 1,
+      "deliveryConflictsRejected": 1,
+      "staleWorkerRejections": 3,
+      "staleRunObservationsSkipped": 1,
+      "stopBlocks": 5,
+      "mainUnhealthyBlocks": 1,
+      "reclaimedByRunState": {
+        "launch_failed": 1,
+        "worker_terminated": 1,
+        "run_terminal": 2,
+        "run_missing": 1,
+        "lease_expired": 1
+      },
+      "occupiedDurationMs": 210500,
+      "readySampleCount": 8,
+      "p50ReadyLatencyMs": 800,
+      "p95ReadyLatencyMs": 3500
+    }
+  }
+}
