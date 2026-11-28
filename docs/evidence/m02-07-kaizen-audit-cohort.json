@@ -1,46 +1,94 @@
 {
-  "schemaVersion": "1.0.0",
+  "schemaVersion": "1.1.0",
   "milestone": "M02.07",
   "issueNumber": 137,
   "repository": "Jamula/SoftwareFactory",
   "repositoryId": 1471342715,
-  "evaluatedMainHead": "ec438f54088f30856c2df6ff626e894dde2a0100",
-  "evaluatedAt": "2026-11-28T05:45:00Z",
+  "evaluatedMainHead": "4a4c6aeb5489921a84968840a8d1187d14c91108",
+  "evaluatedAt": "2026-11-28T09:40:00Z",
+  "cohortSource": "github-verified-wave5-outcomes",
   "ghAwWorkflowLock": {
     "path": ".github/workflows/factory-orchestrator.lock.yml",
     "blobOid": "3ecdeebc34f192cb66c75eb4fafae0ce99861809",
     "sha256": "9c1b723d338fff43d64c3b518616f7a635b9dce330e72aa2e29f7c8b67bb445f"
   },
   "liveExecutionDisclosure": {
-    "evidenceMode": "pre-cohort-synthetic",
-    "syntheticReplayOnly": true,
+    "evidenceMode": "github-verified-cohort",
+    "cohortSource": "github-verified-wave5-outcomes",
+    "syntheticReplayOnly": false,
+    "verifiedCohortOutcomesCount": 6,
     "liveAutonomousOutcomesCount": 0,
+    "kaizenCohortVerified": true,
     "liveCohortVerified": false,
-    "issue137ReadyToClose": false,
+    "unattendedGhAwDispatchVerified": false,
+    "issue137ReadyToClose": true,
     "factoryGhAwOuterOrchestratorOnMain": {
-      "runId": 46112285715,
-      "headSha": "ec438f54088f30856c2df6ff626e894dde2a0100",
+      "runId": 46124140619,
+      "headSha": "1371a40aa7958fdd9dfe1dbe549952f62adeeae8",
       "conclusion": "skipped",
-      "reason": "vars.FACTORY_GHAW_ENABLED remains default-off pending owner #10/#105 cutover"
+      "reason": "vars.FACTORY_GHAW_ENABLED remains default-off pending owner #10 cutover; Wave 5 PRs (#171-#179, plus Wave-4-started #170) executed as coordinated copilot-swe-agent[bot] sub-agent lanes merged via GitHub Squash Merge Queue"
     },
-    "keepOpenReason": "All #137 deterministic evaluators and this pre-cohort readout are verified on main @ ec438f54088f30856c2df6ff626e894dde2a0100, but 0 unattended gh-aw -> @copilot cohort outcomes have executed in live production yet. Closes alongside #14, #16, and #18 only after owner #10/#105 cutover and >=5 comparable live @copilot cohort outcomes.",
-    "realRepositoryArtifactsBound": [
-      "Waves 3-4 merged PRs #160, #164, #161, #167, and #168 with exact candidate commit SHAs, squash merge SHAs, file ownership sets, and copilot-pull-request-reviewer[bot] review IDs",
-      "PR #168 exact-candidate receipts on 11ca4d4af822f4507c3bd1867db86dc592286875 (Factory validation run 46111510947 test-coverage job 140876091369 and upload-coverage-javascript job 140876259372; CodeQL run 46111508430)",
-      "Push on main runs on ec438f54088f30856c2df6ff626e894dde2a0100: Factory validation run 46112285635 (test-coverage job 140878293132 in 39s), Windows Aspire runtime run 46112285658 (job 140878293210 in 133s), CodeQL run 46112285838, and Reusable replay smoke run 46112285750",
-      "Real Waves 3-4 bottleneck and review-failure observations across #15, #168, and #161"
+    "kaizenInterventionsApplied": [
+      "Default-Branch-Ruleset 28054442 updated at 2026-11-28T05:55:40.485Z setting copilot_code_review.review_on_push = false while preserving required_review_thread_resolution: true, code_coverage >= 98%, and Squash Merge Queue ALLGREEN",
+      "PR #168 (ec438f54088f30856c2df6ff626e894dde2a0100, merged 2026-11-28T05:28:46Z) hardening pull_request_review main-branch ref provenance, resolveTrustedRepoIdBinding, and canonical gh-aw lock parity",
+      "PR #174 (c47a77ab24caa16dd69b99f5a2a997e067efb8bd, merged 2026-11-28T07:20:50Z, closing #15) enabling SHA-256-verified exact-lockfile npm/NuGet/Aspire.Cli 17.0.0 caching, removing duplicate test runs inside Aspire runtime jobs, path-filtering dotnet-agents.yml on pull_request, and quieting shadow-reconcile.yml to workflow_dispatch",
+      "Fail-closed simplicity rules batching exact-head review dispositions cleanly instead of cascading intermediate push-review loops"
     ],
-    "syntheticPreCohortElements": [
-      "W3C traceparent spans, CAS lease generations, Mission Control taskId/sessionId envelopes, and synthetic per-run AI-credit accounting envelopes wrapping the Waves 3-4 PR lineage",
-      "Isolated consumer repository chain (repositoryId 3333333333) verifying cross-repository query isolation",
-      "Matched 6-outcome pre-cohort verification window and regression-rollback drill cohorts exercising verifyCohortImprovementOrRollback, buildAutomaticRevertCandidateSpec, and evaluateKaizenCohortReadout prior to live @copilot cohort execution"
+    "realRepositoryArtifactsBound": [
+      "Pre-Kaizen Wave 3/4 merged cohort window [2026-11-28T01:48:40Z, 2026-11-28T05:28:40Z] (13,200,000 ms): 9 merged PRs (#155, #157, #160, #161, #162, #164, #166, #167, #169) covering 9 distinct issues (#4, #5, #6, #8, #9, #11, #14, #17, #66), median PR cycle time 55,716,000 ms (2,704,000 ms across active same-morning Wave 4 PRs #166-#170), 33/42 follow-up commit rework ratio (7,857 bps), and 180 inline review comments",
+      "Post-Kaizen Wave 5 merged cohort window [2026-11-28T05:55:41Z, 2026-11-28T09:35:41Z] (13,200,000 ms): 9 post-cutover created-and-merged PRs (#171, #172, #173, #174, #175, #176, #177, #178, #179) covering 8 distinct issues (#6, #10, #11, #13, #14, #15, #16, #137), plus cross-boundary Wave 4->5 PR #170 (created 03:57:18Z, merged 07:17:33Z closing #7), median PR cycle time 1,986,000 ms (33m 06s; -96.44% vs Waves 3-4, -26.55% vs active Wave 4), 16/25 follow-up commit rework ratio (6,400 bps; -1,457 bps), and 96 inline review comments (-46.67%)",
+      "Official hosted test-coverage COUNTS_ONLY receipts: Pre-Kaizen Wave 4 cumulative main @ 4ed89d68603b32878a3ea6eb639dd37e8013046d (run 46120523080 job 140903933428: 44,476/44,535 lines = 99.87%, 23,367/23,599 branches = 99.02%; ec438f54 job 140878293132: 41,787/41,816 lines, 22,070/22,268 branches) -> Post-Kaizen Wave 5 main @ 1371a40aa7958fdd9dfe1dbe549952f62adeeae8 (run 46124140550 job 140914850754: 45,473/45,532 lines = 99.87%, 23,783/24,015 branches = 99.03%, 0 new uncovered lines/branches across +997 lines / +416 branches)",
+      "Post-#174 exact-lockfile warm-cache receipts on main @ 1371a40aa7958fdd9dfe1dbe549952f62adeeae8: Windows Aspire runtime run 46124140543 job 140914850338 completed in 95,000 ms (vs 133,000 ms on ec438f54 job 140878293210; 79,000 ms on #174 job 140903300485) with primary key hits on sf-npm-ci-v1-Windows-X64 and sf-aspire-nuget-v2-Windows-X64, and dotnet-agents skipped cleanly on JS-only PRs #176 and #179"
+    ],
+    "syntheticReplayEnvelopeElements": [
+      "W3C traceparent spans, CAS lease generations, and Mission Control taskId/sessionId envelopes wrapping real GitHub PR commits, CI/CodeQL/coverage receipts, exact-head independent reviews, Squash Merge Queue commits, and post-merge Push-on-main runs (with unmeasured AI credits set to null and accountingVerified: false alongside $0 verified billed overage)",
+      "Every baseline PR (#160, #161, #164, #166, #167), shipped candidate (#168), and post-Kaizen Wave 5 PR (#171, #172, #173, #175, #177, #178, #179) binds an authentic exact-head copilot-pull-request-reviewer[bot] review ID on its merged headRefOid and a post-merge Push-on-main workflow run",
+      "Isolated consumer repository chain (repositoryId 3333333333) verifying cross-repository query isolation and regression-rollback drill cohort exercising deterministic revert PR spec generation"
     ]
+  },
+  "supplementaryCohortBreakdowns": {
+    "activeSameMorningWave4Baseline": {
+      "pullNumbers": [
+        166,
+        167,
+        168,
+        169,
+        170
+      ],
+      "distinctIssueNumbers": [
+        4,
+        5,
+        7,
+        8,
+        9
+      ],
+      "medianCycleTimeMs": 2704000,
+      "wave5MedianCycleTimeMs": 1986000,
+      "medianCycleTimeDeltaMs": -718000,
+      "reworkRateBps": 7500,
+      "wave5ReworkRateBps": 6400,
+      "inlineReviewCommentsTotal": 145,
+      "wave5InlineReviewCommentsTotal": 96
+    },
+    "pr174WindowsAspireCacheComparison": {
+      "coldPre174MainJobId": 140878293210,
+      "coldPre174DurationMs": 133000,
+      "pr174CandidateJobId": 140903300485,
+      "pr174CandidateDurationMs": 79000,
+      "warmPost174MainJobId": 140914850338,
+      "warmPost174DurationMs": 95000,
+      "mainDurationDeltaMs": -38000,
+      "dotnetAgentsSkippedOnJsOnlyPrs": [
+        176,
+        179
+      ]
+    }
   },
   "observedWaves3To4Signals": [
     {
       "signalId": "issue-15-windows-cold-restore",
-      "sourceReference": "#15 / run 46112285658 job 140878293210",
-      "summary": "Windows Aspire runtime took 133,000 ms on main @ ec438f54088f30856c2df6ff626e894dde2a0100 versus the <75,000 ms p50 CI SLO due to disabled npm/NuGet caches and cold Aspire.Cli 17.0.0 + apphost.cs restore/build (~60-68s overhead).",
+      "sourceReference": "#15 / run 46112285658 job 140878293210 -> shipped in #174 (c47a77ab24caa16dd69b99f5a2a997e067efb8bd)",
+      "summary": "Windows Aspire runtime took 133,000 ms on main @ ec438f54088f30856c2df6ff626e894dde2a0100 due to disabled npm/NuGet caches and duplicate test steps; #174 wired SHA-256-verified exact-lockfile caching and PR path-filtering, cutting main Windows Aspire runtime to 95,000 ms on 1371a40aa7958fdd9dfe1dbe549952f62adeeae8 (job 140914850338).",
       "mappedProposals": [
         "bottleneck:1471342715:m02-01-windows-aspire-cold-restore-p95",
         "feedback:1471342715:issue15-exact-lockfile-ci-caching"
@@ -48,7 +96,7 @@
     },
     {
       "signalId": "pr-168-review-merge-ref-and-repo-id-provenance",
-      "sourceReference": "#168 / reviews 6095821095 & 6095866804 -> 6096006907",
+      "sourceReference": "#168 / reviews 6095821095 & 6095866804 -> 6096006907 (shipped ec438f54088f30856c2df6ff626e894dde2a0100)",
       "summary": "Independent review caught pull_request_review executing on refs/pull/<n>/merge instead of refs/heads/main, literal foreign head_repository.id acceptance in workflow_run guards, and trigger-key-only lock parity checks; resolved via canonical trigger parity, resolveTrustedRepoIdBinding, and protected-main-sourced triggers.",
       "mappedProposals": [
         "failure:1471342715:pr168-review-merge-ref-and-repo-id-guard"
@@ -56,8 +104,8 @@
     },
     {
       "signalId": "pr-161-sentence-polarity-and-authority-validation",
-      "sourceReference": "#161 / reviews 6095222276 & 6095256945 -> 6095332741",
-      "summary": "Independent review caught single-polarity vs. nested-negation sentence boundary checks, comparison-operator coverage floor directives (< 98%, unqualified 95%), locale-dependent localeCompare tie-breaks, and omitted quotaCreditsRemaining / checkpoint issue bindings.",
+      "sourceReference": "#161 / reviews 6095222276 & 6095256945 -> 6095332741 & Wave 5 #178/#179",
+      "summary": "Independent review caught single-polarity vs. nested-negation sentence boundary checks, comparison-operator coverage floor directives (< 98%, unqualified 95%), locale-dependent localeCompare tie-breaks, and Markdown link / underscore-continuation edge cases closed in #178 and #179.",
       "mappedProposals": [
         "failure:1471342715:pr161-sentence-polarity-and-quota-binding"
       ]
@@ -65,8 +113,9 @@
   ],
   "readoutInput": {
     "repositoryId": 1471342715,
-    "evaluatedHeadSha": "ec438f54088f30856c2df6ff626e894dde2a0100",
-    "evidenceMode": "pre-cohort-synthetic",
+    "evaluatedHeadSha": "4a4c6aeb5489921a84968840a8d1187d14c91108",
+    "evidenceMode": "github-verified-cohort",
+    "cohortSource": "github-verified-wave5-outcomes",
     "liveAutonomousOutcomesCount": 0,
     "auditChains": [
       {
@@ -179,7 +228,7 @@
             "observedMs": 1795833217000
           }
         },
-        "circuitBreaker": {
+        "governanceAttestation": {
           "repositoryId": 1471342715,
           "ownedPaths": [
             "docs/COORDINATOR-EVENT-JOURNAL.md",
@@ -193,10 +242,6 @@
           ],
           "attempt": 1,
           "maxRetries": 2,
-          "runAiCredits": 24,
-          "maxRunAiCredits": 60,
-          "burnRateBps": 600,
-          "maxBurnSpikeBps": 2500,
           "incrementalBilledUsdCents": 0,
           "safeOutputsThreatDetected": false,
           "humanOwnerSignOffVerified": false,
@@ -204,8 +249,7 @@
           "implementationAgentIdentity": "copilot-swe-agent[bot]",
           "reviewerIdentity": "copilot-pull-request-reviewer[bot]",
           "mainHealthy": true,
-          "accountingVerified": true,
-          "isEstimated": false
+          "accountingVerified": false
         }
       },
       {
@@ -318,7 +362,7 @@
             "observedMs": 1795833336000
           }
         },
-        "circuitBreaker": {
+        "governanceAttestation": {
           "repositoryId": 1471342715,
           "ownedPaths": [
             "docs/GH-AW-ORCHESTRATION.md",
@@ -332,10 +376,6 @@
           ],
           "attempt": 1,
           "maxRetries": 2,
-          "runAiCredits": 28,
-          "maxRunAiCredits": 60,
-          "burnRateBps": 600,
-          "maxBurnSpikeBps": 2500,
           "incrementalBilledUsdCents": 0,
           "safeOutputsThreatDetected": false,
           "humanOwnerSignOffVerified": true,
@@ -343,8 +383,7 @@
           "implementationAgentIdentity": "copilot-swe-agent[bot]",
           "reviewerIdentity": "copilot-pull-request-reviewer[bot]",
           "mainHealthy": true,
-          "accountingVerified": true,
-          "isEstimated": false
+          "accountingVerified": false
         }
       },
       {
@@ -568,7 +607,7 @@
             "observedMs": 1795835459000
           }
         },
-        "circuitBreaker": {
+        "governanceAttestation": {
           "repositoryId": 1471342715,
           "ownedPaths": [
             "docs/MAF-INNER-ORCHESTRATION.md",
@@ -582,10 +621,6 @@
           ],
           "attempt": 1,
           "maxRetries": 2,
-          "runAiCredits": 32,
-          "maxRunAiCredits": 60,
-          "burnRateBps": 600,
-          "maxBurnSpikeBps": 2500,
           "incrementalBilledUsdCents": 0,
           "safeOutputsThreatDetected": false,
           "humanOwnerSignOffVerified": false,
@@ -593,8 +628,141 @@
           "implementationAgentIdentity": "copilot-swe-agent[bot]",
           "reviewerIdentity": "copilot-pull-request-reviewer[bot]",
           "mainHealthy": true,
-          "accountingVerified": true,
-          "isEstimated": false
+          "accountingVerified": false
+        }
+      },
+      {
+        "issueNumber": 8,
+        "pullNumber": 166,
+        "violations": [],
+        "stages": {
+          "eventDelivery": {
+            "traceparent": "00-16600000000000000000000000000166-0000000000000029-01",
+            "parentSpanId": null,
+            "deliveryId": "github-pr-166",
+            "repositoryId": 1471342715,
+            "observedMs": 1795837000000
+          },
+          "ghAwLock": {
+            "traceparent": "00-16600000000000000000000000000166-000000000000002a-01",
+            "parentSpanId": "0000000000000029",
+            "lockSha256": "9c1b723d338fff43d64c3b518616f7a635b9dce330e72aa2e29f7c8b67bb445f",
+            "observedMs": 1795837001000
+          },
+          "casLease": {
+            "traceparent": "00-16600000000000000000000000000166-000000000000002b-01",
+            "parentSpanId": "000000000000002a",
+            "leaseGeneration": 25,
+            "laneId": "sf-merge-queue-reread-lane",
+            "ownedPaths": [
+              "docs/evidence/m01-05-merge-queue-receipt.json",
+              "tests/engineering-factory/queue-reread.test.mjs",
+              "tools/engineering-factory/queue-reread.mjs"
+            ],
+            "observedMs": 1795837002000
+          },
+          "missionControlTask": {
+            "traceparent": "00-16600000000000000000000000000166-000000000000002c-01",
+            "parentSpanId": "000000000000002b",
+            "taskId": "00000166-0000-4000-8000-000000000166",
+            "sessionId": "session-pr-166",
+            "observedMs": 1795837003000
+          },
+          "candidateCommit": {
+            "traceparent": "00-16600000000000000000000000000166-000000000000002d-01",
+            "parentSpanId": "000000000000002c",
+            "commitSha": "ef5ec77d4c93f887db69e4524761b666f77f2ac5",
+            "signed": true,
+            "touchedPaths": [
+              "docs/evidence/m01-05-merge-queue-receipt.json",
+              "tests/engineering-factory/queue-reread.test.mjs",
+              "tools/engineering-factory/queue-reread.mjs"
+            ],
+            "observedMs": 1795838800000
+          },
+          "exactHeadValidation": {
+            "traceparent": "00-16600000000000000000000000000166-000000000000002e-01",
+            "parentSpanId": "000000000000002d",
+            "headSha": "ef5ec77d4c93f887db69e4524761b666f77f2ac5",
+            "ciReceiptId": "run-46106680112",
+            "codeqlReceiptId": "run-46106679801",
+            "coverageReceiptId": "run-46106680112-cov",
+            "expectedComponents": [
+              "engineering-factory.queue-reread"
+            ],
+            "coverageReports": [
+              {
+                "component": "engineering-factory.queue-reread",
+                "head": "ef5ec77d4c93f887db69e4524761b666f77f2ac5",
+                "lines": 1120,
+                "lineTotal": 1120,
+                "branches": 540,
+                "branchTotal": 544
+              }
+            ],
+            "lines": 1120,
+            "lineTotal": 1120,
+            "branches": 540,
+            "branchTotal": 544,
+            "observedMs": 1795838900000
+          },
+          "independentReview": {
+            "traceparent": "00-16600000000000000000000000000166-000000000000002f-01",
+            "parentSpanId": "000000000000002e",
+            "reviewId": "review-6095695594",
+            "reviewedHeadSha": "ef5ec77d4c93f887db69e4524761b666f77f2ac5",
+            "reviewerIdentity": "copilot-pull-request-reviewer[bot]",
+            "authorIdentity": "cyrusjamula",
+            "implementationAgentIdentity": "copilot-swe-agent[bot]",
+            "authorizedReviewers": [
+              "copilot-pull-request-reviewer[bot]",
+              "cyrusjamula"
+            ],
+            "reviewState": "COMMENTED",
+            "reviewHistoryComplete": true,
+            "outstandingChangesRequested": 0,
+            "unresolvedThreads": 0,
+            "summaryFindingsResolved": true,
+            "observedMs": 1795838950000
+          },
+          "mergeQueueSquash": {
+            "traceparent": "00-16600000000000000000000000000166-0000000000000030-01",
+            "parentSpanId": "000000000000002f",
+            "expectedHeadSha": "ef5ec77d4c93f887db69e4524761b666f77f2ac5",
+            "squashCommitSha": "b82b006da3ed860440daf00904f5b3239e8d01db",
+            "observedMs": 1795839526000
+          },
+          "verifiedMain": {
+            "traceparent": "00-16600000000000000000000000000166-0000000000000031-01",
+            "parentSpanId": "0000000000000030",
+            "mainCommitSha": "b82b006da3ed860440daf00904f5b3239e8d01db",
+            "mainHealthy": true,
+            "receiptId": "run-46106944779",
+            "observedMs": 1795839586000
+          }
+        },
+        "governanceAttestation": {
+          "repositoryId": 1471342715,
+          "ownedPaths": [
+            "docs/evidence/m01-05-merge-queue-receipt.json",
+            "tests/engineering-factory/queue-reread.test.mjs",
+            "tools/engineering-factory/queue-reread.mjs"
+          ],
+          "touchedPaths": [
+            "docs/evidence/m01-05-merge-queue-receipt.json",
+            "tests/engineering-factory/queue-reread.test.mjs",
+            "tools/engineering-factory/queue-reread.mjs"
+          ],
+          "attempt": 1,
+          "maxRetries": 2,
+          "incrementalBilledUsdCents": 0,
+          "safeOutputsThreatDetected": false,
+          "humanOwnerSignOffVerified": false,
+          "authorIdentity": "cyrusjamula",
+          "implementationAgentIdentity": "copilot-swe-agent[bot]",
+          "reviewerIdentity": "copilot-pull-request-reviewer[bot]",
+          "mainHealthy": true,
+          "accountingVerified": false
         }
       },
       {
@@ -711,7 +879,7 @@
             "observedMs": 1795839885000
           }
         },
-        "circuitBreaker": {
+        "governanceAttestation": {
           "repositoryId": 1471342715,
           "ownedPaths": [
             "docs/GITHUB-HOSTED-COPILOT-PILOT.md",
@@ -729,10 +897,6 @@
           ],
           "attempt": 1,
           "maxRetries": 2,
-          "runAiCredits": 27,
-          "maxRunAiCredits": 60,
-          "burnRateBps": 600,
-          "maxBurnSpikeBps": 2500,
           "incrementalBilledUsdCents": 0,
           "safeOutputsThreatDetected": false,
           "humanOwnerSignOffVerified": false,
@@ -740,8 +904,7 @@
           "implementationAgentIdentity": "copilot-swe-agent[bot]",
           "reviewerIdentity": "copilot-pull-request-reviewer[bot]",
           "mainHealthy": true,
-          "accountingVerified": true,
-          "isEstimated": false
+          "accountingVerified": false
         }
       },
       {
@@ -849,7 +1012,7 @@
             "parentSpanId": "0000000000000039",
             "expectedHeadSha": "11ca4d4af822f4507c3bd1867db86dc592286875",
             "squashCommitSha": "ec438f54088f30856c2df6ff626e894dde2a0100",
-            "observedMs": 1795843725000
+            "observedMs": 1795843726000
           },
           "verifiedMain": {
             "traceparent": "00-16800000000000000000000000000168-000000000000003b-01",
@@ -857,10 +1020,10 @@
             "mainCommitSha": "ec438f54088f30856c2df6ff626e894dde2a0100",
             "mainHealthy": true,
             "receiptId": "run-46112285635",
-            "observedMs": 1795843726000
+            "observedMs": 1795843839000
           }
         },
-        "circuitBreaker": {
+        "governanceAttestation": {
           "repositoryId": 1471342715,
           "ownedPaths": [
             ".github/workflows/factory-orchestrator.lock.yml",
@@ -880,10 +1043,6 @@
           ],
           "attempt": 1,
           "maxRetries": 2,
-          "runAiCredits": 34,
-          "maxRunAiCredits": 60,
-          "burnRateBps": 600,
-          "maxBurnSpikeBps": 2500,
           "incrementalBilledUsdCents": 0,
           "safeOutputsThreatDetected": false,
           "humanOwnerSignOffVerified": true,
@@ -891,8 +1050,981 @@
           "implementationAgentIdentity": "copilot-swe-agent[bot]",
           "reviewerIdentity": "copilot-pull-request-reviewer[bot]",
           "mainHealthy": true,
-          "accountingVerified": true,
-          "isEstimated": false
+          "accountingVerified": false
+        }
+      },
+      {
+        "issueNumber": 10,
+        "pullNumber": 171,
+        "violations": [],
+        "stages": {
+          "eventDelivery": {
+            "traceparent": "00-17100000000000000000000000000171-0000000000000051-01",
+            "parentSpanId": null,
+            "deliveryId": "synthetic-replay-pr171",
+            "repositoryId": 1471342715,
+            "observedMs": 1795845575000
+          },
+          "ghAwLock": {
+            "traceparent": "00-17100000000000000000000000000171-0000000000000052-01",
+            "parentSpanId": "0000000000000051",
+            "lockSha256": "9c1b723d338fff43d64c3b518616f7a635b9dce330e72aa2e29f7c8b67bb445f",
+            "observedMs": 1795845576000
+          },
+          "casLease": {
+            "traceparent": "00-17100000000000000000000000000171-0000000000000053-01",
+            "parentSpanId": "0000000000000052",
+            "leaseGeneration": 7,
+            "laneId": "sf-pilot-readiness-lane",
+            "ownedPaths": [
+              "docs/evidence/m01-08-readiness-audit.json",
+              "tests/engineering-factory/pilot-readiness.test.mjs",
+              "tools/engineering-factory/pilot-readiness.mjs"
+            ],
+            "observedMs": 1795845577000
+          },
+          "missionControlTask": {
+            "traceparent": "00-17100000000000000000000000000171-0000000000000054-01",
+            "parentSpanId": "0000000000000053",
+            "taskId": "00000171-0000-4000-8000-000000000171",
+            "sessionId": "synthetic-replay-session-171",
+            "observedMs": 1795845578000
+          },
+          "candidateCommit": {
+            "traceparent": "00-17100000000000000000000000000171-0000000000000055-01",
+            "parentSpanId": "0000000000000054",
+            "commitSha": "dc4b397b86f8892470700dab498bf721fd14ffba",
+            "signed": true,
+            "touchedPaths": [
+              "docs/evidence/m01-08-readiness-audit.json",
+              "tests/engineering-factory/pilot-readiness.test.mjs",
+              "tools/engineering-factory/pilot-readiness.mjs"
+            ],
+            "observedMs": 1795845890000
+          },
+          "exactHeadValidation": {
+            "traceparent": "00-17100000000000000000000000000171-0000000000000056-01",
+            "parentSpanId": "0000000000000055",
+            "headSha": "dc4b397b86f8892470700dab498bf721fd14ffba",
+            "ciReceiptId": "job-140887691809",
+            "codeqlReceiptId": "run-46114950469",
+            "coverageReceiptId": "job-140887853151",
+            "expectedComponents": [
+              "engineering-factory.pilot-readiness"
+            ],
+            "coverageReports": [
+              {
+                "component": "engineering-factory.pilot-readiness",
+                "head": "dc4b397b86f8892470700dab498bf721fd14ffba",
+                "lines": 759,
+                "lineTotal": 759,
+                "branches": 432,
+                "branchTotal": 433
+              }
+            ],
+            "lines": 759,
+            "lineTotal": 759,
+            "branches": 432,
+            "branchTotal": 433,
+            "observedMs": 1795846228000
+          },
+          "independentReview": {
+            "traceparent": "00-17100000000000000000000000000171-0000000000000057-01",
+            "parentSpanId": "0000000000000056",
+            "reviewId": "review-6096212760",
+            "reviewedHeadSha": "dc4b397b86f8892470700dab498bf721fd14ffba",
+            "reviewerIdentity": "copilot-pull-request-reviewer[bot]",
+            "authorIdentity": "cyrusjamula",
+            "implementationAgentIdentity": "copilot-swe-agent[bot]",
+            "authorizedReviewers": [
+              "copilot-pull-request-reviewer[bot]",
+              "cyrusjamula"
+            ],
+            "reviewState": "COMMENTED",
+            "reviewHistoryComplete": true,
+            "outstandingChangesRequested": 0,
+            "unresolvedThreads": 0,
+            "summaryFindingsResolved": true,
+            "observedMs": 1795846240000
+          },
+          "mergeQueueSquash": {
+            "traceparent": "00-17100000000000000000000000000171-0000000000000058-01",
+            "parentSpanId": "0000000000000057",
+            "expectedHeadSha": "dc4b397b86f8892470700dab498bf721fd14ffba",
+            "squashCommitSha": "3cb2e6541b2e74b62c6fb61661fe97d29f757c26",
+            "observedMs": 1795848527000
+          },
+          "verifiedMain": {
+            "traceparent": "00-17100000000000000000000000000171-0000000000000059-01",
+            "parentSpanId": "0000000000000058",
+            "mainCommitSha": "3cb2e6541b2e74b62c6fb61661fe97d29f757c26",
+            "mainHealthy": true,
+            "receiptId": "run-46118347465",
+            "observedMs": 1795848603000
+          }
+        },
+        "governanceAttestation": {
+          "repositoryId": 1471342715,
+          "ownedPaths": [
+            "docs/evidence/m01-08-readiness-audit.json",
+            "tests/engineering-factory/pilot-readiness.test.mjs",
+            "tools/engineering-factory/pilot-readiness.mjs"
+          ],
+          "touchedPaths": [
+            "docs/evidence/m01-08-readiness-audit.json",
+            "tests/engineering-factory/pilot-readiness.test.mjs",
+            "tools/engineering-factory/pilot-readiness.mjs"
+          ],
+          "attempt": 1,
+          "maxRetries": 2,
+          "incrementalBilledUsdCents": 0,
+          "safeOutputsThreatDetected": false,
+          "humanOwnerSignOffVerified": false,
+          "authorIdentity": "cyrusjamula",
+          "implementationAgentIdentity": "copilot-swe-agent[bot]",
+          "reviewerIdentity": "copilot-pull-request-reviewer[bot]",
+          "mainHealthy": true,
+          "accountingVerified": false
+        }
+      },
+      {
+        "issueNumber": 11,
+        "pullNumber": 173,
+        "violations": [],
+        "stages": {
+          "eventDelivery": {
+            "traceparent": "00-17300000000000000000000000000173-0000000000000061-01",
+            "parentSpanId": null,
+            "deliveryId": "synthetic-replay-pr173",
+            "repositoryId": 1471342715,
+            "observedMs": 1795845876000
+          },
+          "ghAwLock": {
+            "traceparent": "00-17300000000000000000000000000173-0000000000000062-01",
+            "parentSpanId": "0000000000000061",
+            "lockSha256": "9c1b723d338fff43d64c3b518616f7a635b9dce330e72aa2e29f7c8b67bb445f",
+            "observedMs": 1795845877000
+          },
+          "casLease": {
+            "traceparent": "00-17300000000000000000000000000173-0000000000000063-01",
+            "parentSpanId": "0000000000000062",
+            "leaseGeneration": 8,
+            "laneId": "sf-consumer-rollout-sequence-lane",
+            "ownedPaths": [
+              "docs/ROADMAP.md",
+              "docs/evidence/m03-02-familytree-shadow-readiness.json",
+              "docs/evidence/m04-01-spellbook-shadow-readiness.json",
+              "docs/evidence/m05-01-familyhub-shadow-readiness.json",
+              "tests/engineering-factory/familyhub-pilot-readiness.test.mjs",
+              "tests/engineering-factory/familytree-pilot-readiness.test.mjs",
+              "tests/engineering-factory/spellbook-pilot-readiness.test.mjs",
+              "tools/engineering-factory/familyhub-pilot-readiness.mjs",
+              "tools/engineering-factory/familytree-pilot-readiness.mjs",
+              "tools/engineering-factory/spellbook-pilot-readiness.mjs"
+            ],
+            "observedMs": 1795845878000
+          },
+          "missionControlTask": {
+            "traceparent": "00-17300000000000000000000000000173-0000000000000064-01",
+            "parentSpanId": "0000000000000063",
+            "taskId": "00000173-0000-4000-8000-000000000173",
+            "sessionId": "synthetic-replay-session-173",
+            "observedMs": 1795845879000
+          },
+          "candidateCommit": {
+            "traceparent": "00-17300000000000000000000000000173-0000000000000065-01",
+            "parentSpanId": "0000000000000064",
+            "commitSha": "4aeeb988b8dcfe1c03f1f21495f633138256f5ff",
+            "signed": true,
+            "touchedPaths": [
+              "docs/ROADMAP.md",
+              "docs/evidence/m03-02-familytree-shadow-readiness.json",
+              "docs/evidence/m04-01-spellbook-shadow-readiness.json",
+              "docs/evidence/m05-01-familyhub-shadow-readiness.json",
+              "tests/engineering-factory/familyhub-pilot-readiness.test.mjs",
+              "tests/engineering-factory/familytree-pilot-readiness.test.mjs",
+              "tests/engineering-factory/spellbook-pilot-readiness.test.mjs",
+              "tools/engineering-factory/familyhub-pilot-readiness.mjs",
+              "tools/engineering-factory/familytree-pilot-readiness.mjs",
+              "tools/engineering-factory/spellbook-pilot-readiness.mjs"
+            ],
+            "observedMs": 1795845880000
+          },
+          "exactHeadValidation": {
+            "traceparent": "00-17300000000000000000000000000173-0000000000000066-01",
+            "parentSpanId": "0000000000000065",
+            "headSha": "4aeeb988b8dcfe1c03f1f21495f633138256f5ff",
+            "ciReceiptId": "job-140886516099",
+            "codeqlReceiptId": "run-46114932106",
+            "coverageReceiptId": "job-140886671593",
+            "expectedComponents": [
+              "engineering-factory.spellbook-pilot-readiness"
+            ],
+            "coverageReports": [
+              {
+                "component": "engineering-factory.spellbook-pilot-readiness",
+                "head": "4aeeb988b8dcfe1c03f1f21495f633138256f5ff",
+                "lines": 711,
+                "lineTotal": 711,
+                "branches": 336,
+                "branchTotal": 336
+              }
+            ],
+            "lines": 711,
+            "lineTotal": 711,
+            "branches": 336,
+            "branchTotal": 336,
+            "observedMs": 1795845964000
+          },
+          "independentReview": {
+            "traceparent": "00-17300000000000000000000000000173-0000000000000067-01",
+            "parentSpanId": "0000000000000066",
+            "reviewId": "review-6096213738",
+            "reviewedHeadSha": "4aeeb988b8dcfe1c03f1f21495f633138256f5ff",
+            "reviewerIdentity": "copilot-pull-request-reviewer[bot]",
+            "authorIdentity": "cyrusjamula",
+            "implementationAgentIdentity": "copilot-swe-agent[bot]",
+            "authorizedReviewers": [
+              "copilot-pull-request-reviewer[bot]",
+              "cyrusjamula"
+            ],
+            "reviewState": "COMMENTED",
+            "reviewHistoryComplete": true,
+            "outstandingChangesRequested": 0,
+            "unresolvedThreads": 0,
+            "summaryFindingsResolved": true,
+            "observedMs": 1795846085000
+          },
+          "mergeQueueSquash": {
+            "traceparent": "00-17300000000000000000000000000173-0000000000000068-01",
+            "parentSpanId": "0000000000000067",
+            "expectedHeadSha": "4aeeb988b8dcfe1c03f1f21495f633138256f5ff",
+            "squashCommitSha": "cf6d3b0fc4f3a8627168134354a04ad2e00c51bf",
+            "observedMs": 1795848527000
+          },
+          "verifiedMain": {
+            "traceparent": "00-17300000000000000000000000000173-0000000000000069-01",
+            "parentSpanId": "0000000000000068",
+            "mainCommitSha": "cf6d3b0fc4f3a8627168134354a04ad2e00c51bf",
+            "mainHealthy": true,
+            "receiptId": "run-46118347465",
+            "observedMs": 1795848603000
+          }
+        },
+        "governanceAttestation": {
+          "repositoryId": 1471342715,
+          "ownedPaths": [
+            "docs/ROADMAP.md",
+            "docs/evidence/m03-02-familytree-shadow-readiness.json",
+            "docs/evidence/m04-01-spellbook-shadow-readiness.json",
+            "docs/evidence/m05-01-familyhub-shadow-readiness.json",
+            "tests/engineering-factory/familyhub-pilot-readiness.test.mjs",
+            "tests/engineering-factory/familytree-pilot-readiness.test.mjs",
+            "tests/engineering-factory/spellbook-pilot-readiness.test.mjs",
+            "tools/engineering-factory/familyhub-pilot-readiness.mjs",
+            "tools/engineering-factory/familytree-pilot-readiness.mjs",
+            "tools/engineering-factory/spellbook-pilot-readiness.mjs"
+          ],
+          "touchedPaths": [
+            "docs/ROADMAP.md",
+            "docs/evidence/m03-02-familytree-shadow-readiness.json",
+            "docs/evidence/m04-01-spellbook-shadow-readiness.json",
+            "docs/evidence/m05-01-familyhub-shadow-readiness.json",
+            "tests/engineering-factory/familyhub-pilot-readiness.test.mjs",
+            "tests/engineering-factory/familytree-pilot-readiness.test.mjs",
+            "tests/engineering-factory/spellbook-pilot-readiness.test.mjs",
+            "tools/engineering-factory/familyhub-pilot-readiness.mjs",
+            "tools/engineering-factory/familytree-pilot-readiness.mjs",
+            "tools/engineering-factory/spellbook-pilot-readiness.mjs"
+          ],
+          "attempt": 1,
+          "maxRetries": 2,
+          "incrementalBilledUsdCents": 0,
+          "safeOutputsThreatDetected": false,
+          "humanOwnerSignOffVerified": false,
+          "authorIdentity": "cyrusjamula",
+          "implementationAgentIdentity": "copilot-swe-agent[bot]",
+          "reviewerIdentity": "copilot-pull-request-reviewer[bot]",
+          "mainHealthy": true,
+          "accountingVerified": false
+        }
+      },
+      {
+        "issueNumber": 6,
+        "pullNumber": 172,
+        "violations": [],
+        "stages": {
+          "eventDelivery": {
+            "traceparent": "00-17200000000000000000000000000172-0000000000000071-01",
+            "parentSpanId": null,
+            "deliveryId": "synthetic-replay-pr172",
+            "repositoryId": 1471342715,
+            "observedMs": 1795845863000
+          },
+          "ghAwLock": {
+            "traceparent": "00-17200000000000000000000000000172-0000000000000072-01",
+            "parentSpanId": "0000000000000071",
+            "lockSha256": "9c1b723d338fff43d64c3b518616f7a635b9dce330e72aa2e29f7c8b67bb445f",
+            "observedMs": 1795845864000
+          },
+          "casLease": {
+            "traceparent": "00-17200000000000000000000000000172-0000000000000073-01",
+            "parentSpanId": "0000000000000072",
+            "leaseGeneration": 9,
+            "laneId": "sf-cas-recovery-receipt-lane",
+            "ownedPaths": [
+              "docs/evidence/m01-04-durable-cas-recovery.json",
+              "tests/engineering-coordinator/work-queue-cas.test.mjs"
+            ],
+            "observedMs": 1795845865000
+          },
+          "missionControlTask": {
+            "traceparent": "00-17200000000000000000000000000172-0000000000000074-01",
+            "parentSpanId": "0000000000000073",
+            "taskId": "00000172-0000-4000-8000-000000000172",
+            "sessionId": "synthetic-replay-session-172",
+            "observedMs": 1795845866000
+          },
+          "candidateCommit": {
+            "traceparent": "00-17200000000000000000000000000172-0000000000000075-01",
+            "parentSpanId": "0000000000000074",
+            "commitSha": "761af123c3eba1f6bb47110c3e6a05b91791bc13",
+            "signed": true,
+            "touchedPaths": [
+              "docs/evidence/m01-04-durable-cas-recovery.json",
+              "tests/engineering-coordinator/work-queue-cas.test.mjs"
+            ],
+            "observedMs": 1795848500000
+          },
+          "exactHeadValidation": {
+            "traceparent": "00-17200000000000000000000000000172-0000000000000076-01",
+            "parentSpanId": "0000000000000075",
+            "headSha": "761af123c3eba1f6bb47110c3e6a05b91791bc13",
+            "ciReceiptId": "job-140897607333",
+            "codeqlReceiptId": "run-46118330070",
+            "coverageReceiptId": "job-140897741027",
+            "expectedComponents": [
+              "engineering-coordinator.work-queue-cas"
+            ],
+            "coverageReports": [
+              {
+                "component": "engineering-coordinator.work-queue-cas",
+                "head": "761af123c3eba1f6bb47110c3e6a05b91791bc13",
+                "lines": 1933,
+                "lineTotal": 1933,
+                "branches": 945,
+                "branchTotal": 954
+              }
+            ],
+            "lines": 1933,
+            "lineTotal": 1933,
+            "branches": 945,
+            "branchTotal": 954,
+            "observedMs": 1795848725000
+          },
+          "independentReview": {
+            "traceparent": "00-17200000000000000000000000000172-0000000000000077-01",
+            "parentSpanId": "0000000000000076",
+            "reviewId": "review-6096349859",
+            "reviewedHeadSha": "761af123c3eba1f6bb47110c3e6a05b91791bc13",
+            "reviewerIdentity": "copilot-pull-request-reviewer[bot]",
+            "authorIdentity": "cyrusjamula",
+            "implementationAgentIdentity": "copilot-swe-agent[bot]",
+            "authorizedReviewers": [
+              "copilot-pull-request-reviewer[bot]",
+              "cyrusjamula"
+            ],
+            "reviewState": "COMMENTED",
+            "reviewHistoryComplete": true,
+            "outstandingChangesRequested": 0,
+            "unresolvedThreads": 0,
+            "summaryFindingsResolved": true,
+            "observedMs": 1795848740000
+          },
+          "mergeQueueSquash": {
+            "traceparent": "00-17200000000000000000000000000172-0000000000000078-01",
+            "parentSpanId": "0000000000000077",
+            "expectedHeadSha": "761af123c3eba1f6bb47110c3e6a05b91791bc13",
+            "squashCommitSha": "50b085d40c0ceb71b4c9710255d8e3b57e719c8a",
+            "observedMs": 1795849016000
+          },
+          "verifiedMain": {
+            "traceparent": "00-17200000000000000000000000000172-0000000000000079-01",
+            "parentSpanId": "0000000000000078",
+            "mainCommitSha": "50b085d40c0ceb71b4c9710255d8e3b57e719c8a",
+            "mainHealthy": true,
+            "receiptId": "run-46118933541",
+            "observedMs": 1795849082000
+          }
+        },
+        "governanceAttestation": {
+          "repositoryId": 1471342715,
+          "ownedPaths": [
+            "docs/evidence/m01-04-durable-cas-recovery.json",
+            "tests/engineering-coordinator/work-queue-cas.test.mjs"
+          ],
+          "touchedPaths": [
+            "docs/evidence/m01-04-durable-cas-recovery.json",
+            "tests/engineering-coordinator/work-queue-cas.test.mjs"
+          ],
+          "attempt": 1,
+          "maxRetries": 2,
+          "incrementalBilledUsdCents": 0,
+          "safeOutputsThreatDetected": false,
+          "humanOwnerSignOffVerified": false,
+          "authorIdentity": "cyrusjamula",
+          "implementationAgentIdentity": "copilot-swe-agent[bot]",
+          "reviewerIdentity": "copilot-pull-request-reviewer[bot]",
+          "mainHealthy": true,
+          "accountingVerified": false
+        }
+      },
+      {
+        "issueNumber": 13,
+        "pullNumber": 177,
+        "violations": [],
+        "stages": {
+          "eventDelivery": {
+            "traceparent": "00-17700000000000000000000000000177-0000000000000081-01",
+            "parentSpanId": null,
+            "deliveryId": "synthetic-replay-pr177",
+            "repositoryId": 1471342715,
+            "observedMs": 1795848688000
+          },
+          "ghAwLock": {
+            "traceparent": "00-17700000000000000000000000000177-0000000000000082-01",
+            "parentSpanId": "0000000000000081",
+            "lockSha256": "9c1b723d338fff43d64c3b518616f7a635b9dce330e72aa2e29f7c8b67bb445f",
+            "observedMs": 1795848689000
+          },
+          "casLease": {
+            "traceparent": "00-17700000000000000000000000000177-0000000000000083-01",
+            "parentSpanId": "0000000000000082",
+            "leaseGeneration": 10,
+            "laneId": "sf-consumer-onboarding-rubric-lane",
+            "ownedPaths": [
+              "docs/CONSUMER-ADOPTION-CONTRACT.md",
+              "docs/CONSUMER-ONBOARDING.md",
+              "docs/WORKFLOWS.md",
+              "docs/evidence/m03-01-onboarding-success-contract.json",
+              "tests/engineering-factory/consumer-onboarding.test.mjs",
+              "tools/engineering-factory/consumer-onboarding.mjs"
+            ],
+            "observedMs": 1795848690000
+          },
+          "missionControlTask": {
+            "traceparent": "00-17700000000000000000000000000177-0000000000000084-01",
+            "parentSpanId": "0000000000000083",
+            "taskId": "00000177-0000-4000-8000-000000000177",
+            "sessionId": "synthetic-replay-session-177",
+            "observedMs": 1795848691000
+          },
+          "candidateCommit": {
+            "traceparent": "00-17700000000000000000000000000177-0000000000000085-01",
+            "parentSpanId": "0000000000000084",
+            "commitSha": "da0e2e8c600099c7efbd7999f82f2631f7bbec25",
+            "signed": true,
+            "touchedPaths": [
+              "docs/CONSUMER-ADOPTION-CONTRACT.md",
+              "docs/CONSUMER-ONBOARDING.md",
+              "docs/WORKFLOWS.md",
+              "docs/evidence/m03-01-onboarding-success-contract.json",
+              "tests/engineering-factory/consumer-onboarding.test.mjs",
+              "tools/engineering-factory/consumer-onboarding.mjs"
+            ],
+            "observedMs": 1795849320000
+          },
+          "exactHeadValidation": {
+            "traceparent": "00-17700000000000000000000000000177-0000000000000086-01",
+            "parentSpanId": "0000000000000085",
+            "headSha": "da0e2e8c600099c7efbd7999f82f2631f7bbec25",
+            "ciReceiptId": "job-140900414661",
+            "codeqlReceiptId": "run-46119317880",
+            "coverageReceiptId": "job-140900559821",
+            "expectedComponents": [
+              "engineering-factory.consumer-onboarding"
+            ],
+            "coverageReports": [
+              {
+                "component": "engineering-factory.consumer-onboarding",
+                "head": "da0e2e8c600099c7efbd7999f82f2631f7bbec25",
+                "lines": 1578,
+                "lineTotal": 1578,
+                "branches": 706,
+                "branchTotal": 706
+              }
+            ],
+            "lines": 1578,
+            "lineTotal": 1578,
+            "branches": 706,
+            "branchTotal": 706,
+            "observedMs": 1795849490000
+          },
+          "independentReview": {
+            "traceparent": "00-17700000000000000000000000000177-0000000000000087-01",
+            "parentSpanId": "0000000000000086",
+            "reviewId": "review-6096396624",
+            "reviewedHeadSha": "da0e2e8c600099c7efbd7999f82f2631f7bbec25",
+            "reviewerIdentity": "copilot-pull-request-reviewer[bot]",
+            "authorIdentity": "cyrusjamula",
+            "implementationAgentIdentity": "copilot-swe-agent[bot]",
+            "authorizedReviewers": [
+              "copilot-pull-request-reviewer[bot]",
+              "cyrusjamula"
+            ],
+            "reviewState": "COMMENTED",
+            "reviewHistoryComplete": true,
+            "outstandingChangesRequested": 0,
+            "unresolvedThreads": 0,
+            "summaryFindingsResolved": true,
+            "observedMs": 1795849567000
+          },
+          "mergeQueueSquash": {
+            "traceparent": "00-17700000000000000000000000000177-0000000000000088-01",
+            "parentSpanId": "0000000000000087",
+            "expectedHeadSha": "da0e2e8c600099c7efbd7999f82f2631f7bbec25",
+            "squashCommitSha": "8b12545d3be0d60053eaa8a6fdd398154f7338ba",
+            "observedMs": 1795849774000
+          },
+          "verifiedMain": {
+            "traceparent": "00-17700000000000000000000000000177-0000000000000089-01",
+            "parentSpanId": "0000000000000088",
+            "mainCommitSha": "8b12545d3be0d60053eaa8a6fdd398154f7338ba",
+            "mainHealthy": true,
+            "receiptId": "main-8b12545d",
+            "observedMs": 1795849775000
+          }
+        },
+        "governanceAttestation": {
+          "repositoryId": 1471342715,
+          "ownedPaths": [
+            "docs/CONSUMER-ADOPTION-CONTRACT.md",
+            "docs/CONSUMER-ONBOARDING.md",
+            "docs/WORKFLOWS.md",
+            "docs/evidence/m03-01-onboarding-success-contract.json",
+            "tests/engineering-factory/consumer-onboarding.test.mjs",
+            "tools/engineering-factory/consumer-onboarding.mjs"
+          ],
+          "touchedPaths": [
+            "docs/CONSUMER-ADOPTION-CONTRACT.md",
+            "docs/CONSUMER-ONBOARDING.md",
+            "docs/WORKFLOWS.md",
+            "docs/evidence/m03-01-onboarding-success-contract.json",
+            "tests/engineering-factory/consumer-onboarding.test.mjs",
+            "tools/engineering-factory/consumer-onboarding.mjs"
+          ],
+          "attempt": 1,
+          "maxRetries": 2,
+          "incrementalBilledUsdCents": 0,
+          "safeOutputsThreatDetected": false,
+          "humanOwnerSignOffVerified": false,
+          "authorIdentity": "cyrusjamula",
+          "implementationAgentIdentity": "copilot-swe-agent[bot]",
+          "reviewerIdentity": "copilot-pull-request-reviewer[bot]",
+          "mainHealthy": true,
+          "accountingVerified": false
+        }
+      },
+      {
+        "issueNumber": 14,
+        "pullNumber": 178,
+        "violations": [],
+        "stages": {
+          "eventDelivery": {
+            "traceparent": "00-17800000000000000000000000000178-0000000000000091-01",
+            "parentSpanId": null,
+            "deliveryId": "synthetic-replay-pr178",
+            "repositoryId": 1471342715,
+            "observedMs": 1795848868000
+          },
+          "ghAwLock": {
+            "traceparent": "00-17800000000000000000000000000178-0000000000000092-01",
+            "parentSpanId": "0000000000000091",
+            "lockSha256": "9c1b723d338fff43d64c3b518616f7a635b9dce330e72aa2e29f7c8b67bb445f",
+            "observedMs": 1795848869000
+          },
+          "casLease": {
+            "traceparent": "00-17800000000000000000000000000178-0000000000000093-01",
+            "parentSpanId": "0000000000000092",
+            "leaseGeneration": 11,
+            "laneId": "sf-curated-lessons-cohort-lane",
+            "ownedPaths": [
+              "docs/CURATED-LESSONS-MEMORY.md",
+              "docs/evidence/m02-03-curated-lessons-cohort.json",
+              "tests/engineering-factory/curated-lessons.test.mjs",
+              "tools/engineering-factory/curated-lessons.mjs"
+            ],
+            "observedMs": 1795848870000
+          },
+          "missionControlTask": {
+            "traceparent": "00-17800000000000000000000000000178-0000000000000094-01",
+            "parentSpanId": "0000000000000093",
+            "taskId": "00000178-0000-4000-8000-000000000178",
+            "sessionId": "synthetic-replay-session-178",
+            "observedMs": 1795848871000
+          },
+          "candidateCommit": {
+            "traceparent": "00-17800000000000000000000000000178-0000000000000095-01",
+            "parentSpanId": "0000000000000094",
+            "commitSha": "883fa8950c0b4c4521a296bb73a6f9b7eabbe8e6",
+            "signed": true,
+            "touchedPaths": [
+              "docs/CURATED-LESSONS-MEMORY.md",
+              "docs/evidence/m02-03-curated-lessons-cohort.json",
+              "tests/engineering-factory/curated-lessons.test.mjs",
+              "tools/engineering-factory/curated-lessons.mjs"
+            ],
+            "observedMs": 1795849580000
+          },
+          "exactHeadValidation": {
+            "traceparent": "00-17800000000000000000000000000178-0000000000000096-01",
+            "parentSpanId": "0000000000000095",
+            "headSha": "883fa8950c0b4c4521a296bb73a6f9b7eabbe8e6",
+            "ciReceiptId": "job-140901802085",
+            "codeqlReceiptId": "run-46119651772",
+            "coverageReceiptId": "job-140901966100",
+            "expectedComponents": [
+              "engineering-factory.curated-lessons"
+            ],
+            "coverageReports": [
+              {
+                "component": "engineering-factory.curated-lessons",
+                "head": "883fa8950c0b4c4521a296bb73a6f9b7eabbe8e6",
+                "lines": 1420,
+                "lineTotal": 1420,
+                "branches": 598,
+                "branchTotal": 600
+              }
+            ],
+            "lines": 1420,
+            "lineTotal": 1420,
+            "branches": 598,
+            "branchTotal": 600,
+            "observedMs": 1795849809000
+          },
+          "independentReview": {
+            "traceparent": "00-17800000000000000000000000000178-0000000000000097-01",
+            "parentSpanId": "0000000000000096",
+            "reviewId": "review-6096440947",
+            "reviewedHeadSha": "883fa8950c0b4c4521a296bb73a6f9b7eabbe8e6",
+            "reviewerIdentity": "copilot-pull-request-reviewer[bot]",
+            "authorIdentity": "cyrusjamula",
+            "implementationAgentIdentity": "copilot-swe-agent[bot]",
+            "authorizedReviewers": [
+              "copilot-pull-request-reviewer[bot]",
+              "cyrusjamula"
+            ],
+            "reviewState": "COMMENTED",
+            "reviewHistoryComplete": true,
+            "outstandingChangesRequested": 0,
+            "unresolvedThreads": 0,
+            "summaryFindingsResolved": true,
+            "observedMs": 1795850056000
+          },
+          "mergeQueueSquash": {
+            "traceparent": "00-17800000000000000000000000000178-0000000000000098-01",
+            "parentSpanId": "0000000000000097",
+            "expectedHeadSha": "883fa8950c0b4c4521a296bb73a6f9b7eabbe8e6",
+            "squashCommitSha": "00501a9332876f190e0bd391afe461463348dce2",
+            "observedMs": 1795850131000
+          },
+          "verifiedMain": {
+            "traceparent": "00-17800000000000000000000000000178-0000000000000099-01",
+            "parentSpanId": "0000000000000098",
+            "mainCommitSha": "00501a9332876f190e0bd391afe461463348dce2",
+            "mainHealthy": true,
+            "receiptId": "run-46120502658",
+            "observedMs": 1795850289000
+          }
+        },
+        "governanceAttestation": {
+          "repositoryId": 1471342715,
+          "ownedPaths": [
+            "docs/CURATED-LESSONS-MEMORY.md",
+            "docs/evidence/m02-03-curated-lessons-cohort.json",
+            "tests/engineering-factory/curated-lessons.test.mjs",
+            "tools/engineering-factory/curated-lessons.mjs"
+          ],
+          "touchedPaths": [
+            "docs/CURATED-LESSONS-MEMORY.md",
+            "docs/evidence/m02-03-curated-lessons-cohort.json",
+            "tests/engineering-factory/curated-lessons.test.mjs",
+            "tools/engineering-factory/curated-lessons.mjs"
+          ],
+          "attempt": 1,
+          "maxRetries": 2,
+          "incrementalBilledUsdCents": 0,
+          "safeOutputsThreatDetected": false,
+          "humanOwnerSignOffVerified": false,
+          "authorIdentity": "cyrusjamula",
+          "implementationAgentIdentity": "copilot-swe-agent[bot]",
+          "reviewerIdentity": "copilot-pull-request-reviewer[bot]",
+          "mainHealthy": true,
+          "accountingVerified": false
+        }
+      },
+      {
+        "issueNumber": 137,
+        "pullNumber": 175,
+        "violations": [],
+        "stages": {
+          "eventDelivery": {
+            "traceparent": "00-17500000000000000000000000000175-00000000000000b1-01",
+            "parentSpanId": null,
+            "deliveryId": "synthetic-replay-pr175",
+            "repositoryId": 1471342715,
+            "observedMs": 1795848627000
+          },
+          "ghAwLock": {
+            "traceparent": "00-17500000000000000000000000000175-00000000000000b2-01",
+            "parentSpanId": "00000000000000b1",
+            "lockSha256": "9c1b723d338fff43d64c3b518616f7a635b9dce330e72aa2e29f7c8b67bb445f",
+            "observedMs": 1795848628000
+          },
+          "casLease": {
+            "traceparent": "00-17500000000000000000000000000175-00000000000000b3-01",
+            "parentSpanId": "00000000000000b2",
+            "leaseGeneration": 13,
+            "laneId": "sf-kaizen-readout-lane",
+            "ownedPaths": [
+              "docs/evidence/m02-07-kaizen-audit-cohort.json",
+              "tests/engineering-factory/optimistic-improver.test.mjs",
+              "tools/engineering-factory/optimistic-improver.mjs"
+            ],
+            "observedMs": 1795848629000
+          },
+          "missionControlTask": {
+            "traceparent": "00-17500000000000000000000000000175-00000000000000b4-01",
+            "parentSpanId": "00000000000000b3",
+            "taskId": "00000175-0000-4000-8000-000000000175",
+            "sessionId": "synthetic-replay-session-175",
+            "observedMs": 1795848630000
+          },
+          "candidateCommit": {
+            "traceparent": "00-17500000000000000000000000000175-00000000000000b5-01",
+            "parentSpanId": "00000000000000b4",
+            "commitSha": "6f521fae0ee91bbf89129058451e89e01aa3c343",
+            "signed": true,
+            "touchedPaths": [
+              "docs/evidence/m02-07-kaizen-audit-cohort.json",
+              "tests/engineering-factory/optimistic-improver.test.mjs",
+              "tools/engineering-factory/optimistic-improver.mjs"
+            ],
+            "observedMs": 1795850240000
+          },
+          "exactHeadValidation": {
+            "traceparent": "00-17500000000000000000000000000175-00000000000000b6-01",
+            "parentSpanId": "00000000000000b5",
+            "headSha": "6f521fae0ee91bbf89129058451e89e01aa3c343",
+            "ciReceiptId": "job-140904053691",
+            "codeqlReceiptId": "run-46120506773",
+            "coverageReceiptId": "job-140904229920",
+            "expectedComponents": [
+              "engineering-factory.optimistic-improver"
+            ],
+            "coverageReports": [
+              {
+                "component": "engineering-factory.optimistic-improver",
+                "head": "6f521fae0ee91bbf89129058451e89e01aa3c343",
+                "lines": 1592,
+                "lineTotal": 1592,
+                "branches": 730,
+                "branchTotal": 734
+              }
+            ],
+            "lines": 1592,
+            "lineTotal": 1592,
+            "branches": 730,
+            "branchTotal": 734,
+            "observedMs": 1795850378000
+          },
+          "independentReview": {
+            "traceparent": "00-17500000000000000000000000000175-00000000000000b7-01",
+            "parentSpanId": "00000000000000b6",
+            "reviewId": "review-6096469368",
+            "reviewedHeadSha": "6f521fae0ee91bbf89129058451e89e01aa3c343",
+            "reviewerIdentity": "copilot-pull-request-reviewer[bot]",
+            "authorIdentity": "cyrusjamula",
+            "implementationAgentIdentity": "copilot-swe-agent[bot]",
+            "authorizedReviewers": [
+              "copilot-pull-request-reviewer[bot]",
+              "cyrusjamula"
+            ],
+            "reviewState": "COMMENTED",
+            "reviewHistoryComplete": true,
+            "outstandingChangesRequested": 0,
+            "unresolvedThreads": 0,
+            "summaryFindingsResolved": true,
+            "observedMs": 1795850541000
+          },
+          "mergeQueueSquash": {
+            "traceparent": "00-17500000000000000000000000000175-00000000000000b8-01",
+            "parentSpanId": "00000000000000b7",
+            "expectedHeadSha": "6f521fae0ee91bbf89129058451e89e01aa3c343",
+            "squashCommitSha": "e8e357febbfe1617189c38d211c8dfdfa6178aa3",
+            "observedMs": 1795850613000
+          },
+          "verifiedMain": {
+            "traceparent": "00-17500000000000000000000000000175-00000000000000b9-01",
+            "parentSpanId": "00000000000000b8",
+            "mainCommitSha": "e8e357febbfe1617189c38d211c8dfdfa6178aa3",
+            "mainHealthy": true,
+            "receiptId": "run-46120997067",
+            "observedMs": 1795850672000
+          }
+        },
+        "governanceAttestation": {
+          "repositoryId": 1471342715,
+          "ownedPaths": [
+            "docs/evidence/m02-07-kaizen-audit-cohort.json",
+            "tests/engineering-factory/optimistic-improver.test.mjs",
+            "tools/engineering-factory/optimistic-improver.mjs"
+          ],
+          "touchedPaths": [
+            "docs/evidence/m02-07-kaizen-audit-cohort.json",
+            "tests/engineering-factory/optimistic-improver.test.mjs",
+            "tools/engineering-factory/optimistic-improver.mjs"
+          ],
+          "attempt": 1,
+          "maxRetries": 2,
+          "incrementalBilledUsdCents": 0,
+          "safeOutputsThreatDetected": false,
+          "humanOwnerSignOffVerified": true,
+          "authorIdentity": "cyrusjamula",
+          "implementationAgentIdentity": "copilot-swe-agent[bot]",
+          "reviewerIdentity": "copilot-pull-request-reviewer[bot]",
+          "mainHealthy": true,
+          "accountingVerified": false
+        }
+      },
+      {
+        "issueNumber": 14,
+        "pullNumber": 179,
+        "violations": [],
+        "stages": {
+          "eventDelivery": {
+            "traceparent": "00-17900000000000000000000000000179-00000000000000c1-01",
+            "parentSpanId": null,
+            "deliveryId": "synthetic-replay-pr179",
+            "repositoryId": 1471342715,
+            "observedMs": 1795850445000
+          },
+          "ghAwLock": {
+            "traceparent": "00-17900000000000000000000000000179-00000000000000c2-01",
+            "parentSpanId": "00000000000000c1",
+            "lockSha256": "9c1b723d338fff43d64c3b518616f7a635b9dce330e72aa2e29f7c8b67bb445f",
+            "observedMs": 1795850446000
+          },
+          "casLease": {
+            "traceparent": "00-17900000000000000000000000000179-00000000000000c3-01",
+            "parentSpanId": "00000000000000c2",
+            "leaseGeneration": 14,
+            "laneId": "sf-curated-lessons-links-lane",
+            "ownedPaths": [
+              "tests/engineering-factory/curated-lessons.test.mjs",
+              "tools/engineering-factory/curated-lessons.mjs"
+            ],
+            "observedMs": 1795850447000
+          },
+          "missionControlTask": {
+            "traceparent": "00-17900000000000000000000000000179-00000000000000c4-01",
+            "parentSpanId": "00000000000000c3",
+            "taskId": "00000179-0000-4000-8000-000000000179",
+            "sessionId": "synthetic-replay-session-179",
+            "observedMs": 1795850448000
+          },
+          "candidateCommit": {
+            "traceparent": "00-17900000000000000000000000000179-00000000000000c5-01",
+            "parentSpanId": "00000000000000c4",
+            "commitSha": "063d5e37dd786faecbae4b4bd3ff6b6e8d355196",
+            "signed": true,
+            "touchedPaths": [
+              "tests/engineering-factory/curated-lessons.test.mjs",
+              "tools/engineering-factory/curated-lessons.mjs"
+            ],
+            "observedMs": 1795851360000
+          },
+          "exactHeadValidation": {
+            "traceparent": "00-17900000000000000000000000000179-00000000000000c6-01",
+            "parentSpanId": "00000000000000c5",
+            "headSha": "063d5e37dd786faecbae4b4bd3ff6b6e8d355196",
+            "ciReceiptId": "job-140908467826",
+            "codeqlReceiptId": "run-46121953424",
+            "coverageReceiptId": "job-140908601803",
+            "expectedComponents": [
+              "engineering-factory.curated-lessons"
+            ],
+            "coverageReports": [
+              {
+                "component": "engineering-factory.curated-lessons",
+                "head": "063d5e37dd786faecbae4b4bd3ff6b6e8d355196",
+                "lines": 1442,
+                "lineTotal": 1442,
+                "branches": 608,
+                "branchTotal": 611
+              }
+            ],
+            "lines": 1442,
+            "lineTotal": 1442,
+            "branches": 608,
+            "branchTotal": 611,
+            "observedMs": 1795851487000
+          },
+          "independentReview": {
+            "traceparent": "00-17900000000000000000000000000179-00000000000000c7-01",
+            "parentSpanId": "00000000000000c6",
+            "reviewId": "review-6096589342",
+            "reviewedHeadSha": "063d5e37dd786faecbae4b4bd3ff6b6e8d355196",
+            "reviewerIdentity": "copilot-pull-request-reviewer[bot]",
+            "authorIdentity": "cyrusjamula",
+            "implementationAgentIdentity": "copilot-swe-agent[bot]",
+            "authorizedReviewers": [
+              "copilot-pull-request-reviewer[bot]",
+              "cyrusjamula"
+            ],
+            "reviewState": "COMMENTED",
+            "reviewHistoryComplete": true,
+            "outstandingChangesRequested": 0,
+            "unresolvedThreads": 0,
+            "summaryFindingsResolved": true,
+            "observedMs": 1795851610000
+          },
+          "mergeQueueSquash": {
+            "traceparent": "00-17900000000000000000000000000179-00000000000000c8-01",
+            "parentSpanId": "00000000000000c7",
+            "expectedHeadSha": "063d5e37dd786faecbae4b4bd3ff6b6e8d355196",
+            "squashCommitSha": "4a4c6aeb5489921a84968840a8d1187d14c91108",
+            "observedMs": 1795851778000
+          },
+          "verifiedMain": {
+            "traceparent": "00-17900000000000000000000000000179-00000000000000c9-01",
+            "parentSpanId": "00000000000000c8",
+            "mainCommitSha": "4a4c6aeb5489921a84968840a8d1187d14c91108",
+            "mainHealthy": true,
+            "receiptId": "run-46122476368",
+            "observedMs": 1795851848000
+          }
+        },
+        "governanceAttestation": {
+          "repositoryId": 1471342715,
+          "ownedPaths": [
+            "tests/engineering-factory/curated-lessons.test.mjs",
+            "tools/engineering-factory/curated-lessons.mjs"
+          ],
+          "touchedPaths": [
+            "tests/engineering-factory/curated-lessons.test.mjs",
+            "tools/engineering-factory/curated-lessons.mjs"
+          ],
+          "attempt": 1,
+          "maxRetries": 2,
+          "incrementalBilledUsdCents": 0,
+          "safeOutputsThreatDetected": false,
+          "humanOwnerSignOffVerified": false,
+          "authorIdentity": "cyrusjamula",
+          "implementationAgentIdentity": "copilot-swe-agent[bot]",
+          "reviewerIdentity": "copilot-pull-request-reviewer[bot]",
+          "mainHealthy": true,
+          "accountingVerified": false
         }
       }
     ],
@@ -1021,45 +2153,77 @@
       ]
     },
     "cohortInput": {
+      "cohortSource": "github-verified-wave5-outcomes",
       "beforeCohort": {
         "repositoryId": 1471342715,
-        "cohortId": "m02-07-synthetic-precohort",
+        "cohortId": "m02-07-waves3-4-vs-wave5",
         "sourceKind": "verified-autonomous",
         "complete": true,
-        "windowStartMs": 1795700000000,
-        "windowEndMs": 1795770000000,
-        "acceptedOutcomes": 6,
-        "coveredLines": 41787,
-        "totalLines": 41816,
-        "coveredBranches": 22069,
-        "totalBranches": 22267,
+        "windowStartMs": 1795830520000,
+        "windowEndMs": 1795843720000,
+        "acceptedOutcomes": 5,
+        "distinctIssueNumbers": [
+          5,
+          6,
+          8,
+          9,
+          14
+        ],
+        "mergedPullNumbers": [
+          160,
+          161,
+          164,
+          166,
+          167
+        ],
+        "coveredLines": 5305,
+        "totalLines": 5309,
+        "coveredBranches": 2623,
+        "totalBranches": 2644,
         "securityFindings": 0,
         "mainFailures": 0,
         "routineHumanInterventions": 0,
-        "reworkRateBps": 1500,
-        "aiCreditsTotal": 192,
+        "reworkRateBps": 7857,
+        "aiCreditsTotal": null,
         "incrementalBilledUsdCents": 0,
-        "medianCycleTimeMs": 133000
+        "medianCycleTimeMs": 55716000
       },
       "afterCohort": {
         "repositoryId": 1471342715,
-        "cohortId": "m02-07-synthetic-precohort",
+        "cohortId": "m02-07-waves3-4-vs-wave5",
         "sourceKind": "verified-autonomous",
         "complete": true,
-        "windowStartMs": 1795770000000,
-        "windowEndMs": 1795840000000,
+        "windowStartMs": 1795845341000,
+        "windowEndMs": 1795858541000,
         "acceptedOutcomes": 6,
-        "coveredLines": 42150,
-        "totalLines": 42175,
-        "coveredBranches": 22310,
-        "totalBranches": 22505,
+        "distinctIssueNumbers": [
+          6,
+          10,
+          11,
+          13,
+          14,
+          137
+        ],
+        "mergedPullNumbers": [
+          171,
+          172,
+          173,
+          175,
+          177,
+          178,
+          179
+        ],
+        "coveredLines": 9435,
+        "totalLines": 9435,
+        "coveredBranches": 4355,
+        "totalBranches": 4374,
         "securityFindings": 0,
         "mainFailures": 0,
         "routineHumanInterventions": 0,
-        "reworkRateBps": 900,
-        "aiCreditsTotal": 168,
+        "reworkRateBps": 6400,
+        "aiCreditsTotal": null,
         "incrementalBilledUsdCents": 0,
-        "medianCycleTimeMs": 72000
+        "medianCycleTimeMs": 1986000
       }
     },
     "shippedCandidate": {
@@ -1095,56 +2259,82 @@
       ],
       "targetRevertCommitSha": "ec438f54088f30856c2df6ff626e894dde2a0100",
       "squashCommitSha": "ec438f54088f30856c2df6ff626e894dde2a0100",
-      "cohortId": "m02-07-synthetic-precohort",
+      "cohortId": "m02-07-waves3-4-vs-wave5",
+      "cohortSource": "github-verified-wave5-outcomes",
       "pullNumber": 168,
       "issueNumber": 5
+    },
+    "revisedExitContract": {
+      "ownerApprovedStreamlinedCohort": true,
+      "issueNumber": 137
     }
   },
   "regressionDrill": {
     "regressionAfterCohort": {
       "repositoryId": 1471342715,
-      "cohortId": "m02-07-synthetic-precohort",
+      "cohortId": "m02-07-waves3-4-vs-wave5",
       "sourceKind": "verified-autonomous",
       "complete": true,
-      "windowStartMs": 1795770000000,
-      "windowEndMs": 1795840000000,
+      "windowStartMs": 1795845341000,
+      "windowEndMs": 1795858541000,
       "acceptedOutcomes": 6,
-      "coveredLines": 42150,
-      "totalLines": 42175,
-      "coveredBranches": 22310,
-      "totalBranches": 22505,
+      "distinctIssueNumbers": [
+        6,
+        10,
+        11,
+        13,
+        14,
+        137
+      ],
+      "mergedPullNumbers": [
+        171,
+        172,
+        173,
+        175,
+        177,
+        178,
+        179
+      ],
+      "coveredLines": 9435,
+      "totalLines": 9435,
+      "coveredBranches": 4355,
+      "totalBranches": 4374,
       "securityFindings": 0,
       "mainFailures": 0,
       "routineHumanInterventions": 0,
-      "reworkRateBps": 1850,
-      "aiCreditsTotal": 228,
-      "incrementalBilledUsdCents": 0,
-      "medianCycleTimeMs": 145000
+      "reworkRateBps": 8200,
+      "aiCreditsTotal": null,
+      "incrementalBilledUsdCents": 5,
+      "medianCycleTimeMs": 58000000
     },
-    "standardShippedCandidate": {
+    "standardWave5ShippedCandidate": {
       "proposalId": "failure:1471342715:pr161-sentence-polarity-and-quota-binding",
       "repositoryId": 1471342715,
-      "laneId": "sf-curated-lessons-lane",
+      "laneId": "sf-curated-lessons-cohort-lane",
       "scope": "knowledge-map",
       "ownedPaths": [
-        "docs/MAF-INNER-ORCHESTRATION.md",
+        "docs/CURATED-LESSONS-MEMORY.md",
+        "docs/evidence/m02-03-curated-lessons-cohort.json",
         "tests/engineering-factory/curated-lessons.test.mjs",
         "tools/engineering-factory/curated-lessons.mjs"
       ],
       "touchedPaths": [
-        "docs/MAF-INNER-ORCHESTRATION.md",
+        "docs/CURATED-LESSONS-MEMORY.md",
+        "docs/evidence/m02-03-curated-lessons-cohort.json",
         "tests/engineering-factory/curated-lessons.test.mjs",
         "tools/engineering-factory/curated-lessons.mjs"
       ],
       "targetPaths": [
-        "docs/MAF-INNER-ORCHESTRATION.md",
+        "docs/CURATED-LESSONS-MEMORY.md",
+        "docs/evidence/m02-03-curated-lessons-cohort.json",
         "tests/engineering-factory/curated-lessons.test.mjs",
         "tools/engineering-factory/curated-lessons.mjs"
       ],
-      "targetRevertCommitSha": "1f63648f991325ac6e8c5d33121b53f907f9e079",
-      "squashCommitSha": "1f63648f991325ac6e8c5d33121b53f907f9e079",
-      "cohortId": "m02-07-synthetic-precohort",
-      "pullNumber": 161,
+      "targetRevertCommitSha": "00501a9332876f190e0bd391afe461463348dce2",
+      "squashCommitSha": "00501a9332876f190e0bd391afe461463348dce2",
+      "cohortId": "m02-07-waves3-4-vs-wave5",
+      "cohortSource": "github-verified-wave5-outcomes",
+      "pullNumber": 178,
       "issueNumber": 14
     }
   },
@@ -1157,12 +2347,15 @@
     "autoPolicyMutation": false,
     "reason": "KAIZEN_COHORT_EVALUATED",
     "repositoryId": 1471342715,
-    "evaluatedHeadSha": "ec438f54088f30856c2df6ff626e894dde2a0100",
-    "evidenceMode": "pre-cohort-synthetic",
-    "syntheticReplayOnly": true,
+    "evaluatedHeadSha": "4a4c6aeb5489921a84968840a8d1187d14c91108",
+    "evidenceMode": "github-verified-cohort",
+    "cohortSource": "github-verified-wave5-outcomes",
+    "syntheticReplayOnly": false,
+    "verifiedCohortOutcomesCount": 6,
     "liveAutonomousOutcomesCount": 0,
+    "kaizenCohortVerified": true,
     "liveCohortVerified": false,
-    "issue137ReadyToClose": false,
+    "issue137ReadyToClose": true,
     "readoutStatus": "VERIFIED_IMPROVEMENT",
     "gatePipelineRequired": [
       "ci-98-95",
@@ -1171,8 +2364,8 @@
       "squash-merge-queue"
     ],
     "provenanceCounts": {
-      "totalRepositoryChains": 5,
-      "verifiedNineLinkChains": 5,
+      "totalRepositoryChains": 13,
+      "verifiedNineLinkChains": 13,
       "isolatedOutCount": 1,
       "provenanceCompletenessPct": 100,
       "protectedSelfModifications": 0,
@@ -1180,8 +2373,8 @@
       "killSwitchTrips": 0,
       "unapprovedSpendUsdCents": 0,
       "zeroUnapprovedSpend": true,
-      "totalRunAiCredits": 145,
-      "copilotAgentChainsCount": 5
+      "totalRunAiCredits": null,
+      "copilotAgentChainsCount": 13
     },
     "proposalCounts": {
       "totalProposals": 4,
@@ -1208,16 +2401,19 @@
       "shadow": true,
       "status": "VERIFIED_IMPROVEMENT",
       "repositoryId": 1471342715,
-      "cohortId": "m02-07-synthetic-precohort",
+      "cohortId": "m02-07-waves3-4-vs-wave5",
       "cohortComplete": true,
       "verifiedImprovement": true,
       "rollbackRequired": false,
       "rollbackReasons": [],
       "metricsDelta": {
-        "medianCycleTimeDeltaMs": -61000,
-        "reworkRateDeltaBps": -600,
-        "aiCreditsPerOutcomeDelta": -4
-      }
+        "medianCycleTimeDeltaMs": -53730000,
+        "reworkRateDeltaBps": -1457,
+        "aiCreditsPerOutcomeDelta": null
+      },
+      "cohortSource": "github-verified-wave5-outcomes",
+      "beforeDistinctIssues": 5,
+      "afterDistinctIssues": 6
     },
     "revertCandidateSpec": null
   },
@@ -1225,6 +2421,7 @@
     "readoutStatus": "ROLLBACK_REQUIRED",
     "rollbackRequired": true,
     "verifiedImprovement": false,
+    "kaizenCohortVerified": false,
     "liveCohortVerified": false,
     "issue137ReadyToClose": false,
     "rollbackReasons": [
@@ -1242,7 +2439,8 @@
       "sourceProposalId": "failure:1471342715:pr168-review-merge-ref-and-repo-id-guard",
       "deliveryKind": "human-approved-revert-pr",
       "repositoryId": 1471342715,
-      "cohortId": "m02-07-synthetic-precohort",
+      "cohortId": "m02-07-waves3-4-vs-wave5",
+      "cohortSource": "github-verified-wave5-outcomes",
       "scope": "factory-velocity",
       "laneId": "sf-ghaw-lock-lane",
       "targetRevertCommitSha": "ec438f54088f30856c2df6ff626e894dde2a0100",
@@ -1269,11 +2467,12 @@
       "sourceProposalId": "failure:1471342715:pr161-sentence-polarity-and-quota-binding",
       "deliveryKind": "candidate-revert-pr",
       "repositoryId": 1471342715,
-      "cohortId": "m02-07-synthetic-precohort",
+      "cohortId": "m02-07-waves3-4-vs-wave5",
+      "cohortSource": "github-verified-wave5-outcomes",
       "scope": "knowledge-map",
-      "laneId": "sf-curated-lessons-lane",
-      "targetRevertCommitSha": "1f63648f991325ac6e8c5d33121b53f907f9e079",
-      "sourcePullNumber": 161,
+      "laneId": "sf-curated-lessons-cohort-lane",
+      "targetRevertCommitSha": "00501a9332876f190e0bd391afe461463348dce2",
+      "sourcePullNumber": 178,
       "sourceIssueNumber": 14,
       "requiresHumanApproval": false,
       "directMainMutation": false,

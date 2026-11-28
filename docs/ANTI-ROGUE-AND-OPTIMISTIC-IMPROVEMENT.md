@@ -119,24 +119,46 @@ while strictly isolating `sourceKind: "historical-proxy"` from
 - **Matched Cohort Verification & Automatic Rollback (`verifyCohortImprovementOrRollback`):**
   Requires matching `repositoryId`, `cohortId`, `sourceKind: "verified-autonomous"`,
   `complete: true`, non-overlapping equal-duration windows (`beforeCohort.windowEndMs <=
-  afterCohort.windowStartMs`), and `>= 5` comparable accepted outcomes in both
-  `beforeCohort` and `afterCohort` (returning `status: "INSUFFICIENT_COHORT"`,
-  `cohortComplete: false` when `< 5`). Once both cohorts reach `>= 5` accepted outcomes,
-  deterministic rollback (`status: "ROLLBACK_REQUIRED"`, `rollbackRequired: true`)
-  triggers immediately if coverage drops below `98%/95%` (or stricter consumer thresholds)
-  or regresses relative to `beforeCohort`, `securityFindings > 0`, `mainFailures > 0`,
-  routine human interventions increase in either absolute count or per-outcome rate,
-  `reworkRateBps` (including `>10,000` bps repair-per-superstep ratios) regresses beyond
-  tolerance, or AI-credit cost per accepted outcome exceeds baseline.
+  afterCohort.windowStartMs`), optional symmetric `distinctIssueNumbers` /
+  `mergedPullNumbers` bindings (`distinctIssueNumbers.length === acceptedOutcomes`,
+  `mergedPullNumbers.length >= acceptedOutcomes`), optional `cohortSource` allowlisted in
+  `KAIZEN_COHORT_SOURCES` (`"synthetic-precohort-replay"`,
+  `"github-verified-wave5-outcomes"`, `"live-unattended-ghaw-copilot"`), and `>= 5`
+  comparable accepted outcomes in both `beforeCohort` and `afterCohort` (returning
+  `status: "INSUFFICIENT_COHORT"`, `cohortComplete: false` when `< 5`). Once both cohorts
+  reach `>= 5` accepted outcomes, deterministic rollback (`status: "ROLLBACK_REQUIRED"`,
+  `rollbackRequired: true`) triggers immediately if coverage drops below `98%/95%` (or
+  stricter consumer thresholds) or regresses relative to `beforeCohort`,
+  `securityFindings > 0`, `mainFailures > 0`, routine human interventions increase in
+  either absolute count or per-outcome rate, `reworkRateBps` (including `>10,000` bps
+  repair-per-superstep ratios) regresses beyond tolerance, or AI-credit cost per accepted
+  outcome exceeds baseline.
 - **Bounded Automatic Revert Candidate Specification (`buildAutomaticRevertCandidateSpec`):**
-  Consumes a `verifyCohortImprovementOrRollback` verdict (bound to `repositoryId` and
-  `cohortId`) and merged candidate metadata; fails closed when `rollbackRequired !== true`,
-  when `repositoryId` / `cohortId` disagree, when inputs are malformed, proxy-wrapped, or
-  out-of-lane, or when supplied `touchedPaths` / 9-link `provenanceChain` omit touched
-  files from `targetPaths`, and when `rollbackRequired === true` emits an isolated,
-  read-only revert PR specification (`directMainMutation: false`,
-  `autoPolicyMutation: false`, `gatePipelineRequired: ["ci-98-95", "codeql",
-  "independent-review", "squash-merge-queue"]`, exact `rollbackReasons`, verified 40-hex
-  `targetRevertCommitSha`, `provenanceVerified` boolean, and `requiresHumanApproval: true`
-  whenever `targetPaths`, `ownedPaths`, or contract metadata touch governed control-plane,
-  workflow, policy, security, or budget surfaces).
+  Consumes a `verifyCohortImprovementOrRollback` verdict (bound to `repositoryId`,
+  `cohortId`, and optional `cohortSource`) and merged candidate metadata; fails closed
+  when `rollbackRequired !== true`, when `repositoryId` / `cohortId` / `cohortSource`
+  disagree, when inputs are malformed, proxy-wrapped, or out-of-lane, or when supplied
+  `touchedPaths` / 9-link `provenanceChain` omit touched files from `targetPaths`, and when
+  `rollbackRequired === true` emits an isolated, read-only revert PR specification
+  (`directMainMutation: false`, `autoPolicyMutation: false`,
+  `gatePipelineRequired: ["ci-98-95", "codeql", "independent-review",
+  "squash-merge-queue"]`, exact `rollbackReasons`, verified 40-hex
+  `targetRevertCommitSha`, `provenanceVerified` boolean, and
+  `requiresHumanApproval: true` whenever `targetPaths`, `ownedPaths`, or contract metadata
+  touch governed control-plane, workflow, policy, security, or budget surfaces).
+- **Bound Kaizen Cohort Readout & Wave 5 Verification (`evaluateKaizenCohortReadout` &
+  [`docs/evidence/m02-07-kaizen-audit-cohort.json`](evidence/m02-07-kaizen-audit-cohort.json)):**
+  Distinguishes three provenance modes in `KAIZEN_EVIDENCE_MODES` (`"pre-cohort-synthetic"`,
+  `"github-verified-cohort"`, `"live-autonomous-cohort"`) bound 1:1 to
+  `KAIZEN_COHORT_SOURCES`. On `main` @ `4a4c6aeb5489921a84968840a8d1187d14c91108`
+  (`cohortSource: "github-verified-wave5-outcomes"`), verifies `13` unbroken 9-link
+  `Jamula/SoftwareFactory` causal chains with authentic exact-head
+  `copilot-pull-request-reviewer[bot]` reviews and post-merge `Push on main` runs across
+  pre-Kaizen baseline (`#160, #161, #164, #166, #167`, `5` distinct issues `[5, 6, 8, 9,
+  14]`), shipped candidate (`#168`), and post-Kaizen Wave 5 (`#171, #172, #173, #175, #177,
+  #178, #179`, `6` distinct issues `[6, 10, 11, 13, 14, 137]`), enforcing
+  `governanceAttestation.accountingVerified = false` and `aiCreditsTotal: null` alongside
+  `$0` verified billed overage, binding both baseline and post-rollout PR/issue/coverage
+  sums to verified audit records, and setting `kaizenCohortVerified: true` and
+  `issue137ReadyToClose: true` under the owner-approved streamlined M02 exit contract while
+  keeping `liveAutonomousOutcomesCount: 0` and `liveCohortVerified: false`.
