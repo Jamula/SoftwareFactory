@@ -892,6 +892,31 @@ const validEnrolledLanes = lanes =>
     isDenseArray(lane.owners, 32) && lane.owners.length > 0 && lane.owners.every(isRepoPath)) &&
   isUnique(lanes.map(lane => lane.id)) && arePathsDisjoint(lanes.flatMap(lane => lane.owners));
 
+const enrolledLanesMatchRoster = (enrolledLanes, rosterLanes) =>
+  enrolledLanes.length === rosterLanes.length &&
+  enrolledLanes.every(lane => {
+    const match = rosterLanes.find(candidate => candidate.id === lane.id);
+    return Boolean(match) &&
+      (match.specialist === undefined || match.specialist === null ||
+       !SPECIALIST_ROLES.includes(match.specialist) || match.specialist === lane.specialist) &&
+      lane.owners.length === match.owners.length &&
+      lane.owners.every(owner => match.owners.includes(owner));
+  });
+
+const factoryCatalogLanes = () => {
+  const catalog = softwareFactoryCatalog('0'.repeat(40), [
+    ...new Set([...defaultSoftwareFactoryTestInventory(), MCP_CONNECTOR_TEST_SUITE])
+  ]);
+  const laneMap = new Map();
+  for (const comp of catalog.components) {
+    if (!laneMap.has(comp.owner)) {
+      laneMap.set(comp.owner, { id: comp.owner, specialist: comp.specialty, owners: [] });
+    }
+    laneMap.get(comp.owner).owners.push(comp.root);
+  }
+  return [...laneMap.values()];
+};
+
 export function validateMcpConnectorEnrollment(authorizedRepositories) {
   const context = { authorizedRepositories };
   if (!isValidConnectorContext(context)) return false;
@@ -901,13 +926,19 @@ export function validateMcpConnectorEnrollment(authorizedRepositories) {
   if (!auth.ok) return false;
   return [...auth.byId.values()].every(entry =>
     (entry.lanes === undefined || validEnrolledLanes(entry.lanes)) &&
+    (entry.repositoryId !== DEFAULT_FACTORY_SCOPE.repositoryId || entry.lanes === undefined ||
+      enrolledLanesMatchRoster(entry.lanes, factoryCatalogLanes())) &&
     (entry.projectConfig === undefined ||
       (validateProjectConfig(entry.projectConfig) &&
        entry.projectConfig.project.repository === entry.repository &&
-       entry.projectConfig.project.defaultBranch === entry.defaultBranch)));
+       entry.projectConfig.project.defaultBranch === entry.defaultBranch &&
+       (entry.lanes === undefined || enrolledLanesMatchRoster(entry.lanes, entry.projectConfig.lanes)))));
 }
 
 function buildSanitizedKnowledgeMap(entry, revision, nowMs, requestedTestInventory) {
+  if (entry.lanes !== undefined && !validEnrolledLanes(entry.lanes)) {
+    return { ok: false, reason: 'INVALID_LANE_OWNERSHIP' };
+  }
   if (entry.projectConfig !== undefined) {
     if (!validateProjectConfig(entry.projectConfig) ||
         entry.projectConfig.project.repository !== entry.repository ||
@@ -916,6 +947,9 @@ function buildSanitizedKnowledgeMap(entry, revision, nowMs, requestedTestInvento
     }
     if (entry.projectConfig.project.defaultBranch !== entry.defaultBranch) {
       return { ok: false, reason: 'BRANCH_METADATA_CONFLICT' };
+    }
+    if (entry.lanes !== undefined && !enrolledLanesMatchRoster(entry.lanes, entry.projectConfig.lanes)) {
+      return { ok: false, reason: 'LANE_ROSTER_CONFLICT' };
     }
     const check = validateKnowledgeMap(entry.projectConfig.knowledgeMap, {
       repository: entry.repository,
@@ -973,6 +1007,9 @@ function buildSanitizedKnowledgeMap(entry, revision, nowMs, requestedTestInvento
       specialist: lane.specialist,
       owners: Object.freeze(lane.owners)
     })));
+    if (entry.lanes !== undefined && !enrolledLanesMatchRoster(entry.lanes, lanes)) {
+      return { ok: false, reason: 'LANE_ROSTER_CONFLICT' };
+    }
     const components = Object.freeze(catalog.components.map(comp => Object.freeze({
       id: comp.component,
       lane: comp.owner,
@@ -988,9 +1025,6 @@ function buildSanitizedKnowledgeMap(entry, revision, nowMs, requestedTestInvento
 
   if (entry.lanes === undefined) {
     return { ok: false, reason: 'KNOWLEDGE_MAP_UNAVAILABLE' };
-  }
-  if (!validEnrolledLanes(entry.lanes)) {
-    return { ok: false, reason: 'INVALID_LANE_OWNERSHIP' };
   }
   const lanes = Object.freeze(entry.lanes.map(lane => Object.freeze({
     id: lane.id,
@@ -1372,24 +1406,47 @@ function handleAdditionalTool(name, args, context) {
   let result;
   if (name === 'plan_disjoint_lanes') {
     if (!hasAllowedKeys(args, ['repositoryId', 'tasks'], ['active', 'policy'])) return wrapperDenied('INVALID_PLAN_ARGUMENTS');
+    if (entry.lanes !== undefined && !validEnrolledLanes(entry.lanes)) return wrapperDenied('INVALID_LANE_OWNERSHIP');
     let config = entry.projectConfig;
-    if (config === undefined && entry.repositoryId === DEFAULT_FACTORY_SCOPE.repositoryId) {
-      const map = buildSanitizedKnowledgeMap(entry, '0'.repeat(40), 0);
-      if (!map.ok) return wrapperDenied(map.reason);
-      config = {
-        schemaVersion: 1,
-        project: { key: 'softwarefactory', repository: entry.repository, defaultBranch: entry.defaultBranch },
-        execution: { enabled: false, mode: 'shadow', stop: false },
-        limits: { maxConcurrentLanes: 1, leaseMs: 1000, maxAttempts: 1, baseDelayMs: 1, maxDelayMs: 1 },
-        adapters: { workTracker: 'mock', engineeringAgent: 'mock', state: 'sqlite' },
-        lanes: map.lanes.map(lane => ({ id: lane.id, owners: [...lane.owners], prompt: 'docs/ENGINEERING-STANDARDS.md' }))
-      };
+    if (config === undefined) {
+      if (entry.repositoryId === DEFAULT_FACTORY_SCOPE.repositoryId) {
+        const map = buildSanitizedKnowledgeMap(entry, '0'.repeat(40), 0);
+        if (!map.ok) return wrapperDenied(map.reason);
+        config = {
+          schemaVersion: 1,
+          project: { key: 'softwarefactory', repository: entry.repository, defaultBranch: entry.defaultBranch },
+          execution: { enabled: false, mode: 'shadow', stop: false },
+          limits: { maxConcurrentLanes: 1, leaseMs: 1000, maxAttempts: 1, baseDelayMs: 1, maxDelayMs: 1 },
+          adapters: { workTracker: 'mock', engineeringAgent: 'mock', state: 'sqlite' },
+          lanes: map.lanes.map(lane => ({ id: lane.id, owners: [...lane.owners], prompt: 'docs/ENGINEERING-STANDARDS.md' }))
+        };
+      } else if (entry.lanes !== undefined) {
+        config = {
+          schemaVersion: 1,
+          project: { key: 'enrolled-consumer', repository: entry.repository, defaultBranch: entry.defaultBranch },
+          execution: { enabled: false, mode: 'shadow', stop: false },
+          limits: { maxConcurrentLanes: entry.lanes.length, leaseMs: 1000, maxAttempts: 1, baseDelayMs: 1, maxDelayMs: 1 },
+          adapters: { workTracker: 'mock', engineeringAgent: 'mock', state: 'sqlite' },
+          lanes: entry.lanes.map(lane => ({ id: lane.id, specialist: lane.specialist, owners: [...lane.owners], prompt: 'docs/ENGINEERING-STANDARDS.md' }))
+        };
+      }
     }
     if (!validateProjectConfig(config) || config.project.repository !== entry.repository ||
         config.project.defaultBranch !== entry.defaultBranch) return wrapperDenied('INVALID_PROJECT_CONFIG');
+    if (entry.lanes !== undefined && !enrolledLanesMatchRoster(entry.lanes, config.lanes)) {
+      return wrapperDenied('LANE_ROSTER_CONFLICT');
+    }
+    if (args.policy !== undefined &&
+        (!isPlainObject(args.policy) ||
+         (args.policy.repository !== undefined && args.policy.repository !== entry.repository) ||
+         (args.policy.defaultBranch !== undefined && args.policy.defaultBranch !== entry.defaultBranch) ||
+         (args.policy.coverage !== undefined &&
+          !policyMeetsCoverageFloor(args.policy, entry.coverageThresholds.line, entry.coverageThresholds.branch)))) {
+      return wrapperDenied('INVALID_PLAN_POLICY');
+    }
     const inventories = [args.tasks, args.active ?? []];
     if (inventories.some(items => !isDenseArray(items, 250) || items.some(item =>
-      !isPlainObject(item) || !isDenseArray(item.paths, 256) ||
+      !isPlainObject(item) || !isDenseArray(item.paths, 256) || item.paths.length === 0 ||
       item.paths.some(path => typeof path !== 'string' || path.endsWith('.lock.yml') ||
         FORBIDDEN_CONTROL_PLANE_PATHS.some(blocked => pathsOverlap(path, blocked)))))) {
       return wrapperDenied('INVALID_OR_PROTECTED_PATH');
@@ -1397,6 +1454,14 @@ function handleAdditionalTool(name, args, context) {
     if (inventories.some(items => items.some(item => item.paths.some(path =>
       entry.trustedFiles === undefined || !entry.trustedFiles.includes(path))))) {
       return wrapperDenied('TRUSTED_FILE_INVENTORY_REQUIRED');
+    }
+    if (inventories.some(items => items.some(item => {
+      if (typeof item.lane !== 'string') return true;
+      const matchedLane = config.lanes.find(lane => lane.id === item.lane);
+      return !matchedLane || item.paths.some(path =>
+        !matchedLane.owners.some(owner => pathsOverlap(path, owner)));
+    }))) {
+      return wrapperDenied('UNENROLLED_LANE_WORK');
     }
     result = planLanes(config, args.tasks, args.active, args.policy);
     return toolCallOutcome(result, !['SHADOW_PLAN', 'NO_READY_WORK'].includes(result.reason));

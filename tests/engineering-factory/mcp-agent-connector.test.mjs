@@ -73,6 +73,38 @@ test('new read-only tools enforce enrollment, trusted lanes, identities and stri
     active: [{ id: 2, lane: 'api', paths: ['src/api/build.v1'] }]
   }).structuredContent.reason, 'TRUSTED_FILE_INVENTORY_REQUIRED');
   assert.equal(mcpCall('plan_disjoint_lanes', { repositoryId: CONSUMER_REPO_ID, tasks: [], active: [{ id: 2, lane: 'api', paths: ['src/api/build.lock.yml'] }] }).structuredContent.reason, 'INVALID_OR_PROTECTED_PATH');
+  assert.equal(mcpCall('plan_disjoint_lanes', { repositoryId: CONSUMER_REPO_ID, tasks: [{ ...task, paths: [] }] }).structuredContent.reason, 'INVALID_OR_PROTECTED_PATH');
+  assert.equal(mcpCall('plan_disjoint_lanes', { repositoryId: CONSUMER_REPO_ID, tasks: [{ ...task, lane: 'unenrolled' }] }).structuredContent.reason, 'UNENROLLED_LANE_WORK');
+  assert.equal(mcpCall('plan_disjoint_lanes', { repositoryId: CONSUMER_REPO_ID, tasks: [{ ...task, lane: 123 }] }).structuredContent.reason, 'UNENROLLED_LANE_WORK');
+  assert.equal(mcpCall('plan_disjoint_lanes', { repositoryId: CONSUMER_REPO_ID, tasks: [{ ...task, lane: 'docs' }] }).structuredContent.reason, 'UNENROLLED_LANE_WORK');
+  assert.equal(mcpCall('plan_disjoint_lanes', { repositoryId: CONSUMER_REPO_ID, tasks: [task], policy: { repository: 'Other/Repo' } }).structuredContent.reason, 'INVALID_PLAN_POLICY');
+  assert.equal(mcpCall('plan_disjoint_lanes', { repositoryId: CONSUMER_REPO_ID, tasks: [task], policy: { defaultBranch: 'trunk' } }).structuredContent.reason, 'INVALID_PLAN_POLICY');
+  assert.equal(mcpCall('plan_disjoint_lanes', { repositoryId: CONSUMER_REPO_ID, tasks: [task], policy: { coverage: { line: 95, branch: 90 } } }).structuredContent.reason, 'INVALID_PLAN_POLICY');
+  const laneOnlyPlanCtx = {
+    authorizedRepositories: [{
+      repositoryId: CONSUMER_REPO_ID,
+      repository: 'Synthetic/Spellbook',
+      lanes: [{ id: 'api', specialist: 'api', owners: ['src/api'] }],
+      trustedFiles: ['src/api/x.mjs', 'docs/guide.md']
+    }]
+  };
+  assert.equal(mcpCall('plan_disjoint_lanes', { repositoryId: CONSUMER_REPO_ID, tasks: [task] }, laneOnlyPlanCtx).structuredContent.reason, 'SHADOW_PLAN');
+  assert.equal(mcpCall('plan_disjoint_lanes', {
+    repositoryId: CONSUMER_REPO_ID,
+    tasks: [{ ...task, lane: 'docs', paths: ['docs/guide.md'] }]
+  }, laneOnlyPlanCtx).structuredContent.reason, 'UNENROLLED_LANE_WORK');
+  const conflictingRosterCtx = authorizedContext();
+  conflictingRosterCtx.authorizedRepositories[1].lanes = [{ id: 'api', specialist: 'api', owners: ['src/api'] }];
+  assert.equal(mcpCall('plan_disjoint_lanes', { repositoryId: CONSUMER_REPO_ID, tasks: [task] }, conflictingRosterCtx).structuredContent.reason, 'LANE_ROSTER_CONFLICT');
+  assert.equal(mcpCall('get_repo_knowledge_map', { repositoryId: CONSUMER_REPO_ID, revision: HEAD_SHA, nowMs: NOW_MS }, conflictingRosterCtx).structuredContent.reason, 'LANE_ROSTER_CONFLICT');
+  const factoryConflictCtx = authorizedContext();
+  factoryConflictCtx.authorizedRepositories[0].lanes = [{ id: 'api', specialist: 'api', owners: ['src/api'] }];
+  assert.equal(mcpCall('get_repo_knowledge_map', { repositoryId: FACTORY_REPO_ID, revision: HEAD_SHA, nowMs: NOW_MS }, factoryConflictCtx).structuredContent.reason, 'LANE_ROSTER_CONFLICT');
+  assert.equal(mcpCall('plan_disjoint_lanes', { repositoryId: FACTORY_REPO_ID, tasks: [] }, factoryConflictCtx).structuredContent.reason, 'LANE_ROSTER_CONFLICT');
+  const badEnrolledLanesCtx = {
+    authorizedRepositories: [{ repositoryId: CONSUMER_REPO_ID, repository: 'Synthetic/Spellbook', lanes: [] }]
+  };
+  assert.equal(mcpCall('plan_disjoint_lanes', { repositoryId: CONSUMER_REPO_ID, tasks: [] }, badEnrolledLanesCtx).structuredContent.reason, 'INVALID_LANE_OWNERSHIP');
   assert.equal(mcpCall('plan_disjoint_lanes', { repositoryId: FACTORY_REPO_ID, tasks: [] }).structuredContent.reason, 'NO_READY_WORK');
   assert.equal(mcpCall('plan_disjoint_lanes', { repositoryId: 1, tasks: [] }).structuredContent.reason, 'UNAUTHORIZED_REPOSITORY');
   assert.equal(mcpCall('plan_disjoint_lanes', { repositoryId: CONSUMER_REPO_ID, tasks: [] }, {}).structuredContent.reason, 'AUTHORIZATION_CONTEXT_INVALID');
@@ -324,7 +356,17 @@ test('operator enrollment is structurally validated without weakening repository
   assert.equal(validateMcpConnectorEnrollment([{ repositoryId: FACTORY_REPO_ID, repository: 'Synthetic/Other' }]), false);
   assert.equal(validateMcpConnectorEnrollment([{ ...entries[1], coverage: { line: 94, branch: 90 } }]), false);
   assert.equal(validateMcpConnectorEnrollment([{ ...entries[1], projectConfig: {} }]), false);
-  assert.equal(validateMcpConnectorEnrollment([{ ...entries[1], lanes: [{ id: 'api', specialist: 'api', owners: ['src/api'] }] }]), true);
+  assert.equal(validateMcpConnectorEnrollment([{
+    repositoryId: CONSUMER_REPO_ID,
+    repository: 'Synthetic/Spellbook',
+    lanes: [{ id: 'api', specialist: 'api', owners: ['src/api'] }]
+  }]), true);
+  assert.equal(validateMcpConnectorEnrollment([{ ...entries[1], lanes: [{ id: 'api', specialist: 'api', owners: ['src/api'] }] }]), false);
+  assert.equal(validateMcpConnectorEnrollment([{
+    repositoryId: FACTORY_REPO_ID,
+    repository: 'Jamula/SoftwareFactory',
+    lanes: [{ id: 'api', specialist: 'api', owners: ['src/api'] }]
+  }]), false);
   assert.equal(validateMcpConnectorEnrollment([{ ...entries[1], lanes: [] }]), false);
   for (const trustedFiles of [['src/api/work.lock.yml'], ['src/api', 'src/api/nested.mjs'], ['src/api/x.mjs', 'src/api/x.mjs'], [null], ['.github/workflows/test.yml']]) {
     assert.equal(validateMcpConnectorEnrollment([{ ...entries[1], trustedFiles }]), false);
