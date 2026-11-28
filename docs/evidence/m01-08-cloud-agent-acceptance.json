@@ -1,0 +1,145 @@
+{
+  "schemaVersion": 1,
+  "evidenceId": "m01-08-cloud-agent-acceptance",
+  "milestone": "M01.08",
+  "issue": 10,
+  "repository": "Jamula/SoftwareFactory",
+  "repositoryId": 1471342715,
+  "repositoryVisibility": "public",
+  "recordedAtUtc": "2026-11-28T09:44:39Z",
+  "shadow": true,
+  "liveActivation": false,
+  "m01ExitAccepted": false,
+  "statusReason": "PARTIAL_COHORT_IN_PROGRESS",
+  "billingGuardrails": {
+    "prerequisiteIssue": 105,
+    "prerequisiteState": "CLOSED",
+    "prerequisiteClosedAtUtc": "2026-11-28T05:36:01Z",
+    "aiCreditUnitUsdCents": 1,
+    "incrementalBilledUsdCents": 0,
+    "personalPatInActionsSecrets": false,
+    "customPilotEnvironmentAbsent": true,
+    "meters": {
+      "aiCredits": {
+        "verified": true,
+        "overageLimitUsdCents": 0,
+        "overageAllowed": false
+      },
+      "copilotPremiumRequests": {
+        "verified": true,
+        "overageLimitUsdCents": 0,
+        "overageAllowed": false
+      },
+      "cloudSandboxesAndActions": {
+        "verified": true,
+        "overageLimitUsdCents": 0,
+        "overageAllowed": false
+      }
+    }
+  },
+  "cloudAgentIdentity": {
+    "harness": "copilot-cloud-agent",
+    "runner": "github-hosted",
+    "nodeId": "BOT_kgDOC9w8XQ",
+    "databaseId": 198982749,
+    "login": "Copilot",
+    "botHandle": "copilot-swe-agent[bot]",
+    "agentSlug": "copilot-swe-agent",
+    "coAuthorTrailer": "Co-authored-by: copilot-swe-agent[bot] <198982749+Copilot@users.noreply.github.com>",
+    "laptopOrChatDependency": false
+  },
+  "setupWorkflowRemediation": {
+    "workflowPath": ".github/workflows/copilot-setup-steps.yml",
+    "workflowName": "Copilot Setup Steps",
+    "jobName": "copilot-setup-steps",
+    "runsOn": "ubuntu-latest",
+    "timeoutMinutes": 15,
+    "persistCredentials": false,
+    "nodeVersion": "26.13.1",
+    "dotnetVersion": "10.0.404",
+    "lockedInstallCommand": "npm ci --ignore-scripts",
+    "dotnetRestoreCommand": "dotnet restore tests/SoftwareFactory.Agents.Tests/SoftwareFactory.Agents.Tests.csproj --source https://api.nuget.org/v3/index.json",
+    "pinnedActions": {
+      "checkout": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+      "setupNode": "actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1",
+      "setupDotnet": "actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73"
+    },
+    "requiresDefaultBranchMergeToActivate": true
+  },
+  "workerScalingObservation": {
+    "ladder": [
+      1,
+      2,
+      4,
+      8,
+      10,
+      12
+    ],
+    "actualWorkerMax": 2,
+    "workerShortfallFrom12": 10
+  },
+  "verifiedRuns": [
+    {
+      "issueNumber": 180,
+      "pullRequestNumber": 181,
+      "branch": "copilot/publish-zero-spend-static-bundle",
+      "workflowRunId": 46129479064,
+      "workflowJobId": 140931282673,
+      "workflowName": "Running Copilot cloud agent",
+      "event": "dynamic",
+      "startedAtUtc": "2026-11-28T09:13:55Z",
+      "completedAtUtc": "2026-11-28T09:15:41Z",
+      "conclusion": "success",
+      "headSha": "5bebc915d285cde66950b18a539a2b0aad899105",
+      "actorNodeId": "BOT_kgDOC9w8XQ",
+      "actorAgent": "copilot-swe-agent",
+      "changedFileCount": 0,
+      "changedFiles": [],
+      "unauthorizedWrites": 0,
+      "incrementalBilledUsdCents": 0,
+      "outcome": "ENVIRONMENT_AND_SCOPE_DIAGNOSTIC",
+      "findings": [
+        "Default GitHub Cloud Agent runner booted with pre-installed Node 20 and blocked post-firewall package downloads without .github/workflows/copilot-setup-steps.yml on main.",
+        "Cloud @copilot respected strict exclusive file ownership and halted with 0 unauthorized writes when an out-of-scope component-count test required modification."
+      ]
+    },
+    {
+      "issueNumber": 182,
+      "pullRequestNumber": 183,
+      "branch": "copilot/m02-06-expose-softwarefactory-mcp-server",
+      "workflowRunId": 46129821572,
+      "workflowJobId": 140932313671,
+      "workflowName": "Running Copilot cloud agent",
+      "event": "dynamic",
+      "startedAtUtc": "2026-11-28T09:18:13Z",
+      "completedAtUtc": "2026-11-28T09:39:00Z",
+      "conclusion": "success",
+      "headSha": "681b943681e58395dc3bafe944a612ccf738afa4",
+      "implementationCommits": [
+        "c62f4fa5452e9172f2806e4236778153b68970ff",
+        "4b67cb34f2963d083eee5170d896c99fe4f4bae9",
+        "b10bcfa569563949cf2cf8e8de972731138d6602",
+        "f7605fb438e0b392a87a6946710a35103dd8530f",
+        "681b943681e58395dc3bafe944a612ccf738afa4"
+      ],
+      "actorNodeId": "BOT_kgDOC9w8XQ",
+      "actorAgent": "copilot-swe-agent",
+      "changedFileCount": 6,
+      "changedFiles": [
+        ".vscode/mcp.json",
+        "bin/softwarefactory-mcp.mjs",
+        "docs/MCP-MULTI-AGENT-CONNECTOR.md",
+        "package.json",
+        "tests/engineering-factory/mcp-agent-connector.test.mjs",
+        "tools/engineering-factory/mcp-agent-connector.mjs"
+      ],
+      "unauthorizedWrites": 0,
+      "incrementalBilledUsdCents": 0,
+      "outcome": "AUTONOMOUS_IMPLEMENTATION_COMPLETE",
+      "findings": [
+        "Native GitHub Cloud @copilot (BOT_kgDOC9w8XQ / copilot-swe-agent) autonomously implemented all 6 scoped MCP server, CLI, configuration, documentation, and test files in GitHub Cloud with 0 laptop or open-chat dependency.",
+        "Observed public-repository action_required workflow gating on bot-pushed commits across runs 46131387885, 46131387976, 46131388030, and 46131386440."
+      ]
+    }
+  ]
+}
