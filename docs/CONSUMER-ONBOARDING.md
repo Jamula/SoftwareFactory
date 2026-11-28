@@ -1,12 +1,81 @@
 # Onboard a consumer repository
 
-The integration model is shared code with independently pinned, repository-local configuration. Today only offline contract verification and synthetic replay are available; do not activate live controller behavior.
+The integration model is shared code with independently pinned, repository-local configuration (`M03.01` [#13](https://github.com/Jamula/SoftwareFactory/issues/13), closed). In `Jamula/SoftwareFactory`, `M01` foundation issues `#4–#9, #17, #105, #118` (`9 / 10`) are closed and the [#10](https://github.com/Jamula/SoftwareFactory/issues/10) live 3-issue `@copilot` proof is active; external consumers adopt in strict **`M03` `Jamula/Spellbook` (`#11`, `P0`) → `M04` `Jamula/FamilyTree` (`#36`, `P1`) → `M05` `FamilyHub` (`#12`, `P1`)** order only after `M01` (`#10`) acceptance and separate repository-scoped owner authorization.
 
 ![Target shared engine and isolated consumers](images/architecture.svg)
 
+## Onboarding architecture, sequence, and data flow diagrams
+
+### 1. Consumer isolation & `M03` → `M04` → `M05` rollout architecture diagram
+
+```mermaid
+flowchart TB
+  subgraph SF["Jamula/SoftwareFactory (Customer One: M01 + M02, Repo ID 1471342715)"]
+    CORE["evaluator-core (core.mjs v1)<br/>>=98% Line / >=95% Branch"]
+    WF["shadow-tests.yml (workflow_call)<br/>Workflow SHA + Internal checkoutRef SHA"]
+    VER["consumer-onboarding.mjs (#13 Closed)<br/>Stage 0 / Stage 1 / Stage 2 Verifier"]
+  end
+
+  subgraph C1["M03.02 P0 — Consumer #1: Jamula/Spellbook (#11)"]
+    S_POL[".github/softwarefactory-policy.json<br/>mode: disabled, killSwitch: true"]
+    S_GATE[">=97%/90% App Coverage + WebKit/iOS/Release Checks<br/>Formal APPROVED + maxActive: 2 + Unique credentialId"]
+  end
+
+  subgraph C2["M04.01 P1 — Consumer #2: Jamula/FamilyTree (#36)"]
+    F_POL[".github/softwarefactory-policy.json<br/>mode: disabled, killSwitch: true"]
+    F_GATE[">=95%/90% Coverage + Genealogy Private-Data Isolation<br/>Formal APPROVED + maxActive: 1 + Unique credentialId"]
+  end
+
+  subgraph C3["M05.01 P1 — Consumer #3: FamilyHub (#12)"]
+    H_POL[".github/softwarefactory-policy.json<br/>mode: disabled, killSwitch: true"]
+    H_GATE["migrationFreezeClear: true + Strict trunk Base<br/>Formal Exact-Head APPROVED + Production Isolation"]
+  end
+
+  CORE & WF & VER -->|"Dual 40-Hex SHA Pin"| S_POL --> S_GATE
+  S_GATE -->|"After M01 #10 + #13 + #11 Accepted"| F_POL --> F_GATE
+  S_GATE -->|"After M01 #10 + #13 + #11 + Freeze Clear"| H_POL --> H_GATE
+```
+
+### 2. 3-stage onboarding & independent `1`-commit rollback sequence diagram
+
+```mermaid
+sequenceDiagram
+  autonumber
+  actor Owner as Repository Owner
+  participant Plan as buildReadOnlyOnboardingPlan (<=5 min)
+  participant PR as Consumer Repo (Disabled-at-Rest PR)
+  participant Ver as verifyConsumerOnboardingPackage + Scorecard
+  participant Bot as @copilot (copilot-swe-agent[bot])
+
+  Owner->>Plan: 1 natural-language request + <=5 settings (0 mutations, $0 spend)
+  Plan-->>Owner: 2 files (.github/workflows/softwarefactory-shadow-replay.yml + policy.json)
+  Owner->>Ver: Run 6 single-mutation shadow denials + dual 40-hex SHA pin check
+  Ver-->>Owner: ONBOARDING_CONTRACT_VERIFIED (0 overwritten files, 0 external services)
+  Owner->>PR: Merge disabled-at-rest 2-file PR in <=15 min (mode: disabled, killSwitch: true)
+  PR->>Ver: evaluateConsumerOnboardingSuccess -> STAGE_1_SHADOW_ONBOARDED (accepted: false)
+  Note over Owner,Bot: Separate owner authorization + $0 overage hard-stops verified
+  Bot->>PR: Land >=1 real bounded unattended issue on healthy protected defaultBranch
+  PR->>Ver: evaluateConsumerOnboardingSuccess(synthetic: false) -> STAGE_2_AUTONOMOUS_ACCEPTED
+  opt Independent Single-Repository Rollback
+    Owner->>PR: Revert 1 onboarding commit + revoke only target credentialId
+    PR->>Ver: verifyIndependentRollback -> STOPPED (SoftwareFactory & peers unaffected)
+  end
+```
+
+### 3. Discovery-to-scorecard data flow diagram
+
+```mermaid
+flowchart LR
+  SET["<=5 User Settings:<br/>repository, repositoryId,<br/>pinnedFactorySha, stackProfile,<br/>optional stricterCoverageThresholds"] --> PLANNER["buildReadOnlyOnboardingPlan<br/>(Greenfield or Existing-Repo Mode)"]
+  DISC["Read-Only discoveredRepository:<br/>Existing Checks, Coverage,<br/>Concurrency, Reviewers, File List"] --> PLANNER
+  PLANNER --> FILES["2 Generated Files:<br/>softwarefactory-shadow-replay.yml<br/>softwarefactory-policy.json<br/>(overwriteExistingFiles: false)"]
+  FILES --> PKG["verifyWorkflowPin +<br/>verifyConsumerOnboardingPackage<br/>(6 Mandatory Shadow Denials)"]
+  PKG --> SCORE["evaluateConsumerOnboardingSuccess<br/>Stage 1 (Shadow) vs Stage 2 (Real @copilot)"]
+```
+
 ## What Success Looks Like: 3-Stage New-Repo Onboarding Rubric (Discovery → Shadow PR → First Unattended Merge)
 
-New-repository onboarding (`#13`, `M03.01`) is measured by the deterministic, fail-closed `evaluateConsumerOnboardingSuccess(input)` scorecard in `tools/engineering-factory/consumer-onboarding.mjs` (backed by [`docs/evidence/m03-01-onboarding-success-contract.json`](evidence/m03-01-onboarding-success-contract.json)). Merging a disabled workflow is **Stage 1 (`STAGE_1_SHADOW_ONBOARDED`)**, never full acceptance: a repository is **onboarded and accepted (`STAGE_2_AUTONOMOUS_ACCEPTED`)** only after `>= 1` real (non-synthetic) bounded unattended `@copilot` issue lands cleanly onto its healthy protected default branch with `0` human interventions and `$0` incremental spend.
+New-repository onboarding (`#13`, `M03.01`, closed) is measured by the deterministic, fail-closed `evaluateConsumerOnboardingSuccess(input)` scorecard in `tools/engineering-factory/consumer-onboarding.mjs` (backed by [`docs/evidence/m03-01-onboarding-success-contract.json`](evidence/m03-01-onboarding-success-contract.json)). Merging a disabled workflow is **Stage 1 (`STAGE_1_SHADOW_ONBOARDED`)**, never full acceptance: a repository is **onboarded and accepted (`STAGE_2_AUTONOMOUS_ACCEPTED`)** only after `>= 1` real (non-synthetic) bounded unattended `@copilot` issue lands cleanly onto its healthy protected default branch with `0` human interventions and `$0` incremental spend.
 
 ### End-to-end customer journey
 
@@ -27,7 +96,7 @@ New-repository onboarding (`#13`, `M03.01`) is measured by the deterministic, fa
 
 ### Public vs. private repository execution matrix
 
-| Repository visibility | `gh-aw` `.lock.yml` + `@copilot` (`copilot-swe-agent[bot]`) + `@microsoft/copilot-sdk` `2.0.3` | Repository Cloud Automations | Mandatory billing & credential controls |
+| Repository visibility | `gh-aw` `.lock.yml` + `@copilot` (`copilot-swe-agent[bot]`) + GitHub Actions Automode / `@microsoft/copilot-sdk` `2.0.3` | Repository Cloud Automations | Mandatory billing & credential controls |
 | --- | --- | --- | --- |
 | `public` | Supported (`copilotCloudAgentSupported: true`) | Not available (`copilotCloudAutomationsSupported: false`) | Per-repo `$0` AI-credit/Actions overage hard-stop (`paidOverageAllowed: false`), isolated `repo-read-only-shadow` credential (`sharedAdminToken: false`), zero personal PATs |
 | `private` | Supported (`copilotCloudAgentSupported: true`) | Supported (`copilotCloudAutomationsSupported: true`) | Per-repo `$0` AI-credit/Actions overage hard-stop (`paidOverageAllowed: false`), isolated `repo-read-only-shadow` credential (`sharedAdminToken: false`), zero personal PATs |
@@ -105,19 +174,24 @@ Measured synthetic verification (`tests/engineering-factory/consumer-onboarding.
 7. **Verify independent single-repository rollback**: Prove via `verifyIndependentRollback` that setting `mode: "disabled"` and `killSwitch: true`, revoking only the target repository's `credentialId`, reverting the workflow SHA pin via a reviewed PR and confirming `queuedLiveMutations === 0` immediately stops the target repository (`STOPPED`) while peer consumers remain unaffected.
 8. **Score Stage 1 shadow onboarding vs. Stage 2 autonomous acceptance**: Run `evaluateConsumerOnboardingSuccess(input)` to confirm `STAGE_1_SHADOW_ONBOARDED` once the disabled-at-rest 2-file onboarding PR is merged, and gate `STAGE_2_AUTONOMOUS_ACCEPTED` ("Onboarded & Accepted") on a non-synthetic (`synthetic: false`) receipt proving `>= 1` bounded unattended `@copilot` issue landed onto the healthy protected default branch with `humanInterventions === 0`, `unauthorizedWrites === 0`, `productionDeployments === 0`, and `incrementalBilledUsdCents === 0`.
 
-| Rollout sequence | Intended consumer | Offline synthetic profile (`example-policies.json`) | Policy and local gates to retain |
+| Rollout sequence | Intended consumer & prerequisite gate | Offline synthetic profile (`example-policies.json`) | Policy and local gates to retain |
 | --- | --- | --- | --- |
-| **1st (`M03`)** | `Jamula/Spellbook` (#11, M03) | `example/spellbook` (`ios-webkit-97-90`) | Stricter `97%` app line / `90%` branch gate, WebKit, iOS, and release required check producers, formal `APPROVED`-only review, and `maxActive: 2` concurrency cap |
-| **2nd (`M04`)** | `Jamula/FamilyTree` (#36, M04) | `example/family-tree` (`web-genealogy-95-90`) | Private-data isolation, `95%/90%` baseline coverage, `maxActive: 1`, formal `APPROVED`-only review, and independent auth/persistence review |
-| **3rd (`M05`)** | `FamilyHub` (#12, M05) | `example/family-hub` (`strict-up-to-date-migration-gated`) | Verified repository identity + migration-freeze clearance (`migrationFreezeClear: true`), `trunk` strict up-to-date base, formal exact-head `APPROVED` review, and production isolation |
+| **1st (`M03.02 P0`)** | `Jamula/Spellbook` ([#11](https://github.com/Jamula/SoftwareFactory/issues/11); gated on `M01` `#10` + closed `#13` + `Jamula/Spellbook#103`) | `example/spellbook` (`ios-webkit-97-90`) | Stricter `>=97%` app line / `>=90%` branch gate, WebKit, iOS, and release required check producers, formal `APPROVED`-only review, `maxActive: 2` concurrency cap, and zero production release |
+| **2nd (`M04.01 P1`)** | `Jamula/FamilyTree` ([#36](https://github.com/Jamula/SoftwareFactory/issues/36); gated on `M01` `#10` + `#13` + `#11` Spellbook + `Jamula/FamilyTree#128`/`#120`) | `example/family-tree` (`web-genealogy-95-90`) | Genealogy private-data isolation, `>=95%/90%` baseline coverage, `maxActive: 1`, formal `APPROVED`-only review, independent auth/persistence review, and zero production deploy |
+| **3rd (`M05.01 P1`)** | `FamilyHub` ([#12](https://github.com/Jamula/SoftwareFactory/issues/12); gated on `M01` `#10` + `#13` + `#11` Spellbook + consumer readiness issue `#81` in the authoritative FamilyHub repository + explicit migration-freeze lift) | `example/family-hub` (`strict-up-to-date-migration-gated`) | Verified repository identity + hard migration-freeze gate (`migrationFreezeClear: true`), `trunk` strict up-to-date base freshness, formal exact-head `APPROVED` review, and production isolation |
 | **Future** | Greenfield or existing repository | `baseline-95-90` or custom synthetic fixture | Explicit owner approval, unique `repositoryId` and `credentialId`, immutable 40-hex SHA pin, `>=95%/90%` or stricter local gates, `$0` overage hard-stop, and independent `1`-commit rollback |
 
 ## Local contract verification
 
-Run the synthetic profile and consumer onboarding contract suites locally without network or GitHub credentials:
+Run the synthetic profile, shared onboarding contract, and per-consumer shadow-readiness suites locally without network or GitHub credentials:
 
 ```bash
-node --test tests/engineering-factory/profiles.test.mjs tests/engineering-factory/consumer-onboarding.test.mjs
+node --test \
+  tests/engineering-factory/profiles.test.mjs \
+  tests/engineering-factory/consumer-onboarding.test.mjs \
+  tests/engineering-factory/spellbook-pilot-readiness.test.mjs \
+  tests/engineering-factory/familytree-pilot-readiness.test.mjs \
+  tests/engineering-factory/familyhub-pilot-readiness.test.mjs
 ```
 
 Actual check names, app IDs, repository IDs and permissions must be obtained by the owner from live repository settings after M01 (#10) acceptance and separate scoped authorization, never copied from fictional examples in `tools/engineering-factory/example-policies.json`. No adoption is currently activated. See [adoption contract](CONSUMER-ADOPTION-CONTRACT.md) and [workflow guide](WORKFLOWS.md).

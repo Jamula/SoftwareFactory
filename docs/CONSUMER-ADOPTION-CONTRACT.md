@@ -1,5 +1,5 @@
 # Independent consumer adoption contract
-Contributes to #13, #10, #11, #36, #12. Offline contract and synthetic verification only; no consumer is activated.
+Shared contract [#13](https://github.com/Jamula/SoftwareFactory/issues/13) (`M03.01`, closed); governs [#10](https://github.com/Jamula/SoftwareFactory/issues/10) (`M01`), [#11](https://github.com/Jamula/SoftwareFactory/issues/11) (`M03.02 P0` `Jamula/Spellbook`), [#36](https://github.com/Jamula/SoftwareFactory/issues/36) (`M04.01 P1` `Jamula/FamilyTree`), and [#12](https://github.com/Jamula/SoftwareFactory/issues/12) (`M05.01 P1` `FamilyHub`). Offline contract and synthetic verification only; no external consumer is activated.
 
 ## Versioned onboarding contract (v1)
 `tools/engineering-factory/consumer-onboarding.mjs` implements deterministic, pure, metadata-only contract verification (`verifyConsumerOnboardingPackage`, `verifyWorkflowPin`, `verifyIndependentRollback`, `planConsumerBootstrap`, `buildReadOnlyOnboardingPlan`, `evaluateConsumerOnboardingSuccess`) backed by `validPolicy` and `evaluate` in `tools/engineering-factory/core.mjs`.
@@ -10,7 +10,7 @@ Contributes to #13, #10, #11, #36, #12. Offline contract and synthetic verificat
 - **Stage 0 (`READ_ONLY_ONBOARDING_PLAN_READY`)**: `mandatorySettingsCount <= 5`, `discoveryAndPlanDurationMs <= 300_000` (`<= 5 min`), `overwrittenExistingFiles === 0`, `competingBacklogsCreated === 0` (`authoritativeBacklog: "github-issues"`), `mandatoryExternalServices === 0`, and `incrementalBilledUsdCents === 0`.
 - **Stage 1 (`STAGE_1_SHADOW_ONBOARDED`)**: `basicIntegrationDurationMs <= 900_000` (`<= 15 min`), `onboardingPrMerged === true`, `mode: "disabled"` & `killSwitch: true`, dual 40-hex SHA pin (`verifyWorkflowPin`), stronger local gate preservation (`effectiveCoverage.line >= Math.max(95, existingLine)` & `effectiveCoverage.branch >= Math.max(90, existingBranch)`, required checks/`appId`s, `maxActive <= maxConcurrency`), formal `APPROVED` independent review (`allowCommentedBotApproval === false`), repository-isolated credentials (`sharedAdminToken === false`), `$0` per-repo AI-credit overage hard-stops (`paidOverageAllowed === false`), all `6` single-mutation shadow denials, and `1`-commit independent rollback (`verifyIndependentRollback`).
 - **Stage 2 (`STAGE_2_AUTONOMOUS_ACCEPTED`, "Onboarded & Accepted")**: Requires Stage 1 **plus** non-synthetic (`synthetic === false`) Day-1 autonomous proof bound to the exact consumer `repository` and `repositoryId` (`AUTONOMOUS_PROOF_REPO_MISMATCH` on cross-repo reuse) showing `>= 1` real bounded unattended `@copilot` (`copilot-swe-agent[bot]`) issue landed onto healthy protected `defaultBranch` with exact-head `APPROVED` review, `humanInterventions === 0`, `unauthorizedWrites === 0`, `productionDeployments === 0`, and `incrementalBilledUsdCents === 0` (`liveActivation: false` preserved throughout offline evaluation). Synthetic fixtures always fail Stage 2 with `SYNTHETIC_RUN_CANNOT_ACCEPT_STAGE_2`.
-- **Public vs. private execution matrix**: `gh-aw` `.lock.yml` + `@copilot` (`copilot-swe-agent[bot]`) + pinned `@microsoft/copilot-sdk` `2.0.3` is supported across `public`, `private`, and `internal` repositories; Repository Cloud Automations are supported on `private` and `internal` repositories only (`copilotCloudAutomationsSupported: false` on `public`); per-repo `$0` AI-credit/Actions overage hard-stops and scoped `repo-read-only-shadow` credentials apply to all visibilities.
+- **Public vs. private execution matrix**: `gh-aw` `.lock.yml` + `@copilot` (`copilot-swe-agent[bot]`) + GitHub Actions Automode / pinned `@microsoft/copilot-sdk` `2.0.3` is supported across `public`, `private`, and `internal` repositories; Repository Cloud Automations are supported on `private` and `internal` repositories only (`copilotCloudAutomationsSupported: false` on `public`); per-repo `$0` AI-credit/Actions overage hard-stops and scoped `repo-read-only-shadow` credentials apply to all visibilities.
 
 | Evidence | Required proof | Verifier enforcement |
 |---|---|---|
@@ -22,6 +22,45 @@ Contributes to #13, #10, #11, #36, #12. Offline contract and synthetic verificat
 | Access & isolation | Separate least-privilege `repo-read-only-shadow` credential scoped strictly to `[policy.repository]`; `sharedAdminToken: false`; `persistedInCheckout: false`; unique `credentialId` per repository | Rejects shared admin tokens, multi-repo scopes and cross-repository credential reuse (`CREDENTIAL_ISOLATION_VIOLATION`) |
 | Reversibility | Disable enrollment (`mode: "disabled"`, `killSwitch: true`), revoke only the target repository's `credentialId`, revert workflow pin via reviewed PR and confirm `queuedLiveMutations === 0` | `verifyIndependentRollback` proves stopping one consumer leaves peer synthetic consumers unaffected (`SINGLE_REPO_ROLLBACK_VERIFIED`) |
 
+## Contract verifier data flow and rollback sequence diagrams
+
+### 1. Onboarding contract verification pipeline (`flowchart TD`)
+
+```mermaid
+flowchart TD
+  IN["Consumer Onboarding Package (contractVersion: 1)"] --> ENV{"Plain-Object Envelope &<br/>Registry Guard"}
+  ENV -->|"Proxy / Getter / Frozen Migration"| DENY1["PACKAGE_INVALID /<br/>ENROLLMENT_NOT_AUTHORIZED"]
+  ENV -->|"Valid"| PIN{"verifyWorkflowPin:<br/>Dual 40-Hex SHAs +<br/>contents:read"}
+  PIN -->|"Branch/Tag or SHA Mismatch"| DENY2["PIN_REF_NOT_IMMUTABLE_SHA /<br/>PIN_SHA_MISMATCH"]
+  PIN -->|"PIN_VERIFIED"| GATES{"Policy & Local Gate Floor:<br/>mode: disabled, killSwitch: true,<br/>>= max(95/90, existingGates)"}
+  GATES -->|"Weakened Gate or Active Mode"| DENY3["LOCAL_GATE_WEAKENED /<br/>SHADOW_POSTURE_REQUIRED"]
+  GATES -->|"Preserved"| CRED{"Credential Isolation:<br/>repo-read-only-shadow,<br/>Unique credentialId"}
+  CRED -->|"Shared Token / Multi-Repo"| DENY4["CREDENTIAL_ISOLATION_VIOLATION"]
+  CRED -->|"Isolated"| REPLAY{"6 Exact Single-Mutation<br/>Shadow Denials + Rollback Spec"}
+  REPLAY -->|"Incomplete Mutation"| DENY5["SHADOW_REPLAY_INCOMPLETE /<br/>ROLLBACK_INVALID"]
+  REPLAY -->|"All 6 Denials Proven"| OK["ONBOARDING_CONTRACT_VERIFIED<br/>(shadow: true, liveActivation: false)"]
+```
+
+### 2. Single-consumer rollback isolation sequence diagram
+
+```mermaid
+sequenceDiagram
+  autonumber
+  actor Owner as Target Repo Owner (e.g., Spellbook)
+  participant Target as Target Consumer Repo
+  participant Ver as verifyIndependentRollback
+  participant Peers as Jamula/SoftwareFactory + FamilyTree + FamilyHub
+
+  Owner->>Target: Set mode: "disabled" & killSwitch: true
+  Owner->>Target: Revoke only target repo credentialId (cred-shadow-spellbook)
+  Owner->>Target: Merge reviewed 1-commit revert of 2-file onboarding pin
+  Target->>Ver: Supply rollback receipt (queuedLiveMutations: 0)
+  Ver->>Target: Confirm evaluate() === STOPPED & credential revoked
+  Ver->>Peers: Re-verify peer packages & unique credentialIds unchanged
+  Peers-->>Ver: ONBOARDING_CONTRACT_VERIFIED (0 cross-repo impact)
+  Ver-->>Owner: SINGLE_REPO_ROLLBACK_VERIFIED
+```
+
 ## Component compatibility and provenance catalog
 `CONSUMER_COMPONENT_CATALOG` enumerates the frozen, read-only factory surfaces reusable by consumers without copying consumer secrets or mutating GitHub:
 - `evaluator-core` (`tools/engineering-factory/core.mjs`, v1): pure snapshot evaluator; zero network/GitHub I/O.
@@ -29,10 +68,10 @@ Contributes to #13, #10, #11, #36, #12. Offline contract and synthetic verificat
 - `consumer-onboarding-verifier` (`tools/engineering-factory/consumer-onboarding.mjs`, v1): offline onboarding package, isolation, rollback and dry-run bootstrap verifier.
 
 ## Independent pilot lanes (`CONSUMER_ROLLOUT_ORDER`)
-- **SoftwareFactory (`M01`, #10)**: first demonstrate hosted autonomous self-pilot execution, trusted shadow/live evidence, expected-head safeguards, and rollback (`>=98%` line / `>=95%` branch).
-- **1st Consumer — `Jamula/Spellbook` (`M03`, #11; consumer #103)**: after M01 (#10) autonomous self-pilot acceptance, preserve stricter `97%` app line / `90%` branch coverage (`example/spellbook` / `ios-webkit-97-90` offline profile), WebKit, iOS, and release required check producers, formal `APPROVED`-only review, and two-agent concurrency cap (`maxActive: 2`) until measured capacity approval.
-- **2nd Consumer — `Jamula/FamilyTree` (`M04`, #36; consumer #128/#120)**: use synthetic data only during contract verification (`example/family-tree` / `web-genealogy-95-90` offline profile), retain `95%/90%` baseline, single-lane concurrency cap (`maxActive: 1`), formal `APPROVED`-only review, independent auth/persistence review, and no product release. No duplicate core.
-- **3rd Consumer — `FamilyHub` (`M05`, #12; consumer #81)**: verify authoritative repository identity and owner migration-freeze lift separately (`migrationFreezeClear: true` required before clearance); preserve `trunk`/up-to-date enforcement, formal exact-head `APPROVED` review, and production isolation (`example/family-hub` / `strict-up-to-date-migration-gated` offline profile). Development resumption is not factory activation authorization.
+- **Customer One — `Jamula/SoftwareFactory` (`M01`, [#10](https://github.com/Jamula/SoftwareFactory/issues/10))**: `9 / 10` foundation issues closed (`#4–#9, #17, #105, #118`); live 3-issue unattended `copilot-swe-agent[bot]` acceptance proof active under `>=98%` line / `>=95%` branch coverage, `Default-Branch-Ruleset` `28054442`, Squash Merge Queue `ALLGREEN`, and `$0` overage hard-stops.
+- **1st Consumer — `Jamula/Spellbook` (`M03.02 P0`, [#11](https://github.com/Jamula/SoftwareFactory/issues/11); `Jamula/Spellbook#103`)**: promoted ahead of FamilyTree as first external consumer pilot (`spellbook-pilot-readiness.mjs`); after `M01` (`#10`) acceptance and closed contract `#13`, preserve stricter `>=97%` app line / `>=90%` branch coverage (`example/spellbook` / `ios-webkit-97-90` offline profile), WebKit, iOS, and release required check producers, formal `APPROVED`-only review, `maxActive: 2` two-agent concurrency cap, and zero production release.
+- **2nd Consumer — `Jamula/FamilyTree` (`M04.01 P1`, [#36](https://github.com/Jamula/SoftwareFactory/issues/36); `Jamula/FamilyTree#128`, `Jamula/FamilyTree#120`)**: follows `M01` (`#10`), `#13`, and `#11` Spellbook acceptance (`familytree-pilot-readiness.mjs`); use synthetic data only during contract verification (`example/family-tree` / `web-genealogy-95-90` offline profile), retain `>=95%/90%` baseline coverage, single-lane concurrency cap (`maxActive: 1`), genealogy private-data isolation, formal `APPROVED`-only review, independent auth/persistence review, and zero product release.
+- **3rd Consumer — `FamilyHub` (`M05.01 P1`, [#12](https://github.com/Jamula/SoftwareFactory/issues/12); consumer readiness issue `#81` in the authoritative FamilyHub repository once verified)**: follows `M01` (`#10`), `#13`, and `#11` Spellbook acceptance (`familyhub-pilot-readiness.mjs`); verify authoritative repository identity and explicit owner migration-freeze lift (`migrationFreezeClear: true` hard gate), preserve `trunk` strict up-to-date base freshness, formal exact-head `APPROVED` review, and production isolation (`example/family-hub` / `strict-up-to-date-migration-gated` offline profile). Development resumption is not factory activation authorization.
 
 ## Verification, dry-run bootstrap and negative fixtures
 `tests/engineering-factory/profiles.test.mjs`, `tests/engineering-factory/consumer-onboarding.test.mjs`, and [`docs/evidence/m03-01-onboarding-success-contract.json`](evidence/m03-01-onboarding-success-contract.json) verify greenfield and all three synthetic stack profiles (`example/spellbook`, `example/family-tree`, `example/family-hub` in `tools/engineering-factory/example-policies.json`, all stored at `mode: "disabled"` and `killSwitch: true`). Mandatory replay, bootstrap, and success-scorecard tests prove:

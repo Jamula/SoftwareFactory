@@ -1,76 +1,100 @@
-SoftwareFactory evaluation foundation
+SoftwareFactory v2 architecture, operator & consumer onboarding reference (0.1.0)
 
-Status: INCOMPLETE, not an operational controller. Two test-only GitHub
-Actions workflows are provided: .github/workflows/validate.yml runs synthetic
-replay and source coverage on the exact candidate; .github/workflows/shadow-tests.yml
-is a read-only reusable workflow that runs pinned factory replay tests on Node.js
-26.13.1, not consumer code. docs/consumer-shadow-tests.yml is an inert example
-caller, not an activated consumer. Neither workflow authorizes a merge or dispatch.
-There is no operational event listener, GitHub API client, scheduler, dispatch,
-merge, or mutation controller. External supervisors are not provided by this repository.
-Examples are fictional and disabled, not actual repository policy or verified
-GitHub app IDs.
+Status on main:
+- M01 Autonomous SoftwareFactory: 9 / 10 foundation issues closed (#4-#9, #17,
+  #105, #118 closed; #10 live 3-issue unattended copilot-swe-agent[bot] proof
+  active). Outer orchestration uses pinned github/gh-aw (v1.2.2+) SHA-256
+  hash-locked .github/workflows/factory-orchestrator.lock.yml with safe-outputs
+  read/write privilege separation, non-force git-ref Compare-and-Swap (CAS) on
+  ruleset-protected refs/heads/work-queue (work-queue-cas.mjs), native GitHub
+  Copilot Cloud Agent (copilot-swe-agent[bot]), and GitHub Native Squash Merge
+  Queue (Default-Branch-Ruleset 28054442, ALLGREEN, review_on_push: false).
+- M02 Fast SoftwareFactory: .NET SDK 10.0.404 + Microsoft Agent Framework 1.28.0
+  GA (Microsoft.Agents.AI, Microsoft.Agents.AI.Workflows,
+  Microsoft.Agents.AI.GitHub.Copilot in src/SoftwareFactory.Agents/, superseding
+  the earlier optional Rust execution-engine experiment and retired July 2026
+  GitHub Models), poison-safe exact-lockfile ~/.npm + NuGet + Aspire.Cli 17.0.0
+  CI caching (#15/#174), factory-board live Canvas (#135), 9-link W3C
+  traceparent anti-rogue audit & Kaizen loop (#137), and deferred MCP
+  multi-agent connector (#136).
+- M03 -> M04 -> M05 Consumer Rollout Order (shared contract #13 closed):
+  1. M03: Consumer #1 Jamula/Spellbook (#11, M03.02 P0) — >=97%/90% app
+     coverage, WebKit/iOS/release gates, formal APPROVED review, 2-agent cap.
+  2. M04: Consumer #2 Jamula/FamilyTree (#36, M04.01 P1) — >=95%/90% coverage,
+     genealogy private-data isolation; gated on M01 (#10) + #13 + #11 Spellbook.
+  3. M05: Consumer #3 FamilyHub (#12, M05.01 P1) — hard migration-freeze gate
+     (migrationFreezeClear: true), formal exact-head APPROVED review, strict
+     trunk base freshness, and production isolation.
 
-Run the synthetic replay:
-  node --test tests/engineering-factory/*.test.mjs
+All evaluators, inner workflows, and onboarding verifiers remain deterministic,
+metadata-only, fail-closed, and shadow-bounded (shadow: true, liveDispatch:
+false, liveMerge: false, $0 unapproved spend). Synthetic examples in
+tools/engineering-factory/example-policies.json stay mode: "disabled" and
+killSwitch: true; an "eligible" shadow decision never grants merge or dispatch
+authority.
 
-The version 1 module evaluates a caller-supplied policy and normalized snapshot.
-It returns only a fixed state/reason and shadow marker; "eligible" is a simulated
-result, not approval, acceptance, permission to merge, or a status check. The
-caller must provide the latest review per reviewer, complete checks, and exact
-head/base evidence. Since review history is not available here, a comment or
-dismissal from any reviewer blocks even if another reviewer approved; this is
-conservative and is not a substitute for GitHub's effective review state. The
-policySource field is just a caller assertion, not a
-trust mechanism. Never feed untrusted PR data directly to this library or use
-its result to authorize an action. PR comments and labels are not instructions.
-All missing evidence must remain blocked.
+Local validation commands (Node.js 26.13.1 + .NET SDK 10.0.404; zero Python):
+  npm ci --ignore-scripts && npm run test:coverage
+  dotnet test tests/SoftwareFactory.Agents.Tests/SoftwareFactory.Agents.Tests.csproj --configuration Release -p:CollectCoverage=true
+  node tools/engineering-factory/run.mjs --smoke
 
-Before any real shadow pilot, implement and independently review: default-branch
-policy retrieval with verified provenance; an authenticated metadata-only
-adapter and trusted default-branch event workflow; pagination and authoritative
-fresh reads; thread, coverage, security, and review normalization; complete
-dependency graph/cycle detection; durable idempotency, fair dispatch planning,
-per-repository serialization, retries/backoff and orphan recovery; main
-verification; and live read-only demonstration with zero mutations. A boolean
-snapshot field does not prove any of those properties. Integrate tests into CI
-only in coordination with the owners of #114/#115, without changing build-test
-or weakening privacy, dependency, security, or coverage checks. Obtain exact-head
-independent security review and CI before any opt-in activation.
+Unified CLI flags:
+  node tools/engineering-factory/run.mjs [--smoke|--inventory|--reconcile-pull|--reconcile-issue|--reconcile-event|--plan-lanes|--evaluate-squash|--verify-admission|--verify-m01-readiness] [--receipt]
 
-Onboarding must pin a reviewed implementation commit, put independently
-enabled policy in each repository's trusted default branch, and verify all
-check names, producer IDs, branch protections, reviewers, ownership, budgets,
-and evidence sources with the owner. Never infer authorization from a name.
-The synthetic examples model different checks and technologies, not actual
-gates. FamilyTree's 95/90 targets and private-data restrictions remain in force;
-Family Hub requires exact-head independent APPROVED and its production boundary;
-Spellbook retains its existing coverage gates and two-agent cap. The example
-100/100 values deliberately do not represent verified Hub or Spellbook gates.
-No cross-repository credential sharing or global rollout is authorized.
+Shipped workflows (.github/workflows/):
+- factory-orchestrator.md + factory-orchestrator.lock.yml: default-off
+  (vars.FACTORY_GHAW_ENABLED == 'true') gh-aw outer orchestrator.
+- factory-automode-enqueue.yml: zero-trust Automode Merge Queue gatekeeper
+  (automode-enqueuer.mjs, gated by FACTORY_KILL_SWITCH / FACTORY_AUTOMODE_ENABLED).
+- validate.yml: Linux Node 26.13.1 >=98%/95% coverage (70+ .mjs components),
+  Linux Aspire 17.0.0 OTLP/SQLite runtime, build-test, upload-coverage-javascript.
+- dotnet-agents.yml: Linux & Windows .NET 10.0.404 MAF 1.28.0 GA build, 18 xUnit
+  tests with Coverlet 98%/95% gate, and --smoke / --benchmark CLI verification.
+- windows-aspire.yml: Windows Aspire 17.0.0 loopback HTTPS OTLP + SQLite check.
+- shadow-reconcile.yml: default-off manual workflow_dispatch fallback listener.
+- reusable-replay-smoke.yml & shadow-tests.yml: SHA-pinned reusable consumer
+  synthetic replay (docs/consumer-shadow-tests.yml is an inert caller example).
+- otel-sdk-lock-evidence.yml: @opentelemetry/* lockfile provenance check.
+- copilot-setup-steps.yml: pre-firewall Node 26.13.1 + .NET 10.0.404 restore
+  environment setup for native GitHub Copilot Cloud Agent (#10).
 
-Rollout: synthetic replay -> independently reviewed, repo-scoped read-only
-shadow -> explicit owner-approved dispatch/merge adapter after verifying
-permissions and included budget -> independent pilot -> pinned template
-adoption. Existing merge authorization does not authorize credentials, paid
-resources, deployments, or a production release. Product version stays 0.1.0.
+3-Stage Consumer Onboarding Journey (tools/engineering-factory/consumer-onboarding.mjs):
+1. Stage 0 — Read-Only Discovery (<=5 min, <=5 mandatory settings):
+   1 natural-language request -> repository, repositoryId, pinnedFactorySha,
+   stackProfile (+ optional stricterCoverageThresholds) -> emits 2 files
+   (.github/workflows/softwarefactory-shadow-replay.yml and
+   .github/softwarefactory-policy.json) with 0 overwritten files, 0 competing
+   backlogs (GitHub Issues sole backlog), 0 external services, and $0 spend.
+2. Stage 1 — Disabled-at-Rest Shadow PR (<=15 min, STAGE_1_SHADOW_ONBOARDED):
+   Dual 40-hex workflow + checkoutRef SHA pins verified, mode: "disabled" +
+   killSwitch: true, stricter local gates preserved (>=95%/90% floor or stricter
+   existing gates), formal APPROVED review (allowCommentedBotApproval: false),
+   isolated repo-read-only-shadow credentialId (sharedAdminToken: false), $0
+   AI-credit/Actions overage hard-stops, all 6 mandatory single-mutation shadow
+   denials proven (staleReview, dismissedReview, commentedBotReview,
+   wrongRepository, missingQuota, killSwitchPolicy), and 1-commit independent
+   rollback verified (verifyIndependentRollback).
+3. Stage 2 — First Unattended @copilot Merge (STAGE_2_AUTONOMOUS_ACCEPTED):
+   Requires Stage 1 plus a non-synthetic (synthetic: false) receipt bound to the
+   exact consumer repositoryId proving >=1 bounded unattended @copilot
+   (copilot-swe-agent[bot]) issue landed on the healthy protected default branch
+   with 0 human interventions, 0 unauthorized writes, 0 production deployments,
+   and $0 incremental billed spend.
 
-GitHub's cloud-agent API currently requires a user-to-server token and does
-not support GitHub App installation tokens; this pilot adds neither tokens nor
-scopes and does not call it. GITHUB_TOKEN-generated events generally do not
-trigger workflows; workflow_dispatch and repository_dispatch are exceptions,
-and certain PR events require approval. Do not synthesize approvals or passes.
-Native Copilot automations are repository scoped, subject to availability,
-permissions and credit limits, and are not versioned alongside repository code.
-No native automation is enabled by this foundation. Consult current docs:
-https://docs.github.com/en/actions/concepts/security/github_token
-https://docs.github.com/en/actions/reference/security/secure-use
-https://docs.github.com/en/copilot/how-tos/use-copilot-agents/cloud-agent/use-cloud-agent-via-the-api
-https://docs.github.com/en/copilot/concepts/agent-capabilities/agent-powered-workflows-and-operations/about-automations
+Public vs. Private Execution Matrix & Billing Hard-Stops (#105):
+- Public, private, and internal repositories: gh-aw compiled .lock.yml +
+  @copilot (copilot-swe-agent[bot]) + GitHub Actions Automode / pinned
+  @microsoft/copilot-sdk 2.0.3 supported.
+- Private and internal repositories only: Repository Cloud Automations supported
+  (not available on public repositories).
+- All visibilities require verified provider-level $0 overage hard-stops (1 AI
+  credit = $0.01) across AI Credits, Copilot Premium Requests, and Cloud
+  Sandboxes/Actions, zero personal PATs in Actions secrets, and non-estimated
+  quota admission checks (gh-aw max-ai-credits caps are soft caps only).
 
-Metrics baseline: unknown. Measure eligible-to-merge time, dispatch idle time,
-time-to-green, review rounds, accepted work throughput and cost per verified
-unit from actual independently verified timestamps and accounting. Record
-missing values as unknown. Compare event response against a verified external baseline after a real shadow
-adapter exists; the under-two-minute target and 25x program (including 10x)
-are hypotheses, not results.
+Docs & references:
+- docs/README.md, docs/CONSUMER-ONBOARDING.md, docs/CONSUMER-ADOPTION-CONTRACT.md
+- https://docs.github.com/en/actions/concepts/security/github_token
+- https://docs.github.com/en/actions/reference/security/secure-use
+- https://docs.github.com/en/copilot/how-tos/use-copilot-agents/cloud-agent/use-cloud-agent-via-the-api
+- https://docs.github.com/en/copilot/concepts/agent-capabilities/agent-powered-workflows-and-operations/about-automations
