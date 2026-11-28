@@ -1,0 +1,730 @@
+{
+  "schemaVersion": "1.0.0",
+  "receiptId": "m02-03-curated-lessons-shadow-cohort-2026-11-28",
+  "milestone": "M02.03",
+  "issueNumber": 14,
+  "repositoryId": 1471342715,
+  "repositorySlug": "Jamula/SoftwareFactory",
+  "recordedOnBaseHeadSha": "ec438f54088f30856c2df6ff626e894dde2a0100",
+  "provenance": {
+    "evaluationMode": "offline-shadow-replay",
+    "shadow": true,
+    "readOnly": true,
+    "autoPolicyMutation": false,
+    "externalKnowledgeStoreRequired": false,
+    "liveAutonomyClaim": false,
+    "liveCopilotCohortProvenance": false,
+    "liveCopilotCohortStatus": "pending-shared-5-issue-live-copilot-cohort",
+    "issueClosureAuthorized": false,
+    "provenanceStatement": "Deterministic offline/shadow replay receipt evaluated through selectScopedGuidanceAndLessons and compareExplorationContextReduction over 6 (>=5) matched SoftwareFactory units anchored to verified merged PR commits (#157, #160, #161, #164, #166, #169) on main HEAD ec438f54088f30856c2df6ff626e894dde2a0100. This artifact makes zero live @copilot autonomous-execution claims; #14 remains open pending the shared 5-issue real @copilot cohort."
+  },
+  "selectionEvaluation": {
+    "expectedHeadSha": "ec438f54088f30856c2df6ff626e894dde2a0100",
+    "nowMs": 1795844000000,
+    "guidanceEntries": [
+      {
+        "guidanceId": "guide-factory-determinism",
+        "repositoryId": 1471342715,
+        "revisionSha": "ec438f54088f30856c2df6ff626e894dde2a0100",
+        "source": "trusted-repo-doc",
+        "sourcePath": "docs/ENGINEERING-STANDARDS.md",
+        "componentScope": [
+          "engineering-factory"
+        ],
+        "guidanceText": "Keep factory evaluators pure, deterministic, metadata-only, read-only, and enforce 98%/95% coverage gates."
+      },
+      {
+        "guidanceId": "guide-factory-security-lanes",
+        "repositoryId": 1471342715,
+        "revisionSha": "ec438f54088f30856c2df6ff626e894dde2a0100",
+        "source": "trusted-lane-contract",
+        "sourcePath": "config/examples/softwarefactory.json",
+        "componentScope": [
+          "engineering-factory"
+        ],
+        "specialistRoles": [
+          "security",
+          "api"
+        ],
+        "pathPrefixes": [
+          "tools/engineering-factory/curated-lessons.mjs",
+          "tools/engineering-factory/anti-rogue-audit.mjs"
+        ],
+        "guidanceText": "Never disable security-gate, bypass merge-queue, or lower line-coverage or branch-coverage floors."
+      },
+      {
+        "guidanceId": "guide-factory-cas-leases",
+        "repositoryId": 1471342715,
+        "revisionSha": "ec438f54088f30856c2df6ff626e894dde2a0100",
+        "source": "trusted-lane-contract",
+        "sourcePath": "docs/ENGINEERING-STANDARDS.md",
+        "componentScope": [
+          "engineering-factory"
+        ],
+        "specialistRoles": [
+          "infra",
+          "data"
+        ],
+        "pathPrefixes": [
+          "tools/engineering-factory/lease-store.mjs"
+        ],
+        "guidanceText": "Prove durable cross-run lease recovery with compare-and-swap sequence guards and zero ephemeral runner state."
+      },
+      {
+        "guidanceId": "guide-coordinator-dispatch",
+        "repositoryId": 1471342715,
+        "revisionSha": "ec438f54088f30856c2df6ff626e894dde2a0100",
+        "source": "trusted-lane-contract",
+        "sourcePath": "agents/engineering-coordinator.md",
+        "componentScope": [
+          "engineering-coordinator"
+        ],
+        "specialistRoles": [
+          "coordinator"
+        ],
+        "pathPrefixes": [
+          "tools/engineering-coordinator"
+        ],
+        "guidanceText": "Assign exactly one independent owner per lane with non-overlapping file paths and verified quota capacity."
+      },
+      {
+        "guidanceId": "guide-apphost-otlp",
+        "repositoryId": 1471342715,
+        "revisionSha": "ec438f54088f30856c2df6ff626e894dde2a0100",
+        "source": "trusted-repo-doc",
+        "sourcePath": "docs/LOCAL-DEVELOPMENT.md",
+        "componentScope": [
+          "apphost-runtime"
+        ],
+        "specialistRoles": [
+          "infra"
+        ],
+        "pathPrefixes": [
+          "apphost.cs"
+        ],
+        "guidanceText": "Bind Aspire AppHost OTLP telemetry strictly to loopback endpoints with zero external telemetry export."
+      },
+      {
+        "guidanceId": "guide-docs-governance",
+        "repositoryId": 1471342715,
+        "revisionSha": "ec438f54088f30856c2df6ff626e894dde2a0100",
+        "source": "trusted-repo-doc",
+        "sourcePath": "docs/ROADMAP.md",
+        "componentScope": [
+          "repository-docs"
+        ],
+        "specialistRoles": [
+          "docs"
+        ],
+        "pathPrefixes": [
+          "docs"
+        ],
+        "guidanceText": "Keep partial acceptance non-closing and mark offline shadow receipts explicitly with zero live autonomy claims."
+      }
+    ],
+    "curatedLessons": [
+      {
+        "lessonId": "lesson-pr-161-knowledge-hardening",
+        "repositoryId": 1471342715,
+        "sourceKind": "accepted-pr",
+        "sourceNumber": 161,
+        "sourceCommitSha": "1f63648f991325ac6e8c5d33121b53f907f9e079",
+        "verifiedHeadSha": "ec438f54088f30856c2df6ff626e894dde2a0100",
+        "componentScope": [
+          "engineering-factory"
+        ],
+        "visibility": "same-repo",
+        "specialistRoles": [
+          "security",
+          "api",
+          "test"
+        ],
+        "pathPrefixes": [
+          "tools/engineering-factory/curated-lessons.mjs",
+          "tests/engineering-factory/curated-lessons.test.mjs"
+        ],
+        "guidanceText": "Validate own enumerable descriptors, decode IDNA/percent GitHub hosts, and reject conditional safety carveouts.",
+        "observedAtMs": 1795835279000,
+        "maxFreshnessMs": 604800000
+      },
+      {
+        "lessonId": "lesson-pr-164-scan-digest-integrity",
+        "repositoryId": 1471342715,
+        "sourceKind": "accepted-pr",
+        "sourceNumber": 164,
+        "sourceCommitSha": "1be6dc1efb991d02637c334e6b6d3dda1530d6aa",
+        "verifiedHeadSha": "ec438f54088f30856c2df6ff626e894dde2a0100",
+        "componentScope": [
+          "engineering-factory"
+        ],
+        "visibility": "same-repo",
+        "specialistRoles": [
+          "security"
+        ],
+        "pathPrefixes": [
+          "tools/engineering-factory/anti-rogue-audit.mjs"
+        ],
+        "guidanceText": "Require exact 64-hex SHA-256 producer artifact digests and reject mismatched event trigger matrices.",
+        "observedAtMs": 1795832898000,
+        "maxFreshnessMs": 604800000
+      },
+      {
+        "lessonId": "lesson-pr-160-git-ref-cas-recovery",
+        "repositoryId": 1471342715,
+        "sourceKind": "accepted-pr",
+        "sourceNumber": 160,
+        "sourceCommitSha": "6fe90f88637c16b2ae1b0ef4cbfa03b673bd758f",
+        "verifiedHeadSha": "ec438f54088f30856c2df6ff626e894dde2a0100",
+        "componentScope": [
+          "engineering-factory"
+        ],
+        "visibility": "same-repo",
+        "specialistRoles": [
+          "infra",
+          "data"
+        ],
+        "pathPrefixes": [
+          "tools/engineering-factory/lease-store.mjs"
+        ],
+        "guidanceText": "Fence stale worker heartbeats using monotonic lease epochs before allowing checkpoint handoff.",
+        "observedAtMs": 1795832892000,
+        "maxFreshnessMs": 604800000
+      },
+      {
+        "lessonId": "lesson-pr-157-consumer-stricter-gates",
+        "repositoryId": 1471342715,
+        "sourceKind": "accepted-pr",
+        "sourceNumber": 157,
+        "sourceCommitSha": "b0924c3807f797e6090e1dc3e1e65fc9caa07550",
+        "verifiedHeadSha": "ec438f54088f30856c2df6ff626e894dde2a0100",
+        "componentScope": [
+          "engineering-factory"
+        ],
+        "visibility": "same-repo",
+        "specialistRoles": [
+          "api",
+          "test"
+        ],
+        "pathPrefixes": [
+          "tools/engineering-factory/consumer-onboarding.mjs"
+        ],
+        "guidanceText": "Preserve stricter per-consumer line and branch coverage thresholds and reject silent fallback to base floors.",
+        "observedAtMs": 1795835282000,
+        "maxFreshnessMs": 604800000
+      },
+      {
+        "lessonId": "lesson-pr-166-queue-reread-scope",
+        "repositoryId": 1471342715,
+        "sourceKind": "accepted-pr",
+        "sourceNumber": 166,
+        "sourceCommitSha": "b82b006da3ed860440daf00904f5b3239e8d01db",
+        "verifiedHeadSha": "ec438f54088f30856c2df6ff626e894dde2a0100",
+        "componentScope": [
+          "engineering-coordinator"
+        ],
+        "visibility": "same-repo",
+        "specialistRoles": [
+          "coordinator"
+        ],
+        "pathPrefixes": [
+          "tools/engineering-coordinator"
+        ],
+        "guidanceText": "Re-read live merge queue and exact PR HEAD review status immediately prior to wave handoff.",
+        "observedAtMs": 1795839388000,
+        "maxFreshnessMs": 604800000
+      },
+      {
+        "lessonId": "lesson-pr-169-evidence-provenance",
+        "repositoryId": 1471342715,
+        "sourceKind": "accepted-pr",
+        "sourceNumber": 169,
+        "sourceCommitSha": "e269e82c3309cee59bdf853028d93ea5b2f87bf0",
+        "verifiedHeadSha": "ec438f54088f30856c2df6ff626e894dde2a0100",
+        "componentScope": [
+          "repository-docs"
+        ],
+        "visibility": "same-repo",
+        "specialistRoles": [
+          "docs"
+        ],
+        "pathPrefixes": [
+          "docs/evidence"
+        ],
+        "guidanceText": "Bind evidence receipts to exact git commit SHAs and separate offline shadow validation from live cohort closure.",
+        "observedAtMs": 1795837761000,
+        "maxFreshnessMs": 604800000
+      }
+    ],
+    "unitSelections": [
+      {
+        "unitId": "m02-03-unit-01-security-hardening",
+        "provenanceRef": {
+          "anchorPrNumber": 161,
+          "anchorCommitSha": "1f63648f991325ac6e8c5d33121b53f907f9e079"
+        },
+        "request": {
+          "issueNumber": 14,
+          "targetComponent": "engineering-factory",
+          "specialistRole": "security",
+          "changedPaths": [
+            "tools/engineering-factory/anti-rogue-audit.mjs",
+            "tools/engineering-factory/curated-lessons.mjs"
+          ],
+          "checkpointEvidence": {
+            "checkpointId": "cp-issue-14-seq-1",
+            "repositoryId": 1471342715,
+            "issueNumber": 14,
+            "headSha": "ec438f54088f30856c2df6ff626e894dde2a0100",
+            "sequence": 1,
+            "digestSha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+            "completedSupersteps": [
+              "planner",
+              "coder"
+            ],
+            "verifiedPaths": [
+              "tools/engineering-factory/anti-rogue-audit.mjs"
+            ]
+          }
+        },
+        "expected": {
+          "selectedGuidanceIds": [
+            "guide-factory-security-lanes",
+            "guide-factory-determinism"
+          ],
+          "selectedLessonIds": [
+            "lesson-pr-161-knowledge-hardening"
+          ],
+          "fullCatalogBytes": 1249,
+          "selectedContextBytes": 315,
+          "contextBytesSaved": 934,
+          "omittedOutOfScopeCount": 8,
+          "omittedCheckpointedCount": 1
+        }
+      },
+      {
+        "unitId": "m02-03-unit-02-consumer-gate-api",
+        "provenanceRef": {
+          "anchorPrNumber": 157,
+          "anchorCommitSha": "b0924c3807f797e6090e1dc3e1e65fc9caa07550"
+        },
+        "request": {
+          "issueNumber": 11,
+          "targetComponent": "engineering-factory",
+          "specialistRole": "api",
+          "changedPaths": [
+            "tools/engineering-factory/consumer-onboarding.mjs"
+          ]
+        },
+        "expected": {
+          "selectedGuidanceIds": [
+            "guide-factory-determinism"
+          ],
+          "selectedLessonIds": [
+            "lesson-pr-157-consumer-stricter-gates"
+          ],
+          "fullCatalogBytes": 1249,
+          "selectedContextBytes": 215,
+          "contextBytesSaved": 1034,
+          "omittedOutOfScopeCount": 10,
+          "omittedCheckpointedCount": 0
+        }
+      },
+      {
+        "unitId": "m02-03-unit-03-lease-recovery-infra",
+        "provenanceRef": {
+          "anchorPrNumber": 160,
+          "anchorCommitSha": "6fe90f88637c16b2ae1b0ef4cbfa03b673bd758f"
+        },
+        "request": {
+          "issueNumber": 6,
+          "targetComponent": "engineering-factory",
+          "specialistRole": "infra",
+          "changedPaths": [
+            "tools/engineering-factory/lease-store.mjs"
+          ]
+        },
+        "expected": {
+          "selectedGuidanceIds": [
+            "guide-factory-cas-leases",
+            "guide-factory-determinism"
+          ],
+          "selectedLessonIds": [
+            "lesson-pr-160-git-ref-cas-recovery"
+          ],
+          "fullCatalogBytes": 1249,
+          "selectedContextBytes": 309,
+          "contextBytesSaved": 940,
+          "omittedOutOfScopeCount": 9,
+          "omittedCheckpointedCount": 0
+        }
+      },
+      {
+        "unitId": "m02-03-unit-04-replay-test-suite",
+        "provenanceRef": {
+          "anchorPrNumber": 164,
+          "anchorCommitSha": "1be6dc1efb991d02637c334e6b6d3dda1530d6aa"
+        },
+        "request": {
+          "issueNumber": 14,
+          "targetComponent": "engineering-factory",
+          "specialistRole": "test",
+          "changedPaths": [
+            "tests/engineering-factory/curated-lessons.test.mjs"
+          ]
+        },
+        "expected": {
+          "selectedGuidanceIds": [
+            "guide-factory-determinism"
+          ],
+          "selectedLessonIds": [
+            "lesson-pr-161-knowledge-hardening"
+          ],
+          "fullCatalogBytes": 1249,
+          "selectedContextBytes": 217,
+          "contextBytesSaved": 1032,
+          "omittedOutOfScopeCount": 10,
+          "omittedCheckpointedCount": 0
+        }
+      },
+      {
+        "unitId": "m02-03-unit-05-coordinator-wave",
+        "provenanceRef": {
+          "anchorPrNumber": 166,
+          "anchorCommitSha": "b82b006da3ed860440daf00904f5b3239e8d01db"
+        },
+        "request": {
+          "issueNumber": 8,
+          "targetComponent": "engineering-coordinator",
+          "specialistRole": "coordinator",
+          "changedPaths": [
+            "tools/engineering-coordinator/dispatch-plan.mjs"
+          ]
+        },
+        "expected": {
+          "selectedGuidanceIds": [
+            "guide-coordinator-dispatch"
+          ],
+          "selectedLessonIds": [
+            "lesson-pr-166-queue-reread-scope"
+          ],
+          "fullCatalogBytes": 1249,
+          "selectedContextBytes": 197,
+          "contextBytesSaved": 1052,
+          "omittedOutOfScopeCount": 10,
+          "omittedCheckpointedCount": 0
+        }
+      },
+      {
+        "unitId": "m02-03-unit-06-evidence-dossier-docs",
+        "provenanceRef": {
+          "anchorPrNumber": 169,
+          "anchorCommitSha": "e269e82c3309cee59bdf853028d93ea5b2f87bf0"
+        },
+        "request": {
+          "issueNumber": 14,
+          "targetComponent": "repository-docs",
+          "specialistRole": "docs",
+          "changedPaths": [
+            "docs/evidence/m02-03-curated-lessons-cohort.json"
+          ]
+        },
+        "expected": {
+          "selectedGuidanceIds": [
+            "guide-docs-governance"
+          ],
+          "selectedLessonIds": [
+            "lesson-pr-169-evidence-provenance"
+          ],
+          "fullCatalogBytes": 1249,
+          "selectedContextBytes": 223,
+          "contextBytesSaved": 1026,
+          "omittedOutOfScopeCount": 10,
+          "omittedCheckpointedCount": 0
+        }
+      }
+    ]
+  },
+  "cohortComparison": {
+    "policy": {
+      "minLineCoveragePct": 98,
+      "minBranchCoveragePct": 95,
+      "quotaCreditsRemaining": 480
+    },
+    "baselineCohort": {
+      "repositoryId": 1471342715,
+      "cohortId": "m02-03-shadow-curated-lessons-v1",
+      "windowStartMs": 1795670400000,
+      "windowEndMs": 1795756800000,
+      "provenanceVerified": true,
+      "independentReviewVerified": true,
+      "quotaCreditsRemaining": 480,
+      "units": [
+        {
+          "unitId": "m02-03-unit-01-security-hardening",
+          "accepted": true,
+          "explorationSteps": 15,
+          "contextBytesLoaded": 1249,
+          "repeatedContextLoads": 4,
+          "reworkIterations": 1,
+          "aiCredits": 22,
+          "incrementalBilledUsdCents": 0,
+          "coveredLines": 992,
+          "totalLines": 1000,
+          "coveredBranches": 486,
+          "totalBranches": 500,
+          "securityFindings": 0,
+          "duplicateWork": false,
+          "unsupportedRouting": false
+        },
+        {
+          "unitId": "m02-03-unit-02-consumer-gate-api",
+          "accepted": true,
+          "explorationSteps": 14,
+          "contextBytesLoaded": 1249,
+          "repeatedContextLoads": 4,
+          "reworkIterations": 1,
+          "aiCredits": 20,
+          "incrementalBilledUsdCents": 0,
+          "coveredLines": 990,
+          "totalLines": 1000,
+          "coveredBranches": 484,
+          "totalBranches": 500,
+          "securityFindings": 0,
+          "duplicateWork": false,
+          "unsupportedRouting": false
+        },
+        {
+          "unitId": "m02-03-unit-03-lease-recovery-infra",
+          "accepted": true,
+          "explorationSteps": 16,
+          "contextBytesLoaded": 1249,
+          "repeatedContextLoads": 5,
+          "reworkIterations": 1,
+          "aiCredits": 24,
+          "incrementalBilledUsdCents": 0,
+          "coveredLines": 991,
+          "totalLines": 1000,
+          "coveredBranches": 485,
+          "totalBranches": 500,
+          "securityFindings": 0,
+          "duplicateWork": false,
+          "unsupportedRouting": false
+        },
+        {
+          "unitId": "m02-03-unit-04-replay-test-suite",
+          "accepted": true,
+          "explorationSteps": 13,
+          "contextBytesLoaded": 1249,
+          "repeatedContextLoads": 3,
+          "reworkIterations": 0,
+          "aiCredits": 18,
+          "incrementalBilledUsdCents": 0,
+          "coveredLines": 994,
+          "totalLines": 1000,
+          "coveredBranches": 488,
+          "totalBranches": 500,
+          "securityFindings": 0,
+          "duplicateWork": false,
+          "unsupportedRouting": false
+        },
+        {
+          "unitId": "m02-03-unit-05-coordinator-wave",
+          "accepted": true,
+          "explorationSteps": 14,
+          "contextBytesLoaded": 1249,
+          "repeatedContextLoads": 4,
+          "reworkIterations": 1,
+          "aiCredits": 20,
+          "incrementalBilledUsdCents": 0,
+          "coveredLines": 989,
+          "totalLines": 1000,
+          "coveredBranches": 482,
+          "totalBranches": 500,
+          "securityFindings": 0,
+          "duplicateWork": false,
+          "unsupportedRouting": false
+        },
+        {
+          "unitId": "m02-03-unit-06-evidence-dossier-docs",
+          "accepted": true,
+          "explorationSteps": 12,
+          "contextBytesLoaded": 1249,
+          "repeatedContextLoads": 3,
+          "reworkIterations": 0,
+          "aiCredits": 16,
+          "incrementalBilledUsdCents": 0,
+          "coveredLines": 990,
+          "totalLines": 1000,
+          "coveredBranches": 485,
+          "totalBranches": 500,
+          "securityFindings": 0,
+          "duplicateWork": false,
+          "unsupportedRouting": false
+        }
+      ]
+    },
+    "candidateCohort": {
+      "repositoryId": 1471342715,
+      "cohortId": "m02-03-shadow-curated-lessons-v1",
+      "windowStartMs": 1795756800000,
+      "windowEndMs": 1795843200000,
+      "provenanceVerified": true,
+      "independentReviewVerified": true,
+      "quotaCreditsRemaining": 480,
+      "units": [
+        {
+          "unitId": "m02-03-unit-01-security-hardening",
+          "accepted": true,
+          "explorationSteps": 7,
+          "contextBytesLoaded": 315,
+          "repeatedContextLoads": 1,
+          "reworkIterations": 0,
+          "aiCredits": 16,
+          "incrementalBilledUsdCents": 0,
+          "coveredLines": 995,
+          "totalLines": 1000,
+          "coveredBranches": 491,
+          "totalBranches": 500,
+          "securityFindings": 0,
+          "duplicateWork": false,
+          "unsupportedRouting": false
+        },
+        {
+          "unitId": "m02-03-unit-02-consumer-gate-api",
+          "accepted": true,
+          "explorationSteps": 6,
+          "contextBytesLoaded": 215,
+          "repeatedContextLoads": 1,
+          "reworkIterations": 0,
+          "aiCredits": 14,
+          "incrementalBilledUsdCents": 0,
+          "coveredLines": 993,
+          "totalLines": 1000,
+          "coveredBranches": 489,
+          "totalBranches": 500,
+          "securityFindings": 0,
+          "duplicateWork": false,
+          "unsupportedRouting": false
+        },
+        {
+          "unitId": "m02-03-unit-03-lease-recovery-infra",
+          "accepted": true,
+          "explorationSteps": 8,
+          "contextBytesLoaded": 309,
+          "repeatedContextLoads": 1,
+          "reworkIterations": 1,
+          "aiCredits": 18,
+          "incrementalBilledUsdCents": 0,
+          "coveredLines": 994,
+          "totalLines": 1000,
+          "coveredBranches": 490,
+          "totalBranches": 500,
+          "securityFindings": 0,
+          "duplicateWork": false,
+          "unsupportedRouting": false
+        },
+        {
+          "unitId": "m02-03-unit-04-replay-test-suite",
+          "accepted": true,
+          "explorationSteps": 6,
+          "contextBytesLoaded": 217,
+          "repeatedContextLoads": 0,
+          "reworkIterations": 0,
+          "aiCredits": 13,
+          "incrementalBilledUsdCents": 0,
+          "coveredLines": 996,
+          "totalLines": 1000,
+          "coveredBranches": 492,
+          "totalBranches": 500,
+          "securityFindings": 0,
+          "duplicateWork": false,
+          "unsupportedRouting": false
+        },
+        {
+          "unitId": "m02-03-unit-05-coordinator-wave",
+          "accepted": true,
+          "explorationSteps": 7,
+          "contextBytesLoaded": 197,
+          "repeatedContextLoads": 1,
+          "reworkIterations": 0,
+          "aiCredits": 15,
+          "incrementalBilledUsdCents": 0,
+          "coveredLines": 992,
+          "totalLines": 1000,
+          "coveredBranches": 488,
+          "totalBranches": 500,
+          "securityFindings": 0,
+          "duplicateWork": false,
+          "unsupportedRouting": false
+        },
+        {
+          "unitId": "m02-03-unit-06-evidence-dossier-docs",
+          "accepted": true,
+          "explorationSteps": 5,
+          "contextBytesLoaded": 223,
+          "repeatedContextLoads": 0,
+          "reworkIterations": 0,
+          "aiCredits": 14,
+          "incrementalBilledUsdCents": 0,
+          "coveredLines": 994,
+          "totalLines": 1000,
+          "coveredBranches": 490,
+          "totalBranches": 500,
+          "securityFindings": 0,
+          "duplicateWork": false,
+          "unsupportedRouting": false
+        }
+      ]
+    },
+    "expectedOutcome": {
+      "valid": true,
+      "shadow": true,
+      "readOnly": true,
+      "status": "ADOPTION_APPROVED",
+      "adoptionApproved": true,
+      "reason": "EXPLORATION_AND_CONTEXT_REDUCED",
+      "rejectionReasons": [],
+      "baselineMetrics": {
+        "unitCount": 6,
+        "explorationStepsP50": 14,
+        "contextBytesLoadedP50": 1249,
+        "repeatedContextLoadsP50": 4,
+        "reworkIterationsRateBps": 6667,
+        "aiCreditsTotal": 120,
+        "aiCreditsPerUnit": 20,
+        "incrementalBilledUsdCents": 0,
+        "acceptedUnitsPerDay": 6,
+        "lineCoveragePct": 99.1,
+        "branchCoveragePct": 97,
+        "securityFindings": 0,
+        "duplicateWorkCount": 0,
+        "unsupportedRoutingCount": 0
+      },
+      "candidateMetrics": {
+        "unitCount": 6,
+        "explorationStepsP50": 6,
+        "contextBytesLoadedP50": 217,
+        "repeatedContextLoadsP50": 1,
+        "reworkIterationsRateBps": 1667,
+        "aiCreditsTotal": 90,
+        "aiCreditsPerUnit": 15,
+        "incrementalBilledUsdCents": 0,
+        "acceptedUnitsPerDay": 6,
+        "lineCoveragePct": 99.4,
+        "branchCoveragePct": 98,
+        "securityFindings": 0,
+        "duplicateWorkCount": 0,
+        "unsupportedRoutingCount": 0
+      },
+      "deltas": {
+        "explorationStepsP50Delta": -8,
+        "contextBytesLoadedP50Delta": -1032,
+        "repeatedContextLoadsP50Delta": -3,
+        "reworkIterationsRateBpsDelta": -5000,
+        "aiCreditsPerUnitDelta": -5,
+        "acceptedUnitsPerDayDelta": 0
+      }
+    }
+  }
+}

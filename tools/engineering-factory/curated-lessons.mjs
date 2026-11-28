@@ -165,7 +165,7 @@ const SECRET_PATTERNS = [
 ];
 
 const PROMPT_INJECTION_OVERRIDE_PATTERN =
-  /\b(?:ignore|disregard|forget|override)\s+(?:(?:all|any|the|these|those|our|your|existing|current)\s+)*(?:(?:previous|prior|above|system|developer|repository|safety|security)\s+)+(?:instructions?|prompts?|rules?|constraints?|polic(?:y|ies)|gates?|directives?|guardrails?)\b/gi;
+  /\b(?:ignore|disregard|forget|override)\s+(?:(?:all|any|the|these|those|our|your|existing|current)[\s_-]+)*(?:(?:previous|prior|above|system|developer|repository|safety|security)[\s_-]+)+(?:instructions?|prompts?|rules?|constraints?|polic(?:y|ies)|gates?|directives?|guardrails?)\b/gi;
 
 const UNCONDITIONAL_PROMPT_INJECTION_PATTERNS = [
   /(?:<\s*\/?\s*(?:system|developer|assistant|user|tool_call|system_instruction)\s*>|\[\s*(?:SYSTEM|INST|ADMIN_OVERRIDE)\s*\]|\byou\s+are\s+now\s+(?:unrestricted|in\s+developer\s+mode|authorized\s+to\s+bypass)\b)/i,
@@ -173,7 +173,7 @@ const UNCONDITIONAL_PROMPT_INJECTION_PATTERNS = [
 ];
 
 const PRIVATE_CROSS_REPO_PHRASE =
-  /\b(?:private\s+cross-repo|cross-repo\s+private|internal-only\s+repo|customer-private\s+repo|copied\s+from\s+private\s+repo)\b/i;
+  /\b(?:private[\s_-]+cross[\s_-]+repo|cross[\s_-]+repo[\s_-]+private|internal[\s_-]+only[\s_-]+repo|customer[\s_-]+private[\s_-]+repo|copied[\s_-]+from[\s_-]+private[\s_-]+repo)\b/i;
 
 const CANONICAL_GITHUB_HTTPS_PATTERN =
   /^(?:https?:\/\/)?github\.com\/([A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+?)(?:\.git)?(?:(?:\/[A-Za-z0-9_./-]*)?(?:#[A-Za-z0-9_.-]*)?)?$/i;
@@ -184,54 +184,68 @@ const CANONICAL_GITHUB_SSH_PATTERN =
 const CANONICAL_RAW_GITHUB_PATTERN =
   /^(?:https?:\/\/)?raw\.githubusercontent\.com\/([A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+)(?:\/[A-Za-z0-9_./-]*)?$/i;
 
-const TOKEN_SPLIT_PATTERN = /[\s,;()[\]{}<>'"`*|]+/;
+const VERIFIED_GITHUB_URL_SPAN_PATTERN =
+  /(?<![A-Za-z0-9_./:-])(?:https?:\/\/)?(?:github\.com|raw\.githubusercontent\.com)\/[A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_./-]*)?(?:#[A-Za-z0-9_.-]*)?/gi;
+
+const OUTER_WRAPPER_TRIM_PATTERN =
+  /^[`'"([<{*_~“”‘’«»\u2012-\u2015]+|[`'")\]>},;.!?*_~“”‘’«»\u2012-\u2015]+$/g;
 const IDNA_DOT_PATTERN = /[\u3002\uFF0E\uFF61]/g;
-const PERCENT_HEX_PATTERN = /%([0-9a-fA-F]{2})/g;
+const PERCENT_RUN_PATTERN = /(?:%[0-9a-fA-F]{2})+/g;
+const UTF8_DECODER = new TextDecoder('utf-8', {fatal: false});
+const PREFIX_WRAPPER_PATTERN =
+  /^(?:[A-Za-z0-9_-]+=|#[0-9]+[\u2012-\u2015]+|\[[^\]/:\\.]+\]\()(.+)$/;
 
 const REPO_QUALIFIER_PATTERN =
-  /(?<![A-Za-z0-9_./:-])repo:([A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+)/gi;
+  /(?:(?<![A-Za-z0-9])repo[:=]|--repo\s+)([A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+)/gi;
 
 const SHORTHAND_REPO_REF_PATTERN =
-  /(?<![A-Za-z0-9_./:-])([A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+)#\d+\b/g;
+  /(?<![A-Za-z0-9])([A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+)#\d+\b/g;
 
 const POLICY_WEAKENING_PATTERNS = [
-  /\b(?:skip|bypass|disable|waive|relax|lower|reduce|drop|ignore|turn\s+off|suppress)\s+(?:(?:the|a|an|all|any|required|mandatory|strict|independent|existing|current|enforced|blocking|full|consumer|stricter)\s+)*(?:coverage|lines?\s+coverage|branch(?:es)?\s+coverage|codeql|security\s+(?:gate|check|scan|review)s?|independent\s+review|review\s+gate|merge\s+queue|ci\s+(?:gate|check)s?|validation|ownership\s+guard|budget\s+gate|zero-spend)\b/gi,
-  /\b(?:allow|enable|authorize|permit)\s+(?:self-approval|self-merge|unreviewed\s+merge|direct\s+push\s+to\s+main|live\s+dispatch|live\s+merge|paid\s+fallback|unapproved\s+spend|--no-verify)\b/gi
+  /\b(?:skip|bypass|disable|deactivate|waive|relax|lower|reduce|drop|ignore|override|weaken|circumvent|turn[\s_-]+off|suppress)\s+(?:(?:the|a|an|all|any|our|these|those|required|mandatory|strict|independent|existing|current|enforced|blocking|full|consumer|stricter|automated)[\s_-]+)*(?:coverage(?:[\s_-]+(?:gate|check|floor|threshold)s?)?|lines?[\s_-]+coverage(?:[\s_-]+(?:gate|check|floor|threshold)s?)?|branch(?:es)?[\s_-]+coverage(?:[\s_-]+(?:gate|check|floor|threshold)s?)?|codeql(?:[\s_-]+(?:gate|check|scan)s?)?|security[\s_-]+(?:gate|check|scan|review|guard)s?|independent[\s_-]+reviews?(?:[\s_-]+gates?)?|review[\s_-]+(?:gate|check|requirement)s?|merge[\s_-]+queues?|ci[\s_-]+(?:gate|check)s?|validations?(?:[\s_-]+(?:gate|check)s?)?|ownership[\s_-]+(?:guard|gate|check)s?|budget[\s_-]+(?:gate|check|guard|cap)s?|zero[\s_-]+spend(?:[\s_-]+(?:gate|policy|guard)s?)?)\b/gi,
+  /\b(?:allow|enable|authorize|permit)\s+(?:(?:the|a|an|all|any|optional|temporary|manual|emergency)[\s_-]+)*(?:self[\s_-]+approvals?|self[\s_-]+merges?|unreviewed[\s_-]+merges?|direct[\s_-]+push(?:es)?[\s_-]+to[\s_-]+main|live[\s_-]+dispatch(?:es)?|live[\s_-]+merges?|paid[\s_-]+fallbacks?|unapproved[\s_-]+spend|--no-verify)\b/gi
 ];
 
-const SENTENCE_CARVEOUT_PATTERN =
-  /\b(?:unless|except|but|however|instead|otherwise|though|although|if|when)\b/i;
+const CARVEOUT_CLAUSE_SOURCE =
+  '(?:unless|except|but|however|instead|otherwise|though|although|if|when|whenever|where|while|provided|once|until|during|in\\s+case|as\\s+long\\s+as|so\\s+long\\s+as|even\\s+(?:if|when|though)|only\\s+(?:if|when|for|on|in|after|during|until)|other\\s+than|apart\\s+from|save\\s+for)';
+
+const SENTENCE_CARVEOUT_PATTERN = new RegExp(`\\b${CARVEOUT_CLAUSE_SOURCE}\\b`, 'i');
+
+const TRAILING_CARVEOUT_CLAUSE_PATTERN = new RegExp(
+  `^[\\s([\\{<«'"\`“”‘’*_~\\u2012-\\u2015-]*${CARVEOUT_CLAUSE_SOURCE}\\b`,
+  'i'
+);
 
 const POLARITY_REVERSER_PATTERN =
-  /(?:n't|\b(?:cannot|not|never|no|without|neither|refuse|forbid|prohibit|hesitate|fail|stop|avoid|prevent))\b/gi;
+  /(?:n['’]t|\b(?:cannot|not|never|no|without|neither|refuse|forbid|prohibit|hesitate|fail|stop|avoid|prevent))\b/gi;
 
 const IMMEDIATE_REJECTION_PREFIX_PATTERN =
   /\b(?:reject|fail|block|deny|forbid|prohibit|disallow)(?:\s+(?:any|all|every))?\s*$/i;
 
 const NEGATION_ANCHOR_PATTERN =
-  /\b(?:never|do\s+not|don't|must\s+not|mustn't|cannot|can't|shall\s+not|should\s+not|shouldn't|will\s+not|won't|refuse\s+to)\s+(?:ever\s+)?/gi;
+  /\b(?:never|do\s+not|don['’]t|must\s+not|mustn['’]t|cannot|can['’]t|shall\s+not|should\s+not|shouldn['’]t|will\s+not|won['’]t|refuse\s+to)\s+(?:ever\s+)?/gi;
 
 const PROHIBITED_SEGMENT_PATTERN =
-  /^(?:skip|bypass|disable|waive|relax|lower|reduce|drop|ignore|disregard|forget|override|turn\s+off|suppress|allow|enable|authorize|permit)(?:\s+[A-Za-z0-9_-]+){1,6}$/i;
+  /^(?:skip|bypass|disable|deactivate|waive|relax|lower|reduce|drop|ignore|disregard|forget|override|weaken|circumvent|turn[\s_-]+off|suppress|allow|enable|authorize|permit)(?:\s+[A-Za-z0-9_-]+){1,6}$/i;
 
 const PROHIBITED_CONNECTOR_SPLIT = /(?:,\s*(?:or|nor)\s+|\s+(?:or|nor)\s+|,\s+)/i;
 
-const UPPER_BOUND_OP_PATTERN = /^(?:<=?|(?:under|below|at\s+most|up\s+to|max|maximum))$/i;
+const UPPER_BOUND_OP_PATTERN = /^(?:<=?|(?:under|below|at[\s_-]+most|up[\s_-]+to|max|maximum))$/i;
 
 const COVERAGE_PAIR_PATTERN =
-  /(?:([<>]=?|\b(?:under|below|at\s+most|up\s+to|max|maximum)\b)\s*)?(\d+(?:\.\d+)?)\s*%\s*\/\s*(\d+(?:\.\d+)?)\s*%/gi;
+  /(?:([<>]=?|\b(?:under|below|at[\s_-]+most|up[\s_-]+to|max|maximum)\b)\s*)?(\d+(?:\.\d+)?)\s*%\s*\/\s*(\d+(?:\.\d+)?)\s*%/gi;
 const LINE_PCT_BEFORE_PATTERN =
-  /(?:([<>]=?|\b(?:under|below|at\s+most|up\s+to|max|maximum)\b)\s*)?(\d+(?:\.\d+)?)\s*%\s*(?:(?:minimum|min|source)\s+)*(?:lines?(?:\s+coverage)?|overall\s+coverage)\b/gi;
+  /(?:([<>]=?|\b(?:under|below|at[\s_-]+most|up[\s_-]+to|max|maximum)\b)\s*)?(\d+(?:\.\d+)?)\s*%\s*(?:(?:minimum|min|source)[\s_-]+)*(?:lines?(?:[\s_-]+coverage)?|overall[\s_-]+coverage)(?:[\s_-]+(?:threshold|floor|gate|target)s?)*\b/gi;
 const LINE_PCT_AFTER_PATTERN =
-  /\b(?:lines?|overall)\s+coverage(?:\s+(?:threshold|floor|gate|target|min|minimum|of|to|is|at))*(?:\s*([<>]=?|==?|:|\b(?:under|below|at\s+most|up\s+to|max|maximum)\b))?\s*(\d+(?:\.\d+)?)\s*%/gi;
+  /\b(?:lines?|overall)[\s_-]+coverage(?:[\s_-]+(?:threshold|floor|gate|target|min|minimum|of|to|is|at))*(?:\s*([<>]=?|==?|:|\b(?:under|below|at[\s_-]+most|up[\s_-]+to|max|maximum)\b))?\s*(\d+(?:\.\d+)?)\s*%/gi;
 const BRANCH_PCT_BEFORE_PATTERN =
-  /(?:([<>]=?|\b(?:under|below|at\s+most|up\s+to|max|maximum)\b)\s*)?(\d+(?:\.\d+)?)\s*%\s*(?:minimum\s+|min\s+)?branch(?:es)?(?:\s+coverage)?\b/gi;
+  /(?:([<>]=?|\b(?:under|below|at[\s_-]+most|up[\s_-]+to|max|maximum)\b)\s*)?(\d+(?:\.\d+)?)\s*%\s*(?:(?:minimum|min)[\s_-]+)*branch(?:es)?(?:[\s_-]+coverage)?(?:[\s_-]+(?:threshold|floor|gate|target)s?)*\b/gi;
 const BRANCH_PCT_AFTER_PATTERN =
-  /\bbranch(?:es)?\s+coverage(?:\s+(?:threshold|floor|gate|target|min|minimum|of|to|is|at))*(?:\s*([<>]=?|==?|:|\b(?:under|below|at\s+most|up\s+to|max|maximum)\b))?\s*(\d+(?:\.\d+)?)\s*%/gi;
+  /\bbranch(?:es)?[\s_-]+coverage(?:[\s_-]+(?:threshold|floor|gate|target|min|minimum|of|to|is|at))*(?:\s*([<>]=?|==?|:|\b(?:under|below|at[\s_-]+most|up[\s_-]+to|max|maximum)\b))?\s*(\d+(?:\.\d+)?)\s*%/gi;
 const GENERAL_COVERAGE_BEFORE_PATTERN =
-  /(?:([<>]=?|\b(?:under|below|at\s+most|up\s+to|max|maximum)\b)\s*)?(\d+(?:\.\d+)?)\s*%\s*(?:minimum\s+|min\s+)?coverage\b/gi;
+  /(?:([<>]=?|\b(?:under|below|at[\s_-]+most|up[\s_-]+to|max|maximum)\b)\s*)?(\d+(?:\.\d+)?)\s*%\s*(?:(?:minimum|min)[\s_-]+)*coverage(?:[\s_-]+(?:threshold|floor|gate|target)s?)*\b/gi;
 const GENERAL_COVERAGE_AFTER_PATTERN =
-  /\bcoverage(?:\s+(?:threshold|floor|gate|target|min|minimum|of|to|is|at))*(?:\s*([<>]=?|==?|:|\b(?:under|below|at\s+most|up\s+to|max|maximum)\b))?\s*(\d+(?:\.\d+)?)\s*%/gi;
+  /\bcoverage(?:[\s_-]+(?:threshold|floor|gate|target|min|minimum|of|to|is|at))*(?:\s*([<>]=?|==?|:|\b(?:under|below|at[\s_-]+most|up[\s_-]+to|max|maximum)\b))?\s*(\d+(?:\.\d+)?)\s*%/gi;
 
 function isPlainObject(value) {
   return value !== null && typeof value === 'object' && !types.isProxy(value) &&
@@ -389,15 +403,9 @@ function validateProposedGateThresholds(item, policy, invalidSchemaReason) {
   return {ok: true};
 }
 
-const TRAILING_CARVEOUT_CLAUSE_PATTERN =
-  /^\s*(?:unless|except|but|however|instead|otherwise|though|although|if|when)\b/i;
-
-function isSentenceDelimiterAt(text, index) {
+function isHardSentenceDelimiterAt(text, index) {
   const ch = text[index];
-  if (ch === ';' || ch === '!' || ch === '?') return true;
-  if (ch === ':') {
-    return index + 1 === text.length || /\s/.test(text[index + 1]);
-  }
+  if (ch === '!' || ch === '?') return true;
   if (ch === '.') {
     if (index + 1 === text.length) return true;
     if (!/\s/.test(text[index + 1])) return false;
@@ -406,48 +414,72 @@ function isSentenceDelimiterAt(text, index) {
   return false;
 }
 
-function sentenceBoundsAt(text, matchIndex, matchLength) {
+function isClauseDelimiterAt(text, index) {
+  const ch = text[index];
+  if (ch === ';') return true;
+  if (ch === ':') {
+    return index + 1 === text.length || /\s/.test(text[index + 1]);
+  }
+  return isHardSentenceDelimiterAt(text, index);
+}
+
+function clauseAndSentenceBoundsAt(text, matchIndex, matchLength) {
   let start = 0;
+  let compoundStart = 0;
+  let foundClauseStart = false;
   for (let i = matchIndex - 1; i >= 0; i--) {
-    if (isSentenceDelimiterAt(text, i)) {
+    if (!foundClauseStart && isClauseDelimiterAt(text, i)) {
       start = i + 1;
+      foundClauseStart = true;
+    }
+    if (isHardSentenceDelimiterAt(text, i)) {
+      compoundStart = i + 1;
       break;
     }
   }
   let end = text.length;
+  let compoundEnd = text.length;
+  let foundClauseEnd = false;
   for (let i = matchIndex + matchLength; i < text.length; i++) {
-    if (isSentenceDelimiterAt(text, i)) {
+    if (!foundClauseEnd && isClauseDelimiterAt(text, i)) {
       end = i;
+      foundClauseEnd = true;
+    }
+    if (isHardSentenceDelimiterAt(text, i)) {
+      compoundEnd = i;
       break;
     }
   }
-  return {start, end};
+  return {start, end, compoundStart, compoundEnd};
 }
 
-function hasCarveoutInOrAfterSentence(text, start, end) {
-  return SENTENCE_CARVEOUT_PATTERN.test(text.slice(start, end)) ||
-    (end < text.length && TRAILING_CARVEOUT_CLAUSE_PATTERN.test(text.slice(end + 1)));
+function hasCarveoutAroundClause(text, bounds) {
+  return SENTENCE_CARVEOUT_PATTERN.test(text.slice(bounds.compoundStart, bounds.compoundEnd)) ||
+    (bounds.end < text.length && TRAILING_CARVEOUT_CLAUSE_PATTERN.test(text.slice(bounds.end + 1))) ||
+    (bounds.compoundEnd < text.length &&
+      bounds.compoundEnd !== bounds.end &&
+      TRAILING_CARVEOUT_CLAUSE_PATTERN.test(text.slice(bounds.compoundEnd + 1)));
 }
 
 const ALLOWED_PROHIBITION_SUBJECT_PATTERN =
   /^\s*(?:(?:you|we|agents?|workers?|executors?|specialists?|lanes?|callers?)\s+)?$/i;
 
 const ALLOWED_REJECTION_LEAD_PATTERN =
-  /^\s*(?:(?:you|we|ci|gates?|agents?|evaluators?)\s+|(?:reject|fail|block|deny|forbid|prohibit|disallow)\b[^'"`]*?\band\s+)?$/i;
+  /^\s*(?:(?:you|we|ci|gates?|agents?|evaluators?)\s+|(?:reject|fail|block|deny|forbid|prohibit|disallow)\b[^'"`“”‘’]*?\band\s+)?$/i;
 
 function countPolarityReversers(segment) {
   return [...segment.matchAll(POLARITY_REVERSER_PATTERN)].length;
 }
 
 function isUnconditionalRejectionClause(text, matchIndex, matchLength) {
-  const {start, end} = sentenceBoundsAt(text, matchIndex, matchLength);
-  const sentence = text.slice(start, end);
-  if (hasCarveoutInOrAfterSentence(text, start, end) || /['"`]/.test(sentence)) return false;
-  const prefix = text.slice(start, matchIndex);
+  const bounds = clauseAndSentenceBoundsAt(text, matchIndex, matchLength);
+  const sentence = text.slice(bounds.start, bounds.end);
+  if (hasCarveoutAroundClause(text, bounds) || /['"`“”‘’]/.test(sentence)) return false;
+  const prefix = text.slice(bounds.start, matchIndex);
   const immediateMatch = IMMEDIATE_REJECTION_PREFIX_PATTERN.exec(prefix);
   if (immediateMatch === null) return false;
   const beforeVerb = prefix.slice(0, immediateMatch.index);
-  const suffix = text.slice(matchIndex + matchLength, end);
+  const suffix = text.slice(matchIndex + matchLength, bounds.end);
   return ALLOWED_REJECTION_LEAD_PATTERN.test(beforeVerb) &&
     countPolarityReversers(beforeVerb) === 0 &&
     countPolarityReversers(suffix) === 0;
@@ -468,60 +500,75 @@ function hasWeakCoverageMatch(text, pattern, floor) {
 }
 
 function hasGithubDomainLabels(host) {
-  const labels = host.toLowerCase().split('.').filter(Boolean);
+  const labels = host.replace(/^-+|-+$/g, '').toLowerCase().split('.').filter(Boolean);
   if (labels.length < 2 || labels.at(-1) !== 'com') return false;
   const secondLevel = labels.at(-2);
   return secondLevel === 'github' || secondLevel === 'githubusercontent';
 }
 
-function extractAuthorityCandidate(token) {
-  const withoutSchemeOrNetPath = token.replace(/^(?:[a-z][a-z0-9+.-]*:(?:\/\/|\\+)|(?:\/|\\)+)/i, '');
-  const withoutUser = withoutSchemeOrNetPath.replace(/^[^@/\\]+@/, '');
-  const [rawHost] = withoutUser.split(/[/:?#\\]/, 1);
-  return rawHost
-    .replace(IDNA_DOT_PATTERN, '.')
-    .replace(PERCENT_HEX_PATTERN, (_, hex) => String.fromCharCode(Number.parseInt(hex, 16)));
+function decodeAuthorityText(value) {
+  const percentDecoded = value.replace(PERCENT_RUN_PATTERN, run => {
+    const bytes = new Uint8Array(run.length / 3);
+    for (let i = 0; i < bytes.length; i++) {
+      bytes[i] = Number.parseInt(run.slice(i * 3 + 1, i * 3 + 3), 16);
+    }
+    return UTF8_DECODER.decode(bytes);
+  });
+  return percentDecoded.normalize('NFKC').replace(IDNA_DOT_PATTERN, '.');
 }
 
 function mentionsGithubAuthority(token) {
   if (URL.canParse(token) && hasGithubDomainLabels(new URL(token).hostname)) {
     return true;
   }
-  return hasGithubDomainLabels(extractAuthorityCandidate(token));
+  const segments = decodeAuthorityText(token).split(/[^A-Za-z0-9.-]+/);
+  return segments.some(seg => seg.length > 0 && hasGithubDomainLabels(seg));
 }
 
-function isDisallowedSingleGithubCandidate(token, expectedSlugLower) {
-  if (token.includes('\\') || token.includes('%') || token.includes('..')) {
+function isDisallowedRawOrUnwrappedCandidate(rawToken, candidate, expectedSlugLower) {
+  if (rawToken.includes('\\') || rawToken.includes('%') || rawToken.includes('..') ||
+      /(?:^|\/)\.[`'")\]>},;.!?*_~“”‘’«»\u2012-\u2015]*$/.test(rawToken)) {
     return true;
   }
   const parsed =
-    CANONICAL_GITHUB_HTTPS_PATTERN.exec(token) ??
-    CANONICAL_GITHUB_SSH_PATTERN.exec(token) ??
-    CANONICAL_RAW_GITHUB_PATTERN.exec(token);
+    CANONICAL_GITHUB_HTTPS_PATTERN.exec(candidate) ??
+    CANONICAL_GITHUB_SSH_PATTERN.exec(candidate) ??
+    CANONICAL_RAW_GITHUB_PATTERN.exec(candidate);
   return parsed === null || parsed[1].toLowerCase() !== expectedSlugLower;
 }
 
+function unwrapOuterCandidate(rawToken) {
+  const prefixMatch = PREFIX_WRAPPER_PATTERN.exec(rawToken);
+  if (prefixMatch !== null) {
+    return prefixMatch[1].replace(OUTER_WRAPPER_TRIM_PATTERN, '');
+  }
+  return rawToken.replace(OUTER_WRAPPER_TRIM_PATTERN, '');
+}
+
 function hasDisallowedGithubHostToken(text, expectedSlugLower) {
-  for (const rawPart of text.split(TOKEN_SPLIT_PATTERN)) {
-    const outer = rawPart.replace(/^[_~]+|[_~.!?]+$/g, '');
-    if (outer.length === 0) continue;
-    if (mentionsGithubAuthority(outer) && isDisallowedSingleGithubCandidate(outer, expectedSlugLower)) {
+  for (const rawPart of text.split(/\s+/)) {
+    if (rawPart.length === 0) continue;
+    const candidate = unwrapOuterCandidate(rawPart);
+    if ((mentionsGithubAuthority(rawPart) || mentionsGithubAuthority(candidate)) &&
+        isDisallowedRawOrUnwrappedCandidate(rawPart, candidate, expectedSlugLower)) {
       return true;
-    }
-    for (const subRaw of outer.split(/[?&=]/)) {
-      const sub = subRaw.replace(/^[_~]+|[_~.!?]+$/g, '');
-      if (sub.length === 0 || sub === outer || !mentionsGithubAuthority(sub)) continue;
-      if (isDisallowedSingleGithubCandidate(sub, expectedSlugLower)) {
-        return true;
-      }
     }
   }
   return false;
 }
 
-function hasForeignRepoMatch(text, pattern, expectedSlugLower) {
-  for (const match of text.matchAll(pattern)) {
-    const cleaned = match[1].replace(/[.,;:]+$/, '').replace(/\.git$/i, '').toLowerCase();
+function hasForeignShorthandRepoMatch(text, expectedSlugLower) {
+  for (const match of text.matchAll(SHORTHAND_REPO_REF_PATTERN)) {
+    const cleaned = match[1].replace(/\.$/, '').replace(/\.git$/i, '').toLowerCase();
+    if (cleaned !== expectedSlugLower) return true;
+    if (match.index > 0 && /[/.\\@]/.test(text[match.index - 1])) return true;
+  }
+  return false;
+}
+
+function hasForeignRepoQualifierMatch(text, expectedSlugLower) {
+  for (const match of text.matchAll(REPO_QUALIFIER_PATTERN)) {
+    const cleaned = match[1].replace(/\.$/, '').replace(/\.git$/i, '').toLowerCase();
     if (cleaned !== expectedSlugLower) return true;
   }
   return false;
@@ -544,11 +591,11 @@ function isValidProhibitedVerbChain(between, suffix) {
 }
 
 function isNegatedSafetyProhibition(text, matchIndex, matchLength) {
-  const {start: sentenceStart, end: sentenceEnd} = sentenceBoundsAt(text, matchIndex, matchLength);
-  if (hasCarveoutInOrAfterSentence(text, sentenceStart, sentenceEnd)) return false;
+  const bounds = clauseAndSentenceBoundsAt(text, matchIndex, matchLength);
+  if (hasCarveoutAroundClause(text, bounds)) return false;
 
-  const prefix = text.slice(sentenceStart, matchIndex);
-  const suffix = text.slice(matchIndex + matchLength, sentenceEnd);
+  const prefix = text.slice(bounds.start, matchIndex);
+  const suffix = text.slice(matchIndex + matchLength, bounds.end);
   if (countPolarityReversers(prefix) !== 1 || countPolarityReversers(suffix) !== 0) {
     return false;
   }
@@ -600,10 +647,14 @@ function inspectGuidanceContent(text, expectedSlugLower, policy) {
   if (hasPromptInjectionDirective(text)) {
     return {ok: false, reason: 'PROMPT_INJECTION_DETECTED'};
   }
+  const maskPreservingNewlines = match => match.replace(/[^\r\n]/g, ' ');
   if (PRIVATE_CROSS_REPO_PHRASE.test(text) ||
       hasDisallowedGithubHostToken(text, expectedSlugLower) ||
-      hasForeignRepoMatch(text, REPO_QUALIFIER_PATTERN, expectedSlugLower) ||
-      hasForeignRepoMatch(text, SHORTHAND_REPO_REF_PATTERN, expectedSlugLower)) {
+      hasForeignRepoQualifierMatch(text, expectedSlugLower) ||
+      hasForeignShorthandRepoMatch(
+        text.replace(VERIFIED_GITHUB_URL_SPAN_PATTERN, maskPreservingNewlines),
+        expectedSlugLower
+      )) {
     return {ok: false, reason: 'CROSS_REPO_PRIVATE_DATA_REJECTED'};
   }
   if (hasPolicyWeakeningDirective(text)) {
@@ -622,7 +673,6 @@ function inspectGuidanceContent(text, expectedSlugLower, policy) {
       return {ok: false, reason: 'POLICY_WEAKENING_REJECTED'};
     }
   }
-  const maskPreservingNewlines = match => match.replace(/[^\r\n]/g, ' ');
   const textWithoutPairs = text.replace(COVERAGE_PAIR_PATTERN, maskPreservingNewlines);
   if (hasWeakCoverageMatch(textWithoutPairs, LINE_PCT_BEFORE_PATTERN, policy.minLineCoveragePct) ||
       hasWeakCoverageMatch(textWithoutPairs, LINE_PCT_AFTER_PATTERN, policy.minLineCoveragePct) ||
