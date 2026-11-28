@@ -6,7 +6,19 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {DatabaseSync} from 'node:sqlite';
 import {Worker} from 'node:worker_threads';
-import {openShadowDispatchLedger} from '../../tools/engineering-factory/shadow-dispatch-ledger.mjs';
+import {createInMemoryWorkQueueRefStore} from '../../tools/engineering-coordinator/work-queue-cas.mjs';
+import {
+  MAX_CROSS_RUN_LEASE_TTL_MS,
+  PROTECTED_WORK_QUEUE_REF,
+  SUPPORTED_CLOUD_HARNESSES,
+  SUPPORTED_QUEUE_PROTOCOLS,
+  ZERO_GIT_OID,
+  computeReservationHeadLock,
+  computeWorkQueueStateOid,
+  openShadowDispatchLedger,
+  reconcileLedgerWithWorkQueueCas,
+  verifySignedLedgerSnapshot
+} from '../../tools/engineering-factory/shadow-dispatch-ledger.mjs';
 
 const head = 'a'.repeat(40);
 const now = 1000;
@@ -769,5 +781,4734 @@ test('two workers with separate connections cannot reserve the same last slot', 
     await Promise.all(workers.map(worker => worker.terminate()));
     ledger.close();
     rmSync(dir, {recursive: true, force: true});
+  }
+});
+
+const casSigningKey = 'cross-run-cas-signing-key-0001';
+const baseAdmission = () => ({
+  includedOnly: true,
+  overageDisabled: true,
+  incrementalSpendUsdCents: 0,
+  personalPatConfigured: false,
+  repositoryVisibility: 'private',
+  harness: 'copilot-cloud-agent',
+  agentLogin: 'copilot-swe-agent[bot]',
+  authorityVerified: true,
+  entitlementVerified: true,
+  hardStopEnforced: true,
+  repositoryId: 1,
+  approvedRepositoryId: 1,
+  observedMs: 1000,
+  remainingIncludedUnits: 6
+});
+const signRawSnapshot = (planSig, seq, exportedAt, rows, key = casSigningKey, win = plan.window) => {
+  const canonical = JSON.stringify([1, planSig, seq, exportedAt, rows]);
+  return {
+    version: 1,
+    window: win,
+    planSignature: planSig,
+    sequence: seq,
+    exportedAt,
+    reservations: rows,
+    digest: createHash('sha256').update(canonical).digest('hex'),
+    hmac: createHmac('sha256', key).update(canonical).digest('hex')
+  };
+};
+
+test('binds signed ledger snapshots to work-queue-cas across ephemeral runner restarts, crash recovery, and zombie fencing', async () => {
+  assert.equal(PROTECTED_WORK_QUEUE_REF, 'refs/heads/work-queue');
+  assert.equal(ZERO_GIT_OID, '0'.repeat(40));
+  assert.equal(MAX_CROSS_RUN_LEASE_TTL_MS, 3600000);
+  assert.deepEqual(SUPPORTED_QUEUE_PROTOCOLS, ['v3', 'v4']);
+  assert.deepEqual(SUPPORTED_CLOUD_HARNESSES, [
+    'copilot-cloud-agent',
+    'copilot-cloud-automation',
+    'copilot-sdk'
+  ]);
+
+  const crossPlan = {...plan, includedUnits: 12, maxExecutionMs: 600000};
+  const runner1 = openShadowDispatchLedger(':memory:', crossPlan);
+  const runner2 = openShadowDispatchLedger(':memory:', crossPlan);
+  const runner3 = openShadowDispatchLedger(':memory:', crossPlan);
+  const refStore = createInMemoryWorkQueueRefStore();
+
+  try {
+    const snap0 = runner1.exportSnapshot({signingKey: casSigningKey, now: 1000}).snapshot;
+
+    // 1. Atomic CAS claim + ledger reservation starting from empty refs/heads/work-queue (ZERO_GIT_OID).
+    const step1 = reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: snap0,
+      signingKey: casSigningKey,
+      casState: refStore.readRef(),
+      expectedRefOid: ZERO_GIT_OID,
+      admissionEvidence: {...baseAdmission(), remainingIncludedUnits: 12},
+      candidate: {
+        repositoryId: 1,
+        issue: 12,
+        head,
+        generation: 1,
+        repository: 'Jamula/SoftwareFactory',
+        lane: 'lane-ledger',
+        ownedPaths: ['tools/engineering-factory/shadow-dispatch-ledger.mjs'],
+        workerId: 'worker-run-1',
+        runId: 1001,
+        runAttempt: 1,
+        leaseTtlMs: 60000,
+        maxExecutionMs: 300000,
+        traceparent: `00-${'1'.repeat(32)}-${'2'.repeat(16)}-01`,
+        lockSha256: computeReservationHeadLock(1, 12, head, 1)
+      },
+      nowMs: 1000
+    });
+    assert.equal(step1.ok, true);
+    assert.equal(step1.reconciled, true);
+    assert.equal(step1.shadow, true);
+    assert.equal(step1.liveDispatch, false);
+    assert.equal(step1.liveMerge, false);
+    assert.equal(step1.reason, 'CROSS_RUN_CAS_RESERVED');
+    assert.equal(step1.protocol, 'v3');
+    assert.equal(step1.casMutationRequired, true);
+    assert.equal(step1.ledgerMutationRequired, true);
+    assert.equal(Object.isFrozen(step1), true);
+    assert.equal(Object.isFrozen(step1.nextCasState), true);
+    assert.equal(Object.isFrozen(step1.nextLedgerSnapshot), true);
+    assert.deepEqual(step1.ticket, {repositoryId: 1, issue: 12, head, generation: 1});
+
+    // Commit nextCasState to work-queue-cas store; deterministic OID matches byte-for-byte.
+    const casCommit1 = refStore.compareAndSwapRef({
+      ref: PROTECTED_WORK_QUEUE_REF,
+      expectedOid: ZERO_GIT_OID,
+      nextState: step1.nextCasState,
+      force: false
+    });
+    assert.equal(casCommit1.ok, true);
+    assert.equal(casCommit1.oid, step1.nextRefOid);
+
+    // Import signed nextLedgerSnapshot onto stateless Runner 2.
+    const importedOnRunner2 = runner2.importSnapshot(step1.nextLedgerSnapshot, {
+      signingKey: casSigningKey,
+      now: 1000
+    });
+    assert.equal(importedOnRunner2.reason, 'SHADOW_SNAPSHOT_IMPORTED');
+
+    // 2. Stale expectedRefOid fails closed with CAS_CONFLICT and exposes actualRefOid.
+    const conflict = reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: step1.nextLedgerSnapshot,
+      signingKey: casSigningKey,
+      casState: refStore.readRef(),
+      expectedRefOid: ZERO_GIT_OID,
+      admissionEvidence: {...baseAdmission(), observedMs: 1200, remainingIncludedUnits: 12},
+      nowMs: 1200
+    });
+    assert.equal(conflict.ok, false);
+    assert.equal(conflict.reason, 'CAS_CONFLICT');
+    assert.equal(conflict.expectedRefOid, ZERO_GIT_OID);
+    assert.equal(conflict.actualRefOid, casCommit1.oid);
+
+    // 3. Advance 'reserved' -> 'in-flight' against active CAS lease on Runner 2 (fences CAS sequence too).
+    const step2 = reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: step1.nextLedgerSnapshot,
+      signingKey: casSigningKey,
+      casState: refStore.readRef(),
+      expectedRefOid: casCommit1.oid,
+      admissionEvidence: {...baseAdmission(), observedMs: 1500, remainingIncludedUnits: 12},
+      candidate: {
+        repositoryId: 1,
+        issue: 12,
+        head,
+        generation: 1,
+        phase: 'in-flight',
+        repository: 'Jamula/SoftwareFactory',
+        lane: 'lane-ledger',
+        ownedPaths: ['tools/engineering-factory/shadow-dispatch-ledger.mjs'],
+        workerId: 'worker-run-1',
+        runId: 1001,
+        runAttempt: 1
+      },
+      nowMs: 1500
+    });
+    assert.equal(step2.ok, true);
+    assert.equal(step2.reason, 'CROSS_RUN_CAS_SIMULATION_STARTED');
+    assert.equal(step2.casMutationRequired, true);
+    assert.equal(step2.ledgerMutationRequired, true);
+    const casCommitStep2 = refStore.compareAndSwapRef({
+      ref: PROTECTED_WORK_QUEUE_REF,
+      expectedOid: casCommit1.oid,
+      nextState: step2.nextCasState,
+      force: false
+    });
+    assert.equal(casCommitStep2.ok, true);
+    assert.equal(casCommitStep2.oid, step2.nextRefOid);
+    assert.equal(runner2.importSnapshot(step2.nextLedgerSnapshot, {
+      signingKey: casSigningKey,
+      now: 1500
+    }).reason, 'SHADOW_SNAPSHOT_IMPORTED');
+
+    // Healthy steady-state check performs zero mutations on either store.
+    const steady = reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: step2.nextLedgerSnapshot,
+      signingKey: casSigningKey,
+      casState: refStore.readRef(),
+      expectedRefOid: casCommitStep2.oid,
+      admissionEvidence: {...baseAdmission(), observedMs: 1600, remainingIncludedUnits: 12},
+      nowMs: 1600
+    });
+    assert.equal(steady.ok, true);
+    assert.equal(steady.reason, 'CROSS_RUN_CAS_RECONCILED');
+    assert.equal(steady.casMutationRequired, false);
+    assert.equal(steady.ledgerMutationRequired, false);
+    assert.deepEqual(steady.nextLedgerSnapshot, step2.nextLedgerSnapshot);
+
+    // 4. Simulate worker_terminated crash on Runner 1 and reconcile orphan across runs.
+    const crashReconcile = reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: step2.nextLedgerSnapshot,
+      signingKey: casSigningKey,
+      casState: refStore.readRef(),
+      expectedRefOid: casCommitStep2.oid,
+      admissionEvidence: {...baseAdmission(), observedMs: 2000, remainingIncludedUnits: 12},
+      observedRuns: [
+        {
+          workId: '1:issue:12',
+          runId: 1001,
+          runAttempt: 1,
+          leaseGeneration: 1,
+          runState: 'worker_terminated'
+        },
+        {
+          workId: '1:issue:999',
+          runId: 9999,
+          runAttempt: 1,
+          leaseGeneration: 1,
+          runState: 'run_missing'
+        }
+      ],
+      nowMs: 2000
+    });
+    assert.equal(crashReconcile.ok, true);
+    assert.equal(crashReconcile.releasedOrphanCount, 1);
+    assert.deepEqual(crashReconcile.reclaimedCasWorkIds, ['1:issue:12']);
+    assert.equal(crashReconcile.skippedRunObservations.length, 1);
+    assert.equal(crashReconcile.skippedRunObservations[0].reason, 'UNKNOWN_WORK_ID');
+    assert.equal(crashReconcile.reconciledActions[0].toPhase, 'expired');
+    assert.equal(crashReconcile.reconciledActions[0].trigger, 'orphan_terminal_run');
+
+    const casCommit2 = refStore.compareAndSwapRef({
+      ref: PROTECTED_WORK_QUEUE_REF,
+      expectedOid: casCommitStep2.oid,
+      nextState: crashReconcile.nextCasState,
+      force: false
+    });
+    assert.equal(casCommit2.ok, true);
+    assert.equal(casCommit2.oid, crashReconcile.nextRefOid);
+
+    // 5. Zombie worker with generation <= reclaimedGeneration or unleased retry at same head is fenced!
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: crashReconcile.nextLedgerSnapshot,
+      signingKey: casSigningKey,
+      casState: refStore.readRef(),
+      expectedRefOid: casCommit2.oid,
+      admissionEvidence: {...baseAdmission(), observedMs: 2100},
+      candidate: {repositoryId: 1, issue: 12, head: 'b'.repeat(40), generation: 1},
+      nowMs: 2100
+    }).reason, 'STALE_LEASE_GENERATION');
+
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: crashReconcile.nextLedgerSnapshot,
+      signingKey: casSigningKey,
+      casState: refStore.readRef(),
+      expectedRefOid: casCommit2.oid,
+      admissionEvidence: {...baseAdmission(), observedMs: 2100},
+      candidate: {repositoryId: 1, issue: 12, head, generation: 1},
+      nowMs: 2100
+    }).reason, 'STALE_LEASE_GENERATION');
+
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: crashReconcile.nextLedgerSnapshot,
+      signingKey: casSigningKey,
+      casState: refStore.readRef(),
+      expectedRefOid: casCommit2.oid,
+      admissionEvidence: {...baseAdmission(), observedMs: 2100},
+      candidate: {repositoryId: 1, issue: 12, head, generation: 3},
+      nowMs: 2100
+    }).reason, 'CAS_LEASE_REQUIRED');
+
+    // Reusing the exact prior (runId, runAttempt) fails closed with DUPLICATE_RUN_ATTEMPT.
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: crashReconcile.nextLedgerSnapshot,
+      signingKey: casSigningKey,
+      casState: refStore.readRef(),
+      expectedRefOid: casCommit2.oid,
+      admissionEvidence: {...baseAdmission(), observedMs: 2100},
+      candidate: {
+        repositoryId: 1,
+        issue: 12,
+        head: 'b'.repeat(40),
+        generation: 3,
+        repository: 'Jamula/SoftwareFactory',
+        lane: 'lane-ledger',
+        ownedPaths: ['tools/engineering-factory/shadow-dispatch-ledger.mjs'],
+        workerId: 'worker-run-2',
+        runId: 1001,
+        runAttempt: 1,
+        leaseTtlMs: 60000
+      },
+      nowMs: 2100
+    }).reason, 'DUPLICATE_RUN_ATTEMPT');
+
+    // 6. Runner 3 atomically claims generation 3 on the requeued CAS entry + binds new head in ledger,
+    // commits to work-queue-cas refStore (verifying priorRuns & OID match), then settles cleanly.
+    const boundRetry = reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: crashReconcile.nextLedgerSnapshot,
+      signingKey: casSigningKey,
+      casState: refStore.readRef(),
+      expectedRefOid: casCommit2.oid,
+      admissionEvidence: {...baseAdmission(), observedMs: 2200, remainingIncludedUnits: 12},
+      candidate: {
+        repositoryId: 1,
+        issue: 12,
+        head: 'b'.repeat(40),
+        generation: 3,
+        phase: 'in-flight',
+        repository: 'Jamula/SoftwareFactory',
+        lane: 'lane-ledger',
+        ownedPaths: ['tools/engineering-factory/shadow-dispatch-ledger.mjs'],
+        workerId: 'worker-run-3',
+        runId: 1002,
+        runAttempt: 1,
+        leaseTtlMs: 60000
+      },
+      nowMs: 2200
+    });
+    assert.equal(boundRetry.ok, true);
+    assert.equal(boundRetry.reason, 'CROSS_RUN_CAS_SIMULATION_STARTED');
+    assert.deepEqual(boundRetry.nextCasState.entries[0].priorRuns, [{runId: 1001, runAttempt: 1}]);
+
+    const casCommit3 = refStore.compareAndSwapRef({
+      ref: PROTECTED_WORK_QUEUE_REF,
+      expectedOid: casCommit2.oid,
+      nextState: boundRetry.nextCasState,
+      force: false
+    });
+    assert.equal(casCommit3.ok, true);
+    assert.equal(casCommit3.oid, boundRetry.nextRefOid);
+
+    // Settle via run_terminal 'success' before lease expiry -> ledger row becomes 'settled'.
+    const settledStep = reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: boundRetry.nextLedgerSnapshot,
+      signingKey: casSigningKey,
+      casState: refStore.readRef(),
+      expectedRefOid: casCommit3.oid,
+      admissionEvidence: {...baseAdmission(), observedMs: 2500, remainingIncludedUnits: 12},
+      observedRuns: [{
+        workId: '1:issue:12',
+        runId: 1002,
+        runAttempt: 1,
+        leaseGeneration: 3,
+        runState: 'run_terminal',
+        conclusion: 'success'
+      }],
+      nowMs: 2500
+    });
+    assert.equal(settledStep.ok, true);
+    assert.equal(settledStep.nextCasState.entries[0].status, 'completed');
+    assert.equal(settledStep.reconciledActions[0].toPhase, 'settled');
+    assert.equal(runner3.importSnapshot(settledStep.nextLedgerSnapshot, {
+      signingKey: casSigningKey,
+      now: 2500
+    }).reason, 'SHADOW_SNAPSHOT_IMPORTED');
+  } finally {
+    runner1.close();
+    runner2.close();
+    runner3.close();
+  }
+});
+
+test('enforces protocol v3 vs gated v4 and #105 $0 overage hard-stop & Cloud Agent / Cloud Automations contract', () => {
+  const ledger = openShadowDispatchLedger(':memory:', plan);
+  try {
+    const snap = ledger.exportSnapshot({signingKey: casSigningKey, now: 1000}).snapshot;
+    const v3State = {
+      schemaVersion: 1,
+      protocol: 'v3',
+      sequence: 1,
+      nextGeneration: 1,
+      entries: [],
+      recoveryReceipts: []
+    };
+    const v3Oid = computeWorkQueueStateOid(v3State);
+    const v4State = {...v3State, protocol: 'v4'};
+    const v4Oid = computeWorkQueueStateOid(v4State);
+
+    // Protocol v4 without protocolV4ReleaseVerified === true fails closed with UNVERIFIED_QUEUE_PROTOCOL.
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: snap,
+      signingKey: casSigningKey,
+      casState: v4State,
+      expectedRefOid: v4Oid,
+      admissionEvidence: baseAdmission(),
+      nowMs: 1000
+    }).reason, 'UNVERIFIED_QUEUE_PROTOCOL');
+
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: snap,
+      signingKey: casSigningKey,
+      casState: v4State,
+      expectedRefOid: v4Oid,
+      protocolV4ReleaseVerified: false,
+      admissionEvidence: baseAdmission(),
+      nowMs: 1000
+    }).reason, 'UNVERIFIED_QUEUE_PROTOCOL');
+
+    // Conflicting top-level vs admissionEvidence protocolV4ReleaseVerified fails closed.
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: snap,
+      signingKey: casSigningKey,
+      casState: v4State,
+      expectedRefOid: v4Oid,
+      protocolV4ReleaseVerified: true,
+      admissionEvidence: {...baseAdmission(), protocolV4ReleaseVerified: false},
+      nowMs: 1000
+    }).reason, 'UNVERIFIED_QUEUE_PROTOCOL');
+
+    // Empty queue with requestedProtocol 'v4' or unknown protocol also enforces protocolV4ReleaseVerified.
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: snap,
+      signingKey: casSigningKey,
+      casState: null,
+      expectedRefOid: ZERO_GIT_OID,
+      requestedProtocol: 'v4',
+      admissionEvidence: baseAdmission(),
+      nowMs: 1000
+    }).reason, 'UNVERIFIED_QUEUE_PROTOCOL');
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: snap,
+      signingKey: casSigningKey,
+      casState: null,
+      expectedRefOid: ZERO_GIT_OID,
+      requestedProtocol: 'v2',
+      admissionEvidence: baseAdmission(),
+      nowMs: 1000
+    }).reason, 'UNVERIFIED_QUEUE_PROTOCOL');
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: snap,
+      signingKey: casSigningKey,
+      casState: {ref: PROTECTED_WORK_QUEUE_REF, oid: ZERO_GIT_OID, state: null},
+      expectedRefOid: ZERO_GIT_OID,
+      requestedProtocol: 'v4',
+      admissionEvidence: baseAdmission(),
+      nowMs: 1000
+    }).reason, 'UNVERIFIED_QUEUE_PROTOCOL');
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: snap,
+      signingKey: casSigningKey,
+      casState: {ref: PROTECTED_WORK_QUEUE_REF, oid: ZERO_GIT_OID, state: null},
+      expectedRefOid: ZERO_GIT_OID,
+      requestedProtocol: 'v2',
+      admissionEvidence: baseAdmission(),
+      nowMs: 1000
+    }).reason, 'UNVERIFIED_QUEUE_PROTOCOL');
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: snap,
+      signingKey: casSigningKey,
+      casState: {...v3State, protocol: 'v2'},
+      expectedRefOid: v3Oid,
+      admissionEvidence: baseAdmission(),
+      nowMs: 1000
+    }).reason, 'UNVERIFIED_QUEUE_PROTOCOL');
+
+    // Verified Protocol v4 succeeds (both direct casState, empty requestedProtocol, and ref envelope).
+    const v4Admitted = reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: snap,
+      signingKey: casSigningKey,
+      casState: v4State,
+      expectedRefOid: v4Oid,
+      protocolV4ReleaseVerified: true,
+      requestedProtocol: 'v4',
+      admissionEvidence: baseAdmission(),
+      nowMs: 1000
+    });
+    assert.equal(v4Admitted.ok, true);
+    assert.equal(v4Admitted.protocol, 'v4');
+
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: snap,
+      signingKey: casSigningKey,
+      casState: {ref: PROTECTED_WORK_QUEUE_REF, oid: v4Oid, state: v4State},
+      expectedRefOid: v4Oid,
+      admissionEvidence: {...baseAdmission(), protocolV4ReleaseVerified: true},
+      requestedProtocol: 'v3',
+      nowMs: 1000
+    }).reason, 'UNVERIFIED_QUEUE_PROTOCOL');
+
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: snap,
+      signingKey: casSigningKey,
+      casState: v4State,
+      expectedRefOid: v4Oid,
+      protocolV4ReleaseVerified: true,
+      requestedProtocol: 'v3',
+      admissionEvidence: baseAdmission(),
+      nowMs: 1000
+    }).reason, 'UNVERIFIED_QUEUE_PROTOCOL');
+
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: snap,
+      signingKey: casSigningKey,
+      casState: null,
+      expectedRefOid: ZERO_GIT_OID,
+      protocolV4ReleaseVerified: true,
+      requestedProtocol: 'v4',
+      admissionEvidence: baseAdmission(),
+      nowMs: 1000
+    }).protocol, 'v4');
+
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: snap,
+      signingKey: casSigningKey,
+      casState: {ref: PROTECTED_WORK_QUEUE_REF, oid: ZERO_GIT_OID, state: null},
+      expectedRefOid: ZERO_GIT_OID,
+      protocolV4ReleaseVerified: true,
+      requestedProtocol: 'v4',
+      admissionEvidence: baseAdmission(),
+      nowMs: 1000
+    }).protocol, 'v4');
+
+    // #105 $0 hard-stop & PAT & harness visibility checks.
+    const checkAdmission = overrides => reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: snap,
+      signingKey: casSigningKey,
+      casState: v3State,
+      expectedRefOid: v3Oid,
+      admissionEvidence: {...baseAdmission(), ...overrides},
+      nowMs: 1000
+    });
+
+    assert.equal(checkAdmission({stop: true}).reason, 'STOPPED');
+    assert.equal(checkAdmission({personalPatConfigured: true}).reason, 'PERSONAL_PAT_FORBIDDEN');
+    assert.equal(checkAdmission({includedOnly: false}).reason, 'INCLUDED_ONLY_REQUIRED');
+    assert.equal(checkAdmission({overageDisabled: false}).reason, 'OVERAGE_HARD_STOP_REQUIRED');
+    assert.equal(checkAdmission({hardStopEnforced: false}).reason, 'OVERAGE_HARD_STOP_REQUIRED');
+    assert.equal(checkAdmission({incrementalSpendUsdCents: 1}).reason, 'NONZERO_INCREMENTAL_SPEND');
+    assert.equal(checkAdmission({incrementalSpendUsdCents: -1}).reason, 'NONZERO_INCREMENTAL_SPEND');
+    assert.equal(checkAdmission({authorityVerified: false}).reason, 'BILLING_AUTHORITY_UNVERIFIED');
+    assert.equal(checkAdmission({entitlementVerified: false}).reason, 'BILLING_AUTHORITY_UNVERIFIED');
+    assert.equal(checkAdmission({repositoryId: 99, approvedRepositoryId: 99}).reason, 'UNCONFIGURED_REPOSITORY');
+    assert.equal(checkAdmission({repositoryId: 1, approvedRepositoryId: 2}).reason, 'REPOSITORY_SCOPE_MISMATCH');
+    assert.equal(checkAdmission({repositoryId: undefined, approvedRepositoryId: 2}).reason, 'REPOSITORY_SCOPE_MISMATCH');
+    assert.equal(checkAdmission({repositoryId: 1, approvedRepositoryId: undefined}).reason, 'REPOSITORY_SCOPE_MISMATCH');
+    assert.equal(checkAdmission({observedMs: 1001}).reason, 'STALE_ADMISSION_EVIDENCE');
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: snap,
+      signingKey: casSigningKey,
+      casState: v3State,
+      expectedRefOid: v3Oid,
+      admissionEvidence: {...baseAdmission(), observedMs: 1000, maxQuotaAgeMs: 5000},
+      nowMs: 7000
+    }).reason, 'STALE_ADMISSION_EVIDENCE');
+
+    // Cloud Agent on public/private/internal succeeds; Cloud Automation requires private/internal.
+    for (const vis of ['public', 'private', 'internal']) {
+      assert.equal(checkAdmission({repositoryVisibility: vis, harness: 'copilot-cloud-agent'}).ok, true);
+    }
+    assert.equal(checkAdmission({
+      repositoryVisibility: 'public',
+      harness: 'copilot-cloud-automation',
+      agentLogin: undefined
+    }).reason, 'AUTOMATION_REQUIRES_PRIVATE_REPO');
+    for (const vis of ['private', 'internal']) {
+      const adm = baseAdmission();
+      delete adm.agentLogin;
+      assert.equal(reconcileLedgerWithWorkQueueCas({
+        ledgerSnapshot: snap,
+        signingKey: casSigningKey,
+        casState: v3State,
+        expectedRefOid: v3Oid,
+        admissionEvidence: {...adm, repositoryVisibility: vis, harness: 'copilot-cloud-automation'},
+        nowMs: 1000
+      }).ok, true);
+    }
+
+    // Object harness shape, agentLogin identity, and pinned @microsoft/copilot-sdk v2.0.3 checks.
+    const admNoLogin = baseAdmission();
+    delete admNoLogin.agentLogin;
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: snap,
+      signingKey: casSigningKey,
+      casState: v3State,
+      expectedRefOid: v3Oid,
+      admissionEvidence: {
+        ...admNoLogin,
+        harness: {kind: 'copilot-cloud-agent', verified: true, agentLogin: 'copilot-swe-agent[bot]'}
+      },
+      nowMs: 1000
+    }).ok, true);
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: snap,
+      signingKey: casSigningKey,
+      casState: v3State,
+      expectedRefOid: v3Oid,
+      admissionEvidence: {...admNoLogin, harness: {kind: 'copilot-cloud-agent', verified: false}},
+      nowMs: 1000
+    }).reason, 'HARNESS_UNVERIFIED');
+    assert.equal(checkAdmission({agentLogin: 'personal-user'}).reason, 'AGENT_IDENTITY_MISMATCH');
+    assert.equal(checkAdmission({
+      harness: 'copilot-cloud-automation',
+      repositoryVisibility: 'private'
+    }).reason, 'AGENT_IDENTITY_MISMATCH');
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: snap,
+      signingKey: casSigningKey,
+      casState: v3State,
+      expectedRefOid: v3Oid,
+      admissionEvidence: {...admNoLogin, harness: 'github-models'},
+      nowMs: 1000
+    }).reason, 'UNSUPPORTED_PROVIDER_HARNESS');
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: snap,
+      signingKey: casSigningKey,
+      casState: v3State,
+      expectedRefOid: v3Oid,
+      admissionEvidence: {...admNoLogin, harness: {kind: 'copilot-sdk', verified: true, sdkVersion: 'v2.0.3'}},
+      nowMs: 1000
+    }).ok, true);
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: snap,
+      signingKey: casSigningKey,
+      casState: v3State,
+      expectedRefOid: v3Oid,
+      admissionEvidence: {...admNoLogin, harness: 'copilot-sdk', sdkVersion: '1.9.0'},
+      nowMs: 1000
+    }).reason, 'SDK_VERSION_MISMATCH');
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: snap,
+      signingKey: casSigningKey,
+      casState: v3State,
+      expectedRefOid: v3Oid,
+      admissionEvidence: {...admNoLogin, harness: 'copilot-sdk'},
+      nowMs: 1000
+    }).reason, 'SDK_VERSION_MISMATCH');
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: snap,
+      signingKey: casSigningKey,
+      casState: v3State,
+      expectedRefOid: v3Oid,
+      admissionEvidence: {...admNoLogin, harness: 'copilot-cloud-agent', sdkVersion: '2.0.3'},
+      nowMs: 1000
+    }).reason, 'INVALID_ADMISSION_EVIDENCE');
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: snap,
+      signingKey: casSigningKey,
+      casState: v3State,
+      expectedRefOid: v3Oid,
+      admissionEvidence: {
+        ...admNoLogin,
+        agentLogin: 'copilot-swe-agent[bot]',
+        harness: {kind: 'copilot-cloud-agent', verified: true, agentLogin: 'other-bot'}
+      },
+      nowMs: 1000
+    }).reason, 'INVALID_ADMISSION_EVIDENCE');
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: snap,
+      signingKey: casSigningKey,
+      casState: v3State,
+      expectedRefOid: v3Oid,
+      admissionEvidence: {
+        ...admNoLogin,
+        sdkVersion: '2.0.3',
+        harness: {kind: 'copilot-sdk', verified: true, sdkVersion: '2.0.2'}
+      },
+      nowMs: 1000
+    }).reason, 'INVALID_ADMISSION_EVIDENCE');
+
+    // gh-aw AI credit soft caps validation.
+    assert.equal(checkAdmission({
+      ghAwCaps: {maxAiCredits: 0, maxDailyAiCredits: 10, dailyAiCreditsUsed: 0, runAiCreditsRequired: 1}
+    }).reason, 'GH_AW_SOFT_CAPS_INVALID');
+    assert.equal(checkAdmission({
+      ghAwCaps: {maxAiCredits: 5, maxDailyAiCredits: 10, dailyAiCreditsUsed: 0, runAiCreditsRequired: 6}
+    }).reason, 'GH_AW_MAX_AI_CREDITS_EXCEEDED');
+    assert.equal(checkAdmission({
+      ghAwCaps: {maxAiCredits: 5, maxDailyAiCredits: 10, dailyAiCreditsUsed: 11, runAiCreditsRequired: 2}
+    }).reason, 'GH_AW_DAILY_AI_CREDITS_EXCEEDED');
+    assert.equal(checkAdmission({
+      ghAwCaps: {maxAiCredits: 5, maxDailyAiCredits: 10, dailyAiCreditsUsed: 6, runAiCreditsRequired: 4}
+    }).ok, true);
+  } finally {
+    ledger.close();
+  }
+});
+
+test('verifies signed ledger snapshots, rejects active/revoked Proxies and getters, and covers TTL/orphan/compaction edge cases', () => {
+  const bigPlan = {
+    window: 'cas-edge-window',
+    maxActive: 4,
+    includedUnits: 5000,
+    unitsPerRun: 2,
+    maxExecutionMs: MAX_CROSS_RUN_LEASE_TTL_MS,
+    repositories: [{repositoryId: 1, maxActive: 2}, {repositoryId: 2, maxActive: 2}]
+  };
+  const ledger = openShadowDispatchLedger(':memory:', bigPlan);
+  try {
+    const snap0 = ledger.exportSnapshot({signingKey: casSigningKey, now: 1000}).snapshot;
+    const planSig = snap0.planSignature;
+
+    // 1. Standalone verifySignedLedgerSnapshot & computeWorkQueueStateOid validation.
+    assert.equal(computeWorkQueueStateOid(null, 'bad-oid'), null);
+    assert.equal(computeWorkQueueStateOid(null, 'a'.repeat(40)), null);
+    assert.equal(computeWorkQueueStateOid(null), ZERO_GIT_OID);
+    assert.equal(computeWorkQueueStateOid({bad: true}), null);
+
+    for (const badOpts of [
+      null,
+      {signingKey: 'short', nowMs: 1000},
+      {signingKey: casSigningKey, nowMs: -1},
+      {signingKey: casSigningKey, nowMs: 1000, minSequence: -1},
+      {signingKey: casSigningKey, nowMs: 1000, maxSnapshotAgeMs: 0},
+      {signingKey: casSigningKey, nowMs: 1000, maxSnapshotAgeMs: 86400001}
+    ]) {
+      assert.equal(verifySignedLedgerSnapshot(snap0, badOpts).reason, 'SNAPSHOT_KEY_OR_TIME_INVALID');
+    }
+    assert.equal(verifySignedLedgerSnapshot(snap0, {
+      signingKey: casSigningKey,
+      nowMs: 1000,
+      fixturePlan: {bad: true}
+    }).reason, 'INVALID_SHADOW_DISPATCH_PLAN');
+    assert.equal(verifySignedLedgerSnapshot(snap0, {
+      signingKey: casSigningKey,
+      nowMs: 1000,
+      fixturePlan: {...bigPlan, window: 'other-window'}
+    }).reason, 'PLAN_SIGNATURE_MISMATCH');
+    assert.equal(verifySignedLedgerSnapshot(snap0, {
+      signingKey: casSigningKey,
+      nowMs: 999
+    }).reason, 'INVALID_SNAPSHOT');
+    assert.equal(verifySignedLedgerSnapshot(snap0, {
+      signingKey: casSigningKey,
+      nowMs: 1000,
+      minSequence: 2
+    }).reason, 'STALE_SNAPSHOT_SEQUENCE');
+    assert.equal(verifySignedLedgerSnapshot(snap0, {
+      signingKey: casSigningKey,
+      nowMs: 5000,
+      maxSnapshotAgeMs: 1000
+    }).reason, 'STALE_LEDGER_SNAPSHOT');
+
+    // Unsigned tampering of row data always yields SNAPSHOT_SIGNATURE_INVALID.
+    const rowValid = {
+      repositoryId: 1,
+      issue: 10,
+      head,
+      generation: 1,
+      units: 2,
+      phase: 'reserved',
+      validThrough: 2000,
+      reservedAt: 1000
+    };
+    const snapWithRow = signRawSnapshot(planSig, 2, 1000, [rowValid], casSigningKey, bigPlan.window);
+    assert.equal(verifySignedLedgerSnapshot(snapWithRow, {
+      signingKey: casSigningKey,
+      nowMs: 1000,
+      fixturePlan: bigPlan
+    }).ok, true);
+    assert.equal(verifySignedLedgerSnapshot({
+      ...snapWithRow,
+      reservations: [{...rowValid, units: 99}]
+    }, {signingKey: casSigningKey, nowMs: 1000}).reason, 'SNAPSHOT_SIGNATURE_INVALID');
+    assert.equal(verifySignedLedgerSnapshot({
+      ...snapWithRow,
+      hmac: '0'.repeat(64)
+    }, {signingKey: casSigningKey, nowMs: 1000}).reason, 'SNAPSHOT_SIGNATURE_INVALID');
+
+    // Signed invalid planSignature or semantic row violations fail closed with INVALID_SNAPSHOT.
+    for (const badSig of [
+      '',
+      'not-json',
+      JSON.stringify([1, 2]),
+      JSON.stringify(['wrong-win', 4, 20, 2, 3600000, [[1, 2]]]),
+      JSON.stringify([bigPlan.window, 4, 20, 2, 3600000, [[2, 2], [1, 2]]])
+    ]) {
+      const forged = signRawSnapshot(badSig, 2, 1000, [], casSigningKey, bigPlan.window);
+      assert.equal(verifySignedLedgerSnapshot(forged, {
+        signingKey: casSigningKey,
+        nowMs: 1000
+      }).reason, 'INVALID_SNAPSHOT');
+    }
+    for (const badRows of [
+      [{...rowValid, repositoryId: 99}],
+      [{...rowValid, units: 4}],
+      [{...rowValid, phase: 'reserved', reservedAt: 1000, validThrough: 62000}],
+      [{...rowValid, phase: 'in-flight', reservedAt: 1000, validThrough: 1000 + MAX_CROSS_RUN_LEASE_TTL_MS + 1}],
+      [rowValid, {...rowValid, head: '0'.repeat(40)}],
+      [rowValid, {...rowValid, head: 'f'.repeat(40)}],
+      Array.from({length: 2501}, (_, idx) => ({...rowValid, issue: idx + 1, phase: 'settled'}))
+    ]) {
+      const forged = signRawSnapshot(planSig, 2, 1000, badRows, casSigningKey, bigPlan.window);
+      assert.equal(verifySignedLedgerSnapshot(forged, {
+        signingKey: casSigningKey,
+        nowMs: 1000
+      }).reason, 'INVALID_SNAPSHOT');
+    }
+    const lateExportForged = signRawSnapshot(
+      planSig,
+      2,
+      80000,
+      [{...rowValid, phase: 'in-flight', reservedAt: 1000, validThrough: 61000 + MAX_CROSS_RUN_LEASE_TTL_MS + 1}],
+      casSigningKey,
+      bigPlan.window
+    );
+    assert.equal(verifySignedLedgerSnapshot(lateExportForged, {
+      signingKey: casSigningKey,
+      nowMs: 80000
+    }).reason, 'INVALID_SNAPSHOT');
+    assert.equal(verifySignedLedgerSnapshot({
+      ...snap0,
+      reservations: [{...rowValid, units: 'bad'}]
+    }, {signingKey: casSigningKey, nowMs: 1000}).reason, 'INVALID_SNAPSHOT');
+
+    // 2. Active Proxy, Revoked Proxy, non-Object.prototype, sparse array, and getter traps never execute or throw!
+    let trapCalls = 0;
+    const trap = () => {
+      trapCalls++;
+      throw new Error('trap invoked');
+    };
+    const revocableObj = Proxy.revocable({a: 1}, {get: trap});
+    revocableObj.revoke();
+    const revocableArr = Proxy.revocable([], {get: trap});
+    revocableArr.revoke();
+    const getterInput = {
+      ledgerSnapshot: snap0,
+      signingKey: casSigningKey,
+      casState: null,
+      expectedRefOid: ZERO_GIT_OID,
+      admissionEvidence: baseAdmission(),
+      nowMs: 1000
+    };
+    Object.defineProperty(getterInput, 'stop', {enumerable: true, get: trap});
+    const sparseArr = [];
+    sparseArr.length = 1;
+
+    for (const badInput of [
+      null,
+      new Proxy(getterInput, {get: trap}),
+      revocableObj.proxy,
+      Object.create(null),
+      getterInput,
+      {...snap0}
+    ]) {
+      assert.equal(reconcileLedgerWithWorkQueueCas(badInput).reason, 'INVALID_RECONCILE_OPTIONS');
+    }
+    assert.equal(verifySignedLedgerSnapshot(revocableObj.proxy, {
+      signingKey: casSigningKey,
+      nowMs: 1000
+    }).reason, 'INVALID_SNAPSHOT');
+    assert.equal(verifySignedLedgerSnapshot({...snap0, reservations: revocableArr.proxy}, {
+      signingKey: casSigningKey,
+      nowMs: 1000
+    }).reason, 'INVALID_SNAPSHOT');
+    assert.equal(verifySignedLedgerSnapshot({...snap0, reservations: sparseArr}, {
+      signingKey: casSigningKey,
+      nowMs: 1000
+    }).reason, 'INVALID_SNAPSHOT');
+    assert.equal(trapCalls, 0);
+
+    // 3. Top-level option guards, ref protection, force push block, and OID modes.
+    const baseReq = {
+      ledgerSnapshot: snap0,
+      signingKey: casSigningKey,
+      casState: null,
+      expectedRefOid: ZERO_GIT_OID,
+      admissionEvidence: {...baseAdmission(), remainingIncludedUnits: 5000},
+      nowMs: 1000
+    };
+    assert.equal(reconcileLedgerWithWorkQueueCas({...baseReq, stop: true}).reason, 'STOPPED');
+    assert.equal(reconcileLedgerWithWorkQueueCas({...baseReq, force: true}).reason, 'FORCE_UPDATE_FORBIDDEN');
+    assert.equal(reconcileLedgerWithWorkQueueCas({...baseReq, force: 'no'}).reason, 'INVALID_RECONCILE_OPTIONS');
+    assert.equal(reconcileLedgerWithWorkQueueCas({...baseReq, targetRef: 42}).reason, 'INVALID_RECONCILE_OPTIONS');
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ...baseReq,
+      targetRef: 'refs/heads/main'
+    }).reason, 'UNPROTECTED_WORK_QUEUE_REF');
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ...baseReq,
+      expectedRefOid: 'not-a-sha'
+    }).reason, 'INVALID_EXPECTED_REF_OID');
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ...baseReq,
+      actualRefOid: 'bad'
+    }).reason, 'INVALID_RECONCILE_OPTIONS');
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ...baseReq,
+      previousRefOid: 'bad'
+    }).reason, 'INVALID_RECONCILE_OPTIONS');
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ...baseReq,
+      previousRefOid: '1'.repeat(40)
+    }).reason, 'INVALID_RECONCILE_OPTIONS');
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ...baseReq,
+      actualRefOid: '1'.repeat(40)
+    }).reason, 'INVALID_QUEUE_STATE');
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ...baseReq,
+      casState: {ref: PROTECTED_WORK_QUEUE_REF, oid: ZERO_GIT_OID, state: null, ok: false}
+    }).reason, 'REF_STORE_UNAVAILABLE');
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ...baseReq,
+      casState: {ref: 'refs/heads/other', oid: ZERO_GIT_OID, state: null}
+    }).reason, 'UNPROTECTED_WORK_QUEUE_REF');
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ...baseReq,
+      casState: {ref: PROTECTED_WORK_QUEUE_REF, oid: 'bad', state: null}
+    }).reason, 'INVALID_QUEUE_STATE');
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ...baseReq,
+      casState: {ref: PROTECTED_WORK_QUEUE_REF, oid: '1'.repeat(40), state: null},
+      expectedRefOid: '1'.repeat(40)
+    }).reason, 'INVALID_QUEUE_STATE');
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ...baseReq,
+      casState: {ref: PROTECTED_WORK_QUEUE_REF, oid: ZERO_GIT_OID, state: null},
+      previousRefOid: '1'.repeat(40)
+    }).reason, 'INVALID_RECONCILE_OPTIONS');
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ...baseReq,
+      casState: {ref: PROTECTED_WORK_QUEUE_REF, oid: ZERO_GIT_OID, state: null},
+      actualRefOid: '1'.repeat(40)
+    }).reason, 'CAS_CONFLICT');
+
+    // Chained previousRefOid works deterministically when actualRefOid is not simultaneously passed.
+    const emptyCasState = {
+      schemaVersion: 1,
+      protocol: 'v3',
+      sequence: 1,
+      nextGeneration: 1,
+      entries: [],
+      recoveryReceipts: []
+    };
+    const prevOid = '2'.repeat(40);
+    const chainedOid = computeWorkQueueStateOid(emptyCasState, prevOid);
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ...baseReq,
+      casState: emptyCasState,
+      previousRefOid: prevOid,
+      actualRefOid: chainedOid,
+      expectedRefOid: chainedOid
+    }).reason, 'INVALID_RECONCILE_OPTIONS');
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ...baseReq,
+      casState: emptyCasState,
+      previousRefOid: prevOid,
+      expectedRefOid: chainedOid
+    }).ok, true);
+
+    // 4. CAS entry TTL > 3_600_000 ms, clock skew, receipts, priorRuns, PR head movement, and orphan states.
+    const makePrEntry = (overrides = {}) => ({
+      workId: `1:pr:42:${head}`,
+      targetType: 'pull_request',
+      repository: 'Jamula/SoftwareFactory',
+      repositoryId: 1,
+      issueNumber: null,
+      pullNumber: 42,
+      headSha: head,
+      lane: 'lane-ledger',
+      ownedPaths: ['tools/engineering-factory/shadow-dispatch-ledger.mjs'],
+      status: 'leased',
+      generation: 1,
+      attempts: 2,
+      maxAttempts: 3,
+      workerId: 'worker-pr',
+      runId: 500,
+      runAttempt: 1,
+      claimedAtMs: 1000,
+      leaseTtlMs: 60000,
+      leaseExpiresAtMs: 61000,
+      maxExecutionMs: 300000,
+      executionDeadlineMs: 301000,
+      priorRuns: [{runId: 499, runAttempt: 1}],
+      ...overrides
+    });
+
+    const overTtlState = {...emptyCasState, nextGeneration: 2, entries: [makePrEntry({
+      leaseTtlMs: MAX_CROSS_RUN_LEASE_TTL_MS + 1,
+      maxExecutionMs: MAX_CROSS_RUN_LEASE_TTL_MS + 1,
+      executionDeadlineMs: 1000 + MAX_CROSS_RUN_LEASE_TTL_MS + 1
+    })]};
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ...baseReq,
+      casState: overTtlState,
+      expectedRefOid: ZERO_GIT_OID
+    }).reason, 'LEASE_TTL_EXCEEDED');
+
+    for (const badEntry of [
+      null,
+      makePrEntry({targetType: 'other'}),
+      makePrEntry({targetType: 'issue', issueNumber: 0, pullNumber: null, headSha: null, workId: '1:issue:0'}),
+      makePrEntry({pullNumber: 0}),
+      makePrEntry({workId: 'wrong'}),
+      makePrEntry({priorRuns: [{runId: 500, runAttempt: 1}]}),
+      makePrEntry({priorRuns: [{runId: 0, runAttempt: 1}]}),
+      makePrEntry({priorRuns: []})
+    ]) {
+      assert.equal(reconcileLedgerWithWorkQueueCas({
+        ...baseReq,
+        casState: {...emptyCasState, nextGeneration: 2, entries: [badEntry]},
+        expectedRefOid: ZERO_GIT_OID
+      }).reason, 'INVALID_QUEUE_STATE');
+    }
+
+    // Clock skew on claimedAtMs and recoveryReceipts.reclaimedAtMs.
+    const skewEntryState = {...emptyCasState, nextGeneration: 2, entries: [makePrEntry({
+      claimedAtMs: 2000,
+      leaseExpiresAtMs: 62000,
+      executionDeadlineMs: 302000
+    })]};
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ...baseReq,
+      casState: skewEntryState,
+      expectedRefOid: ZERO_GIT_OID,
+      nowMs: 1000
+    }).reason, 'CLOCK_SKEW_REJECTED');
+
+    const validReceipt = {
+      workId: `1:pr:42:${head}`,
+      repositoryId: 1,
+      targetType: 'pull_request',
+      runState: 'lease_expired',
+      conclusion: null,
+      previousRunId: 499,
+      previousRunAttempt: 1,
+      previousGeneration: 1,
+      reclaimedGeneration: 2,
+      attempts: 1,
+      maxAttempts: 3,
+      outcome: 'requeued',
+      reclaimedAtMs: 2000
+    };
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ...baseReq,
+      casState: {...emptyCasState, nextGeneration: 3, recoveryReceipts: [validReceipt]},
+      expectedRefOid: ZERO_GIT_OID,
+      nowMs: 1000
+    }).reason, 'CLOCK_SKEW_REJECTED');
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ...baseReq,
+      casState: {...emptyCasState, nextGeneration: 2, recoveryReceipts: [validReceipt]},
+      expectedRefOid: ZERO_GIT_OID,
+      nowMs: 3000
+    }).reason, 'INVALID_QUEUE_STATE');
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ...baseReq,
+      casState: {...emptyCasState, archivedTerminal: [{workId: '', status: 'completed'}]},
+      expectedRefOid: ZERO_GIT_OID
+    }).reason, 'INVALID_QUEUE_STATE');
+
+    // Conflicting active CAS leases on the same lane fail closed with ACTIVE_CAS_LEASE_CONFLICT.
+    const conflictCas = {
+      ...emptyCasState,
+      nextGeneration: 3,
+      entries: [
+        makePrEntry({generation: 1}),
+        makePrEntry({
+          workId: `1:pr:43:${'b'.repeat(40)}`,
+          pullNumber: 43,
+          headSha: 'b'.repeat(40),
+          generation: 2
+        })
+      ]
+    };
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ...baseReq,
+      casState: conflictCas,
+      expectedRefOid: computeWorkQueueStateOid(conflictCas),
+      admissionEvidence: {...baseAdmission(), observedMs: 1500},
+      nowMs: 1500
+    }).reason, 'ACTIVE_CAS_LEASE_CONFLICT');
+
+    // Reclaim expired TTLs, unbacked reservations, superseded PR heads, and archived terminal orphans.
+    const multiRowPlan = {
+      ...bigPlan,
+      repositories: [{repositoryId: 1, maxActive: 3}, {repositoryId: 2, maxActive: 2}]
+    };
+    const multiRowPlanSig = JSON.stringify([
+      multiRowPlan.window,
+      multiRowPlan.maxActive,
+      multiRowPlan.includedUnits,
+      multiRowPlan.unitsPerRun,
+      multiRowPlan.maxExecutionMs,
+      [[1, 3], [2, 2]]
+    ]);
+    const multiRowSnap = signRawSnapshot(multiRowPlanSig, 2, 1000, [
+      // (1, 10): ledger TTL expired ('reserved' -> 'cancelled')
+      {repositoryId: 1, issue: 10, head: '1'.repeat(40), generation: 1, units: 2, phase: 'reserved', validThrough: 1500, reservedAt: 1000},
+      // (1, 20): archived 'completed' in CAS ('in-flight' -> 'settled')
+      {repositoryId: 1, issue: 20, head: '2'.repeat(40), generation: 1, units: 2, phase: 'in-flight', validThrough: 5000, reservedAt: 1000},
+      // (1, 42, head): superseded by newer PR head on pullNumber 42 ('in-flight' -> 'expired')
+      {repositoryId: 1, issue: 42, head, generation: 1, units: 2, phase: 'in-flight', validThrough: 5000, reservedAt: 1000},
+      // (2, 21): unbacked reservation ('reserved' -> 'cancelled')
+      {repositoryId: 2, issue: 21, head: '3'.repeat(40), generation: 1, units: 2, phase: 'reserved', validThrough: 5000, reservedAt: 1000}
+    ], casSigningKey, multiRowPlan.window);
+    const prMovedCas = {
+      schemaVersion: 1,
+      protocol: 'v3',
+      sequence: 3,
+      nextGeneration: 4,
+      entries: [
+        makePrEntry({
+          workId: `1:pr:42:${'c'.repeat(40)}`,
+          pullNumber: 42,
+          headSha: 'c'.repeat(40),
+          generation: 2,
+          leaseTtlMs: 8000,
+          leaseExpiresAtMs: 9000,
+          maxExecutionMs: 8000,
+          executionDeadlineMs: 9000
+        }),
+        {
+          workId: '1:issue:50',
+          targetType: 'issue',
+          repository: 'Jamula/SoftwareFactory',
+          repositoryId: 1,
+          issueNumber: 50,
+          pullNumber: null,
+          headSha: null,
+          lane: 'lane-docs',
+          ownedPaths: ['docs/COORDINATOR-EVENT-JOURNAL.md'],
+          status: 'leased',
+          generation: 3,
+          attempts: 3,
+          maxAttempts: 3,
+          workerId: 'worker-exp',
+          runId: 700,
+          runAttempt: 1,
+          claimedAtMs: 1000,
+          leaseTtlMs: 500,
+          leaseExpiresAtMs: 1500,
+          maxExecutionMs: 500,
+          executionDeadlineMs: 1500
+        }
+      ],
+      recoveryReceipts: [],
+      archivedTerminal: [{workId: '1:issue:20', status: 'completed'}]
+    };
+    const multiRec = reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: multiRowSnap,
+      signingKey: casSigningKey,
+      casState: prMovedCas,
+      expectedRefOid: computeWorkQueueStateOid(prMovedCas),
+      fixturePlan: multiRowPlan,
+      minSnapshotSequence: 2,
+      maxSnapshotAgeMs: 5000,
+      admissionEvidence: {...baseAdmission(), observedMs: 2000, remainingIncludedUnits: 20},
+      observedRuns: [{
+        workId: '1:issue:50',
+        runId: 999,
+        runAttempt: 1,
+        leaseGeneration: 3,
+        runState: 'run_missing'
+      }],
+      nowMs: 2000
+    });
+    assert.equal(multiRec.ok, true);
+    assert.equal(multiRec.reclaimedExpiredCount, 2);
+    assert.equal(multiRec.releasedOrphanCount, 3);
+    assert.equal(multiRec.skippedRunObservations[0].reason, 'STALE_OR_INACTIVE_RUN');
+    assert.equal(multiRec.nextCasState.entries[1].status, 'exhausted');
+    assert.deepEqual(
+      multiRec.reconciledActions.map(a => [a.issue, a.toPhase, a.trigger]),
+      [
+        [10, 'cancelled', 'ledger_ttl_expired'],
+        [20, 'settled', 'orphan_terminal_run'],
+        [42, 'expired', 'superseded_generation'],
+        [21, 'cancelled', 'unbacked_reservation']
+      ]
+    );
+
+    // Ledger row with generation >= casState.nextGeneration fails closed with STALE_LEASE_GENERATION.
+    const futureGenSnap = signRawSnapshot(planSig, 2, 1000, [
+      {...rowValid, generation: 5}
+    ], casSigningKey, bigPlan.window);
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: futureGenSnap,
+      signingKey: casSigningKey,
+      casState: emptyCasState,
+      expectedRefOid: computeWorkQueueStateOid(emptyCasState),
+      admissionEvidence: baseAdmission(),
+      nowMs: 1000
+    }).reason, 'STALE_LEASE_GENERATION');
+
+    // 5. Invalid observedRuns, candidate edge cases, lane/path overlap, peer CAS capacity, and queue compaction.
+    for (const badObs of [
+      'not-an-array',
+      [null],
+      [{workId: '1:issue:1', runId: 1, runAttempt: 1, leaseGeneration: 1, runState: 'run_terminal'}],
+      [{workId: '1:issue:1', runId: 1, runAttempt: 1, leaseGeneration: 1, runState: 'run_missing', conclusion: 'failure'}]
+    ]) {
+      assert.equal(reconcileLedgerWithWorkQueueCas({
+        ...baseReq,
+        observedRuns: badObs
+      }).reason, 'INVALID_OBSERVED_RUNS');
+    }
+
+    for (const [cand, expectedReason] of [
+      [null, 'INVALID_CANDIDATE'],
+      [{repositoryId: 99, issue: 1, head, generation: 1}, 'UNCONFIGURED_REPOSITORY'],
+      [{repositoryId: 2, issue: 1, head, generation: 1}, 'REPOSITORY_SCOPE_MISMATCH'],
+      [{repositoryId: 1, issue: 1, head, generation: 1, targetType: 'bad'}, 'INVALID_CANDIDATE'],
+      [{repositoryId: 1, issue: 1, head, generation: 1, phase: 'settled'}, 'INVALID_CANDIDATE'],
+      [{repositoryId: 1, issue: 1, head, generation: 1, leaseTtlMs: 0}, 'INVALID_CANDIDATE'],
+      [{repositoryId: 1, issue: 1, head, generation: 1, leaseTtlMs: MAX_CROSS_RUN_LEASE_TTL_MS + 1}, 'LEASE_TTL_EXCEEDED'],
+      [{repositoryId: 1, issue: 1, head, generation: 1, maxExecutionMs: 0}, 'INVALID_CANDIDATE'],
+      [{repositoryId: 1, issue: 1, head, generation: 1, maxExecutionMs: MAX_CROSS_RUN_LEASE_TTL_MS + 1}, 'LEASE_TTL_EXCEEDED'],
+      [{repositoryId: 1, issue: 1, head, generation: 1, leaseTtlMs: 5000, maxExecutionMs: 4000}, 'INVALID_CANDIDATE'],
+      [{repositoryId: 1, issue: 1, head, generation: 1, lane: 'BAD_LANE'}, 'INVALID_CANDIDATE'],
+      [{repositoryId: 1, issue: 1, head, generation: 1}, 'CAS_LEASE_REQUIRED']
+    ]) {
+      assert.equal(reconcileLedgerWithWorkQueueCas({
+        ...baseReq,
+        candidate: cand
+      }).reason, expectedReason);
+    }
+
+    // Active CAS lease owner mismatch, overlapping paths, reserved lane, and peer CAS repo capacity saturation.
+    const activeTwoRepoCas = {
+      schemaVersion: 1,
+      protocol: 'v3',
+      sequence: 2,
+      nextGeneration: 3,
+      entries: [
+        makePrEntry({
+          workId: `1:pr:10:${head}`,
+          pullNumber: 10,
+          generation: 1,
+          attempts: 1,
+          priorRuns: undefined,
+          workerId: 'owner-1'
+        }),
+        makePrEntry({
+          workId: `1:pr:11:${'d'.repeat(40)}`,
+          pullNumber: 11,
+          headSha: 'd'.repeat(40),
+          lane: 'lane-docs',
+          ownedPaths: ['docs/COORDINATOR-EVENT-JOURNAL.md'],
+          generation: 2,
+          attempts: 1,
+          priorRuns: undefined,
+          workerId: 'owner-2'
+        })
+      ],
+      recoveryReceipts: []
+    };
+    const twoOid = computeWorkQueueStateOid(activeTwoRepoCas);
+    const twoActiveLedgerSnap = signRawSnapshot(planSig, 2, 1000, [
+      {repositoryId: 1, issue: 10, head, generation: 1, units: 2, phase: 'in-flight', validThrough: 61000, reservedAt: 1000},
+      {repositoryId: 1, issue: 11, head: 'd'.repeat(40), generation: 2, units: 2, phase: 'in-flight', validThrough: 61000, reservedAt: 1000}
+    ], casSigningKey, bigPlan.window);
+    const oneActiveLedgerSnap = signRawSnapshot(planSig, 2, 1000, [
+      {repositoryId: 1, issue: 10, head, generation: 1, units: 2, phase: 'in-flight', validThrough: 61000, reservedAt: 1000}
+    ], casSigningKey, bigPlan.window);
+
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ...baseReq,
+      casState: activeTwoRepoCas,
+      expectedRefOid: twoOid,
+      candidate: {
+        repositoryId: 1,
+        issue: 10,
+        head,
+        generation: 1,
+        targetType: 'pull_request',
+        workerId: 'wrong-worker',
+        runId: 500,
+        runAttempt: 1
+      }
+    }).reason, 'LEASE_OWNER_MISMATCH');
+
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ...baseReq,
+      casState: activeTwoRepoCas,
+      expectedRefOid: twoOid,
+      candidate: {
+        repositoryId: 1,
+        issue: 10,
+        head,
+        generation: 2,
+        targetType: 'pull_request',
+        workerId: 'owner-1',
+        runId: 500,
+        runAttempt: 1
+      }
+    }).reason, 'DUPLICATE_RESERVATION');
+
+    // Different head on already-active PR 10 fails closed with DUPLICATE_RESERVATION.
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ...baseReq,
+      casState: activeTwoRepoCas,
+      expectedRefOid: twoOid,
+      candidate: {
+        repositoryId: 1,
+        issue: 10,
+        head: 'e'.repeat(40),
+        generation: 3,
+        targetType: 'pull_request'
+      }
+    }).reason, 'DUPLICATE_RESERVATION');
+
+    // Overlapping path and reserved lane on new CAS claim fail closed.
+    const oneActiveCas = {
+      ...activeTwoRepoCas,
+      nextGeneration: 2,
+      entries: [activeTwoRepoCas.entries[0]]
+    };
+    const oneOid = computeWorkQueueStateOid(oneActiveCas);
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ...baseReq,
+      ledgerSnapshot: oneActiveLedgerSnap,
+      casState: oneActiveCas,
+      expectedRefOid: oneOid,
+      candidate: {
+        repositoryId: 1,
+        issue: 99,
+        head: 'e'.repeat(40),
+        generation: 2,
+        repository: 'Jamula/SoftwareFactory',
+        lane: 'lane-other',
+        ownedPaths: ['tools/engineering-factory'],
+        workerId: 'worker-new',
+        runId: 800,
+        leaseTtlMs: 10000
+      }
+    }).reason, 'OWNED_PATHS_OVERLAP');
+
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ...baseReq,
+      ledgerSnapshot: oneActiveLedgerSnap,
+      casState: oneActiveCas,
+      expectedRefOid: oneOid,
+      candidate: {
+        repositoryId: 1,
+        issue: 99,
+        head: 'e'.repeat(40),
+        generation: 2,
+        repository: 'Jamula/SoftwareFactory',
+        lane: 'lane-ledger',
+        ownedPaths: ['docs/ROADMAP.md'],
+        workerId: 'worker-new',
+        runId: 800,
+        leaseTtlMs: 10000
+      }
+    }).reason, 'LANE_RESERVED');
+
+    // Peer active CAS leases (2 on repo 1, where repo 1 maxActive is 2) block a 3rd claim with REPO_CAPACITY_EXHAUSTED!
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ...baseReq,
+      ledgerSnapshot: twoActiveLedgerSnap,
+      casState: activeTwoRepoCas,
+      expectedRefOid: twoOid,
+      candidate: {
+        repositoryId: 1,
+        issue: 99,
+        head: 'e'.repeat(40),
+        generation: 3,
+        repository: 'Jamula/SoftwareFactory',
+        lane: 'lane-third',
+        ownedPaths: ['src/other.mjs'],
+        workerId: 'worker-3',
+        runId: 801,
+        leaseTtlMs: 10000
+      }
+    }).reason, 'REPO_CAPACITY_EXHAUSTED');
+
+    // Terminal compaction at 250 CAS entries & archive ceiling at 2000, plus remainingIncludedUnits checks.
+    const terminal250 = Array.from({length: 250}, (_, idx) => ({
+      workId: `1:issue:${idx + 1}`,
+      targetType: 'issue',
+      repository: 'Jamula/SoftwareFactory',
+      repositoryId: 1,
+      issueNumber: idx + 1,
+      pullNumber: null,
+      headSha: null,
+      lane: `lane-${idx + 1}`,
+      ownedPaths: [`docs/f-${idx + 1}.md`],
+      status: 'completed',
+      generation: idx + 1,
+      attempts: 1,
+      maxAttempts: 3,
+      workerId: 'w-done',
+      runId: idx + 1,
+      runAttempt: 1,
+      claimedAtMs: 500,
+      leaseTtlMs: 100,
+      leaseExpiresAtMs: 600,
+      maxExecutionMs: 100,
+      executionDeadlineMs: 600
+    }));
+    const ledger250Snap = signRawSnapshot(
+      planSig,
+      2,
+      1000,
+      Array.from({length: 250}, (_, idx) => ({
+        repositoryId: 1,
+        issue: idx + 1,
+        head: 'a'.repeat(40),
+        generation: idx + 1,
+        units: 2,
+        phase: 'settled',
+        validThrough: 600,
+        reservedAt: 500
+      })),
+      casSigningKey,
+      bigPlan.window
+    );
+    const fullCompactingCas = {
+      schemaVersion: 1,
+      protocol: 'v3',
+      sequence: 10,
+      nextGeneration: 251,
+      entries: terminal250,
+      recoveryReceipts: []
+    };
+    const compactedRes = reconcileLedgerWithWorkQueueCas({
+      ...baseReq,
+      ledgerSnapshot: ledger250Snap,
+      casState: fullCompactingCas,
+      expectedRefOid: computeWorkQueueStateOid(fullCompactingCas),
+      candidate: {
+        repositoryId: 1,
+        issue: 500,
+        head: '9'.repeat(40),
+        generation: 251,
+        repository: 'Jamula/SoftwareFactory',
+        lane: 'lane-ledger',
+        ownedPaths: ['tools/engineering-factory/shadow-dispatch-ledger.mjs'],
+        workerId: 'w-compact',
+        runId: 9001,
+        leaseTtlMs: 5000
+      }
+    });
+    assert.equal(compactedRes.ok, true);
+    assert.equal(compactedRes.nextCasState.entries.length, 250);
+    assert.equal(compactedRes.nextCasState.archivedTerminal.length, 1);
+
+    const archiveFullCas = {
+      ...fullCompactingCas,
+      archivedTerminal: Array.from({length: 2000}, (_, idx) => ({
+        workId: `1:issue:${1000 + idx}`,
+        status: 'exhausted'
+      }))
+    };
+    const ledger2250Rows = [
+      ...Array.from({length: 250}, (_, idx) => ({
+        repositoryId: 1,
+        issue: idx + 1,
+        head: 'a'.repeat(40),
+        generation: idx + 1,
+        units: 2,
+        phase: 'settled',
+        validThrough: 600,
+        reservedAt: 500
+      })),
+      ...Array.from({length: 2000}, (_, idx) => ({
+        repositoryId: 1,
+        issue: 1000 + idx,
+        head: 'a'.repeat(40),
+        generation: 1,
+        units: 2,
+        phase: 'expired',
+        validThrough: 600,
+        reservedAt: 500
+      }))
+    ];
+    const ledger2250Snap = signRawSnapshot(planSig, 3, 1000, ledger2250Rows, casSigningKey, bigPlan.window);
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ...baseReq,
+      ledgerSnapshot: ledger2250Snap,
+      casState: archiveFullCas,
+      expectedRefOid: computeWorkQueueStateOid(archiveFullCas),
+      candidate: {
+        repositoryId: 1,
+        issue: 500,
+        head: '9'.repeat(40),
+        generation: 251,
+        repository: 'Jamula/SoftwareFactory',
+        lane: 'lane-ledger',
+        ownedPaths: ['tools/engineering-factory/shadow-dispatch-ledger.mjs'],
+        workerId: 'w-compact',
+        runId: 9001,
+        leaseTtlMs: 5000
+      }
+    }).reason, 'ARCHIVE_CAPACITY_EXHAUSTED');
+
+    // Archived 'exhausted' vs 'completed' candidate checks and remainingIncludedUnits exhaustion.
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ...baseReq,
+      ledgerSnapshot: ledger2250Snap,
+      casState: archiveFullCas,
+      expectedRefOid: computeWorkQueueStateOid(archiveFullCas),
+      admissionEvidence: {...baseAdmission(), remainingIncludedUnits: 5000},
+      candidate: {repositoryId: 1, issue: 1000, head: '8'.repeat(40), generation: 251}
+    }).reason, 'RETRY_CEILING_EXHAUSTED');
+
+    // Passive cleanup succeeds even when remainingIncludedUnits === 0 (Copilot 4725493439),
+    // while candidate startup/admission remains blocked with CAPACITY_EXHAUSTED!
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ...baseReq,
+      ledgerSnapshot: compactedRes.nextLedgerSnapshot,
+      casState: compactedRes.nextCasState,
+      expectedRefOid: computeWorkQueueStateOid(compactedRes.nextCasState),
+      admissionEvidence: {...baseAdmission(), remainingIncludedUnits: 0},
+      nowMs: 1000
+    }).ok, true);
+
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ...baseReq,
+      ledgerSnapshot: compactedRes.nextLedgerSnapshot,
+      casState: compactedRes.nextCasState,
+      expectedRefOid: computeWorkQueueStateOid(compactedRes.nextCasState),
+      admissionEvidence: {...baseAdmission(), remainingIncludedUnits: 1},
+      candidate: {
+        repositoryId: 1,
+        issue: 500,
+        head: '9'.repeat(40),
+        generation: 251,
+        phase: 'in-flight',
+        workerId: 'w-compact',
+        runId: 9001,
+        runAttempt: 1
+      },
+      nowMs: 1000
+    }).reason, 'CAPACITY_EXHAUSTED');
+
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ...baseReq,
+      casState: oneActiveCas,
+      expectedRefOid: oneOid,
+      admissionEvidence: {
+        ...baseAdmission(),
+        remainingIncludedUnits: 5000,
+        ghAwCaps: {maxAiCredits: 5, maxDailyAiCredits: 10, dailyAiCreditsUsed: 8, runAiCreditsRequired: 4}
+      },
+      candidate: {
+        repositoryId: 1,
+        issue: 10,
+        head,
+        generation: 1,
+        targetType: 'pull_request',
+        workerId: 'owner-1',
+        runId: 500,
+        runAttempt: 1
+      }
+    }).reason, 'GH_AW_DAILY_AI_CREDITS_EXCEEDED');
+
+    // Additional edge cases: cas_lease_expired trigger on active ledger row, stale/completed/exhausted CAS entries,
+    // QUEUE_CAPACITY_EXCEEDED (250 active leased entries), CAPACITY_EXHAUSTED on new reserve, and STORE_FULL (10000 rows).
+    const casExpiredWithLedgerSnap = signRawSnapshot(planSig, 2, 1000, [
+      {repositoryId: 1, issue: 50, head: '1'.repeat(40), generation: 1, units: 2, phase: 'expired', validThrough: 1200, reservedAt: 1000},
+      {repositoryId: 1, issue: 50, head: '2'.repeat(40), generation: 1, units: 2, phase: 'expired', validThrough: 1300, reservedAt: 1000},
+      {repositoryId: 1, issue: 50, head, generation: 1, units: 2, phase: 'in-flight', validThrough: 9000, reservedAt: 1000}
+    ], casSigningKey, bigPlan.window);
+    const casExpiredEntryState = {
+      schemaVersion: 1,
+      protocol: 'v3',
+      sequence: 1,
+      nextGeneration: 2,
+      entries: [{
+        workId: '1:issue:50',
+        targetType: 'issue',
+        repository: 'Jamula/SoftwareFactory',
+        repositoryId: 1,
+        issueNumber: 50,
+        pullNumber: null,
+        headSha: null,
+        lane: 'lane-ledger',
+        ownedPaths: ['tools/engineering-factory/shadow-dispatch-ledger.mjs'],
+        status: 'leased',
+        generation: 1,
+        attempts: 3,
+        maxAttempts: 3,
+        workerId: 'w-exp',
+        runId: 77,
+        runAttempt: 1,
+        claimedAtMs: 1000,
+        leaseTtlMs: 500,
+        leaseExpiresAtMs: 1500,
+        maxExecutionMs: 500,
+        executionDeadlineMs: 1500
+      }],
+      recoveryReceipts: []
+    };
+    const casExpRec = reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: casExpiredWithLedgerSnap,
+      signingKey: casSigningKey,
+      casState: casExpiredEntryState,
+      expectedRefOid: computeWorkQueueStateOid(casExpiredEntryState),
+      admissionEvidence: {...baseAdmission(), observedMs: 2000, remainingIncludedUnits: 5000},
+      nowMs: 2000
+    });
+    assert.equal(casExpRec.ok, true);
+    assert.equal(casExpRec.reconciledActions[0].trigger, 'cas_lease_expired');
+    assert.equal(casExpRec.nextCasState.entries[0].status, 'exhausted');
+
+    // Candidate on exhausted non-archived CAS entry hits RETRY_CEILING_EXHAUSTED.
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: casExpRec.nextLedgerSnapshot,
+      signingKey: casSigningKey,
+      casState: casExpRec.nextCasState,
+      expectedRefOid: computeWorkQueueStateOid(casExpRec.nextCasState),
+      admissionEvidence: {...baseAdmission(), observedMs: 2000, remainingIncludedUnits: 5000},
+      candidate: {
+        repositoryId: 1,
+        issue: 50,
+        head: '8'.repeat(40),
+        generation: 3,
+        repository: 'Jamula/SoftwareFactory',
+        lane: 'lane-ledger',
+        ownedPaths: ['tools/engineering-factory/shadow-dispatch-ledger.mjs'],
+        workerId: 'w-retry',
+        runId: 78,
+        leaseTtlMs: 5000
+      },
+      nowMs: 2000
+    }).reason, 'RETRY_CEILING_EXHAUSTED');
+
+    // Candidate on completed non-archived CAS entry hits DUPLICATE_RESERVATION.
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ...baseReq,
+      ledgerSnapshot: ledger250Snap,
+      casState: fullCompactingCas,
+      expectedRefOid: computeWorkQueueStateOid(fullCompactingCas),
+      admissionEvidence: {...baseAdmission(), remainingIncludedUnits: 5000},
+      candidate: {repositoryId: 1, issue: 1, head: '8'.repeat(40), generation: 251}
+    }).reason, 'DUPLICATE_RESERVATION');
+
+    // Candidate with generation < existing ledger row generation hits STALE_LEASE_GENERATION;
+    // candidate on different head while another head on same issue is active hits DUPLICATE_RESERVATION.
+    const gen2RowSnap = signRawSnapshot(planSig, 2, 1000, [
+      {repositoryId: 1, issue: 10, head, generation: 2, units: 2, phase: 'reserved', validThrough: 5000, reservedAt: 1000}
+    ], casSigningKey, bigPlan.window);
+    const gen2ActiveCas = {
+      schemaVersion: 1,
+      protocol: 'v3',
+      sequence: 2,
+      nextGeneration: 3,
+      entries: [makePrEntry({workId: `1:pr:10:${head}`, pullNumber: 10, generation: 2, attempts: 1, priorRuns: undefined})],
+      recoveryReceipts: []
+    };
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ...baseReq,
+      ledgerSnapshot: gen2RowSnap,
+      casState: gen2ActiveCas,
+      expectedRefOid: computeWorkQueueStateOid(gen2ActiveCas),
+      candidate: {repositoryId: 1, issue: 10, head, generation: 1, targetType: 'pull_request'}
+    }).reason, 'STALE_LEASE_GENERATION');
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ...baseReq,
+      ledgerSnapshot: gen2RowSnap,
+      casState: gen2ActiveCas,
+      expectedRefOid: computeWorkQueueStateOid(gen2ActiveCas),
+      candidate: {repositoryId: 1, issue: 10, head: '7'.repeat(40), generation: 3, targetType: 'pull_request'}
+    }).reason, 'DUPLICATE_RESERVATION');
+
+    // QUEUE_CAPACITY_EXCEEDED when all 250 CAS entries are requeued (non-terminal, non-evictable).
+    const requeued250Cas = {
+      schemaVersion: 1,
+      protocol: 'v3',
+      sequence: 10,
+      nextGeneration: 251,
+      entries: terminal250.map(e => ({
+        ...e,
+        status: 'requeued'
+      })),
+      recoveryReceipts: []
+    };
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ...baseReq,
+      ledgerSnapshot: ledger250Snap,
+      casState: requeued250Cas,
+      expectedRefOid: computeWorkQueueStateOid(requeued250Cas),
+      candidate: {
+        repositoryId: 1,
+        issue: 500,
+        head: '9'.repeat(40),
+        generation: 251,
+        repository: 'Jamula/SoftwareFactory',
+        lane: 'lane-ledger',
+        ownedPaths: ['tools/engineering-factory/shadow-dispatch-ledger.mjs'],
+        workerId: 'w-qfull',
+        runId: 9002,
+        leaseTtlMs: 5000
+      }
+    }).reason, 'QUEUE_CAPACITY_EXCEEDED');
+
+    // STORE_FULL when ledgerSnapshot already holds 10000 cancelled historical rows.
+    const rows10000 = Array.from({length: 10000}, (_, idx) => ({
+      repositoryId: 2,
+      issue: idx + 1,
+      head: '6'.repeat(40),
+      generation: 1,
+      units: 2,
+      phase: 'cancelled',
+      validThrough: 1000,
+      reservedAt: 1000
+    }));
+    const fullLedgerSnap = signRawSnapshot(planSig, 3, 1000, rows10000, casSigningKey, bigPlan.window);
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ...baseReq,
+      ledgerSnapshot: fullLedgerSnap,
+      casState: oneActiveCas,
+      expectedRefOid: oneOid,
+      candidate: {
+        repositoryId: 1,
+        issue: 10,
+        head,
+        generation: 1,
+        targetType: 'pull_request',
+        workerId: 'owner-1',
+        runId: 500,
+        runAttempt: 1
+      }
+    }).reason, 'STORE_FULL');
+
+    // CAPACITY_EXHAUSTED when new candidate units exceed remainingIncludedUnits.
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ...baseReq,
+      casState: oneActiveCas,
+      expectedRefOid: oneOid,
+      admissionEvidence: {...baseAdmission(), remainingIncludedUnits: 1},
+      candidate: {
+        repositoryId: 1,
+        issue: 10,
+        head,
+        generation: 1,
+        targetType: 'pull_request',
+        workerId: 'owner-1',
+        runId: 500,
+        runAttempt: 1
+      }
+    }).reason, 'CAPACITY_EXHAUSTED');
+
+    // Cross-repo CAS entries reject fail-closed with CROSS_REPO_CAS_STATE_REJECTED,
+    // and per-repo/global active ceilings are enforced on single-repo CAS leases.
+    const unconfRepoCas = {
+      schemaVersion: 1,
+      protocol: 'v3',
+      sequence: 1,
+      nextGeneration: 2,
+      entries: [makePrEntry({workId: `99:pr:10:${head}`, repositoryId: 99, pullNumber: 10})],
+      recoveryReceipts: []
+    };
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ...baseReq,
+      casState: unconfRepoCas,
+      expectedRefOid: computeWorkQueueStateOid(unconfRepoCas)
+    }).reason, 'CROSS_REPO_CAS_STATE_REJECTED');
+
+    const smallPlan = {...plan, maxExecutionMs: 500};
+    const smallLedger = openShadowDispatchLedger(':memory:', smallPlan);
+    try {
+      const smallSnap0 = smallLedger.exportSnapshot({signingKey: casSigningKey, now: 1000}).snapshot;
+      // Repo 1 cap is 1 in smallPlan; activeTwoRepoCas has 2 active leases on repo 1 -> REPO_CAPACITY_EXHAUSTED.
+      assert.equal(reconcileLedgerWithWorkQueueCas({
+        ledgerSnapshot: smallSnap0,
+        signingKey: casSigningKey,
+        casState: activeTwoRepoCas,
+        expectedRefOid: twoOid,
+        admissionEvidence: baseAdmission(),
+        nowMs: 1000
+      }).reason, 'REPO_CAPACITY_EXHAUSTED');
+
+      // Global maxActive is 2 in smallPlan; 3 active leases on repo 2 (where repo 2 maxActive is 2) -> CAPACITY_EXHAUSTED!
+      const threeGlobalCas = {
+        schemaVersion: 1,
+        protocol: 'v3',
+        sequence: 3,
+        nextGeneration: 4,
+        entries: [
+          makePrEntry({workId: `2:pr:10:${head}`, repositoryId: 2, pullNumber: 10, generation: 1}),
+          makePrEntry({
+            workId: `2:pr:20:${'b'.repeat(40)}`,
+            repositoryId: 2,
+            pullNumber: 20,
+            headSha: 'b'.repeat(40),
+            lane: 'lane-a',
+            ownedPaths: ['docs/a.md'],
+            generation: 2
+          }),
+          makePrEntry({
+            workId: `2:pr:21:${'c'.repeat(40)}`,
+            repositoryId: 2,
+            pullNumber: 21,
+            headSha: 'c'.repeat(40),
+            lane: 'lane-b',
+            ownedPaths: ['docs/b.md'],
+            generation: 3
+          })
+        ],
+        recoveryReceipts: []
+      };
+      assert.equal(reconcileLedgerWithWorkQueueCas({
+        ledgerSnapshot: smallSnap0,
+        signingKey: casSigningKey,
+        casState: threeGlobalCas,
+        expectedRefOid: computeWorkQueueStateOid(threeGlobalCas),
+        admissionEvidence: {...baseAdmission(), repositoryId: 2, approvedRepositoryId: 2},
+        nowMs: 1000
+      }).reason, 'CAPACITY_EXHAUSTED');
+
+      // Unstarted 'reserved' row with validThrough=61000 under maxExecutionMs=500 reconciles to 'cancelled'
+      // and imports cleanly into smallLedger without deadline failure.
+      const shortReservedSnap = signRawSnapshot(smallSnap0.planSignature, 2, 1000, [
+        {repositoryId: 1, issue: 10, head, generation: 1, units: 2, phase: 'reserved', validThrough: 61000, reservedAt: 1000}
+      ], casSigningKey, smallPlan.window);
+      const completedIssueCas = {
+        schemaVersion: 1,
+        protocol: 'v3',
+        sequence: 2,
+        nextGeneration: 3,
+        entries: [{
+          workId: '1:issue:10',
+          targetType: 'issue',
+          repository: 'Jamula/SoftwareFactory',
+          repositoryId: 1,
+          issueNumber: 10,
+          pullNumber: null,
+          headSha: null,
+          lane: 'lane-ledger',
+          ownedPaths: ['tools/engineering-factory/shadow-dispatch-ledger.mjs'],
+          status: 'completed',
+          generation: 2,
+          attempts: 1,
+          maxAttempts: 3,
+          workerId: 'w-done',
+          runId: 50,
+          runAttempt: 1,
+          claimedAtMs: 1000,
+          leaseTtlMs: 400,
+          leaseExpiresAtMs: 1400,
+          maxExecutionMs: 400,
+          executionDeadlineMs: 1400
+        }],
+        recoveryReceipts: []
+      };
+      const shortRec = reconcileLedgerWithWorkQueueCas({
+        ledgerSnapshot: shortReservedSnap,
+        signingKey: casSigningKey,
+        casState: completedIssueCas,
+        expectedRefOid: computeWorkQueueStateOid(completedIssueCas),
+        admissionEvidence: {...baseAdmission(), observedMs: 1200},
+        nowMs: 1200
+      });
+      assert.equal(shortRec.ok, true);
+      assert.equal(shortRec.reconciledActions[0].toPhase, 'cancelled');
+      assert.equal(smallLedger.importSnapshot(shortRec.nextLedgerSnapshot, {
+        signingKey: casSigningKey,
+        now: 1200
+      }).reason, 'SHADOW_SNAPSHOT_IMPORTED');
+    } finally {
+      smallLedger.close();
+    }
+  } finally {
+    ledger.close();
+  }
+});
+
+test('remediates all 7 Codex and Copilot review findings: repository scope, billing/quota freshness, cross-run ledger completeness, owner/head binding, and start-time daily credit caps', () => {
+  assert.equal(computeReservationHeadLock(0, 1, head, 1), null);
+  assert.equal(computeReservationHeadLock(1, 0, head, 1), null);
+  assert.equal(computeReservationHeadLock(1, 1, 'bad', 1), null);
+  assert.equal(computeReservationHeadLock(1, 1, head, 0), null);
+
+  const tightPlan = {
+    window: 'review-regression-window',
+    maxActive: 2,
+    includedUnits: 2,
+    unitsPerRun: 2,
+    maxExecutionMs: 300000,
+    repositories: [{repositoryId: 1, maxActive: 2}, {repositoryId: 2, maxActive: 2}]
+  };
+  const ledger = openShadowDispatchLedger(':memory:', tightPlan);
+  try {
+    const emptySnap = ledger.exportSnapshot({signingKey: casSigningKey, now: 1000}).snapshot;
+
+    // 1. Missing repositoryId / approvedRepositoryId or unscoped admission is rejected (Codex 4725368189, Copilot 4725378397).
+    const unscopedAdmission = baseAdmission();
+    delete unscopedAdmission.repositoryId;
+    delete unscopedAdmission.approvedRepositoryId;
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: emptySnap,
+      signingKey: casSigningKey,
+      casState: null,
+      expectedRefOid: ZERO_GIT_OID,
+      admissionEvidence: {...unscopedAdmission, remainingIncludedUnits: 2},
+      candidate: {
+        repositoryId: 1,
+        issue: 12,
+        head,
+        generation: 1,
+        repository: 'Jamula/SoftwareFactory',
+        lane: 'lane-ledger',
+        ownedPaths: ['tools/engineering-factory/shadow-dispatch-ledger.mjs'],
+        workerId: 'w-1',
+        runId: 101,
+        leaseTtlMs: 30000
+      },
+      nowMs: 1000
+    }).reason, 'REPOSITORY_SCOPE_MISMATCH');
+
+    // 2. Missing affirmative billing verification flags, observedMs, or remainingIncludedUnits is rejected (Copilot 4725378420).
+    for (const [omittedKey, expectedReason] of [
+      ['authorityVerified', 'BILLING_AUTHORITY_UNVERIFIED'],
+      ['entitlementVerified', 'BILLING_AUTHORITY_UNVERIFIED'],
+      ['hardStopEnforced', 'OVERAGE_HARD_STOP_REQUIRED'],
+      ['observedMs', 'STALE_ADMISSION_EVIDENCE'],
+      ['remainingIncludedUnits', 'BUDGET_UNKNOWN']
+    ]) {
+      const adm = {...baseAdmission(), remainingIncludedUnits: 2};
+      delete adm[omittedKey];
+      assert.equal(reconcileLedgerWithWorkQueueCas({
+        ledgerSnapshot: emptySnap,
+        signingKey: casSigningKey,
+        casState: null,
+        expectedRefOid: ZERO_GIT_OID,
+        admissionEvidence: adm,
+        nowMs: 1000
+      }).reason, expectedReason);
+    }
+
+    // 3. Reserve first run cleanly (consumes 2 of 2 includedUnits).
+    const first = reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: emptySnap,
+      signingKey: casSigningKey,
+      casState: null,
+      expectedRefOid: ZERO_GIT_OID,
+      admissionEvidence: {...baseAdmission(), remainingIncludedUnits: 2},
+      candidate: {
+        repositoryId: 1,
+        issue: 12,
+        head,
+        generation: 1,
+        repository: 'Jamula/SoftwareFactory',
+        lane: 'lane-ledger',
+        ownedPaths: ['tools/engineering-factory/shadow-dispatch-ledger.mjs'],
+        workerId: 'w-1',
+        runId: 101,
+        runAttempt: 1,
+        leaseTtlMs: 30000
+      },
+      nowMs: 1000
+    });
+    assert.equal(first.ok, true);
+    assert.equal(first.reason, 'CROSS_RUN_CAS_RESERVED');
+
+    // 4. Cold runner reusing empty/stale ledgerSnapshot against CAS state with an active peer reservation
+    // fails closed with STALE_OR_INCOMPLETE_LEDGER on candidate admission AND CAPACITY_EXHAUSTED when
+    // unaccounted CAS units exceed remainingIncludedUnits (Codex 4725368181, Copilot 4725378433).
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: emptySnap,
+      signingKey: casSigningKey,
+      casState: first.nextCasState,
+      expectedRefOid: first.nextRefOid,
+      admissionEvidence: {...baseAdmission(), remainingIncludedUnits: 2},
+      candidate: {
+        repositoryId: 1,
+        issue: 13,
+        head: 'b'.repeat(40),
+        generation: 2,
+        repository: 'Jamula/SoftwareFactory',
+        lane: 'lane-docs',
+        ownedPaths: ['docs/COORDINATOR-EVENT-JOURNAL.md'],
+        workerId: 'w-2',
+        runId: 102,
+        runAttempt: 1,
+        leaseTtlMs: 30000
+      },
+      nowMs: 1000
+    }).reason, 'STALE_OR_INCOMPLETE_LEDGER');
+
+    // Passive reconcile with empty snapshot against checkpoint-bound CAS fails with STALE_OR_INCOMPLETE_LEDGER,
+    // and passive reconcile when unaccounted CAS runs exceed plan.includedUnits fails with CAPACITY_EXHAUSTED.
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: emptySnap,
+      signingKey: casSigningKey,
+      casState: first.nextCasState,
+      expectedRefOid: first.nextRefOid,
+      admissionEvidence: {...baseAdmission(), remainingIncludedUnits: 1},
+      nowMs: 1000
+    }).reason, 'STALE_OR_INCOMPLETE_LEDGER');
+
+    const overPlanCas = {
+      schemaVersion: 1,
+      protocol: 'v3',
+      sequence: 2,
+      nextGeneration: 3,
+      entries: [
+        {
+          workId: '1:issue:70',
+          targetType: 'issue',
+          repository: 'Jamula/SoftwareFactory',
+          repositoryId: 1,
+          issueNumber: 70,
+          pullNumber: null,
+          headSha: null,
+          lane: 'lane-a',
+          ownedPaths: ['docs/a.md'],
+          status: 'completed',
+          generation: 1,
+          attempts: 1,
+          maxAttempts: 3,
+          workerId: 'w-a',
+          runId: 701,
+          runAttempt: 1,
+          claimedAtMs: 500,
+          leaseTtlMs: 100,
+          leaseExpiresAtMs: 600,
+          maxExecutionMs: 100,
+          executionDeadlineMs: 600
+        },
+        {
+          workId: '1:issue:71',
+          targetType: 'issue',
+          repository: 'Jamula/SoftwareFactory',
+          repositoryId: 1,
+          issueNumber: 71,
+          pullNumber: null,
+          headSha: null,
+          lane: 'lane-b',
+          ownedPaths: ['docs/b.md'],
+          status: 'completed',
+          generation: 2,
+          attempts: 1,
+          maxAttempts: 3,
+          workerId: 'w-b',
+          runId: 702,
+          runAttempt: 1,
+          claimedAtMs: 500,
+          leaseTtlMs: 100,
+          leaseExpiresAtMs: 600,
+          maxExecutionMs: 100,
+          executionDeadlineMs: 600
+        }
+      ],
+      recoveryReceipts: []
+    };
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: emptySnap,
+      signingKey: casSigningKey,
+      casState: overPlanCas,
+      expectedRefOid: computeWorkQueueStateOid(overPlanCas),
+      admissionEvidence: {...baseAdmission(), remainingIncludedUnits: 0},
+      nowMs: 1000
+    }).reason, 'CAPACITY_EXHAUSTED');
+
+    // Also blocks incomplete PR / archived PR history against empty snapshot.
+    const archivedPrCas = {
+      schemaVersion: 1,
+      protocol: 'v3',
+      sequence: 1,
+      nextGeneration: 2,
+      entries: [],
+      recoveryReceipts: [],
+      archivedTerminal: [{workId: `1:pr:88:${head}`, status: 'completed'}]
+    };
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: emptySnap,
+      signingKey: casSigningKey,
+      casState: archivedPrCas,
+      expectedRefOid: computeWorkQueueStateOid(archivedPrCas),
+      admissionEvidence: {...baseAdmission(), remainingIncludedUnits: 2},
+      candidate: {
+        repositoryId: 1,
+        issue: 89,
+        head: 'b'.repeat(40),
+        generation: 2,
+        repository: 'Jamula/SoftwareFactory',
+        lane: 'lane-docs',
+        ownedPaths: ['docs/COORDINATOR-EVENT-JOURNAL.md'],
+        workerId: 'w-2',
+        runId: 102,
+        leaseTtlMs: 30000
+      },
+      nowMs: 1000
+    }).reason, 'STALE_OR_INCOMPLETE_LEDGER');
+
+    // 5. Binding an existing active CAS lease requires explicit matching (workerId, runId, runAttempt)
+    // AND matching SHA-256 head-binding lockSha256 (Codex 4725368188).
+    // Omitting workerId/runId/runAttempt fails closed with LEASE_OWNER_MISMATCH:
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: emptySnap,
+      signingKey: casSigningKey,
+      casState: first.nextCasState,
+      expectedRefOid: first.nextRefOid,
+      admissionEvidence: {...baseAdmission(), remainingIncludedUnits: 2},
+      candidate: {
+        repositoryId: 1,
+        issue: 12,
+        head,
+        generation: 1,
+        phase: 'in-flight'
+      },
+      nowMs: 1000
+    }).reason, 'LEASE_OWNER_MISMATCH');
+
+    // Attempting to bind a different head B against Issue 12's head-locked CAS lease fails closed with HEAD_BINDING_MISMATCH:
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: emptySnap,
+      signingKey: casSigningKey,
+      casState: first.nextCasState,
+      expectedRefOid: first.nextRefOid,
+      admissionEvidence: {...baseAdmission(), remainingIncludedUnits: 2},
+      candidate: {
+        repositoryId: 1,
+        issue: 12,
+        head: 'b'.repeat(40),
+        generation: 1,
+        phase: 'in-flight',
+        workerId: 'w-1',
+        runId: 101,
+        runAttempt: 1
+      },
+      nowMs: 1000
+    }).reason, 'HEAD_BINDING_MISMATCH');
+
+    // Even the legitimate worker replaying emptySnap on the SAME head against an already ledger-bound CAS lease
+    // fails closed with STALE_OR_INCOMPLETE_LEDGER:
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: emptySnap,
+      signingKey: casSigningKey,
+      casState: first.nextCasState,
+      expectedRefOid: first.nextRefOid,
+      admissionEvidence: {...baseAdmission(), remainingIncludedUnits: 2},
+      candidate: {
+        repositoryId: 1,
+        issue: 12,
+        head,
+        generation: 1,
+        workerId: 'w-1',
+        runId: 101,
+        runAttempt: 1
+      },
+      nowMs: 1000
+    }).reason, 'STALE_OR_INCOMPLETE_LEDGER');
+
+    // Pre-claimed external CAS lease with computeReservationHeadLock binds once, upgrades lockSha256, and fences replay:
+    const externalPreClaimedCas = {
+      schemaVersion: 1,
+      protocol: 'v3',
+      sequence: 1,
+      nextGeneration: 2,
+      entries: [{
+        workId: '1:issue:12',
+        targetType: 'issue',
+        repository: 'Jamula/SoftwareFactory',
+        repositoryId: 1,
+        issueNumber: 12,
+        pullNumber: null,
+        headSha: null,
+        lane: 'lane-ledger',
+        ownedPaths: ['tools/engineering-factory/shadow-dispatch-ledger.mjs'],
+        status: 'leased',
+        generation: 1,
+        attempts: 1,
+        maxAttempts: 3,
+        workerId: 'w-ext',
+        runId: 202,
+        runAttempt: 1,
+        claimedAtMs: 1000,
+        leaseTtlMs: 30000,
+        leaseExpiresAtMs: 31000,
+        maxExecutionMs: 30000,
+        executionDeadlineMs: 31000,
+        lockSha256: computeReservationHeadLock(1, 12, head, 1)
+      }],
+      recoveryReceipts: []
+    };
+    const extBind = reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: emptySnap,
+      signingKey: casSigningKey,
+      casState: externalPreClaimedCas,
+      expectedRefOid: computeWorkQueueStateOid(externalPreClaimedCas),
+      admissionEvidence: {...baseAdmission(), remainingIncludedUnits: 2},
+      candidate: {
+        repositoryId: 1,
+        issue: 12,
+        head,
+        generation: 1,
+        workerId: 'w-ext',
+        runId: 202,
+        runAttempt: 1
+      },
+      nowMs: 1000
+    });
+    assert.equal(extBind.ok, true);
+    assert.equal(extBind.casMutationRequired, true);
+    assert.notEqual(extBind.nextRefOid, computeWorkQueueStateOid(externalPreClaimedCas));
+
+    // Claiming a new lease with a forged lockSha256 also fails closed with HEAD_BINDING_MISMATCH:
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: emptySnap,
+      signingKey: casSigningKey,
+      casState: null,
+      expectedRefOid: ZERO_GIT_OID,
+      admissionEvidence: {...baseAdmission(), remainingIncludedUnits: 2},
+      candidate: {
+        repositoryId: 1,
+        issue: 12,
+        head,
+        generation: 1,
+        repository: 'Jamula/SoftwareFactory',
+        lane: 'lane-ledger',
+        ownedPaths: ['tools/engineering-factory/shadow-dispatch-ledger.mjs'],
+        workerId: 'w-1',
+        runId: 101,
+        leaseTtlMs: 30000,
+        lockSha256: 'f'.repeat(64)
+      },
+      nowMs: 1000
+    }).reason, 'HEAD_BINDING_MISMATCH');
+
+    // 6. Advancing 'reserved' -> 'in-flight' rechecks projected daily AI credits (Copilot 4725378458).
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: first.nextLedgerSnapshot,
+      signingKey: casSigningKey,
+      casState: first.nextCasState,
+      expectedRefOid: first.nextRefOid,
+      admissionEvidence: {
+        ...baseAdmission(),
+        observedMs: 1200,
+        remainingIncludedUnits: 2,
+        ghAwCaps: {
+          maxAiCredits: 5,
+          maxDailyAiCredits: 10,
+          dailyAiCreditsUsed: 8,
+          runAiCreditsRequired: 4
+        }
+      },
+      candidate: {
+        repositoryId: 1,
+        issue: 12,
+        head,
+        generation: 1,
+        phase: 'in-flight',
+        workerId: 'w-1',
+        runId: 101,
+        runAttempt: 1
+      },
+      nowMs: 1200
+    }).reason, 'GH_AW_DAILY_AI_CREDITS_EXCEEDED');
+  } finally {
+    ledger.close();
+  }
+});
+
+test('remediates Round 2 review findings: started c2 lock, compaction attempt/checkpoint fidelity, cross-target subject isolation, issue lock requirement, peer AI-credit projection, and zero-quota cleanup', () => {
+  const round2Plan = {
+    window: 'round2-regression-window',
+    maxActive: 4,
+    includedUnits: 600,
+    unitsPerRun: 2,
+    maxExecutionMs: 300000,
+    repositories: [{repositoryId: 1, maxActive: 3}, {repositoryId: 2, maxActive: 3}]
+  };
+  const ledger = openShadowDispatchLedger(':memory:', round2Plan);
+  try {
+    const snap0 = ledger.exportSnapshot({signingKey: casSigningKey, now: 1000}).snapshot;
+    const planSig = snap0.planSignature;
+
+    // 1 & 5. Persist started ('c2') phase in CAS lockSha256 and reject replaying pre-start 'reserved' snapshot
+    // after startup is committed (Codex 4725484777 & Copilot 4725493410).
+    const reservedRes = reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: snap0,
+      signingKey: casSigningKey,
+      casState: null,
+      expectedRefOid: ZERO_GIT_OID,
+      admissionEvidence: {...baseAdmission(), remainingIncludedUnits: 10},
+      candidate: {
+        repositoryId: 1,
+        issue: 12,
+        head,
+        generation: 1,
+        repository: 'Jamula/SoftwareFactory',
+        lane: 'lane-ledger',
+        ownedPaths: ['tools/engineering-factory/shadow-dispatch-ledger.mjs'],
+        workerId: 'w-start',
+        runId: 301,
+        runAttempt: 1,
+        leaseTtlMs: 30000
+      },
+      nowMs: 1000
+    });
+    assert.equal(reservedRes.ok, true);
+    assert.equal(reservedRes.nextCasState.entries[0].lockSha256.startsWith('c1'), true);
+
+    const startedRes = reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: reservedRes.nextLedgerSnapshot,
+      signingKey: casSigningKey,
+      casState: {
+        ref: PROTECTED_WORK_QUEUE_REF,
+        oid: reservedRes.nextRefOid,
+        state: reservedRes.nextCasState
+      },
+      expectedRefOid: reservedRes.nextRefOid,
+      admissionEvidence: {...baseAdmission(), observedMs: 1200, remainingIncludedUnits: 10},
+      candidate: {
+        repositoryId: 1,
+        issue: 12,
+        head,
+        generation: 1,
+        phase: 'in-flight',
+        workerId: 'w-start',
+        runId: 301,
+        runAttempt: 1
+      },
+      nowMs: 1200
+    });
+    assert.equal(startedRes.ok, true);
+    assert.equal(startedRes.reason, 'CROSS_RUN_CAS_SIMULATION_STARTED');
+    assert.equal(startedRes.nextCasState.entries[0].lockSha256.startsWith('c2'), true);
+
+    // Replaying the earlier signed 'reserved' snapshot against the started CAS OID fails closed!
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: reservedRes.nextLedgerSnapshot,
+      signingKey: casSigningKey,
+      casState: {
+        ref: PROTECTED_WORK_QUEUE_REF,
+        oid: startedRes.nextRefOid,
+        state: startedRes.nextCasState
+      },
+      expectedRefOid: startedRes.nextRefOid,
+      admissionEvidence: {...baseAdmission(), observedMs: 1300, remainingIncludedUnits: 10},
+      candidate: {
+        repositoryId: 1,
+        issue: 12,
+        head,
+        generation: 1,
+        phase: 'in-flight',
+        workerId: 'w-start',
+        runId: 301,
+        runAttempt: 1
+      },
+      nowMs: 1300
+    }).reason, 'STALE_OR_INCOMPLETE_LEDGER');
+
+    // 4. Require a bound lock for issue phase advances — unlocked external issue lease + signed reserved row fails closed (Copilot 4725493396).
+    const unlockedExternalIssueCas = {
+      schemaVersion: 1,
+      protocol: 'v3',
+      sequence: 1,
+      nextGeneration: 2,
+      entries: [{
+        workId: '1:issue:12',
+        targetType: 'issue',
+        repository: 'Jamula/SoftwareFactory',
+        repositoryId: 1,
+        issueNumber: 12,
+        pullNumber: null,
+        headSha: null,
+        lane: 'lane-ledger',
+        ownedPaths: ['tools/engineering-factory/shadow-dispatch-ledger.mjs'],
+        status: 'leased',
+        generation: 1,
+        attempts: 1,
+        maxAttempts: 3,
+        workerId: 'w-start',
+        runId: 301,
+        runAttempt: 1,
+        claimedAtMs: 1000,
+        leaseTtlMs: 30000,
+        leaseExpiresAtMs: 31000,
+        maxExecutionMs: 30000,
+        executionDeadlineMs: 31000
+      }],
+      recoveryReceipts: []
+    };
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: reservedRes.nextLedgerSnapshot,
+      signingKey: casSigningKey,
+      casState: unlockedExternalIssueCas,
+      expectedRefOid: computeWorkQueueStateOid(unlockedExternalIssueCas),
+      admissionEvidence: {...baseAdmission(), observedMs: 1200, remainingIncludedUnits: 10},
+      candidate: {
+        repositoryId: 1,
+        issue: 12,
+        head,
+        generation: 1,
+        phase: 'in-flight',
+        workerId: 'w-start',
+        runId: 301,
+        runAttempt: 1
+      },
+      nowMs: 1200
+    }).reason, 'HEAD_BINDING_MISMATCH');
+
+    // 3. Reject duplicate worker leases across issue and PR targets sharing the same numeric subject (Copilot 4725493381).
+    const dualTargetCas = {
+      schemaVersion: 1,
+      protocol: 'v3',
+      sequence: 2,
+      nextGeneration: 3,
+      entries: [
+        {
+          workId: '1:issue:42',
+          targetType: 'issue',
+          repository: 'Jamula/SoftwareFactory',
+          repositoryId: 1,
+          issueNumber: 42,
+          pullNumber: null,
+          headSha: null,
+          lane: 'lane-a',
+          ownedPaths: ['docs/a.md'],
+          status: 'leased',
+          generation: 1,
+          attempts: 1,
+          maxAttempts: 3,
+          workerId: 'w-issue',
+          runId: 401,
+          runAttempt: 1,
+          claimedAtMs: 1000,
+          leaseTtlMs: 30000,
+          leaseExpiresAtMs: 31000,
+          maxExecutionMs: 30000,
+          executionDeadlineMs: 31000
+        },
+        {
+          workId: `1:pr:42:${head}`,
+          targetType: 'pull_request',
+          repository: 'Jamula/SoftwareFactory',
+          repositoryId: 1,
+          issueNumber: null,
+          pullNumber: 42,
+          headSha: head,
+          lane: 'lane-b',
+          ownedPaths: ['docs/b.md'],
+          status: 'leased',
+          generation: 2,
+          attempts: 1,
+          maxAttempts: 3,
+          workerId: 'w-pr',
+          runId: 402,
+          runAttempt: 1,
+          claimedAtMs: 1000,
+          leaseTtlMs: 30000,
+          leaseExpiresAtMs: 31000,
+          maxExecutionMs: 30000,
+          executionDeadlineMs: 31000
+        }
+      ],
+      recoveryReceipts: []
+    };
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: snap0,
+      signingKey: casSigningKey,
+      casState: dualTargetCas,
+      expectedRefOid: computeWorkQueueStateOid(dualTargetCas),
+      admissionEvidence: {...baseAdmission(), remainingIncludedUnits: 10},
+      nowMs: 1000
+    }).reason, 'ACTIVE_CAS_LEASE_CONFLICT');
+
+    // Candidate PR #42 is also rejected with DUPLICATE_RESERVATION when Issue #42 holds an active lease:
+    const singleIssue42Cas = {
+      ...dualTargetCas,
+      nextGeneration: 2,
+      entries: [dualTargetCas.entries[0]]
+    };
+    const issue42Snap = signRawSnapshot(planSig, 2, 1000, [
+      {repositoryId: 1, issue: 42, head: '1'.repeat(40), generation: 1, units: 2, phase: 'in-flight', validThrough: 31000, reservedAt: 1000}
+    ], casSigningKey, round2Plan.window);
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: issue42Snap,
+      signingKey: casSigningKey,
+      casState: singleIssue42Cas,
+      expectedRefOid: computeWorkQueueStateOid(singleIssue42Cas),
+      admissionEvidence: {...baseAdmission(), remainingIncludedUnits: 10},
+      candidate: {
+        repositoryId: 1,
+        issue: 42,
+        head: '2'.repeat(40),
+        generation: 2,
+        targetType: 'pull_request',
+        repository: 'Jamula/SoftwareFactory',
+        lane: 'lane-b',
+        ownedPaths: ['docs/b.md'],
+        workerId: 'w-pr',
+        runId: 402,
+        leaseTtlMs: 30000
+      },
+      nowMs: 1000
+    }).reason, 'DUPLICATE_RESERVATION');
+
+    // 6. Include peer active reservations' AI-credit commitments in maxDailyAiCredits projections (Copilot 4725493426):
+    // Candidate 1 (dailyAiCreditsUsed=6, runAiCreditsRequired=4, maxDailyAiCredits=10) succeeds (6 + 0 + 4 = 10),
+    // while disjoint Candidate 2 on the successive CAS state fails closed (6 + 4 + 4 = 14 > 10)!
+    const creditCaps = {
+      maxAiCredits: 5,
+      maxDailyAiCredits: 10,
+      dailyAiCreditsUsed: 6,
+      runAiCreditsRequired: 4
+    };
+    const creditCand1 = reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: snap0,
+      signingKey: casSigningKey,
+      casState: null,
+      expectedRefOid: ZERO_GIT_OID,
+      admissionEvidence: {...baseAdmission(), remainingIncludedUnits: 10, ghAwCaps: creditCaps},
+      candidate: {
+        repositoryId: 1,
+        issue: 60,
+        head: '1'.repeat(40),
+        generation: 1,
+        repository: 'Jamula/SoftwareFactory',
+        lane: 'lane-a',
+        ownedPaths: ['docs/a.md'],
+        workerId: 'w-c1',
+        runId: 601,
+        leaseTtlMs: 30000
+      },
+      nowMs: 1000
+    });
+    assert.equal(creditCand1.ok, true);
+
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: creditCand1.nextLedgerSnapshot,
+      signingKey: casSigningKey,
+      casState: {
+        ref: PROTECTED_WORK_QUEUE_REF,
+        oid: creditCand1.nextRefOid,
+        state: creditCand1.nextCasState
+      },
+      expectedRefOid: creditCand1.nextRefOid,
+      admissionEvidence: {...baseAdmission(), remainingIncludedUnits: 10, ghAwCaps: creditCaps},
+      candidate: {
+        repositoryId: 1,
+        issue: 61,
+        head: '2'.repeat(40),
+        generation: 2,
+        repository: 'Jamula/SoftwareFactory',
+        lane: 'lane-b',
+        ownedPaths: ['docs/b.md'],
+        workerId: 'w-c2',
+        runId: 602,
+        leaseTtlMs: 30000
+      },
+      nowMs: 1000
+    }).reason, 'GH_AW_DAILY_AI_CREDITS_EXCEEDED');
+
+    // Invalid dailyUsageIncludesReservations type fails closed with GH_AW_SOFT_CAPS_INVALID:
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: snap0,
+      signingKey: casSigningKey,
+      casState: null,
+      expectedRefOid: ZERO_GIT_OID,
+      admissionEvidence: {
+        ...baseAdmission(),
+        remainingIncludedUnits: 10,
+        ghAwCaps: {...creditCaps, dailyUsageIncludesReservations: 'yes'}
+      },
+      nowMs: 1000
+    }).reason, 'GH_AW_SOFT_CAPS_INVALID');
+
+    // 2. Compaction preserves multi-attempt & charge fidelity via recoveryReceipts AND CAS checkpoint lock (Copilot 4725493369):
+    const threeAttemptArchivedCas = {
+      schemaVersion: 1,
+      protocol: 'v3',
+      sequence: 5,
+      nextGeneration: 6,
+      entries: [],
+      recoveryReceipts: [
+        {
+          workId: '1:issue:90',
+          repositoryId: 1,
+          targetType: 'issue',
+          runState: 'worker_terminated',
+          conclusion: null,
+          previousRunId: 901,
+          previousRunAttempt: 1,
+          previousGeneration: 1,
+          reclaimedGeneration: 2,
+          attempts: 1,
+          maxAttempts: 3,
+          outcome: 'requeued',
+          reclaimedAtMs: 600
+        },
+        {
+          workId: '1:issue:90',
+          repositoryId: 1,
+          targetType: 'issue',
+          runState: 'worker_terminated',
+          conclusion: null,
+          previousRunId: 902,
+          previousRunAttempt: 1,
+          previousGeneration: 3,
+          reclaimedGeneration: 4,
+          attempts: 2,
+          maxAttempts: 3,
+          outcome: 'requeued',
+          reclaimedAtMs: 800
+        }
+      ],
+      archivedTerminal: [{workId: '1:issue:90', status: 'completed'}]
+    };
+    const oneAttemptStaleSnap = signRawSnapshot(planSig, 2, 1000, [
+      {repositoryId: 1, issue: 90, head: '1'.repeat(40), generation: 1, units: 2, phase: 'expired', validThrough: 600, reservedAt: 500}
+    ], casSigningKey, round2Plan.window);
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: oneAttemptStaleSnap,
+      signingKey: casSigningKey,
+      casState: threeAttemptArchivedCas,
+      expectedRefOid: computeWorkQueueStateOid(threeAttemptArchivedCas),
+      admissionEvidence: {...baseAdmission(), remainingIncludedUnits: 10},
+      candidate: {
+        repositoryId: 1,
+        issue: 91,
+        head: '9'.repeat(40),
+        generation: 6,
+        repository: 'Jamula/SoftwareFactory',
+        lane: 'lane-a',
+        ownedPaths: ['docs/a.md'],
+        workerId: 'w-91',
+        runId: 910,
+        leaseTtlMs: 30000
+      },
+      nowMs: 1000
+    }).reason, 'STALE_OR_INCOMPLETE_LEDGER');
+
+    // 7. Terminal-run & expiry cleanup succeeds when remainingIncludedUnits === 0, while starts/admissions stay blocked (Copilot 4725493439):
+    const cleanupRes = reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: startedRes.nextLedgerSnapshot,
+      signingKey: casSigningKey,
+      casState: {
+        ref: PROTECTED_WORK_QUEUE_REF,
+        oid: startedRes.nextRefOid,
+        state: startedRes.nextCasState
+      },
+      expectedRefOid: startedRes.nextRefOid,
+      admissionEvidence: {...baseAdmission(), observedMs: 2000, remainingIncludedUnits: 0},
+      observedRuns: [{
+        workId: '1:issue:12',
+        runId: 301,
+        runAttempt: 1,
+        leaseGeneration: 1,
+        runState: 'run_terminal',
+        conclusion: 'success'
+      }],
+      nowMs: 2000
+    });
+    assert.equal(cleanupRes.ok, true);
+    assert.equal(cleanupRes.casMutationRequired, true);
+    assert.equal(cleanupRes.ledgerMutationRequired, true);
+    assert.equal(cleanupRes.nextCasState.entries[0].status, 'completed');
+    assert.equal(cleanupRes.reconciledActions[0].toPhase, 'settled');
+  } finally {
+    ledger.close();
+  }
+});
+
+test('remediates Round 3 review findings: unstarted expiry budget release, receipt-rollover compaction, exact peer AI credits, startup credit dedup, cumulative vs remaining quota, and renewable in-flight deadlines', () => {
+  // 1. Codex 4725538942: Unstarted 'c1' reservation that expires before starting releases its budget cleanly.
+  const twoUnitPlan = {
+    window: 'round3-two-unit-window',
+    maxActive: 2,
+    includedUnits: 2,
+    unitsPerRun: 2,
+    maxExecutionMs: 300000,
+    repositories: [{repositoryId: 1, maxActive: 2}]
+  };
+  const twoUnitLedger = openShadowDispatchLedger(':memory:', twoUnitPlan);
+  try {
+    const empty2Snap = twoUnitLedger.exportSnapshot({signingKey: casSigningKey, now: 1000}).snapshot;
+    const res1 = reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: empty2Snap,
+      signingKey: casSigningKey,
+      casState: null,
+      expectedRefOid: ZERO_GIT_OID,
+      admissionEvidence: {...baseAdmission(), remainingIncludedUnits: 2},
+      candidate: {
+        repositoryId: 1,
+        issue: 10,
+        head: '1'.repeat(40),
+        generation: 1,
+        repository: 'Jamula/SoftwareFactory',
+        lane: 'lane-a',
+        ownedPaths: ['docs/a.md'],
+        workerId: 'w-exp',
+        runId: 10,
+        leaseTtlMs: 500
+      },
+      nowMs: 1000
+    });
+    assert.equal(res1.ok, true);
+
+    // Let reservation expire at nowMs = 2000 (> 1500) without starting; passive cleanup marks row 'cancelled'.
+    const expiredCleanup = reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: res1.nextLedgerSnapshot,
+      signingKey: casSigningKey,
+      casState: {
+        ref: PROTECTED_WORK_QUEUE_REF,
+        oid: res1.nextRefOid,
+        state: res1.nextCasState
+      },
+      expectedRefOid: res1.nextRefOid,
+      admissionEvidence: {...baseAdmission(), observedMs: 2000, remainingIncludedUnits: 2},
+      nowMs: 2000
+    });
+    assert.equal(expiredCleanup.ok, true);
+    assert.equal(expiredCleanup.nextLedgerSnapshot.reservations[0].phase, 'cancelled');
+    assert.equal(expiredCleanup.nextCasState.entries[0].status, 'requeued');
+
+    // Reserving a different issue now succeeds because unstarted 'cancelled' reservation released all 2 units!
+    const res2 = reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: expiredCleanup.nextLedgerSnapshot,
+      signingKey: casSigningKey,
+      casState: {
+        ref: PROTECTED_WORK_QUEUE_REF,
+        oid: expiredCleanup.nextRefOid,
+        state: expiredCleanup.nextCasState
+      },
+      expectedRefOid: expiredCleanup.nextRefOid,
+      admissionEvidence: {...baseAdmission(), observedMs: 2100, remainingIncludedUnits: 2},
+      candidate: {
+        repositoryId: 1,
+        issue: 11,
+        head: '2'.repeat(40),
+        generation: 3,
+        repository: 'Jamula/SoftwareFactory',
+        lane: 'lane-b',
+        ownedPaths: ['docs/b.md'],
+        workerId: 'w-next',
+        runId: 11,
+        leaseTtlMs: 5000
+      },
+      nowMs: 2100
+    });
+    assert.equal(res2.ok, true);
+    assert.equal(res2.reason, 'CROSS_RUN_CAS_RESERVED');
+  } finally {
+    twoUnitLedger.close();
+  }
+
+  // 2. Copilot 4725546493 & 4725546503: Sum each peer's actual persisted credit commitment (8 + 1 + 4 = 13 > 12),
+  // fail closed when peer commitments are unknown, and avoid double-counting target startup when dailyUsageIncludesReservations === true.
+  const sixUnitPlan = {
+    window: 'round3-six-unit-window',
+    maxActive: 4,
+    includedUnits: 6,
+    unitsPerRun: 2,
+    maxExecutionMs: 300000,
+    repositories: [{repositoryId: 1, maxActive: 4}, {repositoryId: 2, maxActive: 4}]
+  };
+  const sixUnitLedger = openShadowDispatchLedger(':memory:', sixUnitPlan);
+  try {
+    const empty6Snap = sixUnitLedger.exportSnapshot({signingKey: casSigningKey, now: 1000}).snapshot;
+
+    // Reserve an 8-credit run (dailyAiCreditsUsed = 4, maxDailyAiCredits = 12 -> 4 + 8 = 12 <= 12):
+    const eightCreditRun = reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: empty6Snap,
+      signingKey: casSigningKey,
+      casState: null,
+      expectedRefOid: ZERO_GIT_OID,
+      admissionEvidence: {
+        ...baseAdmission(),
+        remainingIncludedUnits: 6,
+        ghAwCaps: {
+          maxAiCredits: 10,
+          maxDailyAiCredits: 12,
+          dailyAiCreditsUsed: 4,
+          runAiCreditsRequired: 8
+        }
+      },
+      candidate: {
+        repositoryId: 1,
+        issue: 20,
+        head: '1'.repeat(40),
+        generation: 1,
+        repository: 'Jamula/SoftwareFactory',
+        lane: 'lane-a',
+        ownedPaths: ['docs/a.md'],
+        workerId: 'w-8c',
+        runId: 201,
+        leaseTtlMs: 30000
+      },
+      nowMs: 1000
+    });
+    assert.equal(eightCreditRun.ok, true);
+
+    // Subsequent disjoint 1-credit run projects 4 + 8 (persisted peer!) + 1 = 13 > 12 -> GH_AW_DAILY_AI_CREDITS_EXCEEDED!
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: eightCreditRun.nextLedgerSnapshot,
+      signingKey: casSigningKey,
+      casState: {
+        ref: PROTECTED_WORK_QUEUE_REF,
+        oid: eightCreditRun.nextRefOid,
+        state: eightCreditRun.nextCasState
+      },
+      expectedRefOid: eightCreditRun.nextRefOid,
+      admissionEvidence: {
+        ...baseAdmission(),
+        remainingIncludedUnits: 6,
+        ghAwCaps: {
+          maxAiCredits: 10,
+          maxDailyAiCredits: 12,
+          dailyAiCreditsUsed: 4,
+          runAiCreditsRequired: 1
+        }
+      },
+      candidate: {
+        repositoryId: 1,
+        issue: 21,
+        head: '2'.repeat(40),
+        generation: 2,
+        repository: 'Jamula/SoftwareFactory',
+        lane: 'lane-b',
+        ownedPaths: ['docs/b.md'],
+        workerId: 'w-1c',
+        runId: 202,
+        leaseTtlMs: 30000
+      },
+      nowMs: 1000
+    }).reason, 'GH_AW_DAILY_AI_CREDITS_EXCEEDED');
+
+    // Startup of the 8-credit reservation with dailyUsageIncludesReservations: true and dailyAiCreditsUsed = 12
+    // adds 0 new commitment (12 + (8 - 8) = 12 <= 12) AND keeps validThrough at executionDeadlineMs (301200) rather than leaseExpiresAtMs (31000)!
+    const startedEight = reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: eightCreditRun.nextLedgerSnapshot,
+      signingKey: casSigningKey,
+      casState: {
+        ref: PROTECTED_WORK_QUEUE_REF,
+        oid: eightCreditRun.nextRefOid,
+        state: eightCreditRun.nextCasState
+      },
+      expectedRefOid: eightCreditRun.nextRefOid,
+      admissionEvidence: {
+        ...baseAdmission(),
+        observedMs: 1200,
+        remainingIncludedUnits: 6,
+        ghAwCaps: {
+          maxAiCredits: 10,
+          maxDailyAiCredits: 12,
+          dailyAiCreditsUsed: 12,
+          runAiCreditsRequired: 8,
+          dailyUsageIncludesReservations: true
+        }
+      },
+      candidate: {
+        repositoryId: 1,
+        issue: 20,
+        head: '1'.repeat(40),
+        generation: 1,
+        phase: 'in-flight',
+        workerId: 'w-8c',
+        runId: 201,
+        runAttempt: 1
+      },
+      nowMs: 1200
+    });
+    assert.equal(startedEight.ok, true);
+    // Copilot 4725546535: validThrough is bounded by immutable executionDeadlineMs (301000), NOT short leaseExpiresAtMs (31000)!
+    assert.equal(startedEight.nextLedgerSnapshot.reservations[0].validThrough, 301000);
+
+    // Simulate renewWorkQueueLease extending leaseExpiresAtMs past 31000 -> reconciliation at nowMs = 50000 keeps row 'in-flight'!
+    const renewedCasState = {
+      ...startedEight.nextCasState,
+      sequence: startedEight.nextCasState.sequence + 1,
+      entries: [{
+        ...startedEight.nextCasState.entries[0],
+        leaseExpiresAtMs: 80000
+      }]
+    };
+    const afterRenewRec = reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: startedEight.nextLedgerSnapshot,
+      signingKey: casSigningKey,
+      casState: {
+        ref: PROTECTED_WORK_QUEUE_REF,
+        oid: computeWorkQueueStateOid(renewedCasState),
+        state: renewedCasState
+      },
+      expectedRefOid: computeWorkQueueStateOid(renewedCasState),
+      admissionEvidence: {...baseAdmission(), observedMs: 50000, remainingIncludedUnits: 6},
+      nowMs: 50000
+    });
+    assert.equal(afterRenewRec.ok, true);
+    assert.equal(afterRenewRec.ledgerMutationRequired, false);
+    assert.equal(afterRenewRec.nextLedgerSnapshot.reservations[0].phase, 'in-flight');
+
+    // Unknown peer credit commitment (peer reserved without ghAwCaps) fails closed with PEER_CREDIT_COMMITMENTS_UNKNOWN:
+    const noCapsPeer = reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: empty6Snap,
+      signingKey: casSigningKey,
+      casState: null,
+      expectedRefOid: ZERO_GIT_OID,
+      admissionEvidence: {...baseAdmission(), remainingIncludedUnits: 6},
+      candidate: {
+        repositoryId: 1,
+        issue: 30,
+        head: '3'.repeat(40),
+        generation: 1,
+        repository: 'Jamula/SoftwareFactory',
+        lane: 'lane-a',
+        ownedPaths: ['docs/a.md'],
+        workerId: 'w-nocaps',
+        runId: 301,
+        leaseTtlMs: 30000
+      },
+      nowMs: 1000
+    });
+    assert.equal(noCapsPeer.ok, true);
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: noCapsPeer.nextLedgerSnapshot,
+      signingKey: casSigningKey,
+      casState: {
+        ref: PROTECTED_WORK_QUEUE_REF,
+        oid: noCapsPeer.nextRefOid,
+        state: noCapsPeer.nextCasState
+      },
+      expectedRefOid: noCapsPeer.nextRefOid,
+      admissionEvidence: {
+        ...baseAdmission(),
+        remainingIncludedUnits: 6,
+        ghAwCaps: {
+          maxAiCredits: 10,
+          maxDailyAiCredits: 12,
+          dailyAiCreditsUsed: 4,
+          runAiCreditsRequired: 2
+        }
+      },
+      candidate: {
+        repositoryId: 1,
+        issue: 31,
+        head: '4'.repeat(40),
+        generation: 2,
+        repository: 'Jamula/SoftwareFactory',
+        lane: 'lane-b',
+        ownedPaths: ['docs/b.md'],
+        workerId: 'w-c2',
+        runId: 302,
+        leaseTtlMs: 30000
+      },
+      nowMs: 1000
+    }).reason, 'PEER_CREDIT_COMMITMENTS_UNKNOWN');
+
+    // Startup with dailyUsageIncludesReservations: true when reservation had unknown credits also fails closed:
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: noCapsPeer.nextLedgerSnapshot,
+      signingKey: casSigningKey,
+      casState: {
+        ref: PROTECTED_WORK_QUEUE_REF,
+        oid: noCapsPeer.nextRefOid,
+        state: noCapsPeer.nextCasState
+      },
+      expectedRefOid: noCapsPeer.nextRefOid,
+      admissionEvidence: {
+        ...baseAdmission(),
+        remainingIncludedUnits: 6,
+        ghAwCaps: {
+          maxAiCredits: 10,
+          maxDailyAiCredits: 12,
+          dailyAiCreditsUsed: 4,
+          runAiCreditsRequired: 2,
+          dailyUsageIncludesReservations: true
+        }
+      },
+      candidate: {
+        repositoryId: 1,
+        issue: 30,
+        head: '3'.repeat(40),
+        generation: 1,
+        phase: 'in-flight',
+        workerId: 'w-nocaps',
+        runId: 301,
+        runAttempt: 1
+      },
+      nowMs: 1000
+    }).reason, 'PEER_CREDIT_COMMITMENTS_UNKNOWN');
+
+    // 3. Copilot 4725546518: Six-unit plan with two settled two-unit runs (4 cumulative units) and fresh
+    // remainingIncludedUnits: 2 admits a third two-unit reservation AND its startup!
+    const twoSettledSnap = signRawSnapshot(empty6Snap.planSignature, 2, 1000, [
+      {repositoryId: 1, issue: 1, head: '1'.repeat(40), generation: 1, units: 2, phase: 'settled', validThrough: 900, reservedAt: 500},
+      {repositoryId: 1, issue: 2, head: '2'.repeat(40), generation: 2, units: 2, phase: 'settled', validThrough: 900, reservedAt: 500}
+    ], casSigningKey, sixUnitPlan.window);
+    const twoSettledCas = {
+      schemaVersion: 1,
+      protocol: 'v3',
+      sequence: 2,
+      nextGeneration: 3,
+      entries: [
+        {
+          workId: '1:issue:1',
+          targetType: 'issue',
+          repository: 'Jamula/SoftwareFactory',
+          repositoryId: 1,
+          issueNumber: 1,
+          pullNumber: null,
+          headSha: null,
+          lane: 'lane-a',
+          ownedPaths: ['docs/a.md'],
+          status: 'completed',
+          generation: 1,
+          attempts: 1,
+          maxAttempts: 3,
+          workerId: 'w-1',
+          runId: 1,
+          runAttempt: 1,
+          claimedAtMs: 500,
+          leaseTtlMs: 400,
+          leaseExpiresAtMs: 900,
+          maxExecutionMs: 400,
+          executionDeadlineMs: 900
+        },
+        {
+          workId: '1:issue:2',
+          targetType: 'issue',
+          repository: 'Jamula/SoftwareFactory',
+          repositoryId: 1,
+          issueNumber: 2,
+          pullNumber: null,
+          headSha: null,
+          lane: 'lane-b',
+          ownedPaths: ['docs/b.md'],
+          status: 'completed',
+          generation: 2,
+          attempts: 1,
+          maxAttempts: 3,
+          workerId: 'w-2',
+          runId: 2,
+          runAttempt: 1,
+          claimedAtMs: 500,
+          leaseTtlMs: 400,
+          leaseExpiresAtMs: 900,
+          maxExecutionMs: 400,
+          executionDeadlineMs: 900
+        }
+      ],
+      recoveryReceipts: []
+    };
+    const thirdRes = reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: twoSettledSnap,
+      signingKey: casSigningKey,
+      casState: twoSettledCas,
+      expectedRefOid: computeWorkQueueStateOid(twoSettledCas),
+      admissionEvidence: {...baseAdmission(), remainingIncludedUnits: 2},
+      candidate: {
+        repositoryId: 1,
+        issue: 3,
+        head: '3'.repeat(40),
+        generation: 3,
+        repository: 'Jamula/SoftwareFactory',
+        lane: 'lane-c',
+        ownedPaths: ['docs/c.md'],
+        workerId: 'w-3',
+        runId: 3,
+        leaseTtlMs: 30000
+      },
+      nowMs: 1000
+    });
+    assert.equal(thirdRes.ok, true);
+    assert.equal(thirdRes.reason, 'CROSS_RUN_CAS_RESERVED');
+
+    // Startup of that 3rd reservation succeeds both when netOfReservationsVerified: false (remaining=2)
+    // and when netOfReservationsVerified: true (remaining=0 after deducting reservation)!
+    const thirdStart = reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: thirdRes.nextLedgerSnapshot,
+      signingKey: casSigningKey,
+      casState: {
+        ref: PROTECTED_WORK_QUEUE_REF,
+        oid: thirdRes.nextRefOid,
+        state: thirdRes.nextCasState
+      },
+      expectedRefOid: thirdRes.nextRefOid,
+      admissionEvidence: {
+        ...baseAdmission(),
+        observedMs: 1200,
+        remainingIncludedUnits: 0,
+        netOfReservationsVerified: true
+      },
+      candidate: {
+        repositoryId: 1,
+        issue: 3,
+        head: '3'.repeat(40),
+        generation: 3,
+        phase: 'in-flight',
+        workerId: 'w-3',
+        runId: 3,
+        runAttempt: 1
+      },
+      nowMs: 1200
+    });
+    assert.equal(thirdStart.ok, true);
+    assert.equal(thirdStart.reason, 'CROSS_RUN_CAS_SIMULATION_STARTED');
+  } finally {
+    sixUnitLedger.close();
+  }
+
+  // 4. Copilot 4725546480: Receipt-rollover compaction regression (>250 receipts rolled out):
+  const rolloverPlan = {
+    window: 'round3-rollover-window',
+    maxActive: 4,
+    includedUnits: 600,
+    unitsPerRun: 2,
+    maxExecutionMs: 300000,
+    repositories: [{repositoryId: 1, maxActive: 2}, {repositoryId: 2, maxActive: 2}]
+  };
+  const rolloverLedger = openShadowDispatchLedger(':memory:', rolloverPlan);
+  try {
+    const baseRolloverSnap = rolloverLedger.exportSnapshot({signingKey: casSigningKey, now: 1000}).snapshot;
+    const rolloverSig = baseRolloverSnap.planSignature;
+
+    // Issue 1 has 3 attempts (6 units); entries 2..250 have 1 attempt each (249 * 2 = 498 units; total = 504 units).
+    // 250 unrelated recoveryReceipts saturate maxCasReceipts so Issue 1's receipts have completely rolled out!
+    const entries250With3AttemptFirst = Array.from({length: 250}, (_, idx) => ({
+      workId: `1:issue:${idx + 1}`,
+      targetType: 'issue',
+      repository: 'Jamula/SoftwareFactory',
+      repositoryId: 1,
+      issueNumber: idx + 1,
+      pullNumber: null,
+      headSha: null,
+      lane: `lane-${idx + 1}`,
+      ownedPaths: [`docs/r-${idx + 1}.md`],
+      status: 'completed',
+      generation: idx + 10,
+      attempts: idx === 0 ? 3 : 1,
+      maxAttempts: 3,
+      workerId: 'w-done',
+      runId: 1000 + idx,
+      runAttempt: 1,
+      claimedAtMs: 500,
+      leaseTtlMs: 100,
+      leaseExpiresAtMs: 600,
+      maxExecutionMs: 100,
+      executionDeadlineMs: 600,
+      ...(idx === 0 ? {priorRuns: [{runId: 998, runAttempt: 1}, {runId: 999, runAttempt: 1}]} : {})
+    }));
+    const saturatedReceipts250 = Array.from({length: 250}, (_, idx) => ({
+      workId: `1:issue:${500 + idx}`,
+      repositoryId: 1,
+      targetType: 'issue',
+      runState: 'lease_expired',
+      conclusion: null,
+      previousRunId: 5000 + idx,
+      previousRunAttempt: 1,
+      previousGeneration: 300 + idx * 2,
+      reclaimedGeneration: 301 + idx * 2,
+      attempts: 1,
+      maxAttempts: 3,
+      outcome: 'requeued',
+      reclaimedAtMs: 700
+    }));
+    const full3AttemptLedgerRows = [
+      {repositoryId: 1, issue: 1, head: '1'.repeat(40), generation: 1, units: 2, phase: 'expired', validThrough: 600, reservedAt: 500},
+      {repositoryId: 1, issue: 1, head: '2'.repeat(40), generation: 2, units: 2, phase: 'expired', validThrough: 600, reservedAt: 500},
+      {repositoryId: 1, issue: 1, head: '3'.repeat(40), generation: 10, units: 2, phase: 'settled', validThrough: 600, reservedAt: 500},
+      ...Array.from({length: 249}, (_, idx) => ({
+        repositoryId: 1,
+        issue: idx + 2,
+        head: 'a'.repeat(40),
+        generation: idx + 11,
+        units: 2,
+        phase: 'settled',
+        validThrough: 600,
+        reservedAt: 500
+      }))
+    ];
+    const fullRolloverSnap = signRawSnapshot(rolloverSig, 2, 1000, full3AttemptLedgerRows, casSigningKey, rolloverPlan.window);
+    const rolloverCas = {
+      schemaVersion: 1,
+      protocol: 'v3',
+      sequence: 20,
+      nextGeneration: 900,
+      entries: entries250With3AttemptFirst,
+      recoveryReceipts: saturatedReceipts250
+    };
+
+    // Compacting Issue 1 keeps strict 2-key {workId, status} archivedTerminal compatible with work-queue-cas
+    // compareAndSwapRef while encoding cumulative 3 attempts & 3 charged runs in checkpoint lockSha256!
+    const rolloverRefStore = createInMemoryWorkQueueRefStore(rolloverCas);
+    const initialRolloverOid = rolloverRefStore.readRef().oid;
+    const compactedRollover = reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: fullRolloverSnap,
+      signingKey: casSigningKey,
+      casState: rolloverRefStore.readRef(),
+      expectedRefOid: initialRolloverOid,
+      admissionEvidence: {...baseAdmission(), remainingIncludedUnits: 100},
+      candidate: {
+        repositoryId: 1,
+        issue: 600,
+        head: 'b'.repeat(40),
+        generation: 900,
+        repository: 'Jamula/SoftwareFactory',
+        lane: 'lane-ledger',
+        ownedPaths: ['tools/engineering-factory/shadow-dispatch-ledger.mjs'],
+        workerId: 'w-roll',
+        runId: 9600,
+        leaseTtlMs: 30000
+      },
+      nowMs: 1000
+    });
+    assert.equal(compactedRollover.ok, true);
+    assert.deepEqual(compactedRollover.nextCasState.archivedTerminal[0], {
+      workId: '1:issue:1',
+      status: 'completed'
+    });
+    // Round-trip through createInMemoryWorkQueueRefStore().compareAndSwapRef() succeeds with exact OID match!
+    const casRolloverCommit = rolloverRefStore.compareAndSwapRef({
+      ref: PROTECTED_WORK_QUEUE_REF,
+      expectedOid: initialRolloverOid,
+      nextState: compactedRollover.nextCasState,
+      force: false
+    });
+    assert.equal(casRolloverCommit.ok, true);
+    assert.equal(casRolloverCommit.oid, compactedRollover.nextRefOid);
+
+    // Complete 3-row snapshot continues admitting after compareAndSwapRef round-trip across saturated receipts!
+    const postRolloverAdmit = reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: compactedRollover.nextLedgerSnapshot,
+      signingKey: casSigningKey,
+      casState: rolloverRefStore.readRef(),
+      expectedRefOid: casRolloverCommit.oid,
+      admissionEvidence: {...baseAdmission(), observedMs: 1200, remainingIncludedUnits: 100},
+      candidate: {
+        repositoryId: 1,
+        issue: 601,
+        head: 'c'.repeat(40),
+        generation: 901,
+        repository: 'Jamula/SoftwareFactory',
+        lane: 'lane-docs',
+        ownedPaths: ['docs/ROADMAP.md'],
+        workerId: 'w-roll-2',
+        runId: 9601,
+        leaseTtlMs: 30000
+      },
+      nowMs: 1200
+    });
+    assert.equal(postRolloverAdmit.ok, true);
+
+    // Stale 1-row snapshot for Issue 1 fails closed both against checkpointed CAS state AND stripped-lock external archive!
+    const stale1RowForIssue1 = [
+      {repositoryId: 1, issue: 1, head: '1'.repeat(40), generation: 1, units: 2, phase: 'settled', validThrough: 600, reservedAt: 500},
+      ...full3AttemptLedgerRows.slice(3),
+      {repositoryId: 1, issue: 600, head: 'b'.repeat(40), generation: 900, units: 2, phase: 'reserved', validThrough: 31000, reservedAt: 1000}
+    ];
+    const staleRolloverSnap = signRawSnapshot(rolloverSig, 3, 1000, stale1RowForIssue1, casSigningKey, rolloverPlan.window);
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: staleRolloverSnap,
+      signingKey: casSigningKey,
+      casState: rolloverRefStore.readRef(),
+      expectedRefOid: casRolloverCommit.oid,
+      admissionEvidence: {...baseAdmission(), remainingIncludedUnits: 100},
+      candidate: {
+        repositoryId: 1,
+        issue: 601,
+        head: 'c'.repeat(40),
+        generation: 901,
+        repository: 'Jamula/SoftwareFactory',
+        lane: 'lane-docs',
+        ownedPaths: ['docs/ROADMAP.md'],
+        workerId: 'w-roll-2',
+        runId: 9601,
+        leaseTtlMs: 30000
+      },
+      nowMs: 1000
+    }).reason, 'STALE_OR_INCOMPLETE_LEDGER');
+
+    const strippedLocksCas = {
+      ...compactedRollover.nextCasState,
+      entries: compactedRollover.nextCasState.entries.map(e => {
+        const copy = {...e};
+        delete copy.lockSha256;
+        return copy;
+      })
+    };
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: staleRolloverSnap,
+      signingKey: casSigningKey,
+      casState: strippedLocksCas,
+      expectedRefOid: computeWorkQueueStateOid(strippedLocksCas),
+      admissionEvidence: {...baseAdmission(), remainingIncludedUnits: 100},
+      candidate: {
+        repositoryId: 1,
+        issue: 601,
+        head: 'c'.repeat(40),
+        generation: 901,
+        repository: 'Jamula/SoftwareFactory',
+        lane: 'lane-docs',
+        ownedPaths: ['docs/ROADMAP.md'],
+        workerId: 'w-roll-2',
+        runId: 9601,
+        leaseTtlMs: 30000
+      },
+      nowMs: 1000
+    }).reason, 'COMPACTED_ARCHIVE_CHECKPOINT_MISMATCH');
+
+    // 5. Copilot 4725604667: Active and revoked Proxy items in archivedTerminal never execute traps or throw!
+    let archiveTrapCalls = 0;
+    const archiveTrap = () => {
+      archiveTrapCalls++;
+      throw new Error('archive proxy trap invoked');
+    };
+    const activeArchiveProxy = new Proxy(
+      {workId: '1:issue:1', status: 'completed'},
+      {get: archiveTrap, getOwnPropertyDescriptor: archiveTrap, ownKeys: archiveTrap}
+    );
+    const revokedArchive = Proxy.revocable({workId: '1:issue:1', status: 'completed'}, {get: archiveTrap});
+    revokedArchive.revoke();
+    for (const badItem of [activeArchiveProxy, revokedArchive.proxy]) {
+      const proxyArchiveCas = {
+        schemaVersion: 1,
+        protocol: 'v3',
+        sequence: 1,
+        nextGeneration: 2,
+        entries: [],
+        recoveryReceipts: [],
+        archivedTerminal: [badItem]
+      };
+      assert.equal(computeWorkQueueStateOid(proxyArchiveCas), null);
+      assert.equal(reconcileLedgerWithWorkQueueCas({
+        ledgerSnapshot: baseRolloverSnap,
+        signingKey: casSigningKey,
+        casState: proxyArchiveCas,
+        expectedRefOid: ZERO_GIT_OID,
+        admissionEvidence: {...baseAdmission(), remainingIncludedUnits: 100},
+        nowMs: 1000
+      }).reason, 'INVALID_QUEUE_STATE');
+    }
+    assert.equal(archiveTrapCalls, 0);
+
+    // 6. Copilot 4725604689: Compacting an unstarted, cancelled PR head A when a later PR head B on the same PR
+    // has settled records 0 charges for head A, so the next audit accepts the complete snapshot!
+    const headA = '1'.repeat(40);
+    const headB = '2'.repeat(40);
+    const prEntries250 = [
+      {
+        workId: `1:pr:77:${headA}`,
+        targetType: 'pull_request',
+        repository: 'Jamula/SoftwareFactory',
+        repositoryId: 1,
+        issueNumber: null,
+        pullNumber: 77,
+        headSha: headA,
+        lane: 'lane-pr-a',
+        ownedPaths: ['docs/pr-a.md'],
+        status: 'cancelled',
+        generation: 1,
+        attempts: 1,
+        maxAttempts: 3,
+        workerId: 'w-pr-a',
+        runId: 7701,
+        runAttempt: 1,
+        claimedAtMs: 500,
+        leaseTtlMs: 100,
+        leaseExpiresAtMs: 600,
+        maxExecutionMs: 100,
+        executionDeadlineMs: 600
+      },
+      {
+        workId: `1:pr:77:${headB}`,
+        targetType: 'pull_request',
+        repository: 'Jamula/SoftwareFactory',
+        repositoryId: 1,
+        issueNumber: null,
+        pullNumber: 77,
+        headSha: headB,
+        lane: 'lane-pr-b',
+        ownedPaths: ['docs/pr-b.md'],
+        status: 'completed',
+        generation: 2,
+        attempts: 1,
+        maxAttempts: 3,
+        workerId: 'w-pr-b',
+        runId: 7702,
+        runAttempt: 1,
+        claimedAtMs: 500,
+        leaseTtlMs: 100,
+        leaseExpiresAtMs: 600,
+        maxExecutionMs: 100,
+        executionDeadlineMs: 600
+      },
+      ...Array.from({length: 248}, (_, idx) => ({
+        workId: `1:issue:${100 + idx}`,
+        targetType: 'issue',
+        repository: 'Jamula/SoftwareFactory',
+        repositoryId: 1,
+        issueNumber: 100 + idx,
+        pullNumber: null,
+        headSha: null,
+        lane: `lane-fill-${idx}`,
+        ownedPaths: [`docs/fill-${idx}.md`],
+        status: 'completed',
+        generation: idx + 3,
+        attempts: 1,
+        maxAttempts: 3,
+        workerId: 'w-fill',
+        runId: 8000 + idx,
+        runAttempt: 1,
+        claimedAtMs: 500,
+        leaseTtlMs: 100,
+        leaseExpiresAtMs: 600,
+        maxExecutionMs: 100,
+        executionDeadlineMs: 600
+      }))
+    ];
+    const prMultiHeadRows = [
+      {repositoryId: 1, issue: 77, head: headA, generation: 1, units: 2, phase: 'cancelled', validThrough: 600, reservedAt: 500},
+      {repositoryId: 1, issue: 77, head: headB, generation: 2, units: 2, phase: 'settled', validThrough: 600, reservedAt: 500},
+      ...Array.from({length: 248}, (_, idx) => ({
+        repositoryId: 1,
+        issue: 100 + idx,
+        head: 'a'.repeat(40),
+        generation: idx + 3,
+        units: 2,
+        phase: 'settled',
+        validThrough: 600,
+        reservedAt: 500
+      }))
+    ];
+    const prMultiHeadSnap = signRawSnapshot(rolloverSig, 4, 1000, prMultiHeadRows, casSigningKey, rolloverPlan.window);
+    const prMultiHeadStore = createInMemoryWorkQueueRefStore({
+      schemaVersion: 1,
+      protocol: 'v3',
+      sequence: 5,
+      nextGeneration: 251,
+      entries: prEntries250,
+      recoveryReceipts: []
+    });
+    // Compact cancelled PR head A into archivedTerminal:
+    const compactPrHeadA = reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: prMultiHeadSnap,
+      signingKey: casSigningKey,
+      casState: prMultiHeadStore.readRef(),
+      expectedRefOid: prMultiHeadStore.readRef().oid,
+      admissionEvidence: {...baseAdmission(), remainingIncludedUnits: 100},
+      candidate: {
+        repositoryId: 1,
+        issue: 700,
+        head: 'd'.repeat(40),
+        generation: 251,
+        repository: 'Jamula/SoftwareFactory',
+        lane: 'lane-ledger',
+        ownedPaths: ['tools/engineering-factory/shadow-dispatch-ledger.mjs'],
+        workerId: 'w-pr-next',
+        runId: 9700,
+        leaseTtlMs: 30000
+      },
+      nowMs: 1000
+    });
+    assert.equal(compactPrHeadA.ok, true);
+    const prCasCommit = prMultiHeadStore.compareAndSwapRef({
+      ref: PROTECTED_WORK_QUEUE_REF,
+      expectedOid: prMultiHeadStore.readRef().oid,
+      nextState: compactPrHeadA.nextCasState,
+      force: false
+    });
+    assert.equal(prCasCommit.ok, true);
+
+    // Next audit accepts the complete snapshot without misattributing head B's charge to archived head A!
+    const nextPrAudit = reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: compactPrHeadA.nextLedgerSnapshot,
+      signingKey: casSigningKey,
+      casState: prMultiHeadStore.readRef(),
+      expectedRefOid: prCasCommit.oid,
+      admissionEvidence: {...baseAdmission(), observedMs: 1200, remainingIncludedUnits: 100},
+      candidate: {
+        repositoryId: 1,
+        issue: 701,
+        head: 'e'.repeat(40),
+        generation: 252,
+        repository: 'Jamula/SoftwareFactory',
+        lane: 'lane-docs',
+        ownedPaths: ['docs/ROADMAP.md'],
+        workerId: 'w-pr-next-2',
+        runId: 9701,
+        leaseTtlMs: 30000
+      },
+      nowMs: 1200
+    });
+    assert.equal(nextPrAudit.ok, true);
+  } finally {
+    rolloverLedger.close();
+  }
+});
+
+test('remediates Round 4 review findings: retained startup AI-credit commitment, stale billing observation fencing, and generation-fenced same-head terminal retries', () => {
+  const round4Plan = {
+    window: 'round4-regression-window',
+    maxActive: 4,
+    includedUnits: 4,
+    unitsPerRun: 2,
+    maxExecutionMs: 300000,
+    repositories: [{repositoryId: 1, maxActive: 4}]
+  };
+  const ledger = openShadowDispatchLedger(':memory:', round4Plan);
+  try {
+    const emptySnap = ledger.exportSnapshot({signingKey: casSigningKey, now: 1000}).snapshot;
+
+    // 1. Codex 4725632833 & Copilot 4725642618: Retain persisted target credit commitment on reserved -> in-flight startup
+    // when dailyUsageIncludesReservations is absent or false.
+    const eightCreditReserved = reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: emptySnap,
+      signingKey: casSigningKey,
+      casState: null,
+      expectedRefOid: ZERO_GIT_OID,
+      admissionEvidence: {
+        ...baseAdmission(),
+        observedMs: 1000,
+        remainingIncludedUnits: 4,
+        ghAwCaps: {
+          maxAiCredits: 10,
+          maxDailyAiCredits: 12,
+          dailyAiCreditsUsed: 4,
+          runAiCreditsRequired: 8
+        }
+      },
+      candidate: {
+        repositoryId: 1,
+        issue: 41,
+        head: '1'.repeat(40),
+        generation: 1,
+        repository: 'Jamula/SoftwareFactory',
+        lane: 'lane-a',
+        ownedPaths: ['docs/a.md'],
+        workerId: 'w-41',
+        runId: 4101,
+        leaseTtlMs: 30000
+      },
+      nowMs: 1000
+    });
+    assert.equal(eightCreditReserved.ok, true);
+
+    // Lower incoming runAiCreditsRequired (1) with dailyAiCreditsUsed = 10 (absent flag -> 10 + 8 = 18 > 12)
+    // and dailyAiCreditsUsed = 5 (false flag -> 5 + 8 = 13 > 12) both reject with GH_AW_DAILY_AI_CREDITS_EXCEEDED!
+    for (const capsOverride of [
+      {maxAiCredits: 10, maxDailyAiCredits: 12, dailyAiCreditsUsed: 10, runAiCreditsRequired: 1},
+      {
+        maxAiCredits: 10,
+        maxDailyAiCredits: 12,
+        dailyAiCreditsUsed: 5,
+        runAiCreditsRequired: 1,
+        dailyUsageIncludesReservations: false
+      }
+    ]) {
+      assert.equal(reconcileLedgerWithWorkQueueCas({
+        ledgerSnapshot: eightCreditReserved.nextLedgerSnapshot,
+        signingKey: casSigningKey,
+        casState: {
+          ref: PROTECTED_WORK_QUEUE_REF,
+          oid: eightCreditReserved.nextRefOid,
+          state: eightCreditReserved.nextCasState
+        },
+        expectedRefOid: eightCreditReserved.nextRefOid,
+        admissionEvidence: {
+          ...baseAdmission(),
+          observedMs: 1200,
+          remainingIncludedUnits: 4,
+          ghAwCaps: capsOverride
+        },
+        candidate: {
+          repositoryId: 1,
+          issue: 41,
+          head: '1'.repeat(40),
+          generation: 1,
+          phase: 'in-flight',
+          workerId: 'w-41',
+          runId: 4101,
+          runAttempt: 1
+        },
+        nowMs: 1200
+      }).reason, 'GH_AW_DAILY_AI_CREDITS_EXCEEDED');
+    }
+
+    // With dailyAiCreditsUsed = 4 and runAiCreditsRequired = 1 (4 + max(8, 1) = 12 <= 12), startup succeeds!
+    const eightCreditStarted = reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: eightCreditReserved.nextLedgerSnapshot,
+      signingKey: casSigningKey,
+      casState: {
+        ref: PROTECTED_WORK_QUEUE_REF,
+        oid: eightCreditReserved.nextRefOid,
+        state: eightCreditReserved.nextCasState
+      },
+      expectedRefOid: eightCreditReserved.nextRefOid,
+      admissionEvidence: {
+        ...baseAdmission(),
+        observedMs: 1200,
+        remainingIncludedUnits: 4,
+        ghAwCaps: {
+          maxAiCredits: 10,
+          maxDailyAiCredits: 12,
+          dailyAiCreditsUsed: 4,
+          runAiCreditsRequired: 1,
+          dailyUsageIncludesReservations: false
+        }
+      },
+      candidate: {
+        repositoryId: 1,
+        issue: 41,
+        head: '1'.repeat(40),
+        generation: 1,
+        phase: 'in-flight',
+        workerId: 'w-41',
+        runId: 4101,
+        runAttempt: 1
+      },
+      nowMs: 1200
+    });
+    assert.equal(eightCreditStarted.ok, true);
+    assert.equal(eightCreditStarted.nextCasState.entries[0].lockSha256.slice(2, 10), '00000008');
+
+    // 2. Copilot 4725642599: Reject admission/startup with STALE_BILLING_OBSERVATION when observedMs predates
+    // a settled/expired charged run's terminal timestamp (both in-call transition and post-settlement snapshot/receipt/CAS).
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: eightCreditStarted.nextLedgerSnapshot,
+      signingKey: casSigningKey,
+      casState: {
+        ref: PROTECTED_WORK_QUEUE_REF,
+        oid: eightCreditStarted.nextRefOid,
+        state: eightCreditStarted.nextCasState
+      },
+      expectedRefOid: eightCreditStarted.nextRefOid,
+      admissionEvidence: {
+        ...baseAdmission(),
+        observedMs: 1000,
+        remainingIncludedUnits: 4,
+        ghAwCaps: {
+          maxAiCredits: 10,
+          maxDailyAiCredits: 12,
+          dailyAiCreditsUsed: 4,
+          runAiCreditsRequired: 8
+        }
+      },
+      observedRuns: [{
+        workId: '1:issue:41',
+        runId: 4101,
+        runAttempt: 1,
+        leaseGeneration: 1,
+        runState: 'run_terminal',
+        conclusion: 'success'
+      }],
+      candidate: {
+        repositoryId: 1,
+        issue: 42,
+        head: '2'.repeat(40),
+        generation: 3,
+        repository: 'Jamula/SoftwareFactory',
+        lane: 'lane-b',
+        ownedPaths: ['docs/b.md'],
+        workerId: 'w-42',
+        runId: 4201,
+        leaseTtlMs: 30000
+      },
+      nowMs: 2000
+    }).reason, 'STALE_BILLING_OBSERVATION');
+
+    const settled41 = reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: eightCreditStarted.nextLedgerSnapshot,
+      signingKey: casSigningKey,
+      casState: {
+        ref: PROTECTED_WORK_QUEUE_REF,
+        oid: eightCreditStarted.nextRefOid,
+        state: eightCreditStarted.nextCasState
+      },
+      expectedRefOid: eightCreditStarted.nextRefOid,
+      admissionEvidence: {...baseAdmission(), observedMs: 2000, remainingIncludedUnits: 2},
+      observedRuns: [{
+        workId: '1:issue:41',
+        runId: 4101,
+        runAttempt: 1,
+        leaseGeneration: 1,
+        runState: 'run_terminal',
+        conclusion: 'success'
+      }],
+      nowMs: 2000
+    });
+    assert.equal(settled41.ok, true);
+
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: settled41.nextLedgerSnapshot,
+      signingKey: casSigningKey,
+      casState: {
+        ref: PROTECTED_WORK_QUEUE_REF,
+        oid: settled41.nextRefOid,
+        state: settled41.nextCasState
+      },
+      expectedRefOid: settled41.nextRefOid,
+      admissionEvidence: {
+        ...baseAdmission(),
+        observedMs: 1000,
+        remainingIncludedUnits: 4,
+        ghAwCaps: {
+          maxAiCredits: 10,
+          maxDailyAiCredits: 12,
+          dailyAiCreditsUsed: 4,
+          runAiCreditsRequired: 8
+        }
+      },
+      candidate: {
+        repositoryId: 1,
+        issue: 42,
+        head: '2'.repeat(40),
+        generation: 3,
+        repository: 'Jamula/SoftwareFactory',
+        lane: 'lane-b',
+        ownedPaths: ['docs/b.md'],
+        workerId: 'w-42',
+        runId: 4201,
+        leaseTtlMs: 30000
+      },
+      nowMs: 2100
+    }).reason, 'STALE_BILLING_OBSERVATION');
+
+    // Even when receipts are empty and snapshot exportedAt <= observedMs, clamped CAS leaseExpiresAtMs > observedMs rejects:
+    const clampedTerminalCas = {
+      schemaVersion: 1,
+      protocol: 'v3',
+      sequence: 2,
+      nextGeneration: 3,
+      entries: [{
+        workId: '1:issue:41',
+        targetType: 'issue',
+        repository: 'Jamula/SoftwareFactory',
+        repositoryId: 1,
+        issueNumber: 41,
+        pullNumber: null,
+        headSha: null,
+        lane: 'lane-a',
+        ownedPaths: ['docs/a.md'],
+        status: 'completed',
+        generation: 2,
+        attempts: 1,
+        maxAttempts: 3,
+        workerId: 'w-41',
+        runId: 4101,
+        runAttempt: 1,
+        claimedAtMs: 1000,
+        leaseTtlMs: 2000,
+        leaseExpiresAtMs: 1800,
+        maxExecutionMs: 2000,
+        executionDeadlineMs: 3000
+      }],
+      recoveryReceipts: []
+    };
+    const clampedSettledSnap = signRawSnapshot(emptySnap.planSignature, 2, 1500, [
+      {repositoryId: 1, issue: 41, head: '1'.repeat(40), generation: 1, units: 2, phase: 'settled', validThrough: 2500, reservedAt: 1000}
+    ], casSigningKey, round4Plan.window);
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: clampedSettledSnap,
+      signingKey: casSigningKey,
+      casState: clampedTerminalCas,
+      expectedRefOid: computeWorkQueueStateOid(clampedTerminalCas),
+      admissionEvidence: {...baseAdmission(), observedMs: 1500, remainingIncludedUnits: 4},
+      candidate: {
+        repositoryId: 1,
+        issue: 42,
+        head: '2'.repeat(40),
+        generation: 3,
+        repository: 'Jamula/SoftwareFactory',
+        lane: 'lane-b',
+        ownedPaths: ['docs/b.md'],
+        workerId: 'w-42',
+        runId: 4201,
+        leaseTtlMs: 30000
+      },
+      nowMs: 2000
+    }).reason, 'STALE_BILLING_OBSERVATION');
+
+    // Settled rows remain permanently blocked against same-head retry (DUPLICATE_RESERVATION / STALE_LEASE_GENERATION):
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: settled41.nextLedgerSnapshot,
+      signingKey: casSigningKey,
+      casState: {
+        ref: PROTECTED_WORK_QUEUE_REF,
+        oid: settled41.nextRefOid,
+        state: settled41.nextCasState
+      },
+      expectedRefOid: settled41.nextRefOid,
+      admissionEvidence: {...baseAdmission(), observedMs: 2100, remainingIncludedUnits: 2},
+      candidate: {repositoryId: 1, issue: 41, head: '1'.repeat(40), generation: 3},
+      nowMs: 2100
+    }).reason, 'DUPLICATE_RESERVATION');
+
+    // 3. Codex 4725632829: Generation-fenced retry of 'cancelled' and 'expired' terminal rows at the SAME PR head.
+    const prHead = '7'.repeat(40);
+    const prRefStore = createInMemoryWorkQueueRefStore();
+    const prRes1 = reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: emptySnap,
+      signingKey: casSigningKey,
+      casState: prRefStore.readRef(),
+      expectedRefOid: ZERO_GIT_OID,
+      admissionEvidence: {...baseAdmission(), observedMs: 1000, remainingIncludedUnits: 2},
+      candidate: {
+        repositoryId: 1,
+        issue: 77,
+        head: prHead,
+        generation: 1,
+        targetType: 'pull_request',
+        repository: 'Jamula/SoftwareFactory',
+        lane: 'lane-pr',
+        ownedPaths: ['docs/pr.md'],
+        workerId: 'w-pr-1',
+        runId: 7701,
+        leaseTtlMs: 500
+      },
+      nowMs: 1000
+    });
+    assert.equal(prRes1.ok, true);
+    const prCommit1 = prRefStore.compareAndSwapRef({
+      ref: PROTECTED_WORK_QUEUE_REF,
+      expectedOid: ZERO_GIT_OID,
+      nextState: prRes1.nextCasState,
+      force: false
+    });
+    assert.equal(prCommit1.ok, true);
+
+    // Unstarted PR reservation expires -> 'cancelled' row + 'requeued' CAS entry at reclaimedGeneration=2, nextGeneration=3.
+    const prExpiredUnstarted = reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: prRes1.nextLedgerSnapshot,
+      signingKey: casSigningKey,
+      casState: prRefStore.readRef(),
+      expectedRefOid: prCommit1.oid,
+      admissionEvidence: {...baseAdmission(), observedMs: 2000, remainingIncludedUnits: 2},
+      nowMs: 2000
+    });
+    assert.equal(prExpiredUnstarted.ok, true);
+    assert.equal(prExpiredUnstarted.nextLedgerSnapshot.reservations[0].phase, 'cancelled');
+    const prCommit2 = prRefStore.compareAndSwapRef({
+      ref: PROTECTED_WORK_QUEUE_REF,
+      expectedOid: prCommit1.oid,
+      nextState: prExpiredUnstarted.nextCasState,
+      force: false
+    });
+    assert.equal(prCommit2.ok, true);
+
+    // Stale generations (<= reclaimedGeneration) fail closed with STALE_LEASE_GENERATION:
+    for (const staleGen of [1, 2]) {
+      assert.equal(reconcileLedgerWithWorkQueueCas({
+        ledgerSnapshot: prExpiredUnstarted.nextLedgerSnapshot,
+        signingKey: casSigningKey,
+        casState: prRefStore.readRef(),
+        expectedRefOid: prCommit2.oid,
+        admissionEvidence: {...baseAdmission(), observedMs: 2100, remainingIncludedUnits: 2},
+        candidate: {repositoryId: 1, issue: 77, head: prHead, generation: staleGen, targetType: 'pull_request'},
+        nowMs: 2100
+      }).reason, 'STALE_LEASE_GENERATION');
+    }
+
+    // Fenced retry at the SAME PR head with nextGeneration=3 replaces row in place and commits cleanly to CAS!
+    const prSameHeadRetry = reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: prExpiredUnstarted.nextLedgerSnapshot,
+      signingKey: casSigningKey,
+      casState: prRefStore.readRef(),
+      expectedRefOid: prCommit2.oid,
+      admissionEvidence: {...baseAdmission(), observedMs: 2100, remainingIncludedUnits: 2},
+      candidate: {
+        repositoryId: 1,
+        issue: 77,
+        head: prHead,
+        generation: 3,
+        targetType: 'pull_request',
+        phase: 'in-flight',
+        repository: 'Jamula/SoftwareFactory',
+        lane: 'lane-pr',
+        ownedPaths: ['docs/pr.md'],
+        workerId: 'w-pr-2',
+        runId: 7702,
+        leaseTtlMs: 30000
+      },
+      nowMs: 2100
+    });
+    assert.equal(prSameHeadRetry.ok, true);
+    assert.equal(prSameHeadRetry.nextLedgerSnapshot.reservations.length, 1);
+    assert.equal(prSameHeadRetry.nextLedgerSnapshot.reservations[0].generation, 3);
+    assert.equal(prSameHeadRetry.nextLedgerSnapshot.reservations[0].phase, 'in-flight');
+    assert.equal(prSameHeadRetry.reconciledActions[0].fromPhase, 'cancelled');
+    assert.equal(verifySignedLedgerSnapshot(prSameHeadRetry.nextLedgerSnapshot, {
+      signingKey: casSigningKey,
+      nowMs: 2100
+    }).ok, true);
+    const prCommit3 = prRefStore.compareAndSwapRef({
+      ref: PROTECTED_WORK_QUEUE_REF,
+      expectedOid: prCommit2.oid,
+      nextState: prSameHeadRetry.nextCasState,
+      force: false
+    });
+    assert.equal(prCommit3.ok, true);
+
+    // Started 'in-flight' PR run crashes -> 'expired' row preserves its 2 charged units against cumulative includedUnits!
+    const prCrashed = reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: prSameHeadRetry.nextLedgerSnapshot,
+      signingKey: casSigningKey,
+      casState: prRefStore.readRef(),
+      expectedRefOid: prCommit3.oid,
+      admissionEvidence: {...baseAdmission(), observedMs: 2500, remainingIncludedUnits: 2},
+      observedRuns: [{
+        workId: `1:pr:77:${prHead}`,
+        runId: 7702,
+        runAttempt: 1,
+        leaseGeneration: 3,
+        runState: 'worker_terminated'
+      }],
+      nowMs: 2500
+    });
+    assert.equal(prCrashed.ok, true);
+    assert.equal(prCrashed.nextLedgerSnapshot.reservations[0].phase, 'expired');
+    const prCommit4 = prRefStore.compareAndSwapRef({
+      ref: PROTECTED_WORK_QUEUE_REF,
+      expectedOid: prCommit3.oid,
+      nextState: prCrashed.nextCasState,
+      force: false
+    });
+    assert.equal(prCommit4.ok, true);
+
+    // Under a 2-unit plan, retrying after an 'expired' charged attempt fails closed with CAPACITY_EXHAUSTED (2 + 2 > 2);
+    // under round4Plan (includedUnits = 4), retrying at generation=5 succeeds (2 + 2 <= 4) and settles cleanly!
+    const twoOnlyLedger = openShadowDispatchLedger(':memory:', {...round4Plan, includedUnits: 2});
+    try {
+      const twoOnlySnap = signRawSnapshot(
+        twoOnlyLedger.exportSnapshot({signingKey: casSigningKey, now: 2500}).snapshot.planSignature,
+        2,
+        2500,
+        [{repositoryId: 1, issue: 77, head: prHead, generation: 1, units: 2, phase: 'expired', validThrough: 2400, reservedAt: 1000}],
+        casSigningKey,
+        round4Plan.window
+      );
+      const oneCrashCas = {
+        schemaVersion: 1,
+        protocol: 'v3',
+        sequence: 2,
+        nextGeneration: 3,
+        entries: [{
+          workId: `1:pr:77:${prHead}`,
+          targetType: 'pull_request',
+          repository: 'Jamula/SoftwareFactory',
+          repositoryId: 1,
+          issueNumber: null,
+          pullNumber: 77,
+          headSha: prHead,
+          lane: 'lane-pr',
+          ownedPaths: ['docs/pr.md'],
+          status: 'requeued',
+          generation: 2,
+          attempts: 1,
+          maxAttempts: 3,
+          workerId: 'w-pr-1',
+          runId: 7701,
+          runAttempt: 1,
+          claimedAtMs: 1000,
+          leaseTtlMs: 1400,
+          leaseExpiresAtMs: 2400,
+          maxExecutionMs: 1400,
+          executionDeadlineMs: 2400
+        }],
+        recoveryReceipts: []
+      };
+      assert.equal(reconcileLedgerWithWorkQueueCas({
+        ledgerSnapshot: twoOnlySnap,
+        signingKey: casSigningKey,
+        casState: oneCrashCas,
+        expectedRefOid: computeWorkQueueStateOid(oneCrashCas),
+        admissionEvidence: {...baseAdmission(), observedMs: 2600, remainingIncludedUnits: 2},
+        candidate: {
+          repositoryId: 1,
+          issue: 77,
+          head: prHead,
+          generation: 3,
+          targetType: 'pull_request',
+          repository: 'Jamula/SoftwareFactory',
+          lane: 'lane-pr',
+          ownedPaths: ['docs/pr.md'],
+          workerId: 'w-pr-2',
+          runId: 7702,
+          leaseTtlMs: 30000
+        },
+        nowMs: 2600
+      }).reason, 'CAPACITY_EXHAUSTED');
+
+      const fourCapExpiredSnap = signRawSnapshot(
+        emptySnap.planSignature,
+        2,
+        2500,
+        [{repositoryId: 1, issue: 77, head: prHead, generation: 1, units: 2, phase: 'expired', validThrough: 2400, reservedAt: 1000}],
+        casSigningKey,
+        round4Plan.window
+      );
+      const prExpiredRetry = reconcileLedgerWithWorkQueueCas({
+        ledgerSnapshot: fourCapExpiredSnap,
+        signingKey: casSigningKey,
+        casState: oneCrashCas,
+        expectedRefOid: computeWorkQueueStateOid(oneCrashCas),
+        admissionEvidence: {...baseAdmission(), observedMs: 2600, remainingIncludedUnits: 2},
+        candidate: {
+          repositoryId: 1,
+          issue: 77,
+          head: prHead,
+          generation: 3,
+          targetType: 'pull_request',
+          phase: 'in-flight',
+          repository: 'Jamula/SoftwareFactory',
+          lane: 'lane-pr',
+          ownedPaths: ['docs/pr.md'],
+          workerId: 'w-pr-2',
+          runId: 7702,
+          leaseTtlMs: 30000
+        },
+        nowMs: 2600
+      });
+      assert.equal(prExpiredRetry.ok, true);
+      assert.equal(prExpiredRetry.reconciledActions[0].fromPhase, 'expired');
+
+      // Follow-up peer admission after same-head expired retry preserves collapsed 2-unit charge (2 + 2 = 4 -> 3rd 2-unit run exceeds 4)!
+      assert.equal(reconcileLedgerWithWorkQueueCas({
+        ledgerSnapshot: prExpiredRetry.nextLedgerSnapshot,
+        signingKey: casSigningKey,
+        casState: {
+          ref: PROTECTED_WORK_QUEUE_REF,
+          oid: prExpiredRetry.nextRefOid,
+          state: prExpiredRetry.nextCasState
+        },
+        expectedRefOid: prExpiredRetry.nextRefOid,
+        admissionEvidence: {...baseAdmission(), observedMs: 2700, remainingIncludedUnits: 4},
+        candidate: {
+          repositoryId: 1,
+          issue: 78,
+          head: '8'.repeat(40),
+          generation: 4,
+          repository: 'Jamula/SoftwareFactory',
+          lane: 'lane-docs',
+          ownedPaths: ['docs/ROADMAP.md'],
+          workerId: 'w-pr-3',
+          runId: 7703,
+          leaseTtlMs: 30000
+        },
+        nowMs: 2700
+      }).reason, 'CAPACITY_EXHAUSTED');
+    } finally {
+      twoOnlyLedger.close();
+    }
+
+    // 4. Copilot 4725642578: Reject cross-repository entries, archivedTerminal items, and recoveryReceipts
+    // with CROSS_REPO_CAS_STATE_REJECTED.
+    const baseEmptyCas = {
+      schemaVersion: 1,
+      protocol: 'v3',
+      sequence: 1,
+      nextGeneration: 3,
+      entries: [],
+      recoveryReceipts: []
+    };
+    const crossRepoReceipt = {
+      workId: '2:issue:10',
+      repositoryId: 2,
+      targetType: 'issue',
+      runState: 'lease_expired',
+      conclusion: null,
+      previousRunId: 1,
+      previousRunAttempt: 1,
+      previousGeneration: 1,
+      reclaimedGeneration: 2,
+      attempts: 1,
+      maxAttempts: 3,
+      outcome: 'requeued',
+      reclaimedAtMs: 500
+    };
+    for (const crossRepoCas of [
+      {...baseEmptyCas, archivedTerminal: [{workId: '2:issue:10', status: 'completed'}]},
+      {...baseEmptyCas, recoveryReceipts: [crossRepoReceipt]}
+    ]) {
+      assert.equal(reconcileLedgerWithWorkQueueCas({
+        ledgerSnapshot: emptySnap,
+        signingKey: casSigningKey,
+        casState: crossRepoCas,
+        expectedRefOid: computeWorkQueueStateOid(crossRepoCas),
+        admissionEvidence: {...baseAdmission(), observedMs: 1000, remainingIncludedUnits: 4},
+        nowMs: 1000
+      }).reason, 'CROSS_REPO_CAS_STATE_REJECTED');
+    }
+
+    // 5. Copilot 4725642560: External compaction mutating archivedTerminal while a peer checkpoint lock survives
+    // fails closed with COMPACTED_ARCHIVE_CHECKPOINT_MISMATCH!
+    const externallyCompactedCas = {
+      ...eightCreditReserved.nextCasState,
+      sequence: eightCreditReserved.nextCasState.sequence + 1,
+      archivedTerminal: [{workId: '1:issue:99', status: 'completed'}]
+    };
+    assert.equal(reconcileLedgerWithWorkQueueCas({
+      ledgerSnapshot: eightCreditReserved.nextLedgerSnapshot,
+      signingKey: casSigningKey,
+      casState: externallyCompactedCas,
+      expectedRefOid: computeWorkQueueStateOid(externallyCompactedCas),
+      admissionEvidence: {...baseAdmission(), observedMs: 1000, remainingIncludedUnits: 4},
+      nowMs: 1000
+    }).reason, 'COMPACTED_ARCHIVE_CHECKPOINT_MISMATCH');
+
+    // 6. Copilot 4725642584: Evicting cancelled 1:issue:77 on headA alongside completed 1:pr:77:<headB>
+    // excludes headB's PR charge from archived issue totals so the next audit succeeds!
+    const bigCapLedger = openShadowDispatchLedger(':memory:', {...round4Plan, includedUnits: 600});
+    try {
+      const bigCapSig = bigCapLedger.exportSnapshot({signingKey: casSigningKey, now: 1000}).snapshot.planSignature;
+      const headA = '1'.repeat(40);
+      const headB = '2'.repeat(40);
+      const mixedIssuePr250 = [
+        {
+          workId: '1:issue:77',
+          targetType: 'issue',
+          repository: 'Jamula/SoftwareFactory',
+          repositoryId: 1,
+          issueNumber: 77,
+          pullNumber: null,
+          headSha: null,
+          lane: 'lane-issue-77',
+          ownedPaths: ['docs/i77.md'],
+          status: 'cancelled',
+          generation: 1,
+          attempts: 1,
+          maxAttempts: 3,
+          workerId: 'w-i77',
+          runId: 771,
+          runAttempt: 1,
+          claimedAtMs: 500,
+          leaseTtlMs: 100,
+          leaseExpiresAtMs: 600,
+          maxExecutionMs: 100,
+          executionDeadlineMs: 600
+        },
+        {
+          workId: `1:pr:77:${headB}`,
+          targetType: 'pull_request',
+          repository: 'Jamula/SoftwareFactory',
+          repositoryId: 1,
+          issueNumber: null,
+          pullNumber: 77,
+          headSha: headB,
+          lane: 'lane-pr-77',
+          ownedPaths: ['docs/pr77.md'],
+          status: 'completed',
+          generation: 2,
+          attempts: 1,
+          maxAttempts: 3,
+          workerId: 'w-pr77',
+          runId: 772,
+          runAttempt: 1,
+          claimedAtMs: 500,
+          leaseTtlMs: 100,
+          leaseExpiresAtMs: 600,
+          maxExecutionMs: 100,
+          executionDeadlineMs: 600
+        },
+        ...Array.from({length: 248}, (_, idx) => ({
+          workId: `1:issue:${100 + idx}`,
+          targetType: 'issue',
+          repository: 'Jamula/SoftwareFactory',
+          repositoryId: 1,
+          issueNumber: 100 + idx,
+          pullNumber: null,
+          headSha: null,
+          lane: `lane-f-${idx}`,
+          ownedPaths: [`docs/f-${idx}.md`],
+          status: 'completed',
+          generation: idx + 3,
+          attempts: 1,
+          maxAttempts: 3,
+          workerId: 'w-f',
+          runId: 800 + idx,
+          runAttempt: 1,
+          claimedAtMs: 500,
+          leaseTtlMs: 100,
+          leaseExpiresAtMs: 600,
+          maxExecutionMs: 100,
+          executionDeadlineMs: 600
+        }))
+      ];
+      const mixedRows = [
+        {repositoryId: 1, issue: 77, head: headA, generation: 1, units: 2, phase: 'cancelled', validThrough: 600, reservedAt: 500},
+        {repositoryId: 1, issue: 77, head: headB, generation: 2, units: 2, phase: 'settled', validThrough: 600, reservedAt: 500},
+        ...Array.from({length: 248}, (_, idx) => ({
+          repositoryId: 1,
+          issue: 100 + idx,
+          head: 'a'.repeat(40),
+          generation: idx + 3,
+          units: 2,
+          phase: 'settled',
+          validThrough: 600,
+          reservedAt: 500
+        }))
+      ];
+      const mixedSnap = signRawSnapshot(bigCapSig, 2, 1000, mixedRows, casSigningKey, round4Plan.window);
+      const mixedStore = createInMemoryWorkQueueRefStore({
+        schemaVersion: 1,
+        protocol: 'v3',
+        sequence: 5,
+        nextGeneration: 251,
+        entries: mixedIssuePr250,
+        recoveryReceipts: []
+      });
+      const mixedCompact = reconcileLedgerWithWorkQueueCas({
+        ledgerSnapshot: mixedSnap,
+        signingKey: casSigningKey,
+        casState: mixedStore.readRef(),
+        expectedRefOid: mixedStore.readRef().oid,
+        admissionEvidence: {...baseAdmission(), observedMs: 1000, remainingIncludedUnits: 100},
+        candidate: {
+          repositoryId: 1,
+          issue: 800,
+          head: 'd'.repeat(40),
+          generation: 251,
+          repository: 'Jamula/SoftwareFactory',
+          lane: 'lane-ledger',
+          ownedPaths: ['tools/engineering-factory/shadow-dispatch-ledger.mjs'],
+          workerId: 'w-800',
+          runId: 9800,
+          leaseTtlMs: 30000
+        },
+        nowMs: 1000
+      });
+      assert.equal(mixedCompact.ok, true);
+      const mixedCommit = mixedStore.compareAndSwapRef({
+        ref: PROTECTED_WORK_QUEUE_REF,
+        expectedOid: mixedStore.readRef().oid,
+        nextState: mixedCompact.nextCasState,
+        force: false
+      });
+      assert.equal(mixedCommit.ok, true);
+
+      const mixedNext = reconcileLedgerWithWorkQueueCas({
+        ledgerSnapshot: mixedCompact.nextLedgerSnapshot,
+        signingKey: casSigningKey,
+        casState: mixedStore.readRef(),
+        expectedRefOid: mixedCommit.oid,
+        admissionEvidence: {...baseAdmission(), observedMs: 1200, remainingIncludedUnits: 100},
+        candidate: {
+          repositoryId: 1,
+          issue: 801,
+          head: 'e'.repeat(40),
+          generation: 252,
+          repository: 'Jamula/SoftwareFactory',
+          lane: 'lane-docs',
+          ownedPaths: ['docs/ROADMAP.md'],
+          workerId: 'w-801',
+          runId: 9801,
+          leaseTtlMs: 30000
+        },
+        nowMs: 1200
+      });
+      assert.equal(mixedNext.ok, true);
+
+      // 8. Round 5A (4725713119): externally pre-claimed gen-2 issue lease without checkpoint
+      // must NOT be satisfied by a cancelled gen-1 ledger row on the same issue.
+      const tightPlan = {...round4Plan, includedUnits: 2, unitsPerRun: 2};
+      const tightLedger = openShadowDispatchLedger(':memory:', tightPlan);
+      try {
+        const tightSig = tightLedger.exportSnapshot({
+          signingKey: casSigningKey,
+          now: 1000
+        }).snapshot.planSignature;
+        const gen1CancelledSnap = signRawSnapshot(
+          tightSig,
+          2,
+          1000,
+          [
+            {
+              repositoryId: 1,
+              issue: 10,
+              head: headA,
+              generation: 1,
+              units: 2,
+              phase: 'cancelled',
+              validThrough: 600,
+              reservedAt: 500
+            }
+          ],
+          casSigningKey,
+          tightPlan.window
+        );
+        const extActiveGen2State = {
+          schemaVersion: 1,
+          protocol: 'v3',
+          sequence: 2,
+          nextGeneration: 3,
+          entries: [
+            {
+              workId: '1:issue:10',
+              targetType: 'issue',
+              repository: 'Jamula/SoftwareFactory',
+              repositoryId: 1,
+              issueNumber: 10,
+              pullNumber: null,
+              headSha: null,
+              lane: 'lane-peer',
+              ownedPaths: ['docs/ROADMAP.md'],
+              status: 'leased',
+              generation: 2,
+              attempts: 1,
+              maxAttempts: 3,
+              workerId: 'w-ext',
+              runId: 5010,
+              runAttempt: 1,
+              claimedAtMs: 900,
+              leaseTtlMs: 30000,
+              leaseExpiresAtMs: 30900,
+              maxExecutionMs: 30000,
+              executionDeadlineMs: 30900
+            }
+          ],
+          recoveryReceipts: []
+        };
+        const overAdmitAttempt = reconcileLedgerWithWorkQueueCas({
+          ledgerSnapshot: gen1CancelledSnap,
+          signingKey: casSigningKey,
+          casState: extActiveGen2State,
+          expectedRefOid: computeWorkQueueStateOid(extActiveGen2State),
+          admissionEvidence: {...baseAdmission(), observedMs: 1000, remainingIncludedUnits: 2},
+          candidate: {
+            repositoryId: 1,
+            issue: 11,
+            head: headB,
+            generation: 3,
+            repository: 'Jamula/SoftwareFactory',
+            lane: 'lane-ledger',
+            ownedPaths: ['tools/engineering-factory/shadow-dispatch-ledger.mjs'],
+            workerId: 'w-11',
+            runId: 5011,
+            leaseTtlMs: 30000
+          },
+          nowMs: 1000
+        });
+        assert.equal(overAdmitAttempt.ok, false);
+        assert.equal(overAdmitAttempt.reason, 'STALE_OR_INCOMPLETE_LEDGER');
+      } finally {
+        tightLedger.close();
+      }
+
+      // 9. Round 5B (4725770554): expired attempt retried at the SAME head, settled, and
+      // compacted into archivedTerminal must admit the next candidate cleanly while preserving
+      // both charges (4 units total across the expired + settled runs).
+      const retryCompactEntries = [
+        {
+          workId: '1:issue:90',
+          targetType: 'issue',
+          repository: 'Jamula/SoftwareFactory',
+          repositoryId: 1,
+          issueNumber: 90,
+          pullNumber: null,
+          headSha: null,
+          lane: 'lane-90',
+          ownedPaths: ['docs/r90.md'],
+          status: 'requeued',
+          generation: 1,
+          attempts: 1,
+          maxAttempts: 3,
+          workerId: 'w-90a',
+          runId: 6090,
+          runAttempt: 1,
+          claimedAtMs: 200,
+          leaseTtlMs: 100,
+          leaseExpiresAtMs: 300,
+          maxExecutionMs: 100,
+          executionDeadlineMs: 300
+        },
+        ...Array.from({length: 249}, (_, idx) => ({
+          workId: `1:issue:${200 + idx}`,
+          targetType: 'issue',
+          repository: 'Jamula/SoftwareFactory',
+          repositoryId: 1,
+          issueNumber: 200 + idx,
+          pullNumber: null,
+          headSha: null,
+          lane: `lane-c-${idx}`,
+          ownedPaths: [`docs/c-${idx}.md`],
+          status: 'completed',
+          generation: idx + 2,
+          attempts: 1,
+          maxAttempts: 3,
+          workerId: 'w-c',
+          runId: 6200 + idx,
+          runAttempt: 1,
+          claimedAtMs: 400,
+          leaseTtlMs: 100,
+          leaseExpiresAtMs: 500,
+          maxExecutionMs: 100,
+          executionDeadlineMs: 500
+        }))
+      ];
+      const retryCompactRows = [
+        {
+          repositoryId: 1,
+          issue: 90,
+          head: headA,
+          generation: 1,
+          units: 2,
+          phase: 'expired',
+          validThrough: 300,
+          reservedAt: 200
+        },
+        ...Array.from({length: 249}, (_, idx) => ({
+          repositoryId: 1,
+          issue: 200 + idx,
+          head: headB,
+          generation: idx + 2,
+          units: 2,
+          phase: 'settled',
+          validThrough: 500,
+          reservedAt: 400
+        }))
+      ];
+      const compact506Ledger = openShadowDispatchLedger(':memory:', {
+        ...round4Plan,
+        includedUnits: 506
+      });
+      let compact506Sig;
+      try {
+        compact506Sig = compact506Ledger.exportSnapshot({
+          signingKey: casSigningKey,
+          now: 1000
+        }).snapshot.planSignature;
+      } finally {
+        compact506Ledger.close();
+      }
+      const retryBaseSnap = signRawSnapshot(
+        compact506Sig,
+        2,
+        1000,
+        retryCompactRows,
+        casSigningKey,
+        round4Plan.window
+      );
+      const retryStore = createInMemoryWorkQueueRefStore({
+        schemaVersion: 1,
+        protocol: 'v3',
+        sequence: 5,
+        nextGeneration: 251,
+        entries: retryCompactEntries,
+        recoveryReceipts: []
+      });
+      // Step 1: retry issue 90 at the SAME headA (overwriting expired gen-1 row -> retryCharged = 1)
+      const sameHeadRetry = reconcileLedgerWithWorkQueueCas({
+        ledgerSnapshot: retryBaseSnap,
+        signingKey: casSigningKey,
+        casState: retryStore.readRef(),
+        expectedRefOid: retryStore.readRef().oid,
+        admissionEvidence: {...baseAdmission(), observedMs: 1000, remainingIncludedUnits: 500},
+        candidate: {
+          repositoryId: 1,
+          issue: 90,
+          head: headA,
+          generation: 251,
+          repository: 'Jamula/SoftwareFactory',
+          lane: 'lane-90',
+          ownedPaths: ['docs/r90.md'],
+          workerId: 'w-90b',
+          runId: 6990,
+          leaseTtlMs: 30000
+        },
+        nowMs: 1000
+      });
+      assert.equal(sameHeadRetry.ok, true);
+      assert.equal(
+        retryStore.compareAndSwapRef({
+          ref: PROTECTED_WORK_QUEUE_REF,
+          expectedOid: retryStore.readRef().oid,
+          nextState: sameHeadRetry.nextCasState,
+          force: false
+        }).ok,
+        true
+      );
+      // Step 1b: advance issue 90 from reserved -> in-flight so completion charges 2 units
+      const startRetry90 = reconcileLedgerWithWorkQueueCas({
+        ledgerSnapshot: sameHeadRetry.nextLedgerSnapshot,
+        signingKey: casSigningKey,
+        casState: retryStore.readRef(),
+        expectedRefOid: retryStore.readRef().oid,
+        admissionEvidence: {...baseAdmission(), observedMs: 1100, remainingIncludedUnits: 500},
+        candidate: {
+          repositoryId: 1,
+          issue: 90,
+          head: headA,
+          generation: 251,
+          phase: 'in-flight',
+          repository: 'Jamula/SoftwareFactory',
+          lane: 'lane-90',
+          ownedPaths: ['docs/r90.md'],
+          workerId: 'w-90b',
+          runId: 6990,
+          runAttempt: 1
+        },
+        nowMs: 1100
+      });
+      assert.equal(startRetry90.ok, true);
+      assert.equal(
+        retryStore.compareAndSwapRef({
+          ref: PROTECTED_WORK_QUEUE_REF,
+          expectedOid: retryStore.readRef().oid,
+          nextState: startRetry90.nextCasState,
+          force: false
+        }).ok,
+        true
+      );
+      // Step 1c: passively settle issue 90 via observedRuns at t=1150 before fresh billing observation at t=1200
+      const settle90 = reconcileLedgerWithWorkQueueCas({
+        ledgerSnapshot: startRetry90.nextLedgerSnapshot,
+        signingKey: casSigningKey,
+        casState: retryStore.readRef(),
+        expectedRefOid: retryStore.readRef().oid,
+        admissionEvidence: {...baseAdmission(), observedMs: 1150, remainingIncludedUnits: 500},
+        observedRuns: [
+          {
+            workId: '1:issue:90',
+            runId: 6990,
+            runAttempt: 1,
+            leaseGeneration: 251,
+            runState: 'run_terminal',
+            conclusion: 'success'
+          }
+        ],
+        nowMs: 1150
+      });
+      assert.equal(settle90.ok, true);
+      assert.equal(
+        retryStore.compareAndSwapRef({
+          ref: PROTECTED_WORK_QUEUE_REF,
+          expectedOid: retryStore.readRef().oid,
+          nextState: settle90.nextCasState,
+          force: false
+        }).ok,
+        true
+      );
+      // Step 2: admit issue 902 at t=1200, compacting completed issue 90 (index 0) into archivedTerminal
+      const compact90 = reconcileLedgerWithWorkQueueCas({
+        ledgerSnapshot: settle90.nextLedgerSnapshot,
+        signingKey: casSigningKey,
+        casState: retryStore.readRef(),
+        expectedRefOid: retryStore.readRef().oid,
+        admissionEvidence: {...baseAdmission(), observedMs: 1200, remainingIncludedUnits: 500},
+        candidate: {
+          repositoryId: 1,
+          issue: 902,
+          head: 'd'.repeat(40),
+          generation: 253,
+          repository: 'Jamula/SoftwareFactory',
+          lane: 'lane-docs',
+          ownedPaths: ['docs/ROADMAP.md'],
+          workerId: 'w-902',
+          runId: 6902,
+          leaseTtlMs: 30000
+        },
+        nowMs: 1200
+      });
+      assert.equal(compact90.ok, true);
+      assert.equal(
+        compact90.nextCasState.archivedTerminal.some(a => a.workId === '1:issue:90'),
+        true
+      );
+      assert.equal(
+        retryStore.compareAndSwapRef({
+          ref: PROTECTED_WORK_QUEUE_REF,
+          expectedOid: retryStore.readRef().oid,
+          nextState: compact90.nextCasState,
+          force: false
+        }).ok,
+        true
+      );
+      // Step 3: next admission after issue 90 is archived MUST succeed at exact 506/506 units,
+      // and a 508th unit MUST fail CAPACITY_EXHAUSTED (proving both charges on issue 90 survived!)
+      const postCompact90 = reconcileLedgerWithWorkQueueCas({
+        ledgerSnapshot: compact90.nextLedgerSnapshot,
+        signingKey: casSigningKey,
+        casState: retryStore.readRef(),
+        expectedRefOid: retryStore.readRef().oid,
+        admissionEvidence: {...baseAdmission(), observedMs: 1300, remainingIncludedUnits: 500},
+        candidate: {
+          repositoryId: 1,
+          issue: 903,
+          head: 'e'.repeat(40),
+          generation: 254,
+          repository: 'Jamula/SoftwareFactory',
+          lane: 'lane-queue',
+          ownedPaths: ['tools/engineering-coordinator/work-queue-cas.mjs'],
+          workerId: 'w-903',
+          runId: 6903,
+          leaseTtlMs: 30000
+        },
+        nowMs: 1300
+      });
+      assert.equal(postCompact90.ok, true);
+      assert.equal(
+        retryStore.compareAndSwapRef({
+          ref: PROTECTED_WORK_QUEUE_REF,
+          expectedOid: retryStore.readRef().oid,
+          nextState: postCompact90.nextCasState,
+          force: false
+        }).ok,
+        true
+      );
+      const over506 = reconcileLedgerWithWorkQueueCas({
+        ledgerSnapshot: postCompact90.nextLedgerSnapshot,
+        signingKey: casSigningKey,
+        casState: retryStore.readRef(),
+        expectedRefOid: retryStore.readRef().oid,
+        admissionEvidence: {...baseAdmission(), observedMs: 1400, remainingIncludedUnits: 500},
+        candidate: {
+          repositoryId: 1,
+          issue: 904,
+          head: 'f'.repeat(40),
+          generation: 255,
+          repository: 'Jamula/SoftwareFactory',
+          lane: 'lane-extra',
+          ownedPaths: ['docs/LOCAL-DEVELOPMENT.md'],
+          workerId: 'w-904',
+          runId: 6904,
+          leaseTtlMs: 30000
+        },
+        nowMs: 1400
+      });
+      assert.equal(over506.ok, false);
+      assert.equal(over506.reason, 'CAPACITY_EXHAUSTED');
+
+      // 10. Round 5C (4725770575): >255 overwritten retries across 250 entries stay valid 64-char
+      // hex locks accepted by createInMemoryWorkQueueRefStore, and >0xffff fails closed cleanly.
+      const hugeCapLedger = openShadowDispatchLedger(':memory:', {
+        ...round4Plan,
+        includedUnits: 100000,
+        unitsPerRun: 1
+      });
+      try {
+        const hugeSig = hugeCapLedger.exportSnapshot({
+          signingKey: casSigningKey,
+          now: 1000
+        }).snapshot.planSignature;
+        const highRetryEntries = Array.from({length: 130}, (_, idx) => ({
+          workId: `1:issue:${1000 + idx}`,
+          targetType: 'issue',
+          repository: 'Jamula/SoftwareFactory',
+          repositoryId: 1,
+          issueNumber: 1000 + idx,
+          pullNumber: null,
+          headSha: null,
+          lane: `lane-hr-${idx}`,
+          ownedPaths: [`docs/hr-${idx}.md`],
+          status: idx === 0 ? 'leased' : idx === 1 ? 'requeued' : 'completed',
+          generation: idx + 10,
+          attempts: idx === 0 ? 1 : 3,
+          maxAttempts: 5,
+          workerId: `w-hr-${idx}`,
+          runId: 8000 + idx,
+          runAttempt: 1,
+          claimedAtMs: 500,
+          leaseTtlMs: idx === 0 ? 30000 : 100,
+          leaseExpiresAtMs: idx === 0 ? 30500 : 600,
+          maxExecutionMs: idx === 0 ? 30000 : 100,
+          executionDeadlineMs: idx === 0 ? 30500 : 600
+        }));
+        const highRetryRows = Array.from({length: 130}, (_, idx) => ({
+          repositoryId: 1,
+          issue: 1000 + idx,
+          head: headA,
+          generation: idx + 10,
+          units: 1,
+          phase: idx === 0 ? 'reserved' : idx === 1 ? 'expired' : 'settled',
+          validThrough: idx === 0 ? 30500 : 600,
+          reservedAt: 500
+        }));
+        const highRetrySnap = signRawSnapshot(
+          hugeSig,
+          2,
+          1000,
+          highRetryRows,
+          casSigningKey,
+          round4Plan.window
+        );
+        const hrLedgerTag14 = createHash('sha256')
+          .update(`sf-cas-checkpoint:v1:${highRetrySnap.digest}`, 'utf8')
+          .digest('hex')
+          .slice(0, 14);
+        const hrArchiveTag14 = createHash('sha256')
+          .update('sf-cas-archive:v1:[]', 'utf8')
+          .digest('hex')
+          .slice(0, 14);
+        const hrHeadTag14 = computeReservationHeadLock(1, 1000, headA, 10).slice(2, 16);
+        // 129 entries * 2 overwritten attempts each = 258 (0x0102 > 255!)
+        highRetryEntries[0].lockSha256 =
+          `c100000000000001020102${hrHeadTag14}${hrArchiveTag14}${hrLedgerTag14}`;
+        const hrStore = createInMemoryWorkQueueRefStore({
+          schemaVersion: 1,
+          protocol: 'v3',
+          sequence: 3,
+          nextGeneration: 500,
+          entries: highRetryEntries,
+          recoveryReceipts: []
+        });
+        const hrResult = reconcileLedgerWithWorkQueueCas({
+          ledgerSnapshot: highRetrySnap,
+          signingKey: casSigningKey,
+          casState: hrStore.readRef(),
+          expectedRefOid: hrStore.readRef().oid,
+          admissionEvidence: {...baseAdmission(), observedMs: 1000, remainingIncludedUnits: 500},
+          candidate: {
+            repositoryId: 1,
+            issue: 1001,
+            head: headA,
+            generation: 500,
+            repository: 'Jamula/SoftwareFactory',
+            lane: 'lane-hr-1',
+            ownedPaths: ['docs/hr-1.md'],
+            workerId: 'w-hr-retry',
+            runId: 8999,
+            leaseTtlMs: 30000
+          },
+          nowMs: 1000
+        });
+        assert.equal(hrResult.ok, true);
+        for (const entry of hrResult.nextCasState.entries) {
+          if (entry.lockSha256 !== undefined) {
+            assert.equal(entry.lockSha256.length, 64);
+          }
+        }
+        assert.equal(
+          hrStore.compareAndSwapRef({
+            ref: PROTECTED_WORK_QUEUE_REF,
+            expectedOid: hrStore.readRef().oid,
+            nextState: hrResult.nextCasState,
+            force: false
+          }).ok,
+          true
+        );
+
+        // Overflow guard (> 0xffff) fails closed with ARCHIVE_CAPACITY_EXHAUSTED
+        const maxOverflowEntries = highRetryEntries.map((e, idx) =>
+          idx === 0
+            ? {...e, lockSha256: `c10000000000000102ffff${hrHeadTag14}${hrArchiveTag14}${hrLedgerTag14}`}
+            : {...e}
+        );
+        const overflowCas = {
+          schemaVersion: 1,
+          protocol: 'v3',
+          sequence: 3,
+          nextGeneration: 500,
+          entries: maxOverflowEntries,
+          recoveryReceipts: []
+        };
+        const overflowRes = reconcileLedgerWithWorkQueueCas({
+          ledgerSnapshot: highRetrySnap,
+          signingKey: casSigningKey,
+          casState: overflowCas,
+          expectedRefOid: computeWorkQueueStateOid(overflowCas),
+          admissionEvidence: {...baseAdmission(), observedMs: 1000, remainingIncludedUnits: 500},
+          candidate: {
+            repositoryId: 1,
+            issue: 1001,
+            head: headA,
+            generation: 500,
+            repository: 'Jamula/SoftwareFactory',
+            lane: 'lane-hr-1',
+            ownedPaths: ['docs/hr-1.md'],
+            workerId: 'w-hr-retry',
+            runId: 8999,
+            leaseTtlMs: 30000
+          },
+          nowMs: 1000
+        });
+        assert.equal(overflowRes.ok, false);
+        assert.equal(overflowRes.reason, 'ARCHIVE_CAPACITY_EXHAUSTED');
+      } finally {
+        hugeCapLedger.close();
+      }
+    } finally {
+      bigCapLedger.close();
+    }
+  } finally {
+    ledger.close();
   }
 });
