@@ -2110,41 +2110,87 @@ test('evaluateKaizenCohortReadout binds 100% 9-link provenance, human-approved p
   assert.equal(kmRollback.valid, true);
   assert.equal(kmRollback.revertCandidateSpec.scope, 'knowledge-map');
 
-  // Regression with inline provenanceChain, billed-spend regression, and contract-touching proposal propagates requiresHumanApproval: true
+  // Equal nonzero routineHumanInterventions (1 -> 1) with cycle-time improvement keeps liveCohortVerified: false and issue137ReadyToClose: false
+  const liveWithRoutineTouch = evaluateKaizenCohortReadout(buildValidReadoutInput({
+    evaluatedHeadSha: '9'.repeat(40),
+    evidenceMode: 'live-autonomous-cohort',
+    liveAutonomousOutcomesCount: 5,
+    auditChains: liveChains,
+    cohortInput: {
+      beforeCohort: buildBaselineCohort({
+        windowStartMs: 90_000,
+        windowEndMs: 190_000,
+        acceptedOutcomes: 5,
+        routineHumanInterventions: 1
+      }),
+      afterCohort: buildCandidateCohort({
+        acceptedOutcomes: 5,
+        routineHumanInterventions: 1,
+        medianCycleTimeMs: 310_000
+      })
+    },
+    shippedCandidate: liveShippedMeta
+  }));
+  assert.equal(liveWithRoutineTouch.valid, true);
+  assert.equal(liveWithRoutineTouch.readoutStatus, 'VERIFIED_IMPROVEMENT');
+  assert.equal(liveWithRoutineTouch.liveCohortVerified, false);
+  assert.equal(liveWithRoutineTouch.issue137ReadyToClose, false);
+
+  // Proposal requiring human approval fails closed when matched audit chain has humanOwnerSignOffVerified: false
   const rawInlineChain = {stages: livePostRolloutChains[4].stages};
+  const contractProposalInput = {
+    scorecard: {...buildSampleScorecard(), bottlenecks: []},
+    knowledgeLanes: buildKnowledgeLanes(),
+    failureTaxonomy: [],
+    feedbackItems: [
+      {
+        id: 'vel-contract-touch',
+        repositoryId: SF_REPO_ID,
+        laneId: 'sf-velocity-lane',
+        source: 'operator',
+        metricName: 'stageMs',
+        baselineValue: 100,
+        targetValue: 50,
+        targetPaths: ['tools/engineering-factory/stage-latency.mjs'],
+        touchesContract: true
+      }
+    ]
+  };
+  const contractShippedMeta = {
+    proposalId: `feedback:${SF_REPO_ID}:vel-contract-touch`,
+    repositoryId: SF_REPO_ID,
+    laneId: 'sf-velocity-lane',
+    targetPaths: ['tools/engineering-factory/stage-latency.mjs'],
+    targetRevertCommitSha: '9'.repeat(40),
+    provenanceChain: rawInlineChain
+  };
+  assert.equal(
+    evaluateKaizenCohortReadout(buildValidReadoutInput({
+      evaluatedHeadSha: '9'.repeat(40),
+      auditChains: liveChains,
+      proposalInput: contractProposalInput,
+      shippedCandidate: contractShippedMeta
+    })).reason,
+    'MISSING_HUMAN_APPROVAL_SIGN_OFF'
+  );
+
+  // Regression with inline provenanceChain, billed-spend regression, verified human sign-off, and contract-touching proposal propagates requiresHumanApproval: true
+  const signedContractChains = [
+    ...liveChains.slice(0, 5),
+    {
+      ...livePostRolloutChains[4],
+      circuitBreaker: {...livePostRolloutChains[4].circuitBreaker, humanOwnerSignOffVerified: true}
+    }
+  ];
   const contractRollout = evaluateKaizenCohortReadout(buildValidReadoutInput({
     evaluatedHeadSha: '9'.repeat(40),
-    auditChains: liveChains,
-    proposalInput: {
-      scorecard: {...buildSampleScorecard(), bottlenecks: []},
-      knowledgeLanes: buildKnowledgeLanes(),
-      failureTaxonomy: [],
-      feedbackItems: [
-        {
-          id: 'vel-contract-touch',
-          repositoryId: SF_REPO_ID,
-          laneId: 'sf-velocity-lane',
-          source: 'operator',
-          metricName: 'stageMs',
-          baselineValue: 100,
-          targetValue: 50,
-          targetPaths: ['tools/engineering-factory/stage-latency.mjs'],
-          touchesContract: true
-        }
-      ]
-    },
+    auditChains: signedContractChains,
+    proposalInput: contractProposalInput,
     cohortInput: {
       beforeCohort: buildBaselineCohort(),
       afterCohort: buildCandidateCohort({incrementalBilledUsdCents: 7})
     },
-    shippedCandidate: {
-      proposalId: `feedback:${SF_REPO_ID}:vel-contract-touch`,
-      repositoryId: SF_REPO_ID,
-      laneId: 'sf-velocity-lane',
-      targetPaths: ['tools/engineering-factory/stage-latency.mjs'],
-      targetRevertCommitSha: '9'.repeat(40),
-      provenanceChain: rawInlineChain
-    }
+    shippedCandidate: contractShippedMeta
   }));
   assert.equal(contractRollout.valid, true);
   assert.equal(contractRollout.readoutStatus, 'ROLLBACK_REQUIRED');

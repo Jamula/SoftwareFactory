@@ -1492,6 +1492,10 @@ export function evaluateKaizenCohortReadout(input) {
           candidateMeta.requiresHumanApproval === false)) {
       return invalidKaizenReadout('CANDIDATE_PROPOSAL_MISMATCH', repositoryId);
     }
+    if (matchingProposal.requiresHumanApproval &&
+        matchedRawEntry.circuitBreaker.humanOwnerSignOffVerified !== true) {
+      return invalidKaizenReadout('MISSING_HUMAN_APPROVAL_SIGN_OFF', repositoryId);
+    }
 
     if (cohortVerdict.rollbackRequired) {
       const enrichedMeta = {
@@ -1538,7 +1542,9 @@ export function evaluateKaizenCohortReadout(input) {
   const unapprovedSpendUsdCents = afterCohort.incrementalBilledUsdCents;
   const zeroUnapprovedSpend = unapprovedSpendUsdCents === 0;
   const liveCohortVerified =
-    !syntheticReplayOnly && cohortVerdict.status === 'VERIFIED_IMPROVEMENT';
+    !syntheticReplayOnly &&
+    cohortVerdict.status === 'VERIFIED_IMPROVEMENT' &&
+    afterCohort.routineHumanInterventions === 0;
 
   return Object.freeze({
     valid: true,
