@@ -1,17 +1,17 @@
 {
   "schemaVersion": "1.0.0",
-  "auditId": "m01-08-customer-one-readiness-2026-11-27",
+  "auditId": "m01-08-customer-one-readiness-2026-11-28",
   "issueNumber": 10,
   "milestone": "M01.08",
   "repository": "Jamula/SoftwareFactory",
   "repositoryId": 1471342715,
   "evaluatedBranch": "main",
-  "evaluatedCommit": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
-  "auditedAt": "2026-11-27T10:05:00Z",
+  "evaluatedCommit": "b0924c3807f797e6090e1dc3e1e65fc9caa07550",
+  "auditedAt": "2026-11-28T03:20:00Z",
   "summary": {
     "status": "BLOCKED_ON_LIVE_OPERATIONAL_PREREQUISITES_AND_UNATTENDED_CYCLES",
-    "engineeringFoundationsDeliveredCount": 6,
-    "pilotEntryBlockingCount": 4,
+    "engineeringFoundationsDeliveredCount": 7,
+    "pilotEntryBlockingCount": 3,
     "pilotEntryReady": false,
     "m01ExitEvidenceReady": false,
     "liveActivation": false,
@@ -25,18 +25,82 @@
       "checklistState": "[x]",
       "verified": true,
       "issue": 118,
-      "pullRequest": 120,
-      "mergeCommit": "824031eb8d9d79c5dec03043a96ee575293978c0",
-      "evidence": "Replaced Python dashboard verification scripts with pure Node.js verifiers and enforced zero tracked Python files, manifests, npm scripts, or workflow invocations via tools/engineering-factory/no-python-guard.mjs."
+      "pullRequests": [
+        120,
+        150
+      ],
+      "mergeCommits": [
+        "824031eb8d9d79c5dec03043a96ee575293978c0",
+        "3d3b0c0c1d28b1df13a401d9caaaaeb9dcb357cb"
+      ],
+      "evidence": "Replaced Python dashboard verification scripts with pure Node.js verifiers and enforced zero tracked Python files, manifests, npm scripts, workflow invocations, or residual CodeQL Python checks via tools/engineering-factory/no-python-guard.mjs."
+    },
+    {
+      "prerequisite": "mainCodeqlHealthy",
+      "checklistState": "[x]",
+      "verified": true,
+      "issue": 118,
+      "pullRequests": [
+        120,
+        150
+      ],
+      "mergeCommits": [
+        "824031eb8d9d79c5dec03043a96ee575293978c0",
+        "3d3b0c0c1d28b1df13a401d9caaaaeb9dcb357cb"
+      ],
+      "verifiedOnCommit": "b0924c3807f797e6090e1dc3e1e65fc9caa07550",
+      "codeqlRunIds": [
+        46101609262,
+        46101609773
+      ],
+      "passingCheckRuns": [
+        {
+          "name": "Analyze (javascript-typescript)",
+          "id": 140845087609,
+          "runId": 46101609262,
+          "conclusion": "success"
+        },
+        {
+          "name": "Analyze (actions)",
+          "id": 140845087572,
+          "runId": 46101609262,
+          "conclusion": "success"
+        },
+        {
+          "name": "Analyze (csharp)",
+          "id": 140845087358,
+          "runId": 46101609262,
+          "conclusion": "success"
+        },
+        {
+          "name": "Analyze (javascript-typescript)",
+          "id": 140845089134,
+          "runId": 46101609773,
+          "conclusion": "success"
+        },
+        {
+          "name": "Analyze (csharp)",
+          "id": 140845088964,
+          "runId": 46101609773,
+          "conclusion": "success"
+        }
+      ],
+      "evidence": "Disabled python in GitHub Repository Settings -> Code security -> Code scanning -> CodeQL default setup and verified 5/5 green Push on main CodeQL checks (runs 46101609262 and 46101609773) with zero Analyze (python) jobs and 13/13 green Push on main checks overall at b0924c3807f797e6090e1dc3e1e65fc9caa07550."
     },
     {
       "prerequisite": "ghAwLockVerified",
       "checklistState": "[x]",
       "verified": true,
       "issue": 5,
-      "pullRequest": 143,
-      "mergeCommit": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
-      "evidence": "Verified github/gh-aw v1.2.2 (399a445fe2d8926c616b54b1b82a16b5b2be4445) SHA-256 frontmatter lock verification, safe-outputs read/write privilege separation, threat-scan gating, and default-off .github/workflows/factory-orchestrator.lock.yml via tools/engineering-factory/gh-aw-lock-verifier.mjs."
+      "pullRequests": [
+        143,
+        164
+      ],
+      "mergeCommits": [
+        "cec2745b7b8a21e77ad9f2839d4255d42305d419",
+        "1be6dc1efb991d02637c334e6b6d3dda1530d6aa"
+      ],
+      "evidence": "Verified github/gh-aw v1.2.2 (399a445fe2d8926c616b54b1b82a16b5b2be4445) SHA-256 frontmatter lock verification, scan producer SHA-256 digests, event trigger matrix, safe-outputs read/write privilege separation, threat-scan gating, and default-off .github/workflows/factory-orchestrator.lock.yml via tools/engineering-factory/gh-aw-lock-verifier.mjs."
     },
     {
       "prerequisite": "workQueueCasVerified",
@@ -45,13 +109,15 @@
       "issue": 6,
       "pullRequests": [
         131,
-        143
+        143,
+        160
       ],
       "mergeCommits": [
         "90f3a0e85e5ad87ef0993fa0ab9dd264adf35bbe",
-        "cec2745b7b8a21e77ad9f2839d4255d42305d419"
+        "cec2745b7b8a21e77ad9f2839d4255d42305d419",
+        "6fe90f88637c16b2ae1b0ef4cbfa03b673bd758f"
       ],
-      "evidence": "Enforced non-force git-ref Compare-and-Swap (refs/heads/work-queue), run-state crash recovery, non-overlapping file-set lane scheduling (planner.mjs), and bounded execution TTL (<= 3600000 ms in coordinator.mjs and tools/engineering-coordinator/work-queue-cas.mjs)."
+      "evidence": "Enforced non-force git-ref Compare-and-Swap (refs/heads/work-queue), durable cross-run lifecycle simulation, run-state crash recovery, non-overlapping file-set lane scheduling (planner.mjs), and bounded execution TTL (<= 3600000 ms in coordinator.mjs and tools/engineering-coordinator/work-queue-cas.mjs)."
     },
     {
       "prerequisite": "unifiedCliVerified",
@@ -73,91 +139,114 @@
       "issue": 9,
       "pullRequest": 141,
       "mergeCommit": "ff5aaba259220455020bd765509276f35d37fe3e",
-      "evidence": "Enforced 9-link W3C traceparent causal provenance verification and external deterministic circuit breakers blocking self-modification of protected control-plane paths, out-of-lane edits, retry-cap breaches, AI-credit burn spikes, safe-outputs threat flags, and post-merge main failures via tools/engineering-factory/anti-rogue-audit.mjs."
+      "evidence": "Enforced 9-link W3C traceparent causal provenance verification, correlated authoritative gh-aw AI-credit and Mission Control receipts in tools/engineering-factory/telemetry.mjs, and external deterministic circuit breakers blocking self-modification of protected control-plane paths, out-of-lane edits, retry-cap breaches, AI-credit burn spikes, safe-outputs threat flags, and post-merge main failures via tools/engineering-factory/anti-rogue-audit.mjs."
     },
     {
       "prerequisite": "crossOsAspireRuntimeVerified",
       "checklistState": "[x]",
       "verified": true,
       "issue": 17,
-      "pullRequest": 129,
-      "mergeCommit": "cd9a099dfe731be5b80ead6829952d84cfced59c",
-      "verifiedOnCommit": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
+      "pullRequests": [
+        129,
+        155
+      ],
+      "mergeCommits": [
+        "cd9a099dfe731be5b80ead6829952d84cfced59c",
+        "e658a51de8f0dea0b6b348f844202d5111da7119"
+      ],
+      "verifiedOnCommit": "b0924c3807f797e6090e1dc3e1e65fc9caa07550",
+      "workflowRunIds": [
+        46101609302,
+        46101609338,
+        46101609310,
+        46101609462,
+        46101609262,
+        46101609773
+      ],
       "passingCheckRuns": [
         {
           "name": "test-coverage",
-          "id": 140426990061,
+          "id": 140845083481,
+          "runId": 46101609302,
           "conclusion": "success"
         },
         {
           "name": "linux-aspire-runtime",
-          "id": 140426990428,
+          "id": 140845083688,
+          "runId": 46101609302,
           "conclusion": "success"
         },
         {
           "name": "windows-aspire-runtime",
-          "id": 140426992317,
+          "id": 140845083870,
+          "runId": 46101609338,
           "conclusion": "success"
         },
         {
           "name": "linux-dotnet-agents",
-          "id": 140426990405,
+          "id": 140845083498,
+          "runId": 46101609310,
           "conclusion": "success"
         },
         {
           "name": "windows-dotnet-agents",
-          "id": 140426989874,
+          "id": 140845083582,
+          "runId": 46101609310,
           "conclusion": "success"
         },
         {
           "name": "build-test",
-          "id": 140427422272,
+          "id": 140845427660,
+          "runId": 46101609302,
           "conclusion": "success"
         },
         {
           "name": "upload-coverage-javascript",
-          "id": 140427292828,
+          "id": 140845266327,
+          "runId": 46101609302,
           "conclusion": "success"
         },
         {
           "name": "pinned-synthetic-replay / replay",
-          "id": 140426990544,
+          "id": 140845084128,
+          "runId": 46101609462,
           "conclusion": "success"
         },
         {
           "name": "Analyze (javascript-typescript)",
-          "id": 140426999735,
+          "id": 140845087609,
+          "runId": 46101609262,
           "conclusion": "success"
         },
         {
           "name": "Analyze (actions)",
-          "id": 140426999431,
+          "id": 140845087572,
+          "runId": 46101609262,
           "conclusion": "success"
         },
         {
           "name": "Analyze (csharp)",
-          "id": 140426999412,
+          "id": 140845087358,
+          "runId": 46101609262,
+          "conclusion": "success"
+        },
+        {
+          "name": "Analyze (javascript-typescript)",
+          "id": 140845089134,
+          "runId": 46101609773,
+          "conclusion": "success"
+        },
+        {
+          "name": "Analyze (csharp)",
+          "id": 140845088964,
+          "runId": 46101609773,
           "conclusion": "success"
         }
       ],
-      "evidence": "Verified .NET 10.0.404 / Aspire 17.0.0 AppHost authenticated loopback OTLP trace, metric, and log export plus clean shutdown on both GitHub-hosted Ubuntu Linux and Windows runners at cec2745b7b8a21e77ad9f2839d4255d42305d419."
+      "evidence": "Verified .NET 10.0.404 / Aspire 17.0.0 AppHost authenticated loopback OTLP trace, metric, and log export plus clean shutdown across GitHub-hosted Ubuntu Linux and Windows runners (runs 46101609302, 46101609338, 46101609310, 46101609462) and CodeQL Push on main (runs 46101609262 and 46101609773; 13/13 green checks, 0 Python checks) at b0924c3807f797e6090e1dc3e1e65fc9caa07550."
     }
   ],
   "liveOperationalBlockers": [
-    {
-      "id": "main-codeql-python-default-setup",
-      "prerequisite": "mainCodeqlHealthy",
-      "checklistState": "[ ]",
-      "category": "repository-ui-setting",
-      "issue": 118,
-      "failingCheckRun": {
-        "name": "Analyze (python)",
-        "id": 140426999433,
-        "conclusion": "failure",
-        "url": "https://github.com/Jamula/SoftwareFactory/actions/runs/45975773999/job/140426999433"
-      },
-      "requiredAction": "Disable python in GitHub Repository Settings -> Code security -> Code scanning -> CodeQL default setup (PR #120 removed all Python files from the repository, causing CodeQL Default Setup's Python analyzer to fail on main @ cec2745b7b8a21e77ad9f2839d4255d42305d419)."
-    },
     {
       "id": "m01-07-01-zero-dollar-billing-hard-stop",
       "prerequisite": "hardStopBillingVerified",
@@ -172,7 +261,7 @@
       "checklistState": "[ ]",
       "category": "hosted-provider-smoke",
       "issue": 105,
-      "requiredAction": "Confirm copilot-swe-agent[bot] / native GitHub Cloud Agent availability on Jamula/SoftwareFactory (noting Cloud Automations require private/internal visibility whereas gh-aw + Cloud Agent operate on public and private repos), execute one minimal cloud smoke task without laptop/open-chat dependency or personal PATs, and record session/task ID, included-quota attribution, and $0 incremental spend."
+      "requiredAction": "Confirm copilot-swe-agent[bot] / native GitHub Cloud Agent availability on public Jamula/SoftwareFactory (noting Cloud Automations require private/internal visibility whereas gh-aw + Cloud Agent operate on public and private repos), execute one minimal cloud smoke issue without laptop/open-chat dependency or personal PATs, and record session/task ID, included-quota attribution, and $0 incremental spend."
     },
     {
       "id": "m01-08-repo-scoped-live-pilot-authorization",
@@ -180,7 +269,7 @@
       "checklistState": "[ ]",
       "category": "owner-live-authorization",
       "issue": 10,
-      "requiredAction": "Obtain explicit owner repository-scoped live pilot dispatch authorization on Jamula/SoftwareFactory after mainCodeqlHealthy, hardStopBillingVerified, and nativeCloudSmokeVerified are evidenced."
+      "requiredAction": "After #105 (hardStopBillingVerified and nativeCloudSmokeVerified) is recorded and protected refs/heads/work-queue branch is created on Jamula/SoftwareFactory, record explicit owner repository-scoped live pilot dispatch authorization and set FACTORY_GHAW_ENABLED=true."
     },
     {
       "id": "m01-08-three-live-unattended-cycles",
@@ -193,7 +282,7 @@
   ],
   "dossierInput": {
     "repositoryId": 1471342715,
-    "pin": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
+    "pin": "b0924c3807f797e6090e1dc3e1e65fc9caa07550",
     "enrolled": true,
     "stop": false,
     "lineMin": 98,
@@ -202,7 +291,7 @@
     "workerShortfallFrom12": 12,
     "prerequisites": {
       "noPythonVerified": true,
-      "mainCodeqlHealthy": false,
+      "mainCodeqlHealthy": true,
       "ghAwLockVerified": true,
       "workQueueCasVerified": true,
       "unifiedCliVerified": true,
@@ -225,8 +314,10 @@
       "engineering-coordinator.work-queue-cas",
       "engineering-factory.ai-credit-scorecard",
       "engineering-factory.anti-rogue-audit",
+      "engineering-factory.aspire-hosted-receipt",
       "engineering-factory.aspire-smoke",
       "engineering-factory.aspire-telemetry-smoke",
+      "engineering-factory.billing-hardstop-smoke",
       "engineering-factory.budget",
       "engineering-factory.capacity-scale",
       "engineering-factory.ci-stage-benchmark",
@@ -235,10 +326,15 @@
       "engineering-factory.contract-routing",
       "engineering-factory.core",
       "engineering-factory.coverage-evidence",
+      "engineering-factory.curated-lessons",
+      "engineering-factory.customer-one-usability-scorecard",
       "engineering-factory.dispatch-intent",
       "engineering-factory.event-envelope",
       "engineering-factory.factory-board",
+      "engineering-factory.familyhub-pilot-readiness",
+      "engineering-factory.familytree-pilot-readiness",
       "engineering-factory.gh-aw-lock-verifier",
+      "engineering-factory.historical-baseline-report",
       "engineering-factory.inspect-dashboard-metric-schema",
       "engineering-factory.integration-train",
       "engineering-factory.issue-event",
@@ -246,12 +342,15 @@
       "engineering-factory.local-otel-sdk",
       "engineering-factory.local-shadow-host",
       "engineering-factory.locked-build-cache",
+      "engineering-factory.main-health-audit",
       "engineering-factory.mcp-agent-connector",
+      "engineering-factory.merge-queue-slo",
       "engineering-factory.no-python-guard",
       "engineering-factory.optimistic-improver",
       "engineering-factory.outcome-measurement",
       "engineering-factory.pilot-readiness",
       "engineering-factory.platform-merge-gates",
+      "engineering-factory.portfolio-train-benchmark",
       "engineering-factory.pr-iterations",
       "engineering-factory.pr-lifecycle",
       "engineering-factory.protected-squash",
@@ -263,13 +362,16 @@
       "engineering-factory.run",
       "engineering-factory.shadow-dispatch-ledger",
       "engineering-factory.shadow-runtime",
+      "engineering-factory.spellbook-pilot-readiness",
       "engineering-factory.stage-aggregate",
       "engineering-factory.stage-latency",
       "engineering-factory.telemetry",
       "engineering-factory.validation-diagnosis",
       "engineering-factory.verify-dashboard-api",
       "engineering-factory.verify-dashboard-export",
-      "engineering-factory.verify-dashboard-metric-receipt"
+      "engineering-factory.verify-dashboard-metric-receipt",
+      "engineering-factory.worker-ladder-handoff",
+      "engineering-factory.workstation-preflight"
     ],
     "cycles": []
   },
@@ -282,6 +384,7 @@
     "reason": "PILOT_ENTRY_BLOCKED",
     "verifiedPrerequisites": [
       "noPythonVerified",
+      "mainCodeqlHealthy",
       "ghAwLockVerified",
       "workQueueCasVerified",
       "unifiedCliVerified",
@@ -289,7 +392,6 @@
       "crossOsAspireRuntimeVerified"
     ],
     "blockingPrerequisites": [
-      "mainCodeqlHealthy",
       "hardStopBillingVerified",
       "nativeCloudSmokeVerified",
       "repoScopedLiveAuthVerified"
