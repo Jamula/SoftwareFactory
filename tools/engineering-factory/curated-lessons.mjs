@@ -38,9 +38,26 @@ export const ALLOWED_GUIDANCE_SOURCES = Object.freeze([
   'trusted-lane-contract'
 ]);
 
+export const ALLOWED_MEASURED_EXECUTION_SURFACES = Object.freeze([
+  'copilot-subagent-wave-prs',
+  'github-hosted-copilot-prs'
+]);
+
+export const MEASURED_METRIC_DERIVATIONS = Object.freeze({
+  projectedSelectorSavings: 'selectScopedGuidanceAndLessons(fullCatalogBytes vs selectedContextBytes); advisory only unless contextLoadObservation supplied on every PR',
+  observedContextBytesLoaded: 'contextLoadObservation.observedContextBytesLoaded when contextLoadingObserved === true; null otherwise',
+  observedExplorationSteps: 'contextLoadObservation.observedExplorationSteps when contextLoadingObserved === true; uniqueReviewedCommits + reviewComments otherwise',
+  observedRepeatedContextLoads: 'contextLoadObservation.observedRepeatedContextLoads when contextLoadingObserved === true; uniqueReviewedCommits - 1 otherwise',
+  reworkIterations: 'totalCommits - 1',
+  verifiedAiCredits: 'pr.verifiedAiCredits when aiCreditAccountingVerified === true; null otherwise (never substituted with interactionTurnProxy)',
+  interactionTurnProxy: 'totalCommits + reviewCount (reported separately from verifiedAiCredits)',
+  duplicateWork: 'concurrentActiveWindowOverlap && changedPathsPrefixOverlap'
+});
+
 const specialistRoleSet = new Set(ALLOWED_SPECIALIST_ROLES);
 const lessonSourceSet = new Set(ALLOWED_LESSON_SOURCES);
 const guidanceSourceSet = new Set(ALLOWED_GUIDANCE_SOURCES);
+const measuredSurfaceSet = new Set(ALLOWED_MEASURED_EXECUTION_SURFACES);
 
 const SELECTION_REQUIRED_KEYS = [
   'repositoryId',
@@ -154,6 +171,86 @@ const COHORT_POLICY_KEYS = [
   'minLineCoveragePct',
   'minBranchCoveragePct',
   'quotaCreditsRemaining'
+];
+
+const MEASURED_COHORT_REQUIRED_KEYS = [
+  'repositoryId',
+  'repositorySlug',
+  'cohortId',
+  'recordedOnBaseHeadSha',
+  'nowMs',
+  'executionSurface',
+  'provenanceVerified',
+  'independentReviewVerified',
+  'unattendedCopilotBotClaimed',
+  'baselineWindow',
+  'candidateWindow',
+  'guidanceEntries',
+  'curatedLessons',
+  'baselinePullRequests',
+  'candidatePullRequests'
+];
+
+const MEASURED_COHORT_OPTIONAL_KEYS = [
+  'policy',
+  'quotaCreditsRemaining',
+  'revisedExitContract'
+];
+
+const REVISED_EXIT_CONTRACT_KEYS = [
+  'ownerApproved',
+  'allowsSubagentWaveCohortReadout',
+  'livePolicyAdoptionAuthorized',
+  'preservesM01Issue10DirectCopilotGate',
+  'approvedAtUtc'
+];
+
+const MEASURED_PR_REQUIRED_KEYS = [
+  'unitId',
+  'prNumber',
+  'relatedIssueNumbers',
+  'headSha',
+  'mergeCommitSha',
+  'createdAtMs',
+  'mergedAtMs',
+  'ciCoverageJobId',
+  'targetComponent',
+  'specialistRole',
+  'changedPaths',
+  'totalCommits',
+  'nonMergeCommits',
+  'uniqueReviewedCommits',
+  'reviewCount',
+  'reviewComments',
+  'incrementalBilledUsdCents',
+  'componentCoverages',
+  'overallCoveredLines',
+  'overallTotalLines',
+  'overallCoveredBranches',
+  'overallTotalBranches',
+  'securityFindings',
+  'unsupportedRouting'
+];
+
+const MEASURED_PR_OPTIONAL_KEYS = [
+  'closedIssueNumbers',
+  'checkpointEvidence',
+  'contextLoadObservation',
+  'verifiedAiCredits'
+];
+
+const COMPONENT_COVERAGE_REQUIRED_KEYS = [
+  'component',
+  'coveredLines',
+  'totalLines',
+  'coveredBranches',
+  'totalBranches'
+];
+
+const CONTEXT_LOAD_OBSERVATION_KEYS = [
+  'observedContextBytesLoaded',
+  'observedRepeatedContextLoads',
+  'observedExplorationSteps'
 ];
 
 const SECRET_PATTERNS = [
@@ -920,6 +1017,53 @@ function validateCheckpointEvidence(checkpoint, expectedRepoId, expectedIssueNum
   };
 }
 
+function validateKnowledgeCatalog(
+  guidanceEntries,
+  curatedLessons,
+  repositoryId,
+  slugLower,
+  expectedHeadSha,
+  nowMs,
+  policy
+) {
+  const seenGuidanceIds = new Set();
+  const validatedGuidance = [];
+  let fullCatalogBytes = 0;
+
+  for (const rawEntry of guidanceEntries) {
+    const check = validateGuidanceEntry(rawEntry, repositoryId, slugLower, expectedHeadSha, policy);
+    if (!check.valid) return {ok: false, reason: check.reason};
+    if (seenGuidanceIds.has(check.guidance.guidanceId)) {
+      return {ok: false, reason: 'DUPLICATE_GUIDANCE_ID'};
+    }
+    seenGuidanceIds.add(check.guidance.guidanceId);
+    fullCatalogBytes += check.guidance.textBytes;
+    validatedGuidance.push(check.guidance);
+  }
+
+  const seenLessonIds = new Set();
+  const validatedLessons = [];
+  for (const rawLesson of curatedLessons) {
+    const check = validateLessonInternal(
+      rawLesson,
+      repositoryId,
+      slugLower,
+      expectedHeadSha,
+      nowMs,
+      policy
+    );
+    if (!check.valid) return {ok: false, reason: check.reason};
+    if (seenLessonIds.has(check.lesson.lessonId)) {
+      return {ok: false, reason: 'DUPLICATE_LESSON_ID'};
+    }
+    seenLessonIds.add(check.lesson.lessonId);
+    fullCatalogBytes += check.lesson.textBytes;
+    validatedLessons.push(check.lesson);
+  }
+
+  return {ok: true, validatedGuidance, validatedLessons, fullCatalogBytes};
+}
+
 function blockedSelection(reason) {
   return Object.freeze({
     valid: false,
@@ -1008,50 +1152,57 @@ export function selectScopedGuidanceAndLessons(input) {
   }
 
   const slugLower = input.repositorySlug.toLowerCase();
-  const seenGuidanceIds = new Set();
-  const validatedGuidance = [];
-  let fullCatalogBytes = 0;
+  const catalogCheck = validateKnowledgeCatalog(
+    input.guidanceEntries,
+    input.curatedLessons,
+    input.repositoryId,
+    slugLower,
+    input.expectedHeadSha,
+    input.nowMs,
+    policy
+  );
+  if (!catalogCheck.ok) return blockedSelection(catalogCheck.reason);
+  const {validatedGuidance, validatedLessons, fullCatalogBytes} = catalogCheck;
 
-  for (const rawEntry of input.guidanceEntries) {
-    const check = validateGuidanceEntry(rawEntry, input.repositoryId, slugLower, input.expectedHeadSha, policy);
-    if (!check.valid) return blockedSelection(check.reason);
-    if (seenGuidanceIds.has(check.guidance.guidanceId)) {
-      return blockedSelection('DUPLICATE_GUIDANCE_ID');
-    }
-    seenGuidanceIds.add(check.guidance.guidanceId);
-    fullCatalogBytes += check.guidance.textBytes;
-    validatedGuidance.push(check.guidance);
-  }
+  return selectFromValidatedCatalog({
+    repositoryId: input.repositoryId,
+    repositorySlug: input.repositorySlug,
+    expectedHeadSha: input.expectedHeadSha,
+    targetComponent: input.targetComponent,
+    specialistRole: input.specialistRole,
+    changedPaths: input.changedPaths,
+    unverifiedPaths,
+    checkpointBinding,
+    policy,
+    validatedGuidance,
+    validatedLessons,
+    fullCatalogBytes
+  });
+}
 
-  const seenLessonIds = new Set();
-  const validatedLessons = [];
-  for (const rawLesson of input.curatedLessons) {
-    const check = validateLessonInternal(
-      rawLesson,
-      input.repositoryId,
-      slugLower,
-      input.expectedHeadSha,
-      input.nowMs,
-      policy
-    );
-    if (!check.valid) return blockedSelection(check.reason);
-    if (seenLessonIds.has(check.lesson.lessonId)) {
-      return blockedSelection('DUPLICATE_LESSON_ID');
-    }
-    seenLessonIds.add(check.lesson.lessonId);
-    fullCatalogBytes += check.lesson.textBytes;
-    validatedLessons.push(check.lesson);
-  }
-
+function selectFromValidatedCatalog({
+  repositoryId,
+  repositorySlug,
+  expectedHeadSha,
+  targetComponent,
+  specialistRole,
+  changedPaths,
+  unverifiedPaths,
+  checkpointBinding,
+  policy,
+  validatedGuidance,
+  validatedLessons,
+  fullCatalogBytes
+}) {
   let omittedOutOfScopeCount = 0;
   let omittedCheckpointedCount = 0;
   const matchedGuidance = [];
   for (const item of validatedGuidance) {
     const match = computeScopeMatch(
       item,
-      input.targetComponent,
-      input.specialistRole,
-      input.changedPaths,
+      targetComponent,
+      specialistRole,
+      changedPaths,
       unverifiedPaths
     );
     if (match.state === 'matched') {
@@ -1067,9 +1218,9 @@ export function selectScopedGuidanceAndLessons(input) {
   for (const item of validatedLessons) {
     const match = computeScopeMatch(
       item,
-      input.targetComponent,
-      input.specialistRole,
-      input.changedPaths,
+      targetComponent,
+      specialistRole,
+      changedPaths,
       unverifiedPaths
     );
     if (match.state === 'matched') {
@@ -1125,11 +1276,11 @@ export function selectScopedGuidanceAndLessons(input) {
     autoPolicyMutation: false,
     externalKnowledgeStoreRequired: false,
     reason: 'SCOPED_KNOWLEDGE_SELECTED',
-    repositoryId: input.repositoryId,
-    repositorySlug: input.repositorySlug,
-    expectedHeadSha: input.expectedHeadSha,
-    targetComponent: input.targetComponent,
-    specialistRole: input.specialistRole,
+    repositoryId,
+    repositorySlug,
+    expectedHeadSha,
+    targetComponent,
+    specialistRole,
     effectiveGates: Object.freeze({
       minLineCoveragePct: policy.minLineCoveragePct,
       minBranchCoveragePct: policy.minBranchCoveragePct
@@ -1320,20 +1471,9 @@ export function compareExplorationContextReduction(baselineCohort, candidateCoho
   const resolvedPolicy = resolveCohortPolicy(policy, baselineCohort.repositoryId);
   if (!resolvedPolicy.ok) return invalidCohortResult(resolvedPolicy.reason);
 
-  const candidateQuota = hasOwnEnumerableData(candidateCohort, 'quotaCreditsRemaining')
-    ? candidateCohort.quotaCreditsRemaining
-    : null;
-  if (resolvedPolicy.quotaCreditsRemaining !== null &&
-      candidateQuota !== null &&
-      resolvedPolicy.quotaCreditsRemaining !== candidateQuota) {
-    return invalidCohortResult('INVALID_POLICY');
-  }
-  const effectiveQuota = resolvedPolicy.quotaCreditsRemaining !== null
-    ? resolvedPolicy.quotaCreditsRemaining
-    : candidateQuota;
-  if (effectiveQuota === null) {
-    return invalidCohortResult('QUOTA_REMAINING_REQUIRED');
-  }
+  const quotaCheck = resolveEffectiveQuota(resolvedPolicy, candidateCohort);
+  if (!quotaCheck.ok) return invalidCohortResult(quotaCheck.reason);
+  const effectiveQuota = quotaCheck.quotaCreditsRemaining;
 
   if (baselineCohort.units.length < MIN_COMPARABLE_COHORT_UNITS ||
       candidateCohort.units.length < MIN_COMPARABLE_COHORT_UNITS) {
@@ -1438,5 +1578,872 @@ export function compareExplorationContextReduction(baselineCohort, candidateCoho
     baselineMetrics: baseMetrics,
     candidateMetrics: candMetrics,
     deltas
+  });
+}
+
+function resolveEffectiveQuota(resolvedPolicy, container) {
+  const containerQuota = hasOwnEnumerableData(container, 'quotaCreditsRemaining')
+    ? container.quotaCreditsRemaining
+    : null;
+  if (resolvedPolicy.quotaCreditsRemaining !== null &&
+      containerQuota !== null &&
+      resolvedPolicy.quotaCreditsRemaining !== containerQuota) {
+    return {ok: false, reason: 'INVALID_POLICY'};
+  }
+  const quotaCreditsRemaining = resolvedPolicy.quotaCreditsRemaining !== null
+    ? resolvedPolicy.quotaCreditsRemaining
+    : containerQuota;
+  if (quotaCreditsRemaining === null) {
+    return {ok: false, reason: 'QUOTA_REMAINING_REQUIRED'};
+  }
+  return {ok: true, quotaCreditsRemaining};
+}
+
+function validWindowRecord(windowRecord) {
+  return exactRecord(windowRecord, ['startMs', 'endMs']) &&
+    nonnegInt(windowRecord.startMs) &&
+    nonnegInt(windowRecord.endMs) &&
+    windowRecord.endMs > windowRecord.startMs;
+}
+
+function validPositiveIntList(list, maxLen, requireNonEmpty) {
+  return denseDataArray(list, maxLen) &&
+    (!requireNonEmpty || list.length > 0) &&
+    list.every(positiveInt) &&
+    new Set(list).size === list.length;
+}
+
+function validNestedCoverageCounts(covered, total, overallCovered, overallTotal) {
+  return validCounts(covered, total) &&
+    validCounts(overallCovered, overallTotal) &&
+    covered <= overallCovered &&
+    total - covered <= overallTotal - overallCovered;
+}
+
+function isComponentIdentifier(value) {
+  return typeof value === 'string' &&
+    /^[a-z0-9][a-z0-9-]{0,47}\.[a-z0-9][a-z0-9-]{0,47}$/.test(value);
+}
+
+function validContextLoadObservation(obs) {
+  return exactRecord(obs, CONTEXT_LOAD_OBSERVATION_KEYS) &&
+    nonnegInt(obs.observedContextBytesLoaded) &&
+    obs.observedContextBytesLoaded <= 100_000_000 &&
+    nonnegInt(obs.observedRepeatedContextLoads) &&
+    obs.observedRepeatedContextLoads <= 100_000 &&
+    nonnegInt(obs.observedExplorationSteps) &&
+    obs.observedExplorationSteps <= 100_000;
+}
+
+function validateRevisedExitContract(raw) {
+  if (raw === undefined) {
+    return {ok: true, contract: null};
+  }
+  if (!exactRecord(raw, REVISED_EXIT_CONTRACT_KEYS) ||
+      typeof raw.ownerApproved !== 'boolean' ||
+      typeof raw.allowsSubagentWaveCohortReadout !== 'boolean' ||
+      typeof raw.livePolicyAdoptionAuthorized !== 'boolean' ||
+      typeof raw.preservesM01Issue10DirectCopilotGate !== 'boolean' ||
+      typeof raw.approvedAtUtc !== 'string' ||
+      raw.approvedAtUtc.trim().length === 0 ||
+      raw.approvedAtUtc.length > 64 ||
+      !Number.isFinite(Date.parse(raw.approvedAtUtc))) {
+    return {ok: false, reason: 'INVALID_REVISED_EXIT_CONTRACT'};
+  }
+  if (!raw.preservesM01Issue10DirectCopilotGate) {
+    return {ok: false, reason: 'M01_ISSUE_10_GATE_WEAKENING_FORBIDDEN'};
+  }
+  if (raw.livePolicyAdoptionAuthorized) {
+    return {ok: false, reason: 'LIVE_POLICY_ADOPTION_OVERRIDE_FORBIDDEN'};
+  }
+  return {
+    ok: true,
+    contract: Object.freeze({
+      ownerApproved: raw.ownerApproved,
+      allowsSubagentWaveCohortReadout: raw.allowsSubagentWaveCohortReadout,
+      livePolicyAdoptionAuthorized: false,
+      preservesM01Issue10DirectCopilotGate: true,
+      approvedAtUtc: raw.approvedAtUtc
+    })
+  };
+}
+
+function validateComponentCoverages(componentCoverages) {
+  if (!denseDataArray(componentCoverages, 32) || componentCoverages.length === 0) {
+    return null;
+  }
+  const seenComponents = new Set();
+  let coveredLines = 0;
+  let totalLines = 0;
+  let coveredBranches = 0;
+  let totalBranches = 0;
+
+  for (const comp of componentCoverages) {
+    if (!exactRecord(comp, COMPONENT_COVERAGE_REQUIRED_KEYS) ||
+        !isComponentIdentifier(comp.component) ||
+        seenComponents.has(comp.component) ||
+        !validCounts(comp.coveredLines, comp.totalLines) ||
+        !validCounts(comp.coveredBranches, comp.totalBranches)) {
+      return null;
+    }
+    seenComponents.add(comp.component);
+    coveredLines += comp.coveredLines;
+    totalLines += comp.totalLines;
+    coveredBranches += comp.coveredBranches;
+    totalBranches += comp.totalBranches;
+  }
+  return {coveredLines, totalLines, coveredBranches, totalBranches};
+}
+
+function validMeasuredPullRequest(pr) {
+  if (!exactRecord(pr, MEASURED_PR_REQUIRED_KEYS, MEASURED_PR_OPTIONAL_KEYS)) return null;
+  if (!isIdentifier(pr.unitId) || !positiveInt(pr.prNumber)) return null;
+  if (!validPositiveIntList(pr.relatedIssueNumbers, 32, true)) return null;
+  if (!isSha40(pr.headSha) || !isSha40(pr.mergeCommitSha) || pr.headSha === pr.mergeCommitSha) {
+    return null;
+  }
+  if (!nonnegInt(pr.createdAtMs) || !nonnegInt(pr.mergedAtMs) || pr.createdAtMs > pr.mergedAtMs) {
+    return null;
+  }
+  if (!positiveInt(pr.ciCoverageJobId)) return null;
+  if (!isComponentToken(pr.targetComponent) || !specialistRoleSet.has(pr.specialistRole)) {
+    return null;
+  }
+  if (!validUniquePathList(pr.changedPaths, 200)) return null;
+  if (!positiveInt(pr.totalCommits) || pr.totalCommits > 1001) return null;
+  if (!positiveInt(pr.nonMergeCommits) || pr.nonMergeCommits > pr.totalCommits) return null;
+  if (!positiveInt(pr.uniqueReviewedCommits) || pr.uniqueReviewedCommits > 20_000) return null;
+  if (!positiveInt(pr.reviewCount) || pr.reviewCount > 50_000 ||
+      pr.uniqueReviewedCommits > pr.reviewCount) {
+    return null;
+  }
+  if (!nonnegInt(pr.reviewComments) || pr.reviewComments > 50_000) return null;
+  if (!nonnegInt(pr.incrementalBilledUsdCents) || pr.incrementalBilledUsdCents > 10_000_000) {
+    return null;
+  }
+  const compTotals = validateComponentCoverages(pr.componentCoverages);
+  if (compTotals === null) return null;
+  if (!validNestedCoverageCounts(
+    compTotals.coveredLines,
+    compTotals.totalLines,
+    pr.overallCoveredLines,
+    pr.overallTotalLines
+  )) {
+    return null;
+  }
+  if (!validNestedCoverageCounts(
+    compTotals.coveredBranches,
+    compTotals.totalBranches,
+    pr.overallCoveredBranches,
+    pr.overallTotalBranches
+  )) {
+    return null;
+  }
+  if (!nonnegInt(pr.securityFindings) || pr.securityFindings > 100_000) return null;
+  if (typeof pr.unsupportedRouting !== 'boolean') return null;
+  if (hasOwnEnumerableData(pr, 'closedIssueNumbers')) {
+    if (!validPositiveIntList(pr.closedIssueNumbers, 32, false)) return null;
+    const relatedSet = new Set(pr.relatedIssueNumbers);
+    if (!pr.closedIssueNumbers.every(issueNum => relatedSet.has(issueNum))) return null;
+  }
+  if (hasOwnEnumerableData(pr, 'contextLoadObservation') &&
+      !validContextLoadObservation(pr.contextLoadObservation)) {
+    return null;
+  }
+  if (hasOwnEnumerableData(pr, 'verifiedAiCredits') &&
+      (!nonnegInt(pr.verifiedAiCredits) || pr.verifiedAiCredits > 1_000_000)) {
+    return null;
+  }
+  return compTotals;
+}
+
+function pathsOverlapByPrefix(pathsA, pathsB) {
+  return pathsA.some(left =>
+    pathsB.some(right => matchesPrefix(left, right) || matchesPrefix(right, left)));
+}
+
+function computeConcurrentPathOverlaps(pullRequests) {
+  const overlaps = new Array(pullRequests.length).fill(false);
+  for (let i = 0; i < pullRequests.length; i++) {
+    for (let j = i + 1; j < pullRequests.length; j++) {
+      const left = pullRequests[i];
+      const right = pullRequests[j];
+      if (left.createdAtMs <= right.mergedAtMs &&
+          right.createdAtMs <= left.mergedAtMs &&
+          pathsOverlapByPrefix(left.changedPaths, right.changedPaths)) {
+        overlaps[i] = true;
+        overlaps[j] = true;
+      }
+    }
+  }
+  return overlaps;
+}
+
+function invalidMeasuredCohortResult(reason) {
+  return Object.freeze({
+    valid: false,
+    shadow: true,
+    readOnly: true,
+    autoPolicyMutation: false,
+    externalKnowledgeStoreRequired: false,
+    status: 'INVALID_COHORT_INPUT',
+    adoptionApproved: false,
+    issue14ReadoutClosureAuthorized: false,
+    reason,
+    rejectionReasons: Object.freeze([])
+  });
+}
+
+function validateMeasuredPrCollection(pullRequests, windowRecord, globalSeen, requireCreatedInsideWindow) {
+  const seenUnitIds = new Set();
+  const componentSums = [];
+  for (const pr of pullRequests) {
+    const compTotals = validMeasuredPullRequest(pr);
+    if (compTotals === null || seenUnitIds.has(pr.unitId)) {
+      return {ok: false, reason: 'INVALID_MEASURED_PR'};
+    }
+    seenUnitIds.add(pr.unitId);
+    if (globalSeen.prNumbers.has(pr.prNumber) ||
+        globalSeen.headShas.has(pr.headSha) ||
+        globalSeen.mergeShas.has(pr.mergeCommitSha) ||
+        globalSeen.jobIds.has(pr.ciCoverageJobId)) {
+      return {ok: false, reason: 'DUPLICATE_PR_EVIDENCE'};
+    }
+    globalSeen.prNumbers.add(pr.prNumber);
+    globalSeen.headShas.add(pr.headSha);
+    globalSeen.mergeShas.add(pr.mergeCommitSha);
+    globalSeen.jobIds.add(pr.ciCoverageJobId);
+
+    if (hasOwnEnumerableData(pr, 'closedIssueNumbers')) {
+      for (const issueNum of pr.closedIssueNumbers) {
+        if (globalSeen.closedIssues.has(issueNum)) {
+          return {ok: false, reason: 'DUPLICATE_PR_EVIDENCE'};
+        }
+        globalSeen.closedIssues.add(issueNum);
+      }
+    }
+    if ((requireCreatedInsideWindow && pr.createdAtMs < windowRecord.startMs) ||
+        pr.mergedAtMs < windowRecord.startMs ||
+        pr.mergedAtMs > windowRecord.endMs) {
+      return {ok: false, reason: 'PR_OUTSIDE_COHORT_WINDOW'};
+    }
+    componentSums.push(compTotals);
+  }
+  return {ok: true, componentSums};
+}
+
+function prMeetsEveryComponentAndOverallFloor(pr, policy) {
+  for (const comp of pr.componentCoverages) {
+    if (!meetsCoverageFloor(
+      comp.coveredLines,
+      comp.totalLines,
+      comp.coveredBranches,
+      comp.totalBranches,
+      policy
+    )) {
+      return false;
+    }
+  }
+  return meetsCoverageFloor(
+    pr.overallCoveredLines,
+    pr.overallTotalLines,
+    pr.overallCoveredBranches,
+    pr.overallTotalBranches,
+    policy
+  );
+}
+
+function evaluatePrKnowledgeSelection(pr, input, selectionPolicy, catalogCheck) {
+  let unverifiedPaths = pr.changedPaths;
+  let checkpointBinding = null;
+  if (hasOwnEnumerableData(pr, 'checkpointEvidence')) {
+    const cpCheck = validateCheckpointEvidence(
+      pr.checkpointEvidence,
+      input.repositoryId,
+      pr.relatedIssueNumbers[0],
+      pr.headSha,
+      pr.changedPaths
+    );
+    if (!cpCheck.ok) return {ok: false, reason: cpCheck.reason};
+    unverifiedPaths = cpCheck.unverifiedPaths;
+    checkpointBinding = cpCheck.summary;
+  }
+  const selection = selectFromValidatedCatalog({
+    repositoryId: input.repositoryId,
+    repositorySlug: input.repositorySlug,
+    expectedHeadSha: input.recordedOnBaseHeadSha,
+    targetComponent: pr.targetComponent,
+    specialistRole: pr.specialistRole,
+    changedPaths: pr.changedPaths,
+    unverifiedPaths,
+    checkpointBinding,
+    policy: selectionPolicy,
+    validatedGuidance: catalogCheck.validatedGuidance,
+    validatedLessons: catalogCheck.validatedLessons,
+    fullCatalogBytes: catalogCheck.fullCatalogBytes
+  });
+  return {ok: true, selection};
+}
+
+function summarizeMeasuredWave(
+  pullRequests,
+  componentSums,
+  overlaps,
+  windowDurationMs,
+  contextLoadingObserved,
+  aiCreditAccountingVerified,
+  policy
+) {
+  const unitCount = pullRequests.length;
+  let totalReworkIterations = 0;
+  let aiCreditsTotal = 0;
+  let interactionTurnsTotal = 0;
+  let incrementalBilledUsdCents = 0;
+  let coveredLines = 0;
+  let totalLines = 0;
+  let coveredBranches = 0;
+  let totalBranches = 0;
+  let overallCoveredLines = 0;
+  let overallTotalLines = 0;
+  let overallCoveredBranches = 0;
+  let overallTotalBranches = 0;
+  let securityFindings = 0;
+  let duplicateWorkCount = 0;
+  let unsupportedRoutingCount = 0;
+  let allMeetFloors = true;
+
+  const explorationList = [];
+  const contextBytesList = [];
+  const repeatedLoadsList = [];
+
+  for (let i = 0; i < unitCount; i++) {
+    const pr = pullRequests[i];
+    const compSum = componentSums[i];
+    totalReworkIterations += pr.totalCommits - 1;
+    interactionTurnsTotal += pr.totalCommits + pr.reviewCount;
+    if (aiCreditAccountingVerified) {
+      aiCreditsTotal += pr.verifiedAiCredits;
+    }
+    if (contextLoadingObserved) {
+      explorationList.push(pr.contextLoadObservation.observedExplorationSteps);
+      contextBytesList.push(pr.contextLoadObservation.observedContextBytesLoaded);
+      repeatedLoadsList.push(pr.contextLoadObservation.observedRepeatedContextLoads);
+    } else {
+      explorationList.push(pr.uniqueReviewedCommits + pr.reviewComments);
+      repeatedLoadsList.push(pr.uniqueReviewedCommits - 1);
+    }
+    incrementalBilledUsdCents += pr.incrementalBilledUsdCents;
+    coveredLines += compSum.coveredLines;
+    totalLines += compSum.totalLines;
+    coveredBranches += compSum.coveredBranches;
+    totalBranches += compSum.totalBranches;
+    overallCoveredLines += pr.overallCoveredLines;
+    overallTotalLines += pr.overallTotalLines;
+    overallCoveredBranches += pr.overallCoveredBranches;
+    overallTotalBranches += pr.overallTotalBranches;
+    securityFindings += pr.securityFindings;
+    if (overlaps[i] === true) duplicateWorkCount += 1;
+    if (pr.unsupportedRouting === true) unsupportedRoutingCount += 1;
+    if (!prMeetsEveryComponentAndOverallFloor(pr, policy)) {
+      allMeetFloors = false;
+    }
+  }
+
+  return {
+    allMeetFloors,
+    totalReworkIterations,
+    interactionTurnsTotal,
+    coveredLines,
+    totalLines,
+    coveredBranches,
+    totalBranches,
+    overallCoveredLines,
+    overallTotalLines,
+    overallCoveredBranches,
+    overallTotalBranches,
+    metrics: Object.freeze({
+      unitCount,
+      explorationStepsP50: nearestRankP50(explorationList),
+      contextBytesLoadedP50: contextLoadingObserved ? nearestRankP50(contextBytesList) : null,
+      repeatedContextLoadsP50: nearestRankP50(repeatedLoadsList),
+      reworkIterationsRateBps: Math.round((totalReworkIterations * 10_000) / unitCount),
+      aiCreditsTotal: aiCreditAccountingVerified ? aiCreditsTotal : null,
+      aiCreditsPerUnit: aiCreditAccountingVerified ? aiCreditsTotal / unitCount : null,
+      incrementalBilledUsdCents,
+      acceptedUnitsPerDay: (unitCount * 86_400_000) / windowDurationMs,
+      lineCoveragePct: (coveredLines * 100) / totalLines,
+      branchCoveragePct: (coveredBranches * 100) / totalBranches,
+      overallLineCoveragePct: (overallCoveredLines * 100) / overallTotalLines,
+      overallBranchCoveragePct: (overallCoveredBranches * 100) / overallTotalBranches,
+      securityFindings,
+      duplicateWorkCount,
+      unsupportedRoutingCount
+    })
+  };
+}
+
+export function evaluateMeasuredRepositoryExplorationCohort(input) {
+  if (!exactRecord(input, MEASURED_COHORT_REQUIRED_KEYS, MEASURED_COHORT_OPTIONAL_KEYS)) {
+    return invalidMeasuredCohortResult('INVALID_COHORT_SCHEMA');
+  }
+  const repoCheck = validateRepositoryIdentity(input.repositoryId, input.repositorySlug);
+  if (!repoCheck.ok) return invalidMeasuredCohortResult(repoCheck.reason);
+
+  if (!isCohortId(input.cohortId) ||
+      !isSha40(input.recordedOnBaseHeadSha) ||
+      !nonnegInt(input.nowMs) ||
+      !measuredSurfaceSet.has(input.executionSurface) ||
+      typeof input.provenanceVerified !== 'boolean' ||
+      typeof input.independentReviewVerified !== 'boolean' ||
+      typeof input.unattendedCopilotBotClaimed !== 'boolean' ||
+      (hasOwnEnumerableData(input, 'quotaCreditsRemaining') && !nonnegInt(input.quotaCreditsRemaining)) ||
+      !validWindowRecord(input.baselineWindow) ||
+      !validWindowRecord(input.candidateWindow) ||
+      !denseDataArray(input.guidanceEntries, 100) ||
+      !denseDataArray(input.curatedLessons, 200) ||
+      !denseDataArray(input.baselinePullRequests, 500) ||
+      !denseDataArray(input.candidatePullRequests, 500)) {
+    return invalidMeasuredCohortResult('INVALID_COHORT_SCHEMA');
+  }
+  if (!input.provenanceVerified) {
+    return invalidMeasuredCohortResult('UNVERIFIED_COHORT_PROVENANCE');
+  }
+  if (!input.independentReviewVerified) {
+    return invalidMeasuredCohortResult('INDEPENDENT_REVIEW_REQUIRED');
+  }
+  if (input.executionSurface === 'copilot-subagent-wave-prs' && input.unattendedCopilotBotClaimed) {
+    return invalidMeasuredCohortResult('UNATTENDED_BOT_PROVENANCE_MISMATCH');
+  }
+
+  const exitContractCheck = validateRevisedExitContract(input.revisedExitContract);
+  if (!exitContractCheck.ok) return invalidMeasuredCohortResult(exitContractCheck.reason);
+  const revisedExitContract = exitContractCheck.contract;
+
+  if (input.baselineWindow.endMs > input.candidateWindow.startMs ||
+      input.baselineWindow.endMs - input.baselineWindow.startMs !==
+      input.candidateWindow.endMs - input.candidateWindow.startMs) {
+    return invalidMeasuredCohortResult('WINDOWS_NOT_COMPARABLE');
+  }
+  if (input.candidateWindow.endMs > input.nowMs) {
+    return invalidMeasuredCohortResult('FUTURE_COHORT_WINDOW');
+  }
+
+  const resolvedPolicy = resolveCohortPolicy(input.policy, input.repositoryId);
+  if (!resolvedPolicy.ok) return invalidMeasuredCohortResult(resolvedPolicy.reason);
+
+  const containerQuota = hasOwnEnumerableData(input, 'quotaCreditsRemaining')
+    ? input.quotaCreditsRemaining
+    : null;
+  if (resolvedPolicy.quotaCreditsRemaining !== null &&
+      containerQuota !== null &&
+      resolvedPolicy.quotaCreditsRemaining !== containerQuota) {
+    return invalidMeasuredCohortResult('INVALID_POLICY');
+  }
+  const effectiveQuota = resolvedPolicy.quotaCreditsRemaining !== null
+    ? resolvedPolicy.quotaCreditsRemaining
+    : containerQuota;
+
+  if (input.guidanceEntries.length + input.curatedLessons.length === 0) {
+    return invalidMeasuredCohortResult('EMPTY_KNOWLEDGE_CATALOG');
+  }
+
+  const selectionPolicy = resolveSelectionPolicy(
+    {
+      minLineCoveragePct: resolvedPolicy.minLineCoveragePct,
+      minBranchCoveragePct: resolvedPolicy.minBranchCoveragePct
+    },
+    input.repositoryId
+  );
+  const catalogCheck = validateKnowledgeCatalog(
+    input.guidanceEntries,
+    input.curatedLessons,
+    input.repositoryId,
+    input.repositorySlug.toLowerCase(),
+    input.recordedOnBaseHeadSha,
+    input.nowMs,
+    selectionPolicy
+  );
+  if (!catalogCheck.ok) return invalidMeasuredCohortResult(catalogCheck.reason);
+
+  for (const lesson of catalogCheck.validatedLessons) {
+    if (lesson.observedAtMs > input.candidateWindow.startMs) {
+      return invalidMeasuredCohortResult('CAUSAL_LESSON_LEAKAGE');
+    }
+  }
+
+  const globalSeen = {
+    prNumbers: new Set(),
+    headShas: new Set(),
+    mergeShas: new Set(),
+    jobIds: new Set(),
+    closedIssues: new Set()
+  };
+
+  const basePrCheck = validateMeasuredPrCollection(
+    input.baselinePullRequests,
+    input.baselineWindow,
+    globalSeen,
+    false
+  );
+  if (!basePrCheck.ok) return invalidMeasuredCohortResult(basePrCheck.reason);
+
+  const candPrCheck = validateMeasuredPrCollection(
+    input.candidatePullRequests,
+    input.candidateWindow,
+    globalSeen,
+    true
+  );
+  if (!candPrCheck.ok) return invalidMeasuredCohortResult(candPrCheck.reason);
+
+  const catalogEntryCount =
+    catalogCheck.validatedGuidance.length + catalogCheck.validatedLessons.length;
+  const baselineSelections = [];
+  for (const pr of input.baselinePullRequests) {
+    const selCheck = evaluatePrKnowledgeSelection(pr, input, selectionPolicy, catalogCheck);
+    if (!selCheck.ok) return invalidMeasuredCohortResult(selCheck.reason);
+    baselineSelections.push(Object.freeze({
+      unitId: pr.unitId,
+      prNumber: pr.prNumber,
+      fullCatalogBytes: selCheck.selection.fullCatalogBytes,
+      unscopedEntriesCount: catalogEntryCount,
+      checkpointBinding: selCheck.selection.checkpointBinding
+    }));
+  }
+
+  const candidateSelections = [];
+  const closedCandidateIssueNumbers = [];
+  for (const pr of input.candidatePullRequests) {
+    const selCheck = evaluatePrKnowledgeSelection(pr, input, selectionPolicy, catalogCheck);
+    if (!selCheck.ok) return invalidMeasuredCohortResult(selCheck.reason);
+    const {selection} = selCheck;
+    if (selection.selectedGuidance.length + selection.selectedLessons.length === 0) {
+      return invalidMeasuredCohortResult('EMPTY_SCOPED_SELECTION');
+    }
+    if (hasOwnEnumerableData(pr, 'closedIssueNumbers')) {
+      for (const issueNum of pr.closedIssueNumbers) {
+        closedCandidateIssueNumbers.push(issueNum);
+      }
+    }
+    candidateSelections.push(Object.freeze({
+      unitId: pr.unitId,
+      prNumber: pr.prNumber,
+      selectedGuidanceIds: Object.freeze(selection.selectedGuidance.map(g => g.guidanceId)),
+      selectedLessonIds: Object.freeze(selection.selectedLessons.map(l => l.lessonId)),
+      fullCatalogBytes: selection.fullCatalogBytes,
+      selectedContextBytes: selection.selectedContextBytes,
+      contextBytesSaved: selection.contextBytesSaved,
+      omittedOutOfScopeCount: selection.omittedOutOfScopeCount,
+      omittedCheckpointedCount: selection.omittedCheckpointedCount,
+      checkpointBinding: selection.checkpointBinding
+    }));
+  }
+
+  const allPrs = [...input.baselinePullRequests, ...input.candidatePullRequests];
+  const contextLoadingObserved =
+    allPrs.length > 0 && allPrs.every(pr => hasOwnEnumerableData(pr, 'contextLoadObservation'));
+  const aiCreditAccountingVerified =
+    allPrs.length > 0 && allPrs.every(pr => hasOwnEnumerableData(pr, 'verifiedAiCredits'));
+
+  if (aiCreditAccountingVerified && effectiveQuota === null) {
+    return invalidMeasuredCohortResult('QUOTA_REMAINING_REQUIRED');
+  }
+
+  const projectedSelectedBytesP50 = candidateSelections.length > 0
+    ? nearestRankP50(candidateSelections.map(s => s.selectedContextBytes))
+    : null;
+  const projectedSelectorSavings = Object.freeze({
+    advisoryOnly: !contextLoadingObserved,
+    fullCatalogBytes: catalogCheck.fullCatalogBytes,
+    candidateSelectedContextBytesP50: projectedSelectedBytesP50,
+    projectedContextBytesSavedP50: projectedSelectedBytesP50 === null
+      ? null
+      : catalogCheck.fullCatalogBytes - projectedSelectedBytesP50,
+    baselineSelections: Object.freeze(baselineSelections),
+    candidateSelections: Object.freeze(candidateSelections)
+  });
+
+  if (input.baselinePullRequests.length < MIN_COMPARABLE_COHORT_UNITS ||
+      input.candidatePullRequests.length < MIN_COMPARABLE_COHORT_UNITS) {
+    return Object.freeze({
+      valid: true,
+      shadow: true,
+      readOnly: true,
+      autoPolicyMutation: false,
+      externalKnowledgeStoreRequired: false,
+      repositoryId: input.repositoryId,
+      repositorySlug: input.repositorySlug,
+      cohortId: input.cohortId,
+      recordedOnBaseHeadSha: input.recordedOnBaseHeadSha,
+      executionSurface: input.executionSurface,
+      unattendedCopilotBotClaimed: input.unattendedCopilotBotClaimed,
+      revisedExitContract,
+      contextLoadingObserved,
+      aiCreditAccountingVerified,
+      metricDerivations: MEASURED_METRIC_DERIVATIONS,
+      status: 'INSUFFICIENT_COHORT',
+      adoptionApproved: false,
+      issue14ReadoutClosureAuthorized: false,
+      reason: 'INSUFFICIENT_COMPARABLE_UNITS',
+      rejectionReasons: Object.freeze([]),
+      minimumRequiredUnits: MIN_COMPARABLE_COHORT_UNITS,
+      baselineUnitCount: input.baselinePullRequests.length,
+      candidateUnitCount: input.candidatePullRequests.length,
+      closedCandidateIssueNumbers: Object.freeze(closedCandidateIssueNumbers),
+      projectedSelectorSavings
+    });
+  }
+
+  const windowDurationMs = input.baselineWindow.endMs - input.baselineWindow.startMs;
+  const baselineOverlaps = computeConcurrentPathOverlaps(input.baselinePullRequests);
+  const candidateOverlaps = computeConcurrentPathOverlaps(input.candidatePullRequests);
+
+  const baseSummary = summarizeMeasuredWave(
+    input.baselinePullRequests,
+    basePrCheck.componentSums,
+    baselineOverlaps,
+    windowDurationMs,
+    contextLoadingObserved,
+    aiCreditAccountingVerified,
+    resolvedPolicy
+  );
+  if (!baseSummary.allMeetFloors) {
+    return invalidMeasuredCohortResult('BASELINE_COVERAGE_BELOW_FLOOR');
+  }
+  if (baseSummary.metrics.incrementalBilledUsdCents > 0) {
+    return invalidMeasuredCohortResult('BASELINE_UNAPPROVED_SPEND');
+  }
+
+  const candSummary = summarizeMeasuredWave(
+    input.candidatePullRequests,
+    candPrCheck.componentSums,
+    candidateOverlaps,
+    windowDurationMs,
+    contextLoadingObserved,
+    aiCreditAccountingVerified,
+    resolvedPolicy
+  );
+
+  const baseMetrics = baseSummary.metrics;
+  const candMetrics = candSummary.metrics;
+  const rejectionReasons = [];
+
+  if (!candSummary.allMeetFloors) {
+    rejectionReasons.push('COVERAGE_BELOW_FLOOR');
+  }
+
+  const componentCoverageRegressed =
+    BigInt(candSummary.coveredLines) * BigInt(baseSummary.totalLines) <
+      BigInt(baseSummary.coveredLines) * BigInt(candSummary.totalLines) ||
+    BigInt(candSummary.coveredBranches) * BigInt(baseSummary.totalBranches) <
+      BigInt(baseSummary.coveredBranches) * BigInt(candSummary.totalBranches);
+
+  const overallCoverageRegressed =
+    BigInt(candSummary.overallCoveredLines) * BigInt(baseSummary.overallTotalLines) <
+      BigInt(baseSummary.overallCoveredLines) * BigInt(candSummary.overallTotalLines) ||
+    BigInt(candSummary.overallCoveredBranches) * BigInt(baseSummary.overallTotalBranches) <
+      BigInt(baseSummary.overallCoveredBranches) * BigInt(candSummary.overallTotalBranches);
+
+  if (componentCoverageRegressed || overallCoverageRegressed) {
+    rejectionReasons.push('COVERAGE_REGRESSED');
+  }
+  if (candMetrics.securityFindings > 0) {
+    rejectionReasons.push('SECURITY_REGRESSION');
+  }
+  if (candMetrics.duplicateWorkCount > 0 || candMetrics.unsupportedRoutingCount > 0) {
+    rejectionReasons.push('ROUTING_OR_DUPLICATE_WORK_VIOLATION');
+  }
+  if (candMetrics.unitCount < baseMetrics.unitCount) {
+    rejectionReasons.push('THROUGHPUT_REGRESSED');
+  }
+
+  const aiCreditCostRegressed = aiCreditAccountingVerified && (
+    candMetrics.aiCreditsTotal > effectiveQuota ||
+    BigInt(candMetrics.aiCreditsTotal) * BigInt(baseMetrics.unitCount) >
+      BigInt(baseMetrics.aiCreditsTotal) * BigInt(candMetrics.unitCount)
+  );
+  if (candMetrics.incrementalBilledUsdCents > 0 || aiCreditCostRegressed) {
+    rejectionReasons.push('COST_REGRESSION');
+  }
+
+  const reworkRegressed =
+    BigInt(candSummary.totalReworkIterations) * BigInt(baseMetrics.unitCount) >
+      BigInt(baseSummary.totalReworkIterations) * BigInt(candMetrics.unitCount);
+  const contextBytesRegressed = contextLoadingObserved &&
+    candMetrics.contextBytesLoadedP50 > baseMetrics.contextBytesLoadedP50;
+  if (candMetrics.explorationStepsP50 > baseMetrics.explorationStepsP50 ||
+      contextBytesRegressed ||
+      candMetrics.repeatedContextLoadsP50 > baseMetrics.repeatedContextLoadsP50 ||
+      reworkRegressed) {
+    rejectionReasons.push('EXPLORATION_OR_REWORK_REGRESSED');
+  }
+
+  const interactionTurnMetrics = Object.freeze({
+    advisoryProxyOnly: true,
+    baselineInteractionTurnsTotal: baseSummary.interactionTurnsTotal,
+    candidateInteractionTurnsTotal: candSummary.interactionTurnsTotal,
+    baselineInteractionTurnsPerUnit: baseSummary.interactionTurnsTotal / baseMetrics.unitCount,
+    candidateInteractionTurnsPerUnit: candSummary.interactionTurnsTotal / candMetrics.unitCount,
+    interactionTurnsPerUnitDelta:
+      (candSummary.interactionTurnsTotal / candMetrics.unitCount) -
+      (baseSummary.interactionTurnsTotal / baseMetrics.unitCount)
+  });
+
+  const deltas = Object.freeze({
+    explorationStepsP50Delta: candMetrics.explorationStepsP50 - baseMetrics.explorationStepsP50,
+    contextBytesLoadedP50Delta: contextLoadingObserved
+      ? candMetrics.contextBytesLoadedP50 - baseMetrics.contextBytesLoadedP50
+      : null,
+    repeatedContextLoadsP50Delta:
+      candMetrics.repeatedContextLoadsP50 - baseMetrics.repeatedContextLoadsP50,
+    reworkIterationsRateBpsDelta:
+      candMetrics.reworkIterationsRateBps - baseMetrics.reworkIterationsRateBps,
+    aiCreditsPerUnitDelta: aiCreditAccountingVerified
+      ? candMetrics.aiCreditsPerUnit - baseMetrics.aiCreditsPerUnit
+      : null,
+    acceptedUnitsPerDayDelta: candMetrics.acceptedUnitsPerDay - baseMetrics.acceptedUnitsPerDay
+  });
+
+  const observedReworkReduced =
+    BigInt(candSummary.totalReworkIterations) * BigInt(baseMetrics.unitCount) <
+      BigInt(baseSummary.totalReworkIterations) * BigInt(candMetrics.unitCount);
+
+  const unverifiedTelemetryReasons = [];
+  if (!contextLoadingObserved) {
+    unverifiedTelemetryReasons.push('UNVERIFIED_CONTEXT_LOADING_TELEMETRY');
+  }
+  if (!aiCreditAccountingVerified) {
+    unverifiedTelemetryReasons.push('UNVERIFIED_AI_CREDIT_ACCOUNTING');
+  }
+  const frozenUnverifiedReasons = Object.freeze(unverifiedTelemetryReasons);
+
+  const terminalBase = input.baselinePullRequests.reduce((latest, pr) =>
+    pr.mergedAtMs > latest.mergedAtMs ||
+      (pr.mergedAtMs === latest.mergedAtMs && pr.prNumber > latest.prNumber)
+      ? pr
+      : latest);
+
+  const nonRegressedFromTerminalBase =
+    BigInt(candSummary.overallCoveredLines) * BigInt(terminalBase.overallTotalLines) >=
+      BigInt(terminalBase.overallCoveredLines) * BigInt(candSummary.overallTotalLines) &&
+    BigInt(candSummary.overallCoveredBranches) * BigInt(terminalBase.overallTotalBranches) >=
+      BigInt(terminalBase.overallCoveredBranches) * BigInt(candSummary.overallTotalBranches);
+
+  const onlyBaseDriftOverallRegression =
+    rejectionReasons.length === 1 &&
+    rejectionReasons[0] === 'COVERAGE_REGRESSED' &&
+    !componentCoverageRegressed &&
+    nonRegressedFromTerminalBase;
+
+  const subagentReadoutAuthorized =
+    (rejectionReasons.length === 0 || onlyBaseDriftOverallRegression) &&
+    input.executionSurface === 'copilot-subagent-wave-prs' &&
+    revisedExitContract !== null &&
+    revisedExitContract.ownerApproved &&
+    revisedExitContract.allowsSubagentWaveCohortReadout &&
+    observedReworkReduced;
+
+  if (rejectionReasons.length > 0) {
+    return Object.freeze({
+      valid: true,
+      shadow: true,
+      readOnly: true,
+      autoPolicyMutation: false,
+      externalKnowledgeStoreRequired: false,
+      repositoryId: input.repositoryId,
+      repositorySlug: input.repositorySlug,
+      cohortId: input.cohortId,
+      recordedOnBaseHeadSha: input.recordedOnBaseHeadSha,
+      executionSurface: input.executionSurface,
+      unattendedCopilotBotClaimed: input.unattendedCopilotBotClaimed,
+      revisedExitContract,
+      contextLoadingObserved,
+      aiCreditAccountingVerified,
+      metricDerivations: MEASURED_METRIC_DERIVATIONS,
+      status: 'REJECTED_REGRESSION',
+      adoptionApproved: false,
+      issue14ReadoutClosureAuthorized: subagentReadoutAuthorized,
+      reason: rejectionReasons[0],
+      rejectionReasons: Object.freeze(rejectionReasons),
+      unverifiedTelemetryReasons: frozenUnverifiedReasons,
+      baselineMetrics: baseMetrics,
+      candidateMetrics: candMetrics,
+      deltas,
+      interactionTurnMetrics,
+      closedCandidateIssueNumbers: Object.freeze(closedCandidateIssueNumbers),
+      projectedSelectorSavings
+    });
+  }
+
+  if (unverifiedTelemetryReasons.length > 0) {
+    return Object.freeze({
+      valid: true,
+      shadow: true,
+      readOnly: true,
+      autoPolicyMutation: false,
+      externalKnowledgeStoreRequired: false,
+      repositoryId: input.repositoryId,
+      repositorySlug: input.repositorySlug,
+      cohortId: input.cohortId,
+      recordedOnBaseHeadSha: input.recordedOnBaseHeadSha,
+      executionSurface: input.executionSurface,
+      unattendedCopilotBotClaimed: input.unattendedCopilotBotClaimed,
+      revisedExitContract,
+      contextLoadingObserved,
+      aiCreditAccountingVerified,
+      metricDerivations: MEASURED_METRIC_DERIVATIONS,
+      status: 'UNVERIFIED_ADOPTION_TELEMETRY',
+      adoptionApproved: false,
+      issue14ReadoutClosureAuthorized: subagentReadoutAuthorized,
+      reason: unverifiedTelemetryReasons[0],
+      rejectionReasons: Object.freeze([]),
+      unverifiedTelemetryReasons: frozenUnverifiedReasons,
+      baselineMetrics: baseMetrics,
+      candidateMetrics: candMetrics,
+      deltas,
+      interactionTurnMetrics,
+      closedCandidateIssueNumbers: Object.freeze(closedCandidateIssueNumbers),
+      projectedSelectorSavings
+    });
+  }
+
+  const materialReduction =
+    candMetrics.explorationStepsP50 < baseMetrics.explorationStepsP50 ||
+    candMetrics.contextBytesLoadedP50 < baseMetrics.contextBytesLoadedP50 ||
+    candMetrics.repeatedContextLoadsP50 < baseMetrics.repeatedContextLoadsP50 ||
+    observedReworkReduced;
+
+  const readoutAuthorized = materialReduction && (
+    (input.executionSurface === 'github-hosted-copilot-prs' && input.unattendedCopilotBotClaimed) ||
+    subagentReadoutAuthorized
+  );
+
+  return Object.freeze({
+    valid: true,
+    shadow: true,
+    readOnly: true,
+    autoPolicyMutation: false,
+    externalKnowledgeStoreRequired: false,
+    repositoryId: input.repositoryId,
+    repositorySlug: input.repositorySlug,
+    cohortId: input.cohortId,
+    recordedOnBaseHeadSha: input.recordedOnBaseHeadSha,
+    executionSurface: input.executionSurface,
+    unattendedCopilotBotClaimed: input.unattendedCopilotBotClaimed,
+    revisedExitContract,
+    contextLoadingObserved,
+    aiCreditAccountingVerified,
+    metricDerivations: MEASURED_METRIC_DERIVATIONS,
+    status: materialReduction ? 'ADOPTION_APPROVED' : 'NO_MATERIAL_REDUCTION',
+    adoptionApproved: materialReduction,
+    issue14ReadoutClosureAuthorized: readoutAuthorized,
+    reason: materialReduction ? 'EXPLORATION_AND_CONTEXT_REDUCED' : 'NO_EXPLORATION_OR_CONTEXT_REDUCTION',
+    rejectionReasons: Object.freeze([]),
+    unverifiedTelemetryReasons: frozenUnverifiedReasons,
+    baselineMetrics: baseMetrics,
+    candidateMetrics: candMetrics,
+    deltas,
+    interactionTurnMetrics,
+    closedCandidateIssueNumbers: Object.freeze(closedCandidateIssueNumbers),
+    projectedSelectorSavings
   });
 }

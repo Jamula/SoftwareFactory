@@ -4,15 +4,18 @@ import {readFile} from 'node:fs/promises';
 import {
   ALLOWED_GUIDANCE_SOURCES,
   ALLOWED_LESSON_SOURCES,
+  ALLOWED_MEASURED_EXECUTION_SURFACES,
   ALLOWED_SPECIALIST_ROLES,
   DEFAULT_MAX_CONTEXT_BYTES,
   DEFAULT_MAX_SELECTED_GUIDANCE,
   DEFAULT_MAX_SELECTED_LESSONS,
   MAX_FRESHNESS_CEILING_MS,
   MAX_GUIDANCE_TEXT_CHARS,
+  MEASURED_METRIC_DERIVATIONS,
   MIN_COMPARABLE_COHORT_UNITS,
   SOFTWARE_FACTORY_REPOSITORY_SLUG,
   compareExplorationContextReduction,
+  evaluateMeasuredRepositoryExplorationCohort,
   selectScopedGuidanceAndLessons,
   validateCuratedLesson
 } from '../../tools/engineering-factory/curated-lessons.mjs';
@@ -1362,21 +1365,30 @@ test('replays docs/evidence/m02-03-curated-lessons-cohort.json deterministically
   const receiptUrl = new URL('../../docs/evidence/m02-03-curated-lessons-cohort.json', import.meta.url);
   const receipt = JSON.parse(await readFile(receiptUrl, 'utf8'));
 
-  assert.equal(receipt.schemaVersion, '1.0.0');
+  assert.equal(receipt.schemaVersion, '1.1.0');
   assert.equal(receipt.milestone, 'M02.03');
   assert.equal(receipt.issueNumber, 14);
   assert.equal(receipt.repositoryId, SF_REPO_ID);
   assert.equal(receipt.repositorySlug, SOFTWARE_FACTORY_REPOSITORY_SLUG);
-  assert.equal(receipt.provenance.evaluationMode, 'offline-shadow-replay');
+  assert.equal(receipt.provenance.evaluationMode, 'dual-shadow-replay-and-measured-wave-readout');
+  assert.equal(receipt.provenance.executionSurface, 'copilot-subagent-wave-prs');
   assert.equal(receipt.provenance.shadow, true);
   assert.equal(receipt.provenance.readOnly, true);
   assert.equal(receipt.provenance.autoPolicyMutation, false);
   assert.equal(receipt.provenance.externalKnowledgeStoreRequired, false);
+  assert.equal(receipt.provenance.realMergedRepositoryPrsVerified, true);
+  assert.equal(receipt.provenance.exactHeadCiCoverageVerified, true);
+  assert.equal(receipt.provenance.zeroIncrementalBilledSpendVerified, true);
   assert.equal(receipt.provenance.liveAutonomyClaim, false);
-  assert.equal(receipt.provenance.liveCopilotCohortProvenance, false);
-  assert.equal(receipt.provenance.issueClosureAuthorized, false);
+  assert.equal(receipt.provenance.unattendedCopilotBotClaimed, false);
+  assert.equal(receipt.provenance.livePolicyAdoptionAuthorized, false);
+  assert.equal(receipt.provenance.contextLoadingObservedOnHistoricalPrs, false);
+  assert.equal(receipt.provenance.aiCreditAccountingVerifiedOnHistoricalPrs, false);
+  assert.equal(receipt.provenance.issueClosureAuthorized, true);
+  assert.equal(receipt.provenance.closesIssueNumber, 14);
+  assert.equal(receipt.provenance.revisedExitContract.preservesM01Issue10DirectCopilotGate, true);
 
-  const {selectionEvaluation, cohortComparison} = receipt;
+  const {selectionEvaluation, measuredRepositoryCohort, cohortComparison} = receipt;
   assert.ok(selectionEvaluation.unitSelections.length >= MIN_COMPARABLE_COHORT_UNITS);
   assert.equal(
     selectionEvaluation.unitSelections.length,
@@ -1385,6 +1397,10 @@ test('replays docs/evidence/m02-03-curated-lessons-cohort.json deterministically
   assert.equal(
     selectionEvaluation.unitSelections.length,
     cohortComparison.candidateCohort.units.length
+  );
+  assert.deepEqual(
+    measuredRepositoryCohort.candidatePullRequests.map(pr => pr.prNumber),
+    [171, 172, 173, 174, 177]
   );
 
   for (let i = 0; i < selectionEvaluation.unitSelections.length; i++) {
@@ -1425,7 +1441,6 @@ test('replays docs/evidence/m02-03-curated-lessons-cohort.json deterministically
     assert.equal(selection.omittedOutOfScopeCount, unitSelection.expected.omittedOutOfScopeCount);
     assert.equal(selection.omittedCheckpointedCount, unitSelection.expected.omittedCheckpointedCount);
 
-    // Cohort baseline/candidate context bytes are bound directly to unscoped vs scoped catalog bytes
     assert.equal(baselineUnit.contextBytesLoaded, selection.fullCatalogBytes);
     assert.equal(candidateUnit.contextBytesLoaded, selection.selectedContextBytes);
     assert.ok(candidateUnit.contextBytesLoaded < baselineUnit.contextBytesLoaded);
@@ -1442,4 +1457,773 @@ test('replays docs/evidence/m02-03-curated-lessons-cohort.json deterministically
   assert.equal(outcome.readOnly, true);
   assert.equal(outcome.status, 'ADOPTION_APPROVED');
   assert.equal(outcome.adoptionApproved, true);
+
+  const measuredInput = {
+    repositoryId: receipt.repositoryId,
+    repositorySlug: receipt.repositorySlug,
+    cohortId: measuredRepositoryCohort.cohortId,
+    recordedOnBaseHeadSha: receipt.recordedOnBaseHeadSha,
+    nowMs: selectionEvaluation.nowMs,
+    executionSurface: measuredRepositoryCohort.executionSurface,
+    provenanceVerified: measuredRepositoryCohort.provenanceVerified,
+    independentReviewVerified: measuredRepositoryCohort.independentReviewVerified,
+    unattendedCopilotBotClaimed: measuredRepositoryCohort.unattendedCopilotBotClaimed,
+    revisedExitContract: measuredRepositoryCohort.revisedExitContract,
+    policy: cohortComparison.policy,
+    baselineWindow: measuredRepositoryCohort.baselineWindow,
+    candidateWindow: measuredRepositoryCohort.candidateWindow,
+    guidanceEntries: selectionEvaluation.guidanceEntries,
+    curatedLessons: selectionEvaluation.curatedLessons,
+    baselinePullRequests: measuredRepositoryCohort.baselinePullRequests,
+    candidatePullRequests: measuredRepositoryCohort.candidatePullRequests
+  };
+  const measuredOutcome = evaluateMeasuredRepositoryExplorationCohort(measuredInput);
+  assert.equal(Object.isFrozen(measuredOutcome), true);
+  assert.equal(Object.isFrozen(measuredOutcome.projectedSelectorSavings), true);
+  assert.equal(Object.isFrozen(measuredOutcome.interactionTurnMetrics), true);
+  assert.equal(measuredOutcome.valid, true);
+  assert.equal(measuredOutcome.status, measuredRepositoryCohort.expectedReadout.status);
+  assert.equal(measuredOutcome.adoptionApproved, false);
+  assert.equal(measuredOutcome.issue14ReadoutClosureAuthorized, true);
+  assert.equal(measuredOutcome.contextLoadingObserved, false);
+  assert.equal(measuredOutcome.aiCreditAccountingVerified, false);
+  assert.deepEqual(
+    measuredOutcome.rejectionReasons,
+    measuredRepositoryCohort.expectedReadout.rejectionReasons
+  );
+  assert.deepEqual(
+    measuredOutcome.unverifiedTelemetryReasons,
+    measuredRepositoryCohort.expectedReadout.unverifiedTelemetryReasons
+  );
+  assert.deepEqual(measuredOutcome.closedCandidateIssueNumbers, [6, 15, 13]);
+  assert.deepEqual(
+    measuredOutcome.baselineMetrics,
+    measuredRepositoryCohort.expectedReadout.baselineMetrics
+  );
+  assert.deepEqual(
+    measuredOutcome.candidateMetrics,
+    measuredRepositoryCohort.expectedReadout.candidateMetrics
+  );
+  assert.deepEqual(measuredOutcome.deltas, measuredRepositoryCohort.expectedReadout.deltas);
+  assert.deepEqual(
+    measuredOutcome.interactionTurnMetrics,
+    measuredRepositoryCohort.expectedReadout.interactionTurnMetrics
+  );
+
+  // Reducing candidate overall coverage below terminal baseline (98.5% lines / 96% branches) blocks readout closure too
+  const degradedOverallReceipt = evaluateMeasuredRepositoryExplorationCohort({
+    ...measuredInput,
+    candidatePullRequests: measuredRepositoryCohort.candidatePullRequests.map(pr => ({
+      ...pr,
+      overallCoveredLines: 98500,
+      overallTotalLines: 100000,
+      overallCoveredBranches: 48000,
+      overallTotalBranches: 50000
+    }))
+  });
+  assert.equal(degradedOverallReceipt.status, 'REJECTED_REGRESSION');
+  assert.equal(degradedOverallReceipt.adoptionApproved, false);
+  assert.equal(degradedOverallReceipt.issue14ReadoutClosureAuthorized, false);
+  assert.deepEqual(degradedOverallReceipt.rejectionReasons, ['COVERAGE_REGRESSED']);
 });
+
+function shaHex(n) {
+  return n.toString(16).padStart(40, '0');
+}
+
+function makeMeasuredPr(seed, overrides = {}) {
+  return {
+    unitId: `lane-${seed}`,
+    prNumber: 200 + seed,
+    relatedIssueNumbers: [10 + seed],
+    headSha: shaHex(1000 + seed),
+    mergeCommitSha: shaHex(2000 + seed),
+    createdAtMs: 1_010_000 + seed * 1_000,
+    mergedAtMs: 1_020_000 + seed * 1_000,
+    ciCoverageJobId: 90_000 + seed,
+    targetComponent: 'engineering-factory',
+    specialistRole: 'api',
+    changedPaths: [`tools/engineering-factory/mod-${seed}.mjs`],
+    totalCommits: 5,
+    nonMergeCommits: 5,
+    uniqueReviewedCommits: 4,
+    reviewCount: 6,
+    reviewComments: 8,
+    incrementalBilledUsdCents: 0,
+    componentCoverages: [
+      {
+        component: `engineering-factory.mod-${seed}`,
+        coveredLines: 990,
+        totalLines: 1000,
+        coveredBranches: 485,
+        totalBranches: 500
+      }
+    ],
+    overallCoveredLines: 9950,
+    overallTotalLines: 10000,
+    overallCoveredBranches: 4900,
+    overallTotalBranches: 5000,
+    securityFindings: 0,
+    unsupportedRouting: false,
+    contextLoadObservation: {
+      observedContextBytesLoaded: 1400,
+      observedRepeatedContextLoads: 3,
+      observedExplorationSteps: 14
+    },
+    verifiedAiCredits: 20,
+    ...overrides
+  };
+}
+
+function makeMeasuredInput(overrides = {}) {
+  return {
+    repositoryId: SF_REPO_ID,
+    repositorySlug: SOFTWARE_FACTORY_REPOSITORY_SLUG,
+    cohortId: 'm02-03-measured-test',
+    recordedOnBaseHeadSha: HEAD_SHA,
+    nowMs: 3_000_000,
+    executionSurface: 'copilot-subagent-wave-prs',
+    provenanceVerified: true,
+    independentReviewVerified: true,
+    unattendedCopilotBotClaimed: false,
+    quotaCreditsRemaining: 500,
+    baselineWindow: {startMs: 1_000_000, endMs: 2_000_000},
+    candidateWindow: {startMs: 2_000_000, endMs: 3_000_000},
+    guidanceEntries: [
+      makeGuidance({guidanceId: 'g-active', componentScope: ['engineering-factory']}),
+      makeGuidance({
+        guidanceId: 'g-docs',
+        componentScope: ['repository-docs'],
+        sourcePath: 'docs/ROADMAP.md',
+        guidanceText: 'Keep partial acceptance non-closing across repository documentation.'
+      })
+    ],
+    curatedLessons: [
+      makeLesson({
+        lessonId: 'l-active',
+        observedAtMs: 1_900_000,
+        maxFreshnessMs: 5_000_000
+      }),
+      makeLesson({
+        lessonId: 'l-other',
+        componentScope: ['apphost-runtime'],
+        observedAtMs: 1_800_000,
+        maxFreshnessMs: 5_000_000
+      })
+    ],
+    baselinePullRequests: [1, 2, 3, 4, 5].map(i => makeMeasuredPr(i)),
+    candidatePullRequests: [1, 2, 3, 4, 5].map(i => makeMeasuredPr(10 + i, {
+      unitId: `lane-${i}`,
+      createdAtMs: 2_010_000 + i * 1_000,
+      mergedAtMs: 2_020_000 + i * 1_000,
+      closedIssueNumbers: i <= 2 ? [20 + i] : [],
+      totalCommits: 2,
+      nonMergeCommits: 2,
+      uniqueReviewedCommits: 2,
+      reviewCount: 3,
+      reviewComments: 2,
+      componentCoverages: [
+        {
+          component: `engineering-factory.mod-${i}`,
+          coveredLines: 995,
+          totalLines: 1000,
+          coveredBranches: 492,
+          totalBranches: 500
+        }
+      ],
+      overallCoveredLines: 9960,
+      overallTotalLines: 10000,
+      overallCoveredBranches: 4920,
+      overallTotalBranches: 5000,
+      contextLoadObservation: {
+        observedContextBytesLoaded: 220,
+        observedRepeatedContextLoads: 1,
+        observedExplorationSteps: 6
+      },
+      verifiedAiCredits: 14
+    })),
+    ...overrides
+  };
+}
+
+test('evaluateMeasuredRepositoryExplorationCohort enforces per-component floors, PR-head checkpoints, pooled overall coverage, observed context/AI-credit gates, and revised exit contracts', () => {
+  assert.deepEqual(ALLOWED_MEASURED_EXECUTION_SURFACES, [
+    'copilot-subagent-wave-prs',
+    'github-hosted-copilot-prs'
+  ]);
+  assert.equal(Object.isFrozen(MEASURED_METRIC_DERIVATIONS), true);
+
+  // 1. Hosted surface with verified context-loading + verified AI-credits + PR-head-bound checkpoints approves adoption
+  const hostedApproved = evaluateMeasuredRepositoryExplorationCohort(makeMeasuredInput({
+    executionSurface: 'github-hosted-copilot-prs',
+    unattendedCopilotBotClaimed: true,
+    baselinePullRequests: [1, 2, 3, 4, 5].map(i => makeMeasuredPr(i, i === 1 ? {
+      checkpointEvidence: {
+        checkpointId: 'cp-base-1',
+        repositoryId: SF_REPO_ID,
+        issueNumber: 11,
+        headSha: shaHex(1001),
+        sequence: 1,
+        digestSha256: DIGEST_256,
+        traceparent: VALID_TRACEPARENT,
+        completedSupersteps: ['planner'],
+        verifiedPaths: ['tools/engineering-factory/mod-1.mjs']
+      }
+    } : {})),
+    candidatePullRequests: [1, 2, 3, 4, 5].map(i => makeMeasuredPr(10 + i, {
+      unitId: `lane-${i}`,
+      createdAtMs: 2_010_000 + i * 1_000,
+      mergedAtMs: 2_020_000 + i * 1_000,
+      totalCommits: 2,
+      nonMergeCommits: 2,
+      uniqueReviewedCommits: 2,
+      reviewCount: 3,
+      reviewComments: 2,
+      componentCoverages: [
+        {
+          component: `engineering-factory.mod-${i}`,
+          coveredLines: 995,
+          totalLines: 1000,
+          coveredBranches: 492,
+          totalBranches: 500
+        }
+      ],
+      overallCoveredLines: 9960,
+      overallCoveredBranches: 4920,
+      contextLoadObservation: {
+        observedContextBytesLoaded: 220,
+        observedRepeatedContextLoads: 1,
+        observedExplorationSteps: 6
+      },
+      verifiedAiCredits: 14,
+      ...(i === 1 ? {
+        checkpointEvidence: {
+          checkpointId: 'cp-cand-1',
+          repositoryId: SF_REPO_ID,
+          issueNumber: 21,
+          headSha: shaHex(1011),
+          sequence: 1,
+          digestSha256: DIGEST_256,
+          traceparent: VALID_TRACEPARENT,
+          completedSupersteps: ['planner'],
+          verifiedPaths: []
+        }
+      } : {})
+    }))
+  }));
+  assert.equal(hostedApproved.valid, true);
+  assert.equal(hostedApproved.status, 'ADOPTION_APPROVED');
+  assert.equal(hostedApproved.adoptionApproved, true);
+  assert.equal(hostedApproved.issue14ReadoutClosureAuthorized, true);
+  assert.equal(hostedApproved.contextLoadingObserved, true);
+  assert.equal(hostedApproved.aiCreditAccountingVerified, true);
+
+  // Sub-agent wave with full observed telemetry approves adoption while keeping readout closure false without revisedExitContract
+  const subagentFullObs = evaluateMeasuredRepositoryExplorationCohort(makeMeasuredInput());
+  assert.equal(subagentFullObs.status, 'ADOPTION_APPROVED');
+  assert.equal(subagentFullObs.adoptionApproved, true);
+  assert.equal(subagentFullObs.issue14ReadoutClosureAuthorized, false);
+
+  // Identical observed telemetry returns NO_MATERIAL_REDUCTION (never inflated by projected selector savings)
+  const noReduction = evaluateMeasuredRepositoryExplorationCohort(makeMeasuredInput({
+    candidatePullRequests: [1, 2, 3, 4, 5].map(i => makeMeasuredPr(10 + i, {
+      unitId: `lane-${i}`,
+      createdAtMs: 2_010_000 + i * 1_000,
+      mergedAtMs: 2_020_000 + i * 1_000
+    }))
+  }));
+  assert.equal(noReduction.valid, true);
+  assert.equal(noReduction.status, 'NO_MATERIAL_REDUCTION');
+  assert.equal(noReduction.adoptionApproved, false);
+  assert.equal(noReduction.issue14ReadoutClosureAuthorized, false);
+
+  // Checkpoint bound to recordedOnBaseHeadSha instead of pr.headSha is rejected as STALE_CHECKPOINT_EVIDENCE
+  assert.equal(
+    evaluateMeasuredRepositoryExplorationCohort(makeMeasuredInput({
+      baselinePullRequests: [makeMeasuredPr(1, {
+        checkpointEvidence: {
+          checkpointId: 'cp-stale-base',
+          repositoryId: SF_REPO_ID,
+          issueNumber: 11,
+          headSha: HEAD_SHA,
+          sequence: 1,
+          digestSha256: DIGEST_256,
+          traceparent: VALID_TRACEPARENT,
+          completedSupersteps: ['planner']
+        }
+      })]
+    })).reason,
+    'STALE_CHECKPOINT_EVIDENCE'
+  );
+  assert.equal(
+    evaluateMeasuredRepositoryExplorationCohort(makeMeasuredInput({
+      candidatePullRequests: [makeMeasuredPr(11, {
+        createdAtMs: 2_010_000,
+        mergedAtMs: 2_020_000,
+        checkpointEvidence: {
+          checkpointId: 'cp-stale-cand',
+          repositoryId: SF_REPO_ID,
+          issueNumber: 21,
+          headSha: HEAD_SHA,
+          sequence: 1,
+          digestSha256: DIGEST_256,
+          traceparent: VALID_TRACEPARENT,
+          completedSupersteps: ['planner']
+        }
+      })]
+    })).reason,
+    'STALE_CHECKPOINT_EVIDENCE'
+  );
+
+  // 2. Per-component independent floor validation: 990/1000 + 90/100 (= 98.18% combined) fails COVERAGE_BELOW_FLOOR
+  const secondComponentBelowFloor = evaluateMeasuredRepositoryExplorationCohort(makeMeasuredInput({
+    candidatePullRequests: [1, 2, 3, 4, 5].map(i => makeMeasuredPr(10 + i, {
+      unitId: `lane-${i}`,
+      createdAtMs: 2_010_000 + i * 1_000,
+      mergedAtMs: 2_020_000 + i * 1_000,
+      componentCoverages: i === 1
+        ? [
+            {
+              component: 'engineering-factory.mod-a',
+              coveredLines: 990,
+              totalLines: 1000,
+              coveredBranches: 495,
+              totalBranches: 500
+            },
+            {
+              component: 'engineering-factory.mod-b',
+              coveredLines: 90,
+              totalLines: 100,
+              coveredBranches: 49,
+              totalBranches: 50
+            }
+          ]
+        : [
+            {
+              component: `engineering-factory.mod-${i}`,
+              coveredLines: 995,
+              totalLines: 1000,
+              coveredBranches: 495,
+              totalBranches: 500
+            }
+          ],
+      overallCoveredLines: 9960,
+      overallTotalLines: 10000,
+      overallCoveredBranches: 4920,
+      overallTotalBranches: 5000
+    }))
+  }));
+  assert.equal(secondComponentBelowFloor.status, 'REJECTED_REGRESSION');
+  assert.equal(secondComponentBelowFloor.adoptionApproved, false);
+  assert.ok(secondComponentBelowFloor.rejectionReasons.includes('COVERAGE_BELOW_FLOOR'));
+
+  // 3. Pooled overall coverage regression (lines or branches) rejects adoption even when component counts improve
+  const pooledOverallRegressed = evaluateMeasuredRepositoryExplorationCohort(makeMeasuredInput({
+    candidatePullRequests: [1, 2, 3, 4, 5].map(i => makeMeasuredPr(10 + i, {
+      unitId: `lane-${i}`,
+      createdAtMs: 2_010_000 + i * 1_000,
+      mergedAtMs: 2_020_000 + i * 1_000,
+      componentCoverages: [
+        {
+          component: `engineering-factory.mod-${i}`,
+          coveredLines: 998,
+          totalLines: 1000,
+          coveredBranches: 496,
+          totalBranches: 500
+        }
+      ],
+      overallCoveredLines: 9850,
+      overallTotalLines: 10000,
+      overallCoveredBranches: 4800,
+      overallTotalBranches: 5000,
+      contextLoadObservation: {
+        observedContextBytesLoaded: 220,
+        observedRepeatedContextLoads: 1,
+        observedExplorationSteps: 6
+      },
+      verifiedAiCredits: 14
+    }))
+  }));
+  assert.equal(pooledOverallRegressed.status, 'REJECTED_REGRESSION');
+  assert.equal(pooledOverallRegressed.adoptionApproved, false);
+  assert.deepEqual(pooledOverallRegressed.rejectionReasons, ['COVERAGE_REGRESSED']);
+
+  // 4. Missing contextLoadObservation or verifiedAiCredits withholds ADOPTION_APPROVED (UNVERIFIED_ADOPTION_TELEMETRY)
+  const unverifiedTelemetry = evaluateMeasuredRepositoryExplorationCohort(makeMeasuredInput({
+    revisedExitContract: {
+      ownerApproved: true,
+      allowsSubagentWaveCohortReadout: true,
+      livePolicyAdoptionAuthorized: false,
+      preservesM01Issue10DirectCopilotGate: true,
+      approvedAtUtc: '2026-11-28T09:44:39Z'
+    },
+    baselinePullRequests: [1, 2, 3, 4, 5].map(i => {
+      const {contextLoadObservation: _c, verifiedAiCredits: _a, ...withoutObs} = makeMeasuredPr(i);
+      return withoutObs;
+    }),
+    candidatePullRequests: [1, 2, 3, 4, 5].map(i => {
+      const {contextLoadObservation: _c, verifiedAiCredits: _a, ...withoutObs} = makeMeasuredPr(10 + i, {
+        unitId: `lane-${i}`,
+        createdAtMs: 2_010_000 + i * 1_000,
+        mergedAtMs: 2_020_000 + i * 1_000,
+        totalCommits: 2,
+        nonMergeCommits: 2,
+        uniqueReviewedCommits: 2,
+        reviewCount: 3,
+        reviewComments: 2,
+        overallCoveredLines: 9960,
+        overallCoveredBranches: 4920
+      });
+      return withoutObs;
+    })
+  }));
+  assert.equal(unverifiedTelemetry.valid, true);
+  assert.equal(unverifiedTelemetry.status, 'UNVERIFIED_ADOPTION_TELEMETRY');
+  assert.equal(unverifiedTelemetry.adoptionApproved, false);
+  assert.equal(unverifiedTelemetry.issue14ReadoutClosureAuthorized, true);
+  assert.deepEqual(unverifiedTelemetry.unverifiedTelemetryReasons, [
+    'UNVERIFIED_CONTEXT_LOADING_TELEMETRY',
+    'UNVERIFIED_AI_CREDIT_ACCOUNTING'
+  ]);
+  assert.equal(unverifiedTelemetry.candidateMetrics.contextBytesLoadedP50, null);
+  assert.equal(unverifiedTelemetry.candidateMetrics.aiCreditsTotal, null);
+  assert.equal(unverifiedTelemetry.interactionTurnMetrics.advisoryProxyOnly, true);
+  assert.equal(unverifiedTelemetry.projectedSelectorSavings.advisoryOnly, true);
+
+  // Without contextLoadObservation, identical PR commit/review stats do NOT fabricate improvement
+  const unverifiedNoReworkGain = evaluateMeasuredRepositoryExplorationCohort(makeMeasuredInput({
+    revisedExitContract: {
+      ownerApproved: true,
+      allowsSubagentWaveCohortReadout: true,
+      livePolicyAdoptionAuthorized: false,
+      preservesM01Issue10DirectCopilotGate: true,
+      approvedAtUtc: '2026-11-28T09:44:39Z'
+    },
+    baselinePullRequests: [1, 2, 3, 4, 5].map(i => {
+      const {contextLoadObservation: _c, ...withoutCtx} = makeMeasuredPr(i);
+      return withoutCtx;
+    }),
+    candidatePullRequests: [1, 2, 3, 4, 5].map(i => {
+      const {contextLoadObservation: _c, ...withoutCtx} = makeMeasuredPr(10 + i, {
+        unitId: `lane-${i}`,
+        createdAtMs: 2_010_000 + i * 1_000,
+        mergedAtMs: 2_020_000 + i * 1_000
+      });
+      return withoutCtx;
+    })
+  }));
+  assert.equal(unverifiedNoReworkGain.status, 'UNVERIFIED_ADOPTION_TELEMETRY');
+  assert.equal(unverifiedNoReworkGain.adoptionApproved, false);
+  assert.equal(unverifiedNoReworkGain.issue14ReadoutClosureAuthorized, false);
+  assert.equal(unverifiedNoReworkGain.deltas.explorationStepsP50Delta, 0);
+  assert.equal(unverifiedNoReworkGain.deltas.reworkIterationsRateBpsDelta, 0);
+
+  // 5. Revised exit contract validation (rejects M01 #10 weakening or live adoption override)
+  assert.equal(
+    evaluateMeasuredRepositoryExplorationCohort(makeMeasuredInput({
+      revisedExitContract: {
+        ownerApproved: true,
+        allowsSubagentWaveCohortReadout: true,
+        livePolicyAdoptionAuthorized: false,
+        preservesM01Issue10DirectCopilotGate: false,
+        approvedAtUtc: '2026-11-28T09:44:39Z'
+      }
+    })).reason,
+    'M01_ISSUE_10_GATE_WEAKENING_FORBIDDEN'
+  );
+  assert.equal(
+    evaluateMeasuredRepositoryExplorationCohort(makeMeasuredInput({
+      revisedExitContract: {
+        ownerApproved: true,
+        allowsSubagentWaveCohortReadout: true,
+        livePolicyAdoptionAuthorized: true,
+        preservesM01Issue10DirectCopilotGate: true,
+        approvedAtUtc: '2026-11-28T09:44:39Z'
+      }
+    })).reason,
+    'LIVE_POLICY_ADOPTION_OVERRIDE_FORBIDDEN'
+  );
+  assert.equal(
+    evaluateMeasuredRepositoryExplorationCohort(makeMeasuredInput({
+      revisedExitContract: {
+        ownerApproved: true,
+        allowsSubagentWaveCohortReadout: true,
+        livePolicyAdoptionAuthorized: false,
+        preservesM01Issue10DirectCopilotGate: true,
+        approvedAtUtc: 'not-a-date'
+      }
+    })).reason,
+    'INVALID_REVISED_EXIT_CONTRACT'
+  );
+
+  // Sub-agent wave surface claiming unattended @copilot bot attribution fails closed
+  assert.equal(
+    evaluateMeasuredRepositoryExplorationCohort(makeMeasuredInput({
+      executionSurface: 'copilot-subagent-wave-prs',
+      unattendedCopilotBotClaimed: true
+    })).reason,
+    'UNATTENDED_BOT_PROVENANCE_MISMATCH'
+  );
+
+  // Insufficient (<5) cohort returns valid INSUFFICIENT_COHORT envelope (and handles 0 candidate PRs)
+  const insufficient = evaluateMeasuredRepositoryExplorationCohort(makeMeasuredInput({
+    candidatePullRequests: []
+  }));
+  assert.equal(insufficient.valid, true);
+  assert.equal(insufficient.status, 'INSUFFICIENT_COHORT');
+  assert.equal(insufficient.adoptionApproved, false);
+  assert.equal(insufficient.candidateUnitCount, 0);
+  assert.equal(insufficient.projectedSelectorSavings.candidateSelectedContextBytesP50, null);
+
+  // Security, cost/quota, throughput, duplicate-work, and exploration regressions
+  const multiRegressed = evaluateMeasuredRepositoryExplorationCohort(makeMeasuredInput({
+    quotaCreditsRemaining: 40,
+    baselinePullRequests: [1, 2, 3, 4, 5, 6].map(i => makeMeasuredPr(i)),
+    candidatePullRequests: [1, 2, 3, 4, 5].map(i => makeMeasuredPr(10 + i, {
+      unitId: `lane-${i}`,
+      createdAtMs: 2_010_000,
+      mergedAtMs: 2_050_000,
+      changedPaths: i <= 2
+        ? ['tools/engineering-factory/shared-lane.mjs']
+        : [`tools/engineering-factory/mod-${i}.mjs`],
+      securityFindings: i === 2 ? 1 : 0,
+      unsupportedRouting: i === 3,
+      verifiedAiCredits: 25,
+      contextLoadObservation: {
+        observedContextBytesLoaded: 2000,
+        observedRepeatedContextLoads: 5,
+        observedExplorationSteps: 20
+      }
+    }))
+  }));
+  assert.equal(multiRegressed.status, 'REJECTED_REGRESSION');
+  assert.deepEqual(multiRegressed.rejectionReasons, [
+    'SECURITY_REGRESSION',
+    'ROUTING_OR_DUPLICATE_WORK_VIOLATION',
+    'THROUGHPUT_REGRESSED',
+    'COST_REGRESSION',
+    'EXPLORATION_OR_REWORK_REGRESSED'
+  ]);
+
+  // Baseline overall floor failure and baseline spend failure fail closed
+  assert.equal(
+    evaluateMeasuredRepositoryExplorationCohort(makeMeasuredInput({
+      baselinePullRequests: [1, 2, 3, 4, 5].map(i => makeMeasuredPr(i, {
+        overallCoveredLines: i === 1 ? 9700 : 9950
+      }))
+    })).reason,
+    'BASELINE_COVERAGE_BELOW_FLOOR'
+  );
+  assert.equal(
+    evaluateMeasuredRepositoryExplorationCohort(makeMeasuredInput({
+      baselinePullRequests: [1, 2, 3, 4, 5].map(i => makeMeasuredPr(i, {
+        incrementalBilledUsdCents: i === 1 ? 5 : 0
+      }))
+    })).reason,
+    'BASELINE_UNAPPROVED_SPEND'
+  );
+
+  // Causal lesson leakage & pre-window candidate PR creation
+  assert.equal(
+    evaluateMeasuredRepositoryExplorationCohort(makeMeasuredInput({
+      curatedLessons: [makeLesson({observedAtMs: 2_000_001, maxFreshnessMs: 5_000_000})]
+    })).reason,
+    'CAUSAL_LESSON_LEAKAGE'
+  );
+  assert.equal(
+    evaluateMeasuredRepositoryExplorationCohort(makeMeasuredInput({
+      candidatePullRequests: [1, 2, 3, 4, 5].map(i => makeMeasuredPr(10 + i, {
+        createdAtMs: i === 1 ? 1_999_999 : 2_010_000,
+        mergedAtMs: 2_020_000 + i * 1_000
+      }))
+    })).reason,
+    'PR_OUTSIDE_COHORT_WINDOW'
+  );
+
+  // Envelope, window, quota conflict, catalog, selection, and duplicate PR validation failures
+  assert.equal(evaluateMeasuredRepositoryExplorationCohort(null).reason, 'INVALID_COHORT_SCHEMA');
+  assert.equal(
+    evaluateMeasuredRepositoryExplorationCohort(makeMeasuredInput({
+      repositorySlug: 'OtherOrg/Repo'
+    })).reason,
+    'REPOSITORY_IDENTITY_MISMATCH'
+  );
+  assert.equal(
+    evaluateMeasuredRepositoryExplorationCohort(makeMeasuredInput({
+      executionSurface: 'unknown-surface'
+    })).reason,
+    'INVALID_COHORT_SCHEMA'
+  );
+  assert.equal(
+    evaluateMeasuredRepositoryExplorationCohort(makeMeasuredInput({
+      provenanceVerified: false
+    })).reason,
+    'UNVERIFIED_COHORT_PROVENANCE'
+  );
+  assert.equal(
+    evaluateMeasuredRepositoryExplorationCohort(makeMeasuredInput({
+      independentReviewVerified: false
+    })).reason,
+    'INDEPENDENT_REVIEW_REQUIRED'
+  );
+  assert.equal(
+    evaluateMeasuredRepositoryExplorationCohort(makeMeasuredInput({
+      baselineWindow: {startMs: 1_000_000, endMs: 2_100_000}
+    })).reason,
+    'WINDOWS_NOT_COMPARABLE'
+  );
+  assert.equal(
+    evaluateMeasuredRepositoryExplorationCohort(makeMeasuredInput({
+      nowMs: 2_999_999
+    })).reason,
+    'FUTURE_COHORT_WINDOW'
+  );
+  assert.equal(
+    evaluateMeasuredRepositoryExplorationCohort(makeMeasuredInput({
+      policy: 'invalid-policy'
+    })).reason,
+    'INVALID_POLICY'
+  );
+  assert.equal(
+    evaluateMeasuredRepositoryExplorationCohort(makeMeasuredInput({
+      quotaCreditsRemaining: 500,
+      policy: {quotaCreditsRemaining: 400}
+    })).reason,
+    'INVALID_POLICY'
+  );
+  const {quotaCreditsRemaining: _noTopQuota, ...measuredWithoutQuota} = makeMeasuredInput();
+  assert.equal(
+    evaluateMeasuredRepositoryExplorationCohort(measuredWithoutQuota).reason,
+    'QUOTA_REMAINING_REQUIRED'
+  );
+  assert.equal(
+    evaluateMeasuredRepositoryExplorationCohort(makeMeasuredInput({
+      guidanceEntries: [],
+      curatedLessons: []
+    })).reason,
+    'EMPTY_KNOWLEDGE_CATALOG'
+  );
+  assert.equal(
+    evaluateMeasuredRepositoryExplorationCohort(makeMeasuredInput({
+      guidanceEntries: [makeGuidance({revisionSha: OTHER_SHA})]
+    })).reason,
+    'STALE_GUIDANCE_REVISION'
+  );
+  assert.equal(
+    evaluateMeasuredRepositoryExplorationCohort(makeMeasuredInput({
+      candidatePullRequests: [1, 2, 3, 4, 5].map(i => makeMeasuredPr(10 + i, {
+        targetComponent: 'unmatched-component',
+        createdAtMs: 2_010_000 + i * 1_000,
+        mergedAtMs: 2_020_000 + i * 1_000
+      }))
+    })).reason,
+    'EMPTY_SCOPED_SELECTION'
+  );
+
+  // Out-of-window PRs and duplicate PR evidence
+  assert.equal(
+    evaluateMeasuredRepositoryExplorationCohort(makeMeasuredInput({
+      baselinePullRequests: [makeMeasuredPr(1, {mergedAtMs: 2_000_001})]
+    })).reason,
+    'PR_OUTSIDE_COHORT_WINDOW'
+  );
+  assert.equal(
+    evaluateMeasuredRepositoryExplorationCohort(makeMeasuredInput({
+      candidatePullRequests: [makeMeasuredPr(11, {
+        createdAtMs: 2_010_000,
+        mergedAtMs: 3_000_001
+      })]
+    })).reason,
+    'PR_OUTSIDE_COHORT_WINDOW'
+  );
+  assert.equal(
+    evaluateMeasuredRepositoryExplorationCohort(makeMeasuredInput({
+      candidatePullRequests: [makeMeasuredPr(11, {
+        prNumber: 201,
+        createdAtMs: 2_010_000,
+        mergedAtMs: 2_020_000
+      })]
+    })).reason,
+    'DUPLICATE_PR_EVIDENCE'
+  );
+  assert.equal(
+    evaluateMeasuredRepositoryExplorationCohort(makeMeasuredInput({
+      baselinePullRequests: [makeMeasuredPr(1, {closedIssueNumbers: [11]})],
+      candidatePullRequests: [makeMeasuredPr(11, {
+        relatedIssueNumbers: [11],
+        closedIssueNumbers: [11],
+        createdAtMs: 2_010_000,
+        mergedAtMs: 2_020_000
+      })]
+    })).reason,
+    'DUPLICATE_PR_EVIDENCE'
+  );
+
+  // Measured PR field boundary checks
+  for (const badPrPatch of [
+    {unitId: ''},
+    {relatedIssueNumbers: []},
+    {headSha: shaHex(2001)},
+    {createdAtMs: 1_030_000, mergedAtMs: 1_020_000},
+    {ciCoverageJobId: 0},
+    {specialistRole: 'invalid-role'},
+    {changedPaths: ['../escape']},
+    {totalCommits: 0},
+    {nonMergeCommits: 6, totalCommits: 5},
+    {uniqueReviewedCommits: 0},
+    {uniqueReviewedCommits: 7, reviewCount: 6},
+    {reviewComments: -1},
+    {incrementalBilledUsdCents: -1},
+    {componentCoverages: []},
+    {
+      componentCoverages: [
+        {component: 'BadName', coveredLines: 10, totalLines: 10, coveredBranches: 5, totalBranches: 5}
+      ]
+    },
+    {
+      componentCoverages: [
+        {component: 'engineering-factory.dup', coveredLines: 10, totalLines: 10, coveredBranches: 5, totalBranches: 5},
+        {component: 'engineering-factory.dup', coveredLines: 10, totalLines: 10, coveredBranches: 5, totalBranches: 5}
+      ]
+    },
+    {
+      componentCoverages: [
+        {component: 'engineering-factory.mod-1', coveredLines: 990, totalLines: 1000, coveredBranches: 485, totalBranches: 500}
+      ],
+      overallCoveredLines: 980,
+      overallTotalLines: 10000
+    },
+    {
+      componentCoverages: [
+        {component: 'engineering-factory.mod-1', coveredLines: 990, totalLines: 1000, coveredBranches: 485, totalBranches: 500}
+      ],
+      overallCoveredBranches: 4995,
+      overallTotalBranches: 5000
+    },
+    {securityFindings: -1},
+    {unsupportedRouting: 'no'},
+    {closedIssueNumbers: [999]},
+    {contextLoadObservation: {observedContextBytesLoaded: -1, observedRepeatedContextLoads: 0, observedExplorationSteps: 1}},
+    {verifiedAiCredits: -1}
+  ]) {
+    assert.equal(
+      evaluateMeasuredRepositoryExplorationCohort(makeMeasuredInput({
+        baselinePullRequests: [makeMeasuredPr(1, badPrPatch)]
+      })).reason,
+      'INVALID_MEASURED_PR'
+    );
+  }
+  assert.equal(
+    evaluateMeasuredRepositoryExplorationCohort(makeMeasuredInput({
+      baselinePullRequests: [makeMeasuredPr(1), makeMeasuredPr(2, {unitId: 'lane-1'})]
+    })).reason,
+    'INVALID_MEASURED_PR'
+  );
+  assert.equal(
+    evaluateMeasuredRepositoryExplorationCohort(makeMeasuredInput({
+      baselinePullRequests: [new Proxy(makeMeasuredPr(1), {})]
+    })).reason,
+    'INVALID_MEASURED_PR'
+  );
+});
+
