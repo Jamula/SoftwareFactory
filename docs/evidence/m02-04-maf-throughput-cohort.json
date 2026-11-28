@@ -15,7 +15,7 @@
   "evaluatedAtUtc": "2026-11-28T05:45:00Z",
   "provenance": {
     "classification": "measured-repo-trains-and-maf-benchmarks-separated-from-pending-unattended-copilot-cohort",
-    "honestyStatement": "Waves 2-4 (32 contiguous Squash Merge Queue PRs advancing main from c77612ec3f4e89d792b3b77741718824318ca676 to ec438f54088f30856c2df6ff626e894dde2a0100: Wave 2 #139-#144 plus carry-over #120, Wave 3 21-PR parallel Squash Merge Queue integration train #145-#165, and Wave 4 #166-#169) and .NET 10.0.404 Microsoft.Agents.AI.Workflows 1.28.0 GA --smoke/--benchmark runs are measured repository engineering & shadow workflow evidence. They are strictly separated from unattended copilot-swe-agent[bot] issue outcomes: the artificial 2x-25x multi-cohort ladder is retired per the Nov 28, 2026 UTC owner-approved streamlined M02 exit contract, and #16 remains open until the shared 5-issue real @copilot cohort (#10 3 issues + 2 additional real issues) lands with $0 billed spend.",
+    "honestyStatement": "Waves 2-4 (32 contiguous Squash Merge Queue PRs advancing main from c77612ec3f4e89d792b3b77741718824318ca676 to ec438f54088f30856c2df6ff626e894dde2a0100: Wave 2 #139-#144 plus carry-over #120 ending with the residual CodeQL Analyze (python) failure on 824031eb/cec2745b run 45975773999 remediated before Wave 3, Wave 3 21-PR parallel Squash Merge Queue integration train #145-#165, and Wave 4 #166-#169) and .NET 10.0.404 Microsoft.Agents.AI.Workflows 1.28.0 GA --smoke/--benchmark runs are measured repository engineering & shadow workflow evidence. They are strictly separated from unattended copilot-swe-agent[bot] issue outcomes: the artificial 2x-25x multi-cohort ladder is retired per the Nov 28, 2026 UTC owner-approved streamlined M02 exit contract, and #16 remains open until the shared 5-issue real @copilot cohort (#10 3 issues + 2 additional real issues) and bound exploration/rework/scorecard/Kaizen measurements pass with $0 billed spend.",
     "postMergeVerifyMsNote": "eligibleToMergeMs equals exact GitHub MergedEvent minus AddedToMergeQueueEvent per PR; postMergeVerifyMs equals actual push-on-main Factory validation duration where GitHub emitted a dedicated push run and the batch-tip push-on-main duration (63000ms Wave 2, 61000ms Wave 3/4) for batched Merge Queue predecessors.",
     "multiCohortLadderRetired": true,
     "keepIssue16Open": true,
@@ -23,7 +23,8 @@
     "unattendedCopilotOutcomesRequired": 5,
     "incrementalSpendUsd": 0,
     "waveTrainCandidateInputsNote": "In waveTrainSimulations, pr, head, expectedBase, simulatedSquashSha, ownedPaths, and eligibleToMergeMs are exact GitHub API measurements per PR, whereas per-candidate gate check booleans, reviewState, batched postMergeVerifyMs fallbacks, and 980/1000 line + 950/1000 branch counts are synthetic policy-floor gate fixtures used solely to replay Squash Merge Queue base/path/order mechanics without claiming historical per-head coverage totals. Exact head-bound coverage is recorded only for ec438f54088f30856c2df6ff626e894dde2a0100 under hostedCiReceiptsOnMainHead.",
-    "consolidationProfileMetricsNote": "In consolidationBenchmark.input, hosted CI restore/compile/coverage durations and exact-head coverage counts come from GitHub Actions runs 46112285635 and 46112285657 on ec438f54088f30856c2df6ff626e894dde2a0100, and logical-lane wallClockMs/observedPeakConcurrency/duplicatePathLeases/crossRepoLeaks come from dotnetMafCliReceipts.benchmarkOutput and nodeLogicalLaneReceipt; schema-required cpuTimeMs, peakMemoryMb, p95LatencyMs, contentionWaitMs, and cancellationMs fields are illustrative inputs rather than CLI-emitted measurements."
+    "consolidationProfileMetricsNote": "In consolidationBenchmark.input, hosted CI restore/compile/coverage durations and exact-head coverage counts come from GitHub Actions runs 46112285635 and 46112285657 on ec438f54088f30856c2df6ff626e894dde2a0100, and logical-lane wallClockMs/observedPeakConcurrency/duplicatePathLeases/crossRepoLeaks come from dotnetMafCliReceipts.benchmarkOutput and nodeLogicalLaneReceipt; schema-required cpuTimeMs, peakMemoryMb, p95LatencyMs, contentionWaitMs, and cancellationMs fields are illustrative inputs rather than CLI-emitted measurements.",
+    "wave2MainFailureAndRecoveryNote": "Wave 2 PR #120 (824031eb8d9d79c5dec03043a96ee575293978c0) removed repository Python files, causing residual default-setup CodeQL Analyze (python) push failures on 824031eb and final Wave 2 SHA cec2745b7b8a21e77ad9f2839d4255d42305d419 (run 45975773999 / job 140426999433; postMergeMainFailures=2). Repository CodeQL configuration removed residual python before Wave 3 drained (recoveredBeforeNextWave=true, mainRecoveryVerified=true on wave3), and all 25 subsequent Wave 3 + Wave 4 commits passed statusCheckRollup=SUCCESS (unresolvedPostMergeMainFailures=0)."
   },
   "dotnetMafCliReceipts": {
     "dotnetSdkVersion": "10.0.404",
@@ -776,7 +777,7 @@
                     "tools/engineering-factory/gh-aw-lock-verifier.mjs"
                   ],
                   "simulatedSquashSha": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
-                  "postMergeMainHealthy": true,
+                  "postMergeMainHealthy": false,
                   "eligibleToMergeMs": 192000,
                   "postMergeVerifyMs": 63000,
                   "blockedMs": 0
@@ -803,10 +804,10 @@
         "cancelledInFlightLeases": 0,
         "nextConsumerCursorRepositoryId": null,
         "crossRepoMainFailureSpillover": false,
-        "isolatedUnhealthyMainRepositories": [],
-        "unaffectedHealthyRepositories": [
+        "isolatedUnhealthyMainRepositories": [
           "Jamula/SoftwareFactory"
         ],
+        "unaffectedHealthyRepositories": [],
         "preservedInFlightLeases": [],
         "allocatedWorkItems": [],
         "deferredWorkItems": [],
@@ -825,12 +826,12 @@
               "serialized": true,
               "mergeQueueMode": "native-merge-queue",
               "rebasesPerformed": 0,
-              "trainStatus": "TRAIN_DRAINED",
+              "trainStatus": "HALTED_ON_POST_MERGE_MAIN_FAILURE",
               "initialMainSha": "c77612ec3f4e89d792b3b77741718824318ca676",
               "finalMainSha": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
               "mainHealthyBefore": true,
-              "mainHealthyAfter": true,
-              "tripRepoKillSwitch": false,
+              "mainHealthyAfter": false,
+              "tripRepoKillSwitch": true,
               "queueSize": 7,
               "mergedPrs": [
                 140,
@@ -907,7 +908,7 @@
             "train": {
               "defaultBranch": "main",
               "mainSha": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
-              "mainHealthy": true,
+              "mainHealthy": false,
               "mergeQueue": {
                 "mode": "native-merge-queue",
                 "supported": true,
@@ -1505,7 +1506,8 @@
                   "postMergeVerifyMs": 87000,
                   "blockedMs": 0
                 }
-              ]
+              ],
+              "mainRecoveryVerified": true
             }
           }
         ],
@@ -1552,7 +1554,7 @@
               "trainStatus": "TRAIN_DRAINED",
               "initialMainSha": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
               "finalMainSha": "b0924c3807f797e6090e1dc3e1e65fc9caa07550",
-              "mainHealthyBefore": true,
+              "mainHealthyBefore": false,
               "mainHealthyAfter": true,
               "tripRepoKillSwitch": false,
               "queueSize": 21,
@@ -2353,8 +2355,9 @@
             170000,
             192000
           ],
-          "postMergeMainFailures": 0,
-          "incrementalSpendMicros": 0
+          "postMergeMainFailures": 2,
+          "incrementalSpendMicros": 0,
+          "recoveredBeforeNextWave": true
         },
         {
           "waveId": "wave-3-parallel-21-pr-merge-queue",
@@ -2410,7 +2413,8 @@
             176000
           ],
           "postMergeMainFailures": 0,
-          "incrementalSpendMicros": 0
+          "incrementalSpendMicros": 0,
+          "recoveredBeforeNextWave": false
         },
         {
           "waveId": "wave-4-receipt-and-orchestrator-sync",
@@ -2432,10 +2436,12 @@
             186000
           ],
           "postMergeMainFailures": 0,
-          "incrementalSpendMicros": 0
+          "incrementalSpendMicros": 0,
+          "recoveredBeforeNextWave": false
         }
       ],
-      "unattendedOutcomes": []
+      "unattendedOutcomes": [],
+      "sharedCohortMeasurements": null
     },
     "evaluation": {
       "valid": true,
@@ -2460,6 +2466,7 @@
       "consolidationRecommendation": "retain-node-authoritative",
       "consolidationReason": "CANDIDATE_COVERAGE_REGRESSION",
       "cohortComplete": false,
+      "measurementsVerified": false,
       "m02ExitReady": false,
       "keepIssue16Open": true,
       "status": "PENDING_UNATTENDED_COPILOT_COHORT",
@@ -2472,7 +2479,8 @@
         "mergedPerDay": 34.37352363428401,
         "p50MergeQueueMs": 186000,
         "p95MergeQueueMs": 438000,
-        "postMergeMainFailures": 0,
+        "historicalPostMergeMainFailures": 2,
+        "unresolvedPostMergeMainFailures": 0,
         "incrementalSpendMicros": 0,
         "waves": [
           {
@@ -2484,7 +2492,9 @@
             "windowMs": 9181000,
             "mergedPerDay": 65.87517699596994,
             "p50MergeQueueMs": 186000,
-            "p95MergeQueueMs": 228000
+            "p95MergeQueueMs": 228000,
+            "postMergeMainFailures": 2,
+            "recoveredBeforeNextWave": true
           },
           {
             "waveId": "wave-3-parallel-21-pr-merge-queue",
@@ -2495,7 +2505,9 @@
             "windowMs": 22917000,
             "mergedPerDay": 79.17266657939521,
             "p50MergeQueueMs": 200000,
-            "p95MergeQueueMs": 438000
+            "p95MergeQueueMs": 438000,
+            "postMergeMainFailures": 0,
+            "recoveredBeforeNextWave": false
           },
           {
             "waveId": "wave-4-receipt-and-orchestrator-sync",
@@ -2506,7 +2518,9 @@
             "windowMs": 5964000,
             "mergedPerDay": 57.947686116700204,
             "p50MergeQueueMs": 180000,
-            "p95MergeQueueMs": 204000
+            "p95MergeQueueMs": 204000,
+            "postMergeMainFailures": 0,
+            "recoveredBeforeNextWave": false
           }
         ]
       },
@@ -2531,7 +2545,8 @@
         "routineHumanInterventions": 0,
         "incrementalSpendMicros": 0,
         "coverage": null
-      }
+      },
+      "sharedCohortMeasurements": null
     }
   },
   "nodeLogicalLaneReceipt": {

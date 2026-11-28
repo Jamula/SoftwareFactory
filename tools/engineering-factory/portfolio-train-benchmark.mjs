@@ -47,6 +47,7 @@ const CREDENTIAL_KEYS = [
 const LEASE_KEYS = ['leaseId', 'issue', 'laneId', 'head', 'ownedPaths'];
 const WORK_ITEM_KEYS = ['repositoryId', 'issue', 'laneId', 'head', 'criticalPathRank', 'ownedPaths'];
 const TRAIN_KEYS = ['defaultBranch', 'mainSha', 'mainHealthy', 'mergeQueue', 'candidates'];
+const TRAIN_OPTIONAL_KEYS = ['mainRecoveryVerified'];
 const MERGE_QUEUE_KEYS = ['mode', 'supported', 'ownerApproved', 'costVerified', 'incrementalSpendMicros'];
 const TRAIN_CANDIDATE_KEYS = [
   'pr', 'head', 'observedHead', 'expectedBase', 'compatibleBase',
@@ -258,7 +259,7 @@ function simulateRepositoryTrain(repo, isFactory) {
     });
   }
 
-  if (!train.mainHealthy) {
+  if (!train.mainHealthy && train.mainRecoveryVerified !== true) {
     return Object.freeze({
       serialized: true,
       mergeQueueMode: train.mergeQueue.mode,
@@ -357,7 +358,7 @@ function simulateRepositoryTrain(repo, isFactory) {
     trainStatus,
     initialMainSha: train.mainSha,
     finalMainSha: currentMainSha,
-    mainHealthyBefore: true,
+    mainHealthyBefore: train.mainHealthy,
     mainHealthyAfter,
     tripRepoKillSwitch: !mainHealthyAfter,
     queueSize: candidates.length,
@@ -559,8 +560,14 @@ export function allocatePortfolioCapacityAndSimulateTrains(input) {
     }
 
     const {train} = repo;
-    if (!exactRecord(train, TRAIN_KEYS) || !branchName(train.defaultBranch) ||
-        !hex40(train.mainSha) || typeof train.mainHealthy !== 'boolean' ||
+    const mainRecoveryVerified = Object.hasOwn(train, 'mainRecoveryVerified')
+      ? train.mainRecoveryVerified
+      : false;
+    if (!exactRecord(train, TRAIN_KEYS, TRAIN_OPTIONAL_KEYS) ||
+        !branchName(train.defaultBranch) || !hex40(train.mainSha) ||
+        typeof train.mainHealthy !== 'boolean' ||
+        typeof mainRecoveryVerified !== 'boolean' ||
+        (train.mainHealthy && mainRecoveryVerified) ||
         !exactRecord(train.mergeQueue, MERGE_QUEUE_KEYS) ||
         !denseDataArray(train.candidates, 100)) {
       return portfolioDenied('INVALID_TRAIN_STATE');
@@ -1245,12 +1252,21 @@ export function evaluateDotnetConsolidationBenchmark(input) {
 const SHARED_COHORT_INPUT_KEYS = [
   'stop', 'repositoryId', 'repository', 'headSha', 'policy',
   'billingHardStopVerified', 'incrementalSpendMicros',
-  'portfolioInput', 'benchmarkInput', 'engineeringWaves', 'unattendedOutcomes'
+  'portfolioInput', 'benchmarkInput', 'engineeringWaves',
+  'unattendedOutcomes', 'sharedCohortMeasurements'
 ];
 const ENGINEERING_WAVE_KEYS = [
   'waveId', 'provenanceKind', 'initialMainSha', 'finalMainSha',
   'windowStartMs', 'windowEndMs', 'prNumbers', 'mergeQueueDurationsMs',
-  'postMergeMainFailures', 'incrementalSpendMicros'
+  'postMergeMainFailures', 'recoveredBeforeNextWave', 'incrementalSpendMicros'
+];
+const SHARED_COHORT_MEASUREMENT_KEYS = [
+  'repositoryId', 'repository', 'headSha', 'evaluatedIssueNumbers',
+  'baselineExplorationStepsP50', 'candidateExplorationStepsP50',
+  'baselineContextBytesLoadedP50', 'candidateContextBytesLoadedP50',
+  'baselineReworkRateBps', 'candidateReworkRateBps',
+  'scorecardReadoutVerified', 'kaizenVerificationPassed',
+  'incrementalSpendMicros'
 ];
 const UNATTENDED_OUTCOME_KEYS = [
   'repositoryId', 'repository', 'issue', 'pr', 'provenanceKind', 'agentActor',
@@ -1292,6 +1308,7 @@ function parseEngineeringWaves(waves) {
   const summaries = [];
   let earliestStartMs = Infinity;
   let latestEndMs = 0;
+  let historicalPostMergeMainFailures = 0;
 
   for (let i = 0; i < waves.length; i++) {
     const w = waves[i];
@@ -1306,6 +1323,8 @@ function parseEngineeringWaves(waves) {
         !denseDataArray(w.mergeQueueDurationsMs, 100) ||
         w.mergeQueueDurationsMs.length !== w.prNumbers.length ||
         !nonnegInt(w.postMergeMainFailures, 1000) ||
+        typeof w.recoveredBeforeNextWave !== 'boolean' ||
+        (w.postMergeMainFailures === 0 && w.recoveredBeforeNextWave) ||
         (w.incrementalSpendMicros !== null && !nonnegInt(w.incrementalSpendMicros, 1000000000)) ||
         !w.prNumbers.every(pr => positiveInt(pr, 1000000)) ||
         !w.mergeQueueDurationsMs.every(ms => positiveInt(ms, DAY_MS))) {
@@ -1317,10 +1336,12 @@ function parseEngineeringWaves(waves) {
     if (w.incrementalSpendMicros !== 0) {
       return {ok: false, reason: 'SPEND_UNKNOWN_OR_EXCEEDED'};
     }
-    if (w.postMergeMainFailures !== 0) {
+    if (w.postMergeMainFailures > 0 && (!w.recoveredBeforeNextWave || i === waves.length - 1)) {
       return {ok: false, reason: 'WAVE_MAIN_FAILURE_DETECTED'};
     }
-    if (i > 0 && w.initialMainSha !== waves[i - 1].finalMainSha) {
+    if (i > 0 &&
+        (w.initialMainSha !== waves[i - 1].finalMainSha ||
+          w.windowEndMs < waves[i - 1].windowEndMs)) {
       return {ok: false, reason: 'WAVE_CHAIN_DISCONTINUITY'};
     }
     for (let j = 0; j < w.prNumbers.length; j++) {
@@ -1331,6 +1352,7 @@ function parseEngineeringWaves(waves) {
     seenWaveIds.add(w.waveId);
     earliestStartMs = Math.min(earliestStartMs, w.windowStartMs);
     latestEndMs = Math.max(latestEndMs, w.windowEndMs);
+    historicalPostMergeMainFailures += w.postMergeMainFailures;
     allMqMs.push(...w.mergeQueueDurationsMs);
     const sortedWaveMq = [...w.mergeQueueDurationsMs].sort((a, b) => a - b);
     const waveWindowMs = w.windowEndMs - w.windowStartMs;
@@ -1343,7 +1365,9 @@ function parseEngineeringWaves(waves) {
       windowMs: waveWindowMs,
       mergedPerDay: (w.prNumbers.length * DAY_MS) / waveWindowMs,
       p50MergeQueueMs: percentile(sortedWaveMq, 0.5),
-      p95MergeQueueMs: percentile(sortedWaveMq, 0.95)
+      p95MergeQueueMs: percentile(sortedWaveMq, 0.95),
+      postMergeMainFailures: w.postMergeMainFailures,
+      recoveredBeforeNextWave: w.recoveredBeforeNextWave
     }));
   }
 
@@ -1361,7 +1385,8 @@ function parseEngineeringWaves(waves) {
       mergedPerDay: (wavePrNumbers.size * DAY_MS) / totalWindowMs,
       p50MergeQueueMs: percentile(sortedAllMq, 0.5),
       p95MergeQueueMs: percentile(sortedAllMq, 0.95),
-      postMergeMainFailures: 0,
+      historicalPostMergeMainFailures,
+      unresolvedPostMergeMainFailures: 0,
       incrementalSpendMicros: 0,
       waves: Object.freeze(summaries)
     })
@@ -1423,6 +1448,7 @@ function parseUnattendedOutcomes(
   const seenIssues = new Set();
   const seenPrs = new Set();
   const seenSquash = new Set();
+  const acceptedIssueNumbers = [];
   const parallelGroups = new Map();
   const leadDurations = [];
   const mqDurations = [];
@@ -1492,6 +1518,7 @@ function parseUnattendedOutcomes(
     }
 
     acceptedCount += 1;
+    acceptedIssueNumbers.push(o.issue);
     if (o.parallelBatchGroup !== null && o.m01CohortMember) {
       let windows = parallelGroups.get(o.parallelBatchGroup);
       if (!windows) {
@@ -1523,10 +1550,15 @@ function parseUnattendedOutcomes(
     hasConcurrentExecutionWindowPair(windows)
   );
   const reviewRepairLoopVerified = m01ReviewRepairCount >= 1;
+  const reworkRateBps = acceptedCount > 0
+    ? Math.round((totalReworkIterations * 10000) / acceptedCount)
+    : null;
 
   return {
     ok: true,
     acceptedCount,
+    acceptedIssueNumbers,
+    reworkRateBps,
     m01AnchorSatisfied,
     parallelBatchVerified,
     reviewRepairLoopVerified,
@@ -1547,12 +1579,76 @@ function parseUnattendedOutcomes(
       p50MergeQueueMs: percentile(sortedMq, 0.5),
       p95MergeQueueMs: percentile(sortedMq, 0.95),
       totalReworkIterations,
-      reworkRateBps: acceptedCount > 0 ? Math.round((totalReworkIterations * 10000) / acceptedCount) : null,
+      reworkRateBps,
       routineHumanInterventions: 0,
       incrementalSpendMicros: 0,
       coverage: acceptedCount > 0
         ? Object.freeze({coveredLines, totalLines, coveredBranches, totalBranches})
         : null
+    })
+  };
+}
+
+function parseSharedCohortMeasurements(m, input, acceptedIssueNumbers, actualReworkRateBps) {
+  if (m === null) {
+    return {ok: true, verified: false, summary: null};
+  }
+  if (!exactRecord(m, SHARED_COHORT_MEASUREMENT_KEYS) ||
+      !positiveInt(m.repositoryId) || !isRepoSlug(m.repository) || !hex40(m.headSha) ||
+      !denseDataArray(m.evaluatedIssueNumbers, 50) || m.evaluatedIssueNumbers.length === 0 ||
+      !m.evaluatedIssueNumbers.every(n => positiveInt(n, 1000000)) ||
+      new Set(m.evaluatedIssueNumbers).size !== m.evaluatedIssueNumbers.length ||
+      !positiveInt(m.baselineExplorationStepsP50, 1000000) ||
+      !positiveInt(m.candidateExplorationStepsP50, 1000000) ||
+      !positiveInt(m.baselineContextBytesLoadedP50, 1000000000) ||
+      !positiveInt(m.candidateContextBytesLoadedP50, 1000000000) ||
+      !nonnegInt(m.baselineReworkRateBps, 100000) ||
+      !nonnegInt(m.candidateReworkRateBps, 100000) ||
+      typeof m.scorecardReadoutVerified !== 'boolean' ||
+      typeof m.kaizenVerificationPassed !== 'boolean' ||
+      (m.incrementalSpendMicros !== null && !nonnegInt(m.incrementalSpendMicros, 1000000000))) {
+    return {ok: false, reason: 'MEASUREMENT_SCHEMA_INVALID'};
+  }
+  const acceptedSet = new Set(acceptedIssueNumbers);
+  const sameIssueSet = m.evaluatedIssueNumbers.length === acceptedIssueNumbers.length &&
+    m.evaluatedIssueNumbers.every(n => acceptedSet.has(n));
+  if (m.repositoryId !== input.repositoryId ||
+      m.repository !== input.repository ||
+      m.headSha !== input.headSha ||
+      acceptedIssueNumbers.length < SHARED_M02_COHORT_TARGET_OUTCOMES ||
+      !sameIssueSet ||
+      m.candidateReworkRateBps !== actualReworkRateBps) {
+    return {ok: false, reason: 'MEASUREMENT_COHORT_MISMATCH'};
+  }
+  if (m.incrementalSpendMicros !== 0) {
+    return {ok: false, reason: 'SPEND_UNKNOWN_OR_EXCEEDED'};
+  }
+  const regressed = m.candidateExplorationStepsP50 > m.baselineExplorationStepsP50 ||
+    m.candidateContextBytesLoadedP50 > m.baselineContextBytesLoadedP50 ||
+    m.candidateReworkRateBps > m.baselineReworkRateBps;
+  const improved = m.candidateExplorationStepsP50 < m.baselineExplorationStepsP50 ||
+    m.candidateContextBytesLoadedP50 < m.baselineContextBytesLoadedP50 ||
+    m.candidateReworkRateBps < m.baselineReworkRateBps;
+  if (regressed || !improved) {
+    return {ok: false, reason: 'EXPLORATION_OR_REWORK_REGRESSION'};
+  }
+  if (!m.scorecardReadoutVerified || !m.kaizenVerificationPassed) {
+    return {ok: false, reason: 'SHARED_COHORT_GATE_UNVERIFIED'};
+  }
+  return {
+    ok: true,
+    verified: true,
+    summary: Object.freeze({
+      evaluatedIssueNumbers: Object.freeze([...m.evaluatedIssueNumbers].sort((a, b) => a - b)),
+      baselineExplorationStepsP50: m.baselineExplorationStepsP50,
+      candidateExplorationStepsP50: m.candidateExplorationStepsP50,
+      baselineContextBytesLoadedP50: m.baselineContextBytesLoadedP50,
+      candidateContextBytesLoadedP50: m.candidateContextBytesLoadedP50,
+      baselineReworkRateBps: m.baselineReworkRateBps,
+      candidateReworkRateBps: m.candidateReworkRateBps,
+      scorecardReadoutVerified: true,
+      kaizenVerificationPassed: true,
+      incrementalSpendMicros: 0
     })
   };
 }
@@ -1653,7 +1749,16 @@ export function evaluateSharedFiveOutcomeM02Cohort(input) {
   );
   if (!outcomesParsed.ok) return sharedCohortDenied(outcomesParsed.reason);
 
+  const measurementsParsed = parseSharedCohortMeasurements(
+    input.sharedCohortMeasurements,
+    input,
+    outcomesParsed.acceptedIssueNumbers,
+    outcomesParsed.reworkRateBps
+  );
+  if (!measurementsParsed.ok) return sharedCohortDenied(measurementsParsed.reason);
+
   let cohortComplete = false;
+  let m02ExitReady = false;
   let status = 'PENDING_UNATTENDED_COPILOT_COHORT';
   let reason = 'PENDING_M01_10_AND_SHARED_5_ISSUE_COHORT';
   if (outcomesParsed.acceptedCount >= SHARED_M02_COHORT_TARGET_OUTCOMES) {
@@ -1661,8 +1766,14 @@ export function evaluateSharedFiveOutcomeM02Cohort(input) {
         outcomesParsed.parallelBatchVerified &&
         outcomesParsed.reviewRepairLoopVerified) {
       cohortComplete = true;
-      status = 'SHARED_5_OUTCOME_COHORT_VERIFIED';
-      reason = 'SHARED_M02_COHORT_ELIGIBLE';
+      if (measurementsParsed.verified) {
+        m02ExitReady = true;
+        status = 'SHARED_5_OUTCOME_COHORT_VERIFIED';
+        reason = 'SHARED_M02_COHORT_ELIGIBLE';
+      } else {
+        status = 'PENDING_SHARED_COHORT_MEASUREMENTS';
+        reason = 'SHARED_COHORT_MEASUREMENTS_REQUIRED';
+      }
     } else {
       status = 'INCOMPLETE_COHORT_COMPOSITION';
       reason = 'COHORT_COMPOSITION_REQUIREMENTS_UNMET';
@@ -1689,11 +1800,13 @@ export function evaluateSharedFiveOutcomeM02Cohort(input) {
     consolidationRecommendation: benchmarkEval.recommendation,
     consolidationReason: benchmarkEval.reason,
     cohortComplete,
-    m02ExitReady: cohortComplete,
-    keepIssue16Open: !cohortComplete,
+    measurementsVerified: measurementsParsed.verified,
+    m02ExitReady,
+    keepIssue16Open: !m02ExitReady,
     status,
     reason,
     engineeringWaveSummary: wavesParsed.summary,
-    unattendedCohortSummary: outcomesParsed.summary
+    unattendedCohortSummary: outcomesParsed.summary,
+    sharedCohortMeasurements: measurementsParsed.summary
   });
 }

@@ -1443,10 +1443,10 @@ test('verifies committed m02-04-maf-throughput-cohort.json receipt across Waves 
   );
 
   // Deterministically replay Waves 2, 3 (21-PR parallel Squash Merge Queue train #145-#165), and 4 (#166-#169)
-  for (const [waveKey, expectedCount, expectedFinalSha] of [
-    ['wave2', 7, 'cec2745b7b8a21e77ad9f2839d4255d42305d419'],
-    ['wave3', 21, 'b0924c3807f797e6090e1dc3e1e65fc9caa07550'],
-    ['wave4', 4, 'ec438f54088f30856c2df6ff626e894dde2a0100']
+  for (const [waveKey, expectedStatus, expectedBefore, expectedAfter, expectedCount, expectedFinalSha] of [
+    ['wave2', 'HALTED_ON_POST_MERGE_MAIN_FAILURE', true, false, 7, 'cec2745b7b8a21e77ad9f2839d4255d42305d419'],
+    ['wave3', 'TRAIN_DRAINED', false, true, 21, 'b0924c3807f797e6090e1dc3e1e65fc9caa07550'],
+    ['wave4', 'TRAIN_DRAINED', true, true, 4, 'ec438f54088f30856c2df6ff626e894dde2a0100']
   ]) {
     const sim = receipt.waveTrainSimulations[waveKey];
     assert.equal(
@@ -1456,7 +1456,9 @@ test('verifies committed m02-04-maf-throughput-cohort.json receipt across Waves 
     const replayed = allocatePortfolioCapacityAndSimulateTrains(sim.input);
     assert.deepEqual(replayed, sim.evaluation);
     assert.equal(replayed.valid, true);
-    assert.equal(replayed.repositoryResults[0].train.trainStatus, 'TRAIN_DRAINED');
+    assert.equal(replayed.repositoryResults[0].train.trainStatus, expectedStatus);
+    assert.equal(replayed.repositoryResults[0].train.mainHealthyBefore, expectedBefore);
+    assert.equal(replayed.repositoryResults[0].train.mainHealthyAfter, expectedAfter);
     assert.equal(replayed.repositoryResults[0].train.mergedPrs.length, expectedCount);
     assert.equal(replayed.repositoryResults[0].train.isolatedCandidates.length, 0);
     assert.equal(replayed.repositoryResults[0].train.finalMainSha, expectedFinalSha);
@@ -1486,11 +1488,14 @@ test('verifies committed m02-04-maf-throughput-cohort.json receipt across Waves 
   assert.equal(replayedShared.provenanceSeparated, true);
   assert.equal(replayedShared.runtimePosture, 'dual-runtime-retain-node-authoritative');
   assert.equal(replayedShared.cohortComplete, false);
+  assert.equal(replayedShared.measurementsVerified, false);
   assert.equal(replayedShared.m02ExitReady, false);
   assert.equal(replayedShared.keepIssue16Open, true);
   assert.equal(replayedShared.status, 'PENDING_UNATTENDED_COPILOT_COHORT');
   assert.equal(replayedShared.reason, 'PENDING_M01_10_AND_SHARED_5_ISSUE_COHORT');
   assert.equal(replayedShared.engineeringWaveSummary.totalMergedPrs, 32);
+  assert.equal(replayedShared.engineeringWaveSummary.historicalPostMergeMainFailures, 2);
+  assert.equal(replayedShared.engineeringWaveSummary.unresolvedPostMergeMainFailures, 0);
   assert.equal(replayedShared.unattendedCohortSummary.acceptedCount, 0);
   assert.equal(replayedShared.unattendedCohortSummary.partialOutcomeCount, 0);
   assert.equal(replayedShared.unattendedCohortSummary.remainingRequiredCount, 5);
@@ -1549,9 +1554,44 @@ const buildTrainCandidatesFromOutcomes = outcomes =>
     reviewState: 'APPROVED'
   }));
 
+const makeSharedCohortMeasurements = (overrides = {}) => ({
+  repositoryId: SOFTWARE_FACTORY_REPOSITORY_ID,
+  repository: SOFTWARE_FACTORY_REPOSITORY,
+  headSha: WORKLOAD_SHA,
+  evaluatedIssueNumbers: [201, 202, 203, 204, 205],
+  baselineExplorationStepsP50: 14,
+  candidateExplorationStepsP50: 8,
+  baselineContextBytesLoadedP50: 32000,
+  candidateContextBytesLoadedP50: 18000,
+  baselineReworkRateBps: 4000,
+  candidateReworkRateBps: 2000,
+  scorecardReadoutVerified: true,
+  kaizenVerificationPassed: true,
+  incrementalSpendMicros: 0,
+  ...overrides
+});
+
 const makeSharedCohortInput = (overrides = {}) => {
+  const repositoryId = overrides.repositoryId ?? SOFTWARE_FACTORY_REPOSITORY_ID;
+  const repository = overrides.repository ?? SOFTWARE_FACTORY_REPOSITORY;
+  const headSha = overrides.headSha ?? WORKLOAD_SHA;
   const unattendedOutcomes = overrides.unattendedOutcomes ??
     [1, 2, 3, 4, 5].map(idx => makeUnattendedOutcome(idx, 5));
+  const acceptedIssues = unattendedOutcomes
+    .filter(o => o.issueAccepted && o.allRequiredPrsMerged)
+    .map(o => o.issue);
+  const totalRework = unattendedOutcomes
+    .filter(o => o.issueAccepted && o.allRequiredPrsMerged)
+    .reduce((sum, o) => sum + o.reworkIterations, 0);
+  const defaultMeasurements = acceptedIssues.length >= 5
+    ? makeSharedCohortMeasurements({
+      repositoryId,
+      repository,
+      headSha,
+      evaluatedIssueNumbers: acceptedIssues,
+      candidateReworkRateBps: Math.round((totalRework * 10000) / acceptedIssues.length)
+    })
+    : null;
   const waveFinalSha = unattendedOutcomes.length === 0 ? WORKLOAD_SHA : WAVE_END_SHA;
   const trainInitialSha = unattendedOutcomes.length === 0 ? MAIN_SHA : WAVE_END_SHA;
   const defaultCandidates = unattendedOutcomes.length === 0
@@ -1584,14 +1624,14 @@ const makeSharedCohortInput = (overrides = {}) => {
   };
   return {
     stop: false,
-    repositoryId: SOFTWARE_FACTORY_REPOSITORY_ID,
-    repository: SOFTWARE_FACTORY_REPOSITORY,
-    headSha: WORKLOAD_SHA,
+    repositoryId,
+    repository,
+    headSha,
     policy: {minLinePercent: 98, minBranchPercent: 95},
     billingHardStopVerified: true,
     incrementalSpendMicros: 0,
     portfolioInput,
-    benchmarkInput: benchmarkInput(),
+    benchmarkInput: benchmarkInput({cohorts: null}),
     engineeringWaves: [
       {
         waveId: 'wave-4',
@@ -1603,24 +1643,73 @@ const makeSharedCohortInput = (overrides = {}) => {
         prNumbers: [166, 167, 168, 169],
         mergeQueueDurationsMs: [138000, 204000, 186000, 180000],
         postMergeMainFailures: 0,
+        recoveredBeforeNextWave: false,
         incrementalSpendMicros: 0
       }
     ],
     unattendedOutcomes,
+    sharedCohortMeasurements: defaultMeasurements,
     ...overrides
   };
 };
 
 test('evaluates shared 5-outcome M02 cohort completion, composition requirements, and fail-closed regression gates', () => {
-  // Eligible 5-outcome real @copilot cohort closes #16 alongside #14/#18/#137
+  // Invalid mainRecoveryVerified states in portfolio train fail closed
+  assert.equal(
+    allocatePortfolioCapacityAndSimulateTrains({
+      stop: false,
+      budget: baseBudget({active: 0, maxActive: 4}),
+      repositories: [
+        factoryRepo({
+          overrides: {
+            train: {
+              defaultBranch: 'main',
+              mainSha: MAIN_SHA,
+              mainHealthy: true,
+              mainRecoveryVerified: true,
+              mergeQueue: {
+                mode: 'native-merge-queue',
+                supported: true,
+                ownerApproved: true,
+                costVerified: true,
+                incrementalSpendMicros: 0
+              },
+              candidates: []
+            }
+          }
+        })
+      ],
+      workItems: []
+    }).reason,
+    'INVALID_TRAIN_STATE'
+  );
+
+  // Composition-valid 5 outcomes with sharedCohortMeasurements: null sets cohortComplete=true while keeping m02ExitReady=false
+  const pendingMeasurements = evaluateSharedFiveOutcomeM02Cohort(
+    makeSharedCohortInput({sharedCohortMeasurements: null})
+  );
+  assert.equal(pendingMeasurements.valid, true);
+  assert.equal(pendingMeasurements.cohortComplete, true);
+  assert.equal(pendingMeasurements.measurementsVerified, false);
+  assert.equal(pendingMeasurements.m02ExitReady, false);
+  assert.equal(pendingMeasurements.keepIssue16Open, true);
+  assert.equal(pendingMeasurements.status, 'PENDING_SHARED_COHORT_MEASUREMENTS');
+  assert.equal(pendingMeasurements.reason, 'SHARED_COHORT_MEASUREMENTS_REQUIRED');
+
+  // Eligible 5-outcome real @copilot cohort + bound measurements closes #16 alongside #14/#18/#137 (even with benchmarkInput.cohorts: null!)
   const eligible = evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput());
   assert.equal(eligible.valid, true);
   assert.equal(eligible.cohortComplete, true);
+  assert.equal(eligible.measurementsVerified, true);
   assert.equal(eligible.m02ExitReady, true);
   assert.equal(eligible.keepIssue16Open, false);
   assert.equal(eligible.status, 'SHARED_5_OUTCOME_COHORT_VERIFIED');
   assert.equal(eligible.reason, 'SHARED_M02_COHORT_ELIGIBLE');
-  assert.equal(eligible.runtimePosture, 'dotnet-10-single-runtime-consolidation-eligible');
+  assert.equal(eligible.runtimePosture, 'dual-runtime-retain-node-authoritative');
+  assert.equal(
+    evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({benchmarkInput: benchmarkInput()})).runtimePosture,
+    'dotnet-10-single-runtime-consolidation-eligible'
+  );
   assert.equal(eligible.m01AnchorTargetOutcomes, SHARED_M01_ANCHOR_TARGET_OUTCOMES);
   assert.equal(eligible.unattendedCohortSummary.acceptedCount, 5);
   assert.equal(eligible.unattendedCohortSummary.remainingRequiredCount, 0);
@@ -2049,11 +2138,32 @@ test('evaluates shared 5-outcome M02 cohort completion, composition requirements
     })).reason,
     'MAF_COVERAGE_BELOW_POLICY'
   );
+  // Wave post-merge main failures, unrecovered/final-wave failures, and non-monotonic wave-end timestamps
   assert.equal(
     evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({
       engineeringWaves: [{...makeSharedCohortInput().engineeringWaves[0], postMergeMainFailures: 1}]
     })).reason,
     'WAVE_MAIN_FAILURE_DETECTED'
+  );
+  assert.equal(
+    evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({
+      engineeringWaves: [{
+        ...makeSharedCohortInput().engineeringWaves[0],
+        postMergeMainFailures: 1,
+        recoveredBeforeNextWave: true
+      }]
+    })).reason,
+    'WAVE_MAIN_FAILURE_DETECTED'
+  );
+  assert.equal(
+    evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({
+      engineeringWaves: [{
+        ...makeSharedCohortInput().engineeringWaves[0],
+        postMergeMainFailures: 0,
+        recoveredBeforeNextWave: true
+      }]
+    })).reason,
+    'ENGINEERING_WAVE_UNKNOWN'
   );
   assert.equal(
     evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({
@@ -2073,6 +2183,22 @@ test('evaluates shared 5-outcome M02 cohort completion, composition requirements
   assert.equal(
     evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({
       engineeringWaves: [
+        {
+          ...makeSharedCohortInput().engineeringWaves[0],
+          waveId: 'wave-3',
+          initialMainSha: sha('6'),
+          finalMainSha: MAIN_SHA,
+          windowStartMs: 1795805000000,
+          windowEndMs: 1795809000000
+        },
+        makeSharedCohortInput().engineeringWaves[0]
+      ]
+    })).reason,
+    'WAVE_CHAIN_DISCONTINUITY'
+  );
+  assert.equal(
+    evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({
+      engineeringWaves: [
         makeSharedCohortInput().engineeringWaves[0],
         {...makeSharedCohortInput().engineeringWaves[0], waveId: 'wave-dup-pr', initialMainSha: WAVE_END_SHA, finalMainSha: SQUASH_1}
       ]
@@ -2085,6 +2211,99 @@ test('evaluates shared 5-outcome M02 cohort completion, composition requirements
     })).reason,
     'ENGINEERING_WAVE_UNKNOWN'
   );
+
+  // Shared cohort measurement validation, cohort-binding, spend, exploration/context/rework, and scorecard/Kaizen gates
+  assert.equal(
+    evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({
+      sharedCohortMeasurements: {bad: true}
+    })).reason,
+    'MEASUREMENT_SCHEMA_INVALID'
+  );
+  assert.equal(
+    evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({
+      sharedCohortMeasurements: makeSharedCohortMeasurements({incrementalSpendMicros: -1})
+    })).reason,
+    'MEASUREMENT_SCHEMA_INVALID'
+  );
+  for (const mismatchPatch of [
+    {repositoryId: 999999},
+    {repository: 'example/other'},
+    {headSha: SQUASH_1},
+    {evaluatedIssueNumbers: [201, 202, 203, 204, 299]},
+    {candidateReworkRateBps: 1999}
+  ]) {
+    assert.equal(
+      evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({
+        sharedCohortMeasurements: makeSharedCohortMeasurements(mismatchPatch)
+      })).reason,
+      'MEASUREMENT_COHORT_MISMATCH'
+    );
+  }
+  assert.equal(
+    evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({
+      unattendedOutcomes: [makeUnattendedOutcome(1, 1)],
+      sharedCohortMeasurements: makeSharedCohortMeasurements({
+        evaluatedIssueNumbers: [201],
+        candidateReworkRateBps: 0
+      })
+    })).reason,
+    'MEASUREMENT_COHORT_MISMATCH'
+  );
+  assert.equal(
+    evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({
+      sharedCohortMeasurements: makeSharedCohortMeasurements({incrementalSpendMicros: null})
+    })).reason,
+    'SPEND_UNKNOWN_OR_EXCEEDED'
+  );
+  for (const regPatch of [
+    {candidateExplorationStepsP50: 15},
+    {candidateContextBytesLoadedP50: 33000},
+    {baselineReworkRateBps: 1000},
+    {
+      baselineExplorationStepsP50: 8,
+      candidateExplorationStepsP50: 8,
+      baselineContextBytesLoadedP50: 18000,
+      candidateContextBytesLoadedP50: 18000,
+      baselineReworkRateBps: 2000
+    }
+  ]) {
+    assert.equal(
+      evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({
+        sharedCohortMeasurements: makeSharedCohortMeasurements(regPatch)
+      })).reason,
+      'EXPLORATION_OR_REWORK_REGRESSION'
+    );
+  }
+  // Improvement solely on contextBytes or solely on reworkRate also passes cleanly
+  assert.equal(
+    evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({
+      sharedCohortMeasurements: makeSharedCohortMeasurements({
+        baselineExplorationStepsP50: 8,
+        candidateExplorationStepsP50: 8
+      })
+    })).m02ExitReady,
+    true
+  );
+  assert.equal(
+    evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({
+      sharedCohortMeasurements: makeSharedCohortMeasurements({
+        baselineExplorationStepsP50: 8,
+        candidateExplorationStepsP50: 8,
+        baselineContextBytesLoadedP50: 18000,
+        candidateContextBytesLoadedP50: 18000
+      })
+    })).m02ExitReady,
+    true
+  );
+  for (const gatePatch of [{scorecardReadoutVerified: false}, {kaizenVerificationPassed: false}]) {
+    assert.equal(
+      evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({
+        sharedCohortMeasurements: makeSharedCohortMeasurements(gatePatch)
+      })).reason,
+      'SHARED_COHORT_GATE_UNVERIFIED'
+    );
+  }
+
   assert.equal(
     evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({
       unattendedOutcomes: [makeUnattendedOutcome(1, 1, {reviewRepairVerified: true, reworkIterations: 0})]
