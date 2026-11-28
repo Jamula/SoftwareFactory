@@ -976,8 +976,8 @@ export function computeReservationHeadLock(repositoryId, issue, head, generation
   return `00${digest.slice(0, 62)}`;
 }
 
-function computeHeadTag18(repositoryId, issue, head, generation) {
-  return computeReservationHeadLock(repositoryId, issue, head, generation).slice(2, 20);
+function computeHeadTag14(repositoryId, issue, head, generation) {
+  return computeReservationHeadLock(repositoryId, issue, head, generation).slice(2, 16);
 }
 
 function computeArchiveDigestTag14(archivedList) {
@@ -1005,14 +1005,14 @@ function buildCheckpointedLock(
   archivedChargedRuns,
   overwrittenRetryAttempts,
   overwrittenRetryCharged,
-  headTag18,
+  headTag14,
   checkpointTail28
 ) {
   const creditsHex = reservedAiCredits.toString(16).padStart(8, '0');
   const archChgHex = archivedChargedRuns.toString(16).padStart(4, '0');
-  const retryAttHex = overwrittenRetryAttempts.toString(16).padStart(2, '0');
-  const retryChgHex = overwrittenRetryCharged.toString(16).padStart(2, '0');
-  return `${prefix}${creditsHex}${archChgHex}${retryAttHex}${retryChgHex}${headTag18}${checkpointTail28}`;
+  const retryAttHex = overwrittenRetryAttempts.toString(16).padStart(4, '0');
+  const retryChgHex = overwrittenRetryCharged.toString(16).padStart(4, '0');
+  return `${prefix}${creditsHex}${archChgHex}${retryAttHex}${retryChgHex}${headTag14}${checkpointTail28}`;
 }
 
 function isCheckpointedCasLock(lockSha256) {
@@ -1029,8 +1029,8 @@ function parseCheckpointedCredits(lockSha256) {
 function parseCheckpointedArchiveTotals(lockSha256) {
   return {
     archivedChargedRuns: Number.parseInt(lockSha256.slice(10, 14), 16),
-    overwrittenRetryAttempts: Number.parseInt(lockSha256.slice(14, 16), 16),
-    overwrittenRetryCharged: Number.parseInt(lockSha256.slice(16, 18), 16)
+    overwrittenRetryAttempts: Number.parseInt(lockSha256.slice(14, 18), 16),
+    overwrittenRetryCharged: Number.parseInt(lockSha256.slice(18, 22), 16)
   };
 }
 
@@ -1231,6 +1231,7 @@ function auditCrossRunLedgerAccounting(
   let ledgerSpentUnits = 0;
   const remainingRowsByKey = new Map();
   const remainingChargedByKey = new Map();
+  const activeRowGenByKey = new Map();
   const prWorkKeysInCas = new Set();
 
   for (const e of workingCasEntries) {
@@ -1248,6 +1249,9 @@ function auditCrossRunLedgerAccounting(
       ? exactPrKey
       : `${r.repositoryId}:issue:${r.issue}`;
     remainingRowsByKey.set(bucketKey, (remainingRowsByKey.get(bucketKey) ?? 0) + 1);
+    if (r.phase === 'reserved' || r.phase === 'in-flight') {
+      activeRowGenByKey.set(bucketKey, r.generation);
+    }
     if (r.phase !== 'cancelled') {
       ledgerSpentUnits += r.units;
       remainingChargedByKey.set(bucketKey, (remainingChargedByKey.get(bucketKey) ?? 0) + 1);
@@ -1266,7 +1270,8 @@ function auditCrossRunLedgerAccounting(
   let unaccountedEntryChargedRuns = 0;
   let unaccountedArchivedChargedRuns = 0;
   let unaccountedActivePeerRuns = 0;
-  const consumeBucket = (bucketKey, requiredRows, requiredCharged, isArchived, isActivePeer) => {
+  let missingActiveLeaseRow = false;
+  const consumeBucket = (bucketKey, requiredRows, requiredCharged, isArchived) => {
     const availRows = remainingRowsByKey.get(bucketKey) ?? 0;
     const usedRows = Math.min(requiredRows, availRows);
     const missingRows = requiredRows - usedRows;
@@ -1280,30 +1285,31 @@ function auditCrossRunLedgerAccounting(
     const missingCharged = Math.min(missingRows, requiredCharged);
     if (isArchived) unaccountedArchivedChargedRuns += missingCharged;
     else unaccountedEntryChargedRuns += missingCharged;
-    if (isActivePeer && missingRows > 0) unaccountedActivePeerRuns += 1;
     return {availRows, availCharged};
   };
 
   let missingDistinctPrKey = false;
   for (const e of workingCasEntries) {
     const isPendingBind = e.workId === pendingBindWorkId;
-    const requiredRows = isPendingBind ? e.attempts - 1 : e.attempts;
-    const requiredCharged = isPendingBind || e.status === 'cancelled'
+    const isUnboundActivePeer = !isPendingBind && e.status === 'leased' &&
+      activeRowGenByKey.get(e.workId) !== e.generation;
+    const requiredRows = isPendingBind || isUnboundActivePeer ? e.attempts - 1 : e.attempts;
+    const requiredCharged = isPendingBind || isUnboundActivePeer || e.status === 'cancelled'
       ? e.attempts - 1
       : e.attempts;
+    if (isUnboundActivePeer) {
+      missingActiveLeaseRow = true;
+      unaccountedEntryChargedRuns += 1;
+      unaccountedActivePeerRuns += 1;
+    }
     if (e.targetType === 'pull_request' && !isPendingBind &&
         (remainingRowsByKey.get(e.workId) ?? 0) === 0) {
       missingDistinctPrKey = true;
     }
-    consumeBucket(
-      e.workId,
-      requiredRows,
-      requiredCharged,
-      false,
-      !isPendingBind && e.status === 'leased'
-    );
+    consumeBucket(e.workId, requiredRows, requiredCharged, false);
   }
 
+  let archivedPresentItems = 0;
   let archivedLedgerChargedTotal = 0;
   let inferredArchivedChargedTotal = 0;
 
@@ -1314,15 +1320,19 @@ function auditCrossRunLedgerAccounting(
     const minAttempts = minArchivedAttemptsByWorkId.get(item.workId) ?? 1;
     const minCharged = item.status === 'cancelled' ? minAttempts - 1 : minAttempts;
     inferredArchivedChargedTotal += minCharged;
-    const {availCharged} = consumeBucket(item.workId, minAttempts, minCharged, true, false);
+    const {availRows, availCharged} = consumeBucket(item.workId, minAttempts, minCharged, true);
+    if (availRows > 0) archivedPresentItems += 1;
     archivedLedgerChargedTotal += availCharged;
   }
 
   let incomplete;
   let authoritativeSpentUnits;
   if (checkpointArchiveTotals !== null) {
+    // Each archived item retains at least its latest replacement row in workingLedgerRows, while
+    // overwritten same-head retry charges stay durably counted in overwrittenRetryCharged.
     incomplete = missingDistinctPrKey ||
-      archivedMissingRowsTotal > 0 ||
+      missingActiveLeaseRow ||
+      archivedPresentItems < archivedList.length ||
       entryMissingRowsTotal !== checkpointArchiveTotals.overwrittenRetryAttempts ||
       archivedLedgerChargedTotal < checkpointArchiveTotals.archivedChargedRuns;
     const extraArchivedCharged = Math.max(
@@ -1330,9 +1340,11 @@ function auditCrossRunLedgerAccounting(
       checkpointArchiveTotals.archivedChargedRuns - archivedLedgerChargedTotal
     );
     authoritativeSpentUnits = ledgerSpentUnits +
-      (checkpointArchiveTotals.overwrittenRetryCharged + extraArchivedCharged) * unitsPerRun;
+      (unaccountedActivePeerRuns + checkpointArchiveTotals.overwrittenRetryCharged + extraArchivedCharged) *
+        unitsPerRun;
   } else {
-    incomplete = missingDistinctPrKey || entryMissingRowsTotal > 0 || archivedMissingRowsTotal > 0;
+    incomplete = missingDistinctPrKey || missingActiveLeaseRow ||
+      entryMissingRowsTotal > 0 || archivedMissingRowsTotal > 0;
     authoritativeSpentUnits = ledgerSpentUnits +
       (unaccountedEntryChargedRuns + unaccountedArchivedChargedRuns) * unitsPerRun;
   }
@@ -1913,7 +1925,7 @@ export function reconcileLedgerWithWorkQueueCas(input) {
       cand.head,
       cand.generation
     );
-    const candHeadTag18 = computeHeadTag18(
+    const candHeadTag14 = computeHeadTag14(
       cand.repositoryId,
       cand.issue,
       cand.head,
@@ -1956,7 +1968,7 @@ export function reconcileLedgerWithWorkQueueCas(input) {
         return denyCasReconcile('HEAD_BINDING_MISMATCH');
       }
       if (alreadyLedgerBoundInCas) {
-        if (casEntry.lockSha256.slice(18, 36) !== candHeadTag18) {
+        if (casEntry.lockSha256.slice(22, 36) !== candHeadTag14) {
           return denyCasReconcile('HEAD_BINDING_MISMATCH');
         }
         if (!isPhaseAdvance || casEntry.lockSha256.startsWith('c2') || checkpointMismatch) {
@@ -2056,9 +2068,7 @@ export function reconcileLedgerWithWorkQueueCas(input) {
         }
         const evictedCollapsedAttempts = Math.max(0, evicted.attempts - recordedRowsForEvicted);
         nextOverwrittenRetryAttempts = Math.max(0, nextOverwrittenRetryAttempts - evictedCollapsedAttempts);
-        const evictedCollapsedCharged = Math.min(evictedCollapsedAttempts, nextOverwrittenRetryCharged);
-        nextOverwrittenRetryCharged -= evictedCollapsedCharged;
-        nextArchivedChargedRuns += Math.min(evicted.attempts, recordedChargedForEvicted + evictedCollapsedCharged);
+        nextArchivedChargedRuns += Math.min(evicted.attempts, recordedChargedForEvicted);
         archivedList.push({workId: evicted.workId, status: evicted.status});
       }
 
@@ -2286,6 +2296,11 @@ export function reconcileLedgerWithWorkQueueCas(input) {
         workingLedgerRows.push(nextCandidateRow);
         workingLedgerRows.sort(compareRows);
       }
+      if (nextArchivedChargedRuns > 0xffff ||
+          nextOverwrittenRetryAttempts > 0xffff ||
+          nextOverwrittenRetryCharged > 0xffff) {
+        return denyCasReconcile('ARCHIVE_CAPACITY_EXHAUSTED');
+      }
       candReason = desiredPhase === 'reserved'
         ? 'CROSS_RUN_CAS_RESERVED'
         : 'CROSS_RUN_CAS_SIMULATION_STARTED';
@@ -2323,7 +2338,7 @@ export function reconcileLedgerWithWorkQueueCas(input) {
       hmac
     });
     const nextDigestTag = computeCheckpointTail28(archivedList, digest);
-    const countersHex8 = `${nextArchivedChargedRuns.toString(16).padStart(4, '0')}${nextOverwrittenRetryAttempts.toString(16).padStart(2, '0')}${nextOverwrittenRetryCharged.toString(16).padStart(2, '0')}`;
+    const countersHex12 = `${nextArchivedChargedRuns.toString(16).padStart(4, '0')}${nextOverwrittenRetryAttempts.toString(16).padStart(4, '0')}${nextOverwrittenRetryCharged.toString(16).padStart(4, '0')}`;
     const targetReservedCredits = admission.ghAwCaps !== null
       ? Math.max(existingTargetCredits, admission.ghAwCaps.runAiCreditsRequired)
       : existingTargetCredits;
@@ -2337,13 +2352,13 @@ export function reconcileLedgerWithWorkQueueCas(input) {
             nextArchivedChargedRuns,
             nextOverwrittenRetryAttempts,
             nextOverwrittenRetryCharged,
-            computeHeadTag18(cand.repositoryId, cand.issue, cand.head, item.generation),
+            computeHeadTag14(cand.repositoryId, cand.issue, cand.head, item.generation),
             nextDigestTag
           )
         });
       } else if (isCheckpointedCasLock(item.lockSha256)) {
         workingCasEntries[i] = cloneMutableCasEntry(item, {
-          lockSha256: `${item.lockSha256.slice(0, 10)}${countersHex8}${item.lockSha256.slice(18, 36)}${nextDigestTag}`
+          lockSha256: `${item.lockSha256.slice(0, 10)}${countersHex12}${item.lockSha256.slice(22, 36)}${nextDigestTag}`
         });
       }
     }
