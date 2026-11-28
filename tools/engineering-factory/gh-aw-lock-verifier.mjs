@@ -13,7 +13,7 @@ export const PINNED_GHAW_RELEASE = Object.freeze({
 export const PINNED_GHAW_DETECTION_CONCLUSION_SCRIPT_SHA256 =
   '63f302c76492b6bde7052889282d030724cde0379ba2b3e38f16882d956c1972';
 export const PINNED_FACTORY_POLICY_SCAN_RUN_SHA256 =
-  'f80ecd1a1eb7d1afe69e912592699647f0a4fcf4da5148db05fcaaa5a383c970';
+  '14409625c91fc1059b4e3c8a4964ed9f6db84071545b169d6dbc56e47fcd5d22';
 
 const MAX_SOURCE_CHARS = 262144;
 const FORBIDDEN_CONTROL_RE = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/;
@@ -763,6 +763,75 @@ function isNotEndsWithBot(node) {
     args[1].kind === 'Literal' && args[1].value === '[bot]';
 }
 
+function onMapNeedsWorkflowRunRepoGuard(onMap) {
+  if (!Object.hasOwn(onMap, 'workflow_run')) return false;
+  const cfg = onMap.workflow_run;
+  return !(isMapObject(cfg) && Array.isArray(cfg.branches) && cfg.branches.length > 0);
+}
+
+function isPositiveRepoIdValueNode(node) {
+  if (node.kind === 'Literal') {
+    if (typeof node.value === 'number') return Number.isSafeInteger(node.value) && node.value > 0;
+    return typeof node.value === 'string' && /^[1-9]\d{0,15}$/.test(node.value) &&
+      Number.isSafeInteger(Number(node.value));
+  }
+  return node.kind === 'Ident' &&
+    (node.path === 'github.repository_id' || node.path === 'github.event.workflow_run.repository.id');
+}
+
+function isWorkflowRunHeadRepoEq(node) {
+  if (node.kind !== 'Compare' || node.op !== '==') return false;
+  if (node.left.kind === 'Ident' && node.left.path === 'github.event.workflow_run.head_repository.id') {
+    return isPositiveRepoIdValueNode(node.right);
+  }
+  return node.right.kind === 'Ident' &&
+    node.right.path === 'github.event.workflow_run.head_repository.id' &&
+    isPositiveRepoIdValueNode(node.left);
+}
+
+function isWorkflowRunRepoGuardConjunct(node) {
+  if (isIdentCompareLiteral(node, '!=', 'github.event_name', 'workflow_run') ||
+      isWorkflowRunHeadRepoEq(node)) {
+    return true;
+  }
+  if (node.kind !== 'Or') return false;
+  if (isIdentCompareLiteral(node.left, '!=', 'github.event_name', 'workflow_run')) {
+    return collectMandatoryConjuncts(node.right).some(isWorkflowRunHeadRepoEq);
+  }
+  return isIdentCompareLiteral(node.right, '!=', 'github.event_name', 'workflow_run') &&
+    collectMandatoryConjuncts(node.left).some(isWorkflowRunHeadRepoEq);
+}
+
+function hasWorkflowRunSameRepoGuard(ast) {
+  return ast !== null && !astHasBypassCall(ast) &&
+    collectMandatoryConjuncts(ast).some(isWorkflowRunRepoGuardConjunct);
+}
+
+function validateLockTriggerMap(onMap) {
+  const keys = Object.keys(onMap);
+  const singleTrigger = keys.length === 1;
+  for (const triggerName of keys) {
+    if (!SUPPORTED_EVENT_MATRIX_TRIGGERS.has(triggerName)) {
+      return {ok: false, reason: 'UNSUPPORTED_EVENT_TRIGGER'};
+    }
+    if (triggerName === 'schedule') {
+      if (parseTenMinuteRecoverySchedule(onMap.schedule) === null) {
+        return {ok: false, reason: 'INVALID_RECOVERY_SCHEDULE'};
+      }
+      continue;
+    }
+    const cfg = onMap[triggerName];
+    if (singleTrigger && triggerName === 'pull_request_target' &&
+        isMapObject(cfg) && Object.keys(cfg).length === 0) {
+      continue;
+    }
+    if (!isValidEventTriggerConfig(triggerName, cfg, 'main')) {
+      return {ok: false, reason: 'INVALID_EVENT_TRIGGER_CONFIG'};
+    }
+  }
+  return {ok: true};
+}
+
 function verifyEvaluationGuards(rawIf) {
   const ast = parseIfExpression(rawIf);
   if (ast === null || astHasBypassCall(ast)) {
@@ -1228,6 +1297,17 @@ function inspectFrontmatterPolicy(frontmatter, isNewerVerified, headers, options
 
   const frontmatterGuards = verifyEvaluationGuards(frontmatter.if);
   if (!frontmatterGuards.ok) return frontmatterGuards;
+  if (frontmatter.on !== undefined) {
+    if (!isMapObject(frontmatter.on) || Object.keys(frontmatter.on).length === 0) {
+      return {ok: false, reason: 'INVALID_FRONTMATTER'};
+    }
+    const fmTriggers = validateLockTriggerMap(frontmatter.on);
+    if (!fmTriggers.ok) return fmTriggers;
+    if (onMapNeedsWorkflowRunRepoGuard(frontmatter.on) &&
+        !hasWorkflowRunSameRepoGuard(parseIfExpression(frontmatter.if))) {
+      return {ok: false, reason: 'MISSING_WORKFLOW_RUN_REPO_GUARD'};
+    }
+  }
 
   const headerProtocol = headers['gh-aw-work-queue-protocol'];
   const requestedProtocol = options.workQueueProtocol;
@@ -1418,6 +1498,20 @@ export function verifyGhAwWorkflowLock(input) {
     return deny(topPerms.hasWrite ? 'TOP_LEVEL_WRITE_PERMISSION' : 'INVALID_TOP_LEVEL_PERMISSIONS');
   }
 
+  const lockTriggersCheck = validateLockTriggerMap(lockDoc.on);
+  if (!lockTriggersCheck.ok) return deny(lockTriggersCheck.reason);
+  if (frontmatter.on !== undefined) {
+    const fmTriggerKeys = Object.keys(frontmatter.on);
+    const lockTriggerKeys = Object.keys(lockDoc.on);
+    if (fmTriggerKeys.length !== lockTriggerKeys.length ||
+        !fmTriggerKeys.every(key => Object.hasOwn(lockDoc.on, key))) {
+      return deny('TRIGGER_PARITY_MISMATCH');
+    }
+  }
+  const hasPrRefExposureTrigger = Object.hasOwn(lockDoc.on, 'pull_request_target') ||
+    Object.hasOwn(lockDoc.on, 'pull_request_review');
+  const needsWorkflowRunGuard = onMapNeedsWorkflowRunRepoGuard(lockDoc.on);
+
   const helperJobs = [];
   const evaluationJobIds = [];
   const threatScanJobs = [];
@@ -1537,6 +1631,10 @@ export function verifyGhAwWorkflowLock(input) {
               );
               if (!scanCheckout.ok) return deny('MISSING_THREAT_SCAN_GATE');
               if (scanCheckout.needsUpstreamRefProvenance) scanNeedsRefProvenance = true;
+            } else if (!jobHasWriteScope && hasPrRefExposureTrigger &&
+                       (!isSafeScanEnv(lockDoc.env) || !isSafeScanEnv(job.env) || !isSafeScanEnv(step.env) ||
+                        !isTrustedControlPlaneCheckout(checkoutWith, releaseCheck.release.commit, trustedShas))) {
+              return deny('UNTRUSTED_PR_CHECKOUT');
             }
           }
           if (isThreatScan) {
@@ -1624,21 +1722,43 @@ export function verifyGhAwWorkflowLock(input) {
   const guardedHelperIds = new Set(
     helperJobs.filter(({job}) => verifyEvaluationGuards(job.if).ok).map(({jobId}) => jobId)
   );
+  const workflowRunGuardedHelperIds = new Set(
+    helperJobs
+      .filter(({job}) => verifyEvaluationGuards(job.if).ok && hasWorkflowRunSameRepoGuard(parseIfExpression(job.if)))
+      .map(({jobId}) => jobId)
+  );
 
   if (evaluationJobIds.length === 0) return deny('MISSING_EVALUATION_JOB');
   for (const {job} of evaluationJobIds) {
+    const evalAst = job.if === undefined ? null : parseIfExpression(job.if);
     const guardVerdict = verifyEvaluationGuards(job.if);
-    if (guardVerdict.ok) continue;
-    const evalNeeds = normalizeNeeds(job.needs);
-    const matchingGuardedHelpers = evalNeeds === null ? [] : evalNeeds.filter(dep => guardedHelperIds.has(dep));
-    if (matchingGuardedHelpers.length === 0) return deny(guardVerdict.reason);
-    if (job.if !== undefined) {
-      const evalAst = parseIfExpression(job.if);
-      if (evalAst === null || astHasBypassCall(evalAst)) return deny(guardVerdict.reason);
-      const evalConjuncts = collectMandatoryConjuncts(evalAst);
-      const inheritsHelperSuccess = matchingGuardedHelpers.some(helperId =>
-        evalConjuncts.some(c => isIdentCompareLiteral(c, '==', `needs.${helperId}.result`, 'success')));
-      if (!inheritsHelperSuccess) return deny(guardVerdict.reason);
+    if (!guardVerdict.ok) {
+      const evalNeeds = normalizeNeeds(job.needs);
+      const matchingGuardedHelpers = evalNeeds === null ? [] : evalNeeds.filter(dep => guardedHelperIds.has(dep));
+      if (matchingGuardedHelpers.length === 0) return deny(guardVerdict.reason);
+      if (job.if !== undefined) {
+        if (evalAst === null || astHasBypassCall(evalAst)) return deny(guardVerdict.reason);
+        const evalConjuncts = collectMandatoryConjuncts(evalAst);
+        const inheritsHelperSuccess = matchingGuardedHelpers.some(helperId =>
+          evalConjuncts.some(c => isIdentCompareLiteral(c, '==', `needs.${helperId}.result`, 'success')));
+        if (!inheritsHelperSuccess) return deny(guardVerdict.reason);
+      }
+    }
+    if (needsWorkflowRunGuard && !hasWorkflowRunSameRepoGuard(evalAst)) {
+      const evalNeeds = normalizeNeeds(job.needs);
+      const matchingWrHelpers = evalNeeds === null ? [] : evalNeeds.filter(dep => workflowRunGuardedHelperIds.has(dep));
+      const inheritsWrGuard = matchingWrHelpers.length > 0 && (
+        job.if === undefined || (
+          evalAst !== null &&
+          !astHasBypassCall(evalAst) &&
+          matchingWrHelpers.some(helperId =>
+            collectMandatoryConjuncts(evalAst).some(c =>
+              isIdentCompareLiteral(c, '==', `needs.${helperId}.result`, 'success')
+            )
+          )
+        )
+      );
+      if (!inheritsWrGuard) return deny('MISSING_WORKFLOW_RUN_REPO_GUARD');
     }
   }
 
@@ -1749,6 +1869,10 @@ export function verifyGhAwWorkflowLock(input) {
     if (!allEvalSucceeded || !scanSucceeded) {
       return deny('MISSING_THREAT_SCAN_GATE');
     }
+  }
+
+  if (nodeHasUntrustedInterpolation(lockDoc, 'root')) {
+    return deny('UNTRUSTED_PR_TEXT_INTERPOLATION');
   }
 
   return Object.freeze({
@@ -2243,8 +2367,10 @@ export function verifyEventTriggerMatrix(lockYamlSource, options) {
   }
 
   const workflowEnvSafeForProvenance = lockDoc.defaults === undefined && isSafeScanEnv(lockDoc.env);
+  const needsWorkflowRunGuard = onMapNeedsWorkflowRunRepoGuard(lockDoc.on);
   const disabledJobIds = new Set();
   const guardedJobIds = new Set();
+  const workflowRunGuardedJobIds = new Set();
   const downstreamRefProvenanceJobIds = new Set();
   const inheritedRefProvenanceJobIds = new Set();
   const trustedCheckoutStepsByJob = new Map();
@@ -2272,6 +2398,9 @@ export function verifyEventTriggerMatrix(lockYamlSource, options) {
           matchedEnableVars.add(enableVar.slice('vars.'.length));
         }
       }
+      if (hasWorkflowRunSameRepoGuard(jobAst)) {
+        workflowRunGuardedJobIds.add(jobId);
+      }
       const refProv = resolveJobProtectedBranchProvenance(
         job,
         jobAst,
@@ -2286,6 +2415,9 @@ export function verifyEventTriggerMatrix(lockYamlSource, options) {
     if (job.needs === undefined && !guardedJobIds.has(jobId)) {
       return deny('MISSING_DEFAULT_OFF_GUARD');
     }
+    if (needsWorkflowRunGuard && job.needs === undefined && !workflowRunGuardedJobIds.has(jobId)) {
+      return deny('MISSING_WORKFLOW_RUN_REPO_GUARD');
+    }
   }
 
   const knownJobIds = new Set(Object.keys(lockDoc.jobs));
@@ -2297,6 +2429,9 @@ export function verifyEventTriggerMatrix(lockYamlSource, options) {
       const needs = normalizeNeeds(job.needs);
       if (needs === null || !needs.every(dep => knownJobIds.has(dep))) {
         if (!guardedJobIds.has(jobId)) return deny('MISSING_DEFAULT_OFF_GUARD');
+        if (needsWorkflowRunGuard && !workflowRunGuardedJobIds.has(jobId)) {
+          return deny('MISSING_WORKFLOW_RUN_REPO_GUARD');
+        }
         continue;
       }
       if (job.if === undefined) {
@@ -2304,6 +2439,12 @@ export function verifyEventTriggerMatrix(lockYamlSource, options) {
             needs.some(dep => guardedJobIds.has(dep)) &&
             needs.every(dep => guardedJobIds.has(dep) || disabledJobIds.has(dep))) {
           guardedJobIds.add(jobId);
+          progress = true;
+        }
+        if (needsWorkflowRunGuard && !workflowRunGuardedJobIds.has(jobId) &&
+            needs.some(dep => workflowRunGuardedJobIds.has(dep)) &&
+            needs.every(dep => workflowRunGuardedJobIds.has(dep) || disabledJobIds.has(dep))) {
+          workflowRunGuardedJobIds.add(jobId);
           progress = true;
         }
         if (!inheritedRefProvenanceJobIds.has(jobId) &&
@@ -2333,6 +2474,10 @@ export function verifyEventTriggerMatrix(lockYamlSource, options) {
         guardedJobIds.add(jobId);
         progress = true;
       }
+      if (needsWorkflowRunGuard && !workflowRunGuardedJobIds.has(jobId) && inheritsFrom(workflowRunGuardedJobIds, true)) {
+        workflowRunGuardedJobIds.add(jobId);
+        progress = true;
+      }
       if (!inheritedRefProvenanceJobIds.has(jobId) && inheritsFrom(downstreamRefProvenanceJobIds, false)) {
         inheritedRefProvenanceJobIds.add(jobId);
         if (!toleratesError(job)) downstreamRefProvenanceJobIds.add(jobId);
@@ -2344,6 +2489,10 @@ export function verifyEventTriggerMatrix(lockYamlSource, options) {
   if (guardedJobIds.size === 0 ||
       jobEntries.some(([jobId]) => !disabledJobIds.has(jobId) && !guardedJobIds.has(jobId))) {
     return deny('MISSING_DEFAULT_OFF_GUARD');
+  }
+  if (needsWorkflowRunGuard &&
+      jobEntries.some(([jobId]) => !disabledJobIds.has(jobId) && !workflowRunGuardedJobIds.has(jobId))) {
+    return deny('MISSING_WORKFLOW_RUN_REPO_GUARD');
   }
 
   for (const {jobId, stepIdx} of checkoutProvenanceReqs) {

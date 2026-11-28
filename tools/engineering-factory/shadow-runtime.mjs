@@ -1,5 +1,46 @@
 // Shadow scheduling and public metadata inventory. No mutation, agent dispatch or merge.
+import {types} from 'node:util';
+import {resolveTrustedScope} from './event-envelope.mjs';
+
 const deny = reason => ({shadow:true, ready:[], reason});
+const blockedInventory = reason => ({
+  shadow:true, evidenceComplete:false, liveDispatch:false, liveMerge:false, reason
+});
+const DEFAULT_SCOPE = resolveTrustedScope({});
+const SCOPE_KEYS = new Set(['repository','repositoryId','branch','workflowPath']);
+const INVENTORY_OPTION_KEYS = new Set(['scope',...SCOPE_KEYS]);
+
+function isStrictPlainMap(value, allowedKeys) {
+  if(value===null || typeof value!=='object' || types.isProxy(value) || Array.isArray(value) ||
+     value===process.env ||
+     (Object.getPrototypeOf(value)!==Object.prototype && Object.getPrototypeOf(value)!==null)) {
+    return false;
+  }
+  for(const key of Reflect.ownKeys(value)) {
+    if(typeof key!=='string' || !allowedKeys.has(key)) return false;
+    const desc=Object.getOwnPropertyDescriptor(value,key);
+    if(!desc || !desc.enumerable || !Object.hasOwn(desc,'value')) return false;
+  }
+  return true;
+}
+
+function resolveInventoryScope(options) {
+  if(!isStrictPlainMap(options,INVENTORY_OPTION_KEYS)) return null;
+  if(options.scope!==undefined) {
+    if(!isStrictPlainMap(options.scope,SCOPE_KEYS)) return null;
+    for(const key of SCOPE_KEYS) {
+      if(options[key]!==undefined && options[key]!==options.scope[key]) return null;
+    }
+  }
+  const resolved=resolveTrustedScope(options);
+  if(!resolved) return null;
+  const isDefaultName=resolved.repository.toLowerCase()===DEFAULT_SCOPE.repository.toLowerCase();
+  const isDefaultId=resolved.repositoryId===DEFAULT_SCOPE.repositoryId;
+  if(isDefaultName!==isDefaultId || (isDefaultId && resolved.repository!==DEFAULT_SCOPE.repository)) {
+    return null;
+  }
+  return resolved;
+}
 const dense = a => Array.isArray(a) && Object.keys(a).length===a.length &&
   Array.from({length:a.length},(_,i)=>Object.hasOwn(a,i)).every(Boolean);
 const positive = n => Number.isSafeInteger(n) && n > 0;
@@ -59,7 +100,6 @@ export function plan(input) {
   return {shadow:true,ready,reason:ready.length?'SHADOW_PLAN':'NO_READY_WORK'};
 }
 
-const api='https://api.github.com/repos/Jamula/SoftwareFactory';
 async function boundedJson(response) {
   if(!response.ok || !response.body) throw new Error('GITHUB_READ_FAILED');
   const reader=response.body.getReader();
@@ -79,11 +119,14 @@ async function boundedJson(response) {
     await reader.cancel().catch(()=>{});
   }
 }
-export async function readInventory(request=fetch) {
+export async function readInventory(request=fetch,options={}) {
+  if(typeof request!=='function') return blockedInventory('TRUST_UNKNOWN');
+  const resolved=resolveInventoryScope(options);
+  if(!resolved) return blockedInventory('TRUST_UNKNOWN');
   async function read(kind) {
     const ids=[];
     for(let page=1;page<=5;page++) {
-      const response=await request(api+'/'+kind+'?state=open&per_page=100&page='+page,{
+      const response=await request(resolved.apiRoot+'/'+kind+'?state=open&per_page=100&page='+page,{
         method:'GET',redirect:'error',signal:AbortSignal.timeout(5000),
         headers:{accept:'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28'}
       });
@@ -91,7 +134,15 @@ export async function readInventory(request=fetch) {
       if(!dense(rows)||rows.length>100||rows.some(r=>!r||!positive(r.number)))
         throw new Error('GITHUB_INVALID_METADATA');
       for(const row of rows) {
-        if(kind==='issues' && Object.hasOwn(row,'pull_request')) continue;
+        if(kind==='issues') {
+          if(Object.hasOwn(row,'pull_request')) continue;
+          if(Object.hasOwn(row,'repository_url') && row.repository_url!==resolved.apiRoot)
+            throw new Error('GITHUB_INVALID_METADATA');
+        } else if(Object.hasOwn(row,'base') &&
+                  (row.base?.repo?.full_name!==resolved.repository ||
+                   row.base?.repo?.id!==resolved.repositoryId)) {
+          throw new Error('GITHUB_INVALID_METADATA');
+        }
         if(ids.includes(row.number)) throw new Error('GITHUB_DUPLICATE_METADATA');
         ids.push(row.number);
       }
@@ -100,7 +151,7 @@ export async function readInventory(request=fetch) {
     throw new Error('GITHUB_INVENTORY_LIMIT');
   }
   const [issues,pulls]=await Promise.all([read('issues'),read('pulls')]);
-  return {shadow:true,repository:'Jamula/SoftwareFactory',issues,pulls,
+  return {shadow:true,repository:resolved.repository,repositoryId:resolved.repositoryId,issues,pulls,
     evidenceComplete:false,liveDispatch:false,liveMerge:false};
 }
 export function smoke() {

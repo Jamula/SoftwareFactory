@@ -43,8 +43,103 @@ test('public inventory only reads approved repository, filters PRs, sorts and pa
     return json(url.endsWith('page=1')?first:[{number:2}]);
   });
   assert.equal(calls.length,3);assert.equal(actual.issues.length,100);
+  assert.equal(actual.repository,'Jamula/SoftwareFactory');
+  assert.equal(actual.repositoryId,1471342715);
   assert.equal(actual.issues[0],2);assert.deepEqual(actual.pulls,[1,3]);
   assert.equal(actual.evidenceComplete,false);assert.equal(actual.liveDispatch,false);assert.equal(actual.liveMerge,false);
+});
+test('scoped inventory resolves trusted consumer repository and fails closed on untrusted options or mismatched repo metadata',async()=>{
+  const consumerOpts={repository:'Synthetic/FamilyTree',repositoryId:200036};
+  const consumerCalls=[];
+  const scoped=await readInventory(async url=>{
+    consumerCalls.push(url);
+    assert.ok(url.startsWith('https://api.github.com/repos/Synthetic/FamilyTree/'));
+    if(url.includes('/pulls?')) {
+      return json([{number:7,base:{repo:{id:200036,full_name:'Synthetic/FamilyTree'}}}]);
+    }
+    return json([{number:4,repository_url:'https://api.github.com/repos/Synthetic/FamilyTree'}]);
+  },consumerOpts);
+  assert.equal(consumerCalls.length,2);
+  assert.deepEqual(scoped,{
+    shadow:true,
+    repository:'Synthetic/FamilyTree',
+    repositoryId:200036,
+    issues:[4],
+    pulls:[7],
+    evidenceComplete:false,
+    liveDispatch:false,
+    liveMerge:false
+  });
+
+  const nullProtoOpts=Object.assign(Object.create(null),{
+    scope:{
+      repository:'Synthetic/Spellbook',
+      repositoryId:300042,
+      branch:'release/v1',
+      workflowPath:'.github/workflows/ci.yml'
+    },
+    repository:'Synthetic/Spellbook'
+  });
+  const nestedScoped=await readInventory(async url=>json(url.includes('/pulls?')?[{number:9}]:[{number:5}]),nullProtoOpts);
+  assert.equal(nestedScoped.repository,'Synthetic/Spellbook');
+  assert.equal(nestedScoped.repositoryId,300042);
+
+  for(const crossRepoRow of [
+    url=>json(url.includes('/pulls?')?[]:[{number:1,repository_url:'https://api.github.com/repos/Other/Repo'}]),
+    url=>json(url.includes('/pulls?')?[{number:1,base:{repo:{id:999,full_name:'Synthetic/FamilyTree'}}}]:[]),
+    url=>json(url.includes('/pulls?')?[{number:1,base:{repo:{id:200036,full_name:'Other/Repo'}}}]:[])
+  ]) {
+    await assert.rejects(()=>readInventory(async url=>crossRepoRow(url),consumerOpts),/GITHUB_INVALID_METADATA/);
+  }
+
+  let trapCount=0;
+  const trap=()=>{trapCount++;throw new Error('trap must not run');};
+  const handler={get:trap,ownKeys:trap,getOwnPropertyDescriptor:trap,getPrototypeOf:trap};
+  const revoked=Proxy.revocable({repository:'Synthetic/FamilyTree',repositoryId:200036},handler);
+  revoked.revoke();
+  const getterOpts={repositoryId:200036};
+  Object.defineProperty(getterOpts,'repository',{enumerable:true,get:trap});
+  const nonEnumOpts={repository:'Synthetic/FamilyTree',repositoryId:200036};
+  Object.defineProperty(nonEnumOpts,'branch',{enumerable:false,value:'main'});
+  const symbolOpts={repository:'Synthetic/FamilyTree',repositoryId:200036,[Symbol('s')]:1};
+
+  let unexpectedNetworkCalls=0;
+  const neverFetch=async()=>{unexpectedNetworkCalls++;return json([]);};
+  for(const badReq of [null,'not-a-fn',{}]) {
+    assert.deepEqual(await readInventory(badReq,consumerOpts),{
+      shadow:true,evidenceComplete:false,liveDispatch:false,liveMerge:false,reason:'TRUST_UNKNOWN'
+    });
+  }
+  for(const badOpts of [
+    null,
+    42,
+    [],
+    process.env,
+    Object.create(consumerOpts),
+    new Proxy(consumerOpts,handler),
+    revoked.proxy,
+    getterOpts,
+    nonEnumOpts,
+    symbolOpts,
+    {unknownKey:true},
+    {scope:null},
+    {scope:[]},
+    {scope:{unknownKey:true}},
+    {scope:consumerOpts,repository:'Other/Repo'},
+    {repository:'Synthetic/FamilyTree'},
+    {repositoryId:200036},
+    {repository:'Jamula/SoftwareFactory',repositoryId:200036},
+    {repository:'jamula/softwarefactory',repositoryId:1471342715},
+    {repository:'Synthetic/FamilyTree',repositoryId:1471342715},
+    {repository:'Synthetic/FamilyTree',repositoryId:200036,branch:'../bad'},
+    {repository:'Synthetic/FamilyTree',repositoryId:200036,workflowPath:'bad.txt'}
+  ]) {
+    assert.deepEqual(await readInventory(neverFetch,badOpts),{
+      shadow:true,evidenceComplete:false,liveDispatch:false,liveMerge:false,reason:'TRUST_UNKNOWN'
+    });
+  }
+  assert.equal(trapCount,0);
+  assert.equal(unexpectedNetworkCalls,0);
 });
 test('inventory rejects errors, malformed data, duplicate records and bounded pagination',async()=>{
   for(const [make,pattern] of [
