@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {
+  COORDINATOR_DISPATCHED_WAVE_PROVENANCE,
+  FUTURE_GH_AW_CRON_PROVENANCE,
   LOGICAL_LANE_CLASSIFICATION,
   LOGICAL_LANE_TIERS,
   M01_EXIT_ANCHOR_ISSUE,
@@ -13,12 +15,14 @@ import {
   SOFTWARE_FACTORY_REPOSITORY,
   SOFTWARE_FACTORY_REPOSITORY_ID,
   SPELLBOOK_MAX_CONCURRENCY,
+  STREAMLINED_M02_MIN_ACCEPTED_ISSUES,
   THROUGHPUT_COHORT_MULTIPLIERS,
   TWO_MINUTE_DRAIN_STRETCH_MS,
   UNATTENDED_COPILOT_ACTOR,
   allocatePortfolioCapacityAndSimulateTrains,
   evaluateDotnetConsolidationBenchmark,
-  evaluateSharedFiveOutcomeM02Cohort
+  evaluateSharedFiveOutcomeM02Cohort,
+  evaluateStreamlinedM02CohortReadout
 } from '../../tools/engineering-factory/portfolio-train-benchmark.mjs';
 
 const sha = ch => ch.repeat(40);
@@ -1416,19 +1420,27 @@ test('retains Node as authoritative on CI overhead regressions, unmeasured/synth
   }
 });
 
-test('verifies committed m02-04-maf-throughput-cohort.json receipt across Waves 2-4 trains, .NET 10 MAF 1.28.0 benchmark, and pending #10 provenance separation', () => {
+test('verifies committed m02-04-maf-throughput-cohort.json receipt across Waves 1-5 trains, .NET 10 MAF 1.28.0 benchmark, and 14-issue streamlined #16 cohort readout', () => {
   const receiptUrl = new URL('../../docs/evidence/m02-04-maf-throughput-cohort.json', import.meta.url);
   const receipt = JSON.parse(readFileSync(receiptUrl, 'utf8'));
 
-  assert.equal(receipt.schemaVersion, 'm02-04-maf-throughput-cohort-v1');
+  assert.equal(receipt.schemaVersion, 'm02-04-maf-throughput-cohort-v2');
   assert.equal(receipt.issue, 16);
-  assert.equal(receipt.evaluatedMainHeadSha, 'ec438f54088f30856c2df6ff626e894dde2a0100');
+  assert.equal(receipt.evaluatedMainHeadSha, '1371a40aa7958fdd9dfe1dbe549952f62adeeae8');
   assert.deepEqual(receipt.sharedClosureIssues, [...SHARED_M02_EXIT_ISSUES]);
   assert.equal(receipt.m01AnchorIssue, M01_EXIT_ANCHOR_ISSUE);
+  assert.equal(receipt.provenance.streamlinedM02CohortVerified, true);
   assert.equal(receipt.provenance.multiCohortLadderRetired, true);
-  assert.equal(receipt.provenance.keepIssue16Open, true);
-  assert.equal(receipt.provenance.unattendedCopilotOutcomesCompleted, 0);
-  assert.equal(receipt.provenance.unattendedCopilotOutcomesRequired, SHARED_M02_COHORT_TARGET_OUTCOMES);
+  assert.equal(receipt.provenance.keepIssue16Open, false);
+  assert.equal(receipt.provenance.acceptedCohortIssuesCompleted, 14);
+  assert.equal(receipt.provenance.acceptedCohortIssuesRequired, STREAMLINED_M02_MIN_ACCEPTED_ISSUES);
+  assert.deepEqual(
+    receipt.provenance.acceptedCohortIssueNumbers,
+    [4, 5, 6, 7, 8, 9, 13, 15, 17, 18, 66, 105, 118, 136]
+  );
+  assert.equal(receipt.provenance.coordinatorDispatchedWavePrsMerged, 59);
+  assert.equal(receipt.provenance.futureGhAwCronWavesStatus, 'DEFERRED_PENDING_GHAW_CRON_ENABLEMENT');
+  assert.equal(receipt.provenance.futureGhAwCronOutcomesCompleted, 0);
   assert.equal(receipt.provenance.incrementalSpendUsd, 0);
 
   // Verify .NET 10.0.404 MAF 1.28.0 --smoke and --benchmark receipts
@@ -1442,11 +1454,17 @@ test('verifies committed m02-04-maf-throughput-cohort.json receipt across Waves 
     [12, 50, 100]
   );
 
-  // Deterministically replay Waves 2, 3 (21-PR parallel Squash Merge Queue train #145-#165), and 4 (#166-#169)
+  // Deterministically replay all 9 Squash Merge Queue sub-trains across Waves 1-5 (59 PRs total)
   for (const [waveKey, expectedStatus, expectedBefore, expectedAfter, expectedCount, expectedFinalSha] of [
+    ['wave1a', 'TRAIN_DRAINED', true, true, 3, '1a9b910c626c1b7a32775da9ba681bd09af9670c'],
+    ['wave1b', 'TRAIN_DRAINED', true, true, 7, '0eb14ed3d6bd8d0b1da190593110df0957e46c37'],
+    ['wave1c', 'TRAIN_DRAINED', true, true, 5, '90f3a0e85e5ad87ef0993fa0ab9dd264adf35bbe'],
+    ['wave1d', 'TRAIN_DRAINED', true, true, 2, 'c77612ec3f4e89d792b3b77741718824318ca676'],
     ['wave2', 'HALTED_ON_POST_MERGE_MAIN_FAILURE', true, false, 7, 'cec2745b7b8a21e77ad9f2839d4255d42305d419'],
     ['wave3', 'TRAIN_DRAINED', false, true, 21, 'b0924c3807f797e6090e1dc3e1e65fc9caa07550'],
-    ['wave4', 'TRAIN_DRAINED', true, true, 4, 'ec438f54088f30856c2df6ff626e894dde2a0100']
+    ['wave4', 'TRAIN_DRAINED', true, true, 4, 'ec438f54088f30856c2df6ff626e894dde2a0100'],
+    ['wave5a', 'TRAIN_DRAINED', true, true, 8, 'e8e357febbfe1617189c38d211c8dfdfa6178aa3'],
+    ['wave5b', 'TRAIN_DRAINED', true, true, 2, '1371a40aa7958fdd9dfe1dbe549952f62adeeae8']
   ]) {
     const sim = receipt.waveTrainSimulations[waveKey];
     assert.equal(
@@ -1477,28 +1495,49 @@ test('verifies committed m02-04-maf-throughput-cohort.json receipt across Waves 
   assert.equal(replayedConsolidation.valid, true);
   assert.equal(replayedConsolidation.recommendation, 'retain-node-authoritative');
 
-  // Deterministically replay shared 5-outcome M02 cohort gate
-  const replayedShared = evaluateSharedFiveOutcomeM02Cohort({
-    ...receipt.sharedFiveOutcomeM02Cohort.parameters,
-    portfolioInput: receipt.waveTrainSimulations.wave4.input,
-    benchmarkInput: receipt.consolidationBenchmark.input
+  // Deterministically replay streamlined M02 cohort readout across Waves 1-5 and 14 real accepted issues
+  const params = receipt.streamlinedM02CohortReadout.parameters;
+  const replayedStreamlined = evaluateStreamlinedM02CohortReadout({
+    stop: params.stop,
+    repositoryId: params.repositoryId,
+    repository: params.repository,
+    headSha: params.headSha,
+    policy: params.policy,
+    billingHardStopVerified: params.billingHardStopVerified,
+    incrementalSpendMicros: params.incrementalSpendMicros,
+    futureGhAwCronDisclosure: params.futureGhAwCronDisclosure,
+    exactHeadCoverage: params.exactHeadCoverage,
+    portfolioTrainInputs: params.portfolioTrainInputKeys.map(k => receipt.waveTrainSimulations[k].input),
+    benchmarkInput: receipt.consolidationBenchmark.input,
+    engineeringWaves: params.engineeringWaves,
+    acceptedIssueOutcomes: params.acceptedIssueOutcomes
   });
-  assert.deepEqual(replayedShared, receipt.sharedFiveOutcomeM02Cohort.evaluation);
-  assert.equal(replayedShared.valid, true);
-  assert.equal(replayedShared.provenanceSeparated, true);
-  assert.equal(replayedShared.runtimePosture, 'dual-runtime-retain-node-authoritative');
-  assert.equal(replayedShared.cohortComplete, false);
-  assert.equal(replayedShared.measurementsVerified, false);
-  assert.equal(replayedShared.m02ExitReady, false);
-  assert.equal(replayedShared.keepIssue16Open, true);
-  assert.equal(replayedShared.status, 'PENDING_UNATTENDED_COPILOT_COHORT');
-  assert.equal(replayedShared.reason, 'PENDING_M01_10_AND_SHARED_5_ISSUE_COHORT');
-  assert.equal(replayedShared.engineeringWaveSummary.totalMergedPrs, 32);
-  assert.equal(replayedShared.engineeringWaveSummary.historicalPostMergeMainFailures, 2);
-  assert.equal(replayedShared.engineeringWaveSummary.unresolvedPostMergeMainFailures, 0);
-  assert.equal(replayedShared.unattendedCohortSummary.acceptedCount, 0);
-  assert.equal(replayedShared.unattendedCohortSummary.partialOutcomeCount, 0);
-  assert.equal(replayedShared.unattendedCohortSummary.remainingRequiredCount, 5);
+  assert.deepEqual(replayedStreamlined, receipt.streamlinedM02CohortReadout.evaluation);
+  assert.equal(replayedStreamlined.valid, true);
+  assert.equal(replayedStreamlined.streamlinedM02CohortVerified, true);
+  assert.equal(replayedStreamlined.issue16ExitReady, true);
+  assert.equal(replayedStreamlined.keepIssue16Open, false);
+  assert.equal(replayedStreamlined.provenanceSeparated, true);
+  assert.equal(replayedStreamlined.coordinatorWaveProvenance, COORDINATOR_DISPATCHED_WAVE_PROVENANCE);
+  assert.deepEqual(replayedStreamlined.futureGhAwCronDisclosure, {
+    provenanceKind: FUTURE_GH_AW_CRON_PROVENANCE,
+    status: 'DEFERRED_PENDING_GHAW_CRON_ENABLEMENT',
+    completedCronOutcomes: 0,
+    conflatedWithCoordinatorWaves: false
+  });
+  assert.equal(replayedStreamlined.runtimePosture, 'dual-runtime-retain-node-authoritative');
+  assert.equal(replayedStreamlined.status, 'STREAMLINED_M02_COHORT_VERIFIED');
+  assert.equal(replayedStreamlined.reason, 'STREAMLINED_M02_EXIT_ELIGIBLE');
+  assert.equal(replayedStreamlined.engineeringWaveSummary.waveCount, 5);
+  assert.equal(replayedStreamlined.engineeringWaveSummary.totalMergedPrs, 59);
+  assert.equal(replayedStreamlined.engineeringWaveSummary.historicalPostMergeMainFailures, 2);
+  assert.equal(replayedStreamlined.engineeringWaveSummary.unresolvedPostMergeMainFailures, 0);
+  assert.equal(replayedStreamlined.acceptedCohortSummary.acceptedIssueCount, 14);
+  assert.equal(replayedStreamlined.acceptedCohortSummary.partialOutcomeCount, 0);
+  assert.equal(replayedStreamlined.acceptedCohortSummary.remainingRequiredCount, 0);
+  assert.equal(replayedStreamlined.acceptedCohortSummary.acceptedTrainMainBreakages, 0);
+  assert.equal(replayedStreamlined.acceptedCohortSummary.unresolvedFindings, 0);
+  assert.equal(replayedStreamlined.acceptedCohortSummary.incrementalSpendMicros, 0);
 });
 
 const WAVE_END_SHA = sha('9');
@@ -2315,5 +2354,811 @@ test('evaluates shared 5-outcome M02 cohort completion, composition requirements
       unattendedOutcomes: [makeUnattendedOutcome(1, 1, {incrementalSpendMicros: -1})]
     })).reason,
     'OUTCOME_SCHEMA_INVALID'
+  );
+
+  // Empty unattendedOutcomes keeps pending unattended gh-aw status cleanly
+  const emptyUnattended = evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({unattendedOutcomes: []}));
+  assert.equal(emptyUnattended.valid, true);
+  assert.equal(emptyUnattended.cohortComplete, false);
+  assert.equal(emptyUnattended.status, 'PENDING_UNATTENDED_COPILOT_COHORT');
+  assert.equal(emptyUnattended.unattendedCohortSummary.acceptedCount, 0);
+  assert.equal(emptyUnattended.unattendedCohortSummary.remainingRequiredCount, SHARED_M02_COHORT_TARGET_OUTCOMES);
+});
+
+const makeStreamlinedOutcome = (idx, total = 5, overrides = {}) => {
+  const parentMainSha = idx === 1 ? WAVE_END_SHA : String(idx - 1).padStart(40, '8');
+  const squashMergeSha = idx === total ? WORKLOAD_SHA : String(idx).padStart(40, '8');
+  const prCreatedAtMs = 1795900000000 + idx * 60000;
+  const addedToMergeQueueAtMs = prCreatedAtMs + 600000;
+  const mergedAtMs = addedToMergeQueueAtMs + 180000;
+  const issueClosedOnGitHub = overrides.issueClosedOnGitHub ?? true;
+  return {
+    repositoryId: SOFTWARE_FACTORY_REPOSITORY_ID,
+    repository: SOFTWARE_FACTORY_REPOSITORY,
+    issue: 400 + idx,
+    milestone: `M02.0${idx}`,
+    waveId: 'wave-5',
+    acceptingPr: 500 + idx,
+    supportingWavePrs: idx === 1 ? [166] : [],
+    provenanceKind: COORDINATOR_DISPATCHED_WAVE_PROVENANCE,
+    copilotCoAuthored: true,
+    issueClosedOnGitHub,
+    allAcceptanceCriteriaDelivered: true,
+    expectedBaseSha: parentMainSha,
+    parentMainSha,
+    headSha: String(idx).padStart(40, '7'),
+    squashMergeSha,
+    prCreatedAtMs,
+    addedToMergeQueueAtMs,
+    mergedAtMs,
+    issueClosedAtMs: issueClosedOnGitHub ? mergedAtMs + 30000 : null,
+    mergeQueueDurationMs: 180000,
+    ownedPaths: [`tools/streamlined-lane-${idx}.mjs`],
+    checksPassed: true,
+    securityClear: true,
+    independentReview: true,
+    reviewThreadsTotal: idx === 3 ? 4 : 0,
+    unresolvedFindings: 0,
+    mainHealthyAfterMerge: true,
+    rollbackReady: true,
+    reworkCommits: idx === 3 ? 2 : 0,
+    branchSyncMergeCommits: idx === 2 ? 1 : 0,
+    duplicateDispatches: 0,
+    unauthorizedWrites: 0,
+    incrementalSpendMicros: 0,
+    ...overrides
+  };
+};
+
+const makeStreamlinedInput = (overrides = {}) => {
+  const repositoryId = overrides.repositoryId ?? SOFTWARE_FACTORY_REPOSITORY_ID;
+  const repository = overrides.repository ?? SOFTWARE_FACTORY_REPOSITORY;
+  const headSha = overrides.headSha ?? WORKLOAD_SHA;
+  const acceptedIssueOutcomes = overrides.acceptedIssueOutcomes ??
+    [1, 2, 3, 4, 5].map(idx => makeStreamlinedOutcome(idx, 5, {repositoryId, repository}));
+  const defaultCandidates = acceptedIssueOutcomes.length === 0
+    ? [makeTrainCandidate(501, {
+      expectedBase: WAVE_END_SHA,
+      simulatedSquashSha: headSha,
+      eligibleToMergeMs: 180000,
+      reviewState: 'APPROVED'
+    })]
+    : acceptedIssueOutcomes.map((o, idx) => makeTrainCandidate(o.acceptingPr, {
+      head: o.headSha,
+      observedHead: o.headSha,
+      expectedBase: o.expectedBaseSha,
+      simulatedSquashSha: idx === acceptedIssueOutcomes.length - 1 ? headSha : o.squashMergeSha,
+      eligibleToMergeMs: o.mergeQueueDurationMs,
+      ownedPaths: [...o.ownedPaths],
+      coveredLines: Math.max(990, (overrides.policy?.minLinePercent ?? 98) * 10),
+      totalLines: 1000,
+      coveredBranches: Math.max(970, (overrides.policy?.minBranchPercent ?? 95) * 10),
+      totalBranches: 1000,
+      reviewState: 'APPROVED'
+    }));
+  const defaultRepo = repositoryId === SOFTWARE_FACTORY_REPOSITORY_ID
+    ? factoryRepo({
+      overrides: {
+        train: {
+          defaultBranch: 'main',
+          mainSha: WAVE_END_SHA,
+          mainHealthy: true,
+          mergeQueue: {
+            mode: 'native-merge-queue',
+            supported: true,
+            ownerApproved: true,
+            costVerified: true,
+            incrementalSpendMicros: 0
+          },
+          candidates: defaultCandidates
+        }
+      }
+    })
+    : makeRepo({
+      repositoryId,
+      repository,
+      localConcurrencyCap: 2,
+      minLinePercent: overrides.policy?.minLinePercent ?? 95,
+      minBranchPercent: overrides.policy?.minBranchPercent ?? 90,
+      credentialId: `cred-${repositoryId}`,
+      overrides: {
+        train: {
+          defaultBranch: 'main',
+          mainSha: WAVE_END_SHA,
+          mainHealthy: true,
+          mergeQueue: {
+            mode: 'native-merge-queue',
+            supported: true,
+            ownerApproved: true,
+            costVerified: true,
+            incrementalSpendMicros: 0
+          },
+          candidates: defaultCandidates
+        }
+      }
+    });
+  return {
+    stop: false,
+    repositoryId,
+    repository,
+    headSha,
+    policy: {minLinePercent: 98, minBranchPercent: 95},
+    billingHardStopVerified: true,
+    incrementalSpendMicros: 0,
+    futureGhAwCronDisclosure: {
+      provenanceKind: FUTURE_GH_AW_CRON_PROVENANCE,
+      status: 'DEFERRED_PENDING_GHAW_CRON_ENABLEMENT',
+      completedCronOutcomes: 0,
+      conflatedWithCoordinatorWaves: false
+    },
+    exactHeadCoverage: {
+      headSha,
+      coveredLines: 990,
+      totalLines: 1000,
+      coveredBranches: 970,
+      totalBranches: 1000
+    },
+    portfolioTrainInputs: [
+      {
+        stop: false,
+        budget: baseBudget({active: 0, maxActive: 4}),
+        repositories: [defaultRepo],
+        workItems: []
+      }
+    ],
+    benchmarkInput: benchmarkInput({cohorts: null}),
+    engineeringWaves: [
+      {
+        waveId: 'wave-4',
+        provenanceKind: 'session-orchestrated-merge-queue-wave',
+        initialMainSha: MAIN_SHA,
+        finalMainSha: WAVE_END_SHA,
+        windowStartMs: 1795800000000,
+        windowEndMs: 1795803600000,
+        prNumbers: [166, 167],
+        mergeQueueDurationsMs: [138000, 204000],
+        postMergeMainFailures: 0,
+        recoveredBeforeNextWave: false,
+        incrementalSpendMicros: 0
+      },
+      {
+        waveId: 'wave-5',
+        provenanceKind: 'session-orchestrated-merge-queue-wave',
+        initialMainSha: WAVE_END_SHA,
+        finalMainSha: headSha,
+        windowStartMs: 1795900000000,
+        windowEndMs: 1795905000000,
+        prNumbers: acceptedIssueOutcomes.length === 0
+          ? [501]
+          : acceptedIssueOutcomes.map(o => o.acceptingPr),
+        mergeQueueDurationsMs: acceptedIssueOutcomes.length === 0
+          ? [180000]
+          : acceptedIssueOutcomes.map(o => o.mergeQueueDurationMs),
+        postMergeMainFailures: 0,
+        recoveredBeforeNextWave: false,
+        incrementalSpendMicros: 0
+      }
+    ],
+    acceptedIssueOutcomes,
+    ...overrides
+  };
+};
+
+test('evaluates streamlined M02 cohort readout, consumer policies, partial outcomes, and fail-closed provenance/safety gates', () => {
+  // Single-runtime consolidation posture flows through when benchmarkInput is consolidation-eligible
+  const singleRuntimeEligible = evaluateStreamlinedM02CohortReadout(
+    makeStreamlinedInput({benchmarkInput: benchmarkInput()})
+  );
+  assert.equal(singleRuntimeEligible.valid, true);
+  assert.equal(singleRuntimeEligible.streamlinedM02CohortVerified, true);
+  assert.equal(singleRuntimeEligible.issue16ExitReady, true);
+  assert.equal(singleRuntimeEligible.keepIssue16Open, false);
+  assert.equal(singleRuntimeEligible.runtimePosture, 'dotnet-10-single-runtime-consolidation-eligible');
+
+  // Spellbook (97/90), FamilyTree (95/90), and FamilyHub (100/100) consumer policies evaluate cleanly
+  const sbReadout = evaluateStreamlinedM02CohortReadout(makeStreamlinedInput({
+    repositoryId: 200004,
+    repository: 'example/spellbook',
+    policy: {minLinePercent: 97, minBranchPercent: 90},
+    exactHeadCoverage: {
+      headSha: WORKLOAD_SHA,
+      coveredLines: 975,
+      totalLines: 1000,
+      coveredBranches: 910,
+      totalBranches: 1000
+    }
+  }));
+  assert.equal(sbReadout.streamlinedM02CohortVerified, true);
+
+  const ftReadout = evaluateStreamlinedM02CohortReadout(makeStreamlinedInput({
+    repositoryId: 200003,
+    repository: 'example/family-tree',
+    policy: {minLinePercent: 95, minBranchPercent: 90}
+  }));
+  assert.equal(ftReadout.streamlinedM02CohortVerified, true);
+
+  const fhReadout = evaluateStreamlinedM02CohortReadout(makeStreamlinedInput({
+    repositoryId: 200005,
+    repository: 'example/family-hub',
+    policy: {minLinePercent: 100, minBranchPercent: 100},
+    exactHeadCoverage: {
+      headSha: WORKLOAD_SHA,
+      coveredLines: 1000,
+      totalLines: 1000,
+      coveredBranches: 1000,
+      totalBranches: 1000
+    }
+  }));
+  assert.equal(fhReadout.streamlinedM02CohortVerified, true, fhReadout.reason);
+
+  // Empty or partial non-closing outcomes remain pending without closing #16
+  const emptyReadout = evaluateStreamlinedM02CohortReadout(makeStreamlinedInput({acceptedIssueOutcomes: []}));
+  assert.equal(emptyReadout.valid, true);
+  assert.equal(emptyReadout.streamlinedM02CohortVerified, false);
+  assert.equal(emptyReadout.keepIssue16Open, true);
+  assert.equal(emptyReadout.status, 'PENDING_STREAMLINED_M02_COHORT');
+  assert.equal(emptyReadout.reason, 'INSUFFICIENT_ACCEPTED_OUTCOMES');
+  assert.equal(emptyReadout.acceptedCohortSummary.windowMs, null);
+  assert.equal(emptyReadout.acceptedCohortSummary.acceptedPerDay, null);
+  assert.equal(emptyReadout.acceptedCohortSummary.reworkRateBps, null);
+
+  for (const partialPatch of [
+    {issueClosedOnGitHub: false, issueClosedAtMs: null},
+    {allAcceptanceCriteriaDelivered: false}
+  ]) {
+    const partial = evaluateStreamlinedM02CohortReadout(makeStreamlinedInput({
+      acceptedIssueOutcomes: [1, 2, 3, 4, 5].map(idx => makeStreamlinedOutcome(idx, 5, partialPatch))
+    }));
+    assert.equal(partial.valid, true);
+    assert.equal(partial.streamlinedM02CohortVerified, false);
+    assert.equal(partial.keepIssue16Open, true);
+    assert.equal(partial.acceptedCohortSummary.acceptedIssueCount, 0);
+    assert.equal(partial.acceptedCohortSummary.partialOutcomeCount, 5);
+  }
+
+  // >=5 outcomes without concurrent execution windows or without review-repair remain INCOMPLETE_COHORT_COMPOSITION
+  const serializedOutcomes = [1, 2, 3, 4, 5].map(idx => {
+    const prCreatedAtMs = 1795900000000 + idx * 3600000;
+    const addedToMergeQueueAtMs = prCreatedAtMs + 600000;
+    const mergedAtMs = addedToMergeQueueAtMs + 180000;
+    return makeStreamlinedOutcome(idx, 5, {
+      prCreatedAtMs,
+      addedToMergeQueueAtMs,
+      mergedAtMs,
+      issueClosedAtMs: mergedAtMs + 10000
+    });
+  });
+  const noParallel = evaluateStreamlinedM02CohortReadout(
+    makeStreamlinedInput({acceptedIssueOutcomes: serializedOutcomes})
+  );
+  assert.equal(noParallel.streamlinedM02CohortVerified, false);
+  assert.equal(noParallel.status, 'INCOMPLETE_COHORT_COMPOSITION');
+  assert.equal(noParallel.reason, 'COHORT_COMPOSITION_REQUIREMENTS_UNMET');
+
+  const noRepair = evaluateStreamlinedM02CohortReadout(makeStreamlinedInput({
+    acceptedIssueOutcomes: [1, 2, 3, 4, 5].map(idx =>
+      makeStreamlinedOutcome(idx, 5, {reworkCommits: 0, reviewThreadsTotal: 0})
+    )
+  }));
+  assert.equal(noRepair.streamlinedM02CohortVerified, false);
+  assert.equal(noRepair.reason, 'COHORT_COMPOSITION_REQUIREMENTS_UNMET');
+
+  // Top-level schema, stop, identity, policy, spend, gh-aw disclosure, and exact-head coverage gates
+  assert.equal(evaluateStreamlinedM02CohortReadout(null).reason, 'INPUT_UNKNOWN');
+  assert.equal(
+    evaluateStreamlinedM02CohortReadout(makeStreamlinedInput({incrementalSpendMicros: -1})).reason,
+    'INPUT_UNKNOWN'
+  );
+  assert.equal(evaluateStreamlinedM02CohortReadout(makeStreamlinedInput({stop: true})).reason, 'STOPPED');
+  assert.equal(
+    evaluateStreamlinedM02CohortReadout(makeStreamlinedInput({
+      repositoryId: 999,
+      repository: SOFTWARE_FACTORY_REPOSITORY
+    })).reason,
+    'REPOSITORY_IDENTITY_MISMATCH'
+  );
+  assert.equal(
+    evaluateStreamlinedM02CohortReadout(makeStreamlinedInput({
+      repositoryId: SOFTWARE_FACTORY_REPOSITORY_ID,
+      repository: 'jamula/softwarefactory'
+    })).reason,
+    'REPOSITORY_IDENTITY_MISMATCH'
+  );
+  assert.equal(
+    evaluateStreamlinedM02CohortReadout(makeStreamlinedInput({
+      policy: {minLinePercent: 97, minBranchPercent: 95}
+    })).reason,
+    'POLICY_BELOW_MINIMUM'
+  );
+  assert.equal(
+    evaluateStreamlinedM02CohortReadout(makeStreamlinedInput({billingHardStopVerified: false})).reason,
+    'SPEND_UNKNOWN_OR_EXCEEDED'
+  );
+  assert.equal(
+    evaluateStreamlinedM02CohortReadout(makeStreamlinedInput({incrementalSpendMicros: null})).reason,
+    'SPEND_UNKNOWN_OR_EXCEEDED'
+  );
+  for (const conflated of [
+    {provenanceKind: 'wrong-kind', conflatedWithCoordinatorWaves: false},
+    {provenanceKind: FUTURE_GH_AW_CRON_PROVENANCE, conflatedWithCoordinatorWaves: true}
+  ]) {
+    assert.equal(
+      evaluateStreamlinedM02CohortReadout(makeStreamlinedInput({
+        futureGhAwCronDisclosure: {
+          ...makeStreamlinedInput().futureGhAwCronDisclosure,
+          ...conflated
+        }
+      })).reason,
+      'PROVENANCE_CONFLATION_REJECTED'
+    );
+  }
+  for (const badDisclosure of [
+    {status: 'ACTIVE'},
+    {completedCronOutcomes: 1}
+  ]) {
+    assert.equal(
+      evaluateStreamlinedM02CohortReadout(makeStreamlinedInput({
+        futureGhAwCronDisclosure: {
+          ...makeStreamlinedInput().futureGhAwCronDisclosure,
+          ...badDisclosure
+        }
+      })).reason,
+      'GHAW_CRON_DISCLOSURE_INVALID'
+    );
+  }
+  assert.equal(
+    evaluateStreamlinedM02CohortReadout(makeStreamlinedInput({
+      exactHeadCoverage: {...makeStreamlinedInput().exactHeadCoverage, headSha: SQUASH_1}
+    })).reason,
+    'HEAD_SHA_MISMATCH'
+  );
+  assert.equal(
+    evaluateStreamlinedM02CohortReadout(makeStreamlinedInput({
+      exactHeadCoverage: {...makeStreamlinedInput().exactHeadCoverage, coveredLines: 970}
+    })).reason,
+    'COVERAGE_BELOW_POLICY'
+  );
+  assert.equal(
+    evaluateStreamlinedM02CohortReadout(makeStreamlinedInput({
+      exactHeadCoverage: {...makeStreamlinedInput().exactHeadCoverage, coveredLines: 991}
+    })).reason,
+    'HEAD_COVERAGE_MISMATCH'
+  );
+
+  // Train chain, duplicate PRs, enrolled policy floor, benchmark, and wave boundary checks
+  const baseStreamlined = makeStreamlinedInput();
+  assert.equal(
+    evaluateStreamlinedM02CohortReadout({
+      ...baseStreamlined,
+      portfolioTrainInputs: [{...baseStreamlined.portfolioTrainInputs[0], stop: true}]
+    }).reason,
+    'STOPPED'
+  );
+  assert.equal(
+    evaluateStreamlinedM02CohortReadout({
+      ...baseStreamlined,
+      portfolioTrainInputs: [{
+        stop: false,
+        budget: baseBudget({active: 0, maxActive: 4}),
+        repositories: [factoryRepo()],
+        workItems: []
+      }]
+    }).reason,
+    'INTEGRATION_TRAIN_UNHEALTHY'
+  );
+  assert.equal(
+    evaluateStreamlinedM02CohortReadout(makeStreamlinedInput({
+      repositoryId: 200003,
+      repository: 'example/spoofed',
+      policy: {minLinePercent: 95, minBranchPercent: 90},
+      portfolioTrainInputs: [{
+        stop: false,
+        budget: baseBudget({active: 0, maxActive: 4}),
+        repositories: [familyTreeRepo({candidates: [makeTrainCandidate(501, {simulatedSquashSha: WORKLOAD_SHA})]})],
+        workItems: []
+      }]
+    })).reason,
+    'REPOSITORY_IDENTITY_MISMATCH'
+  );
+  assert.equal(
+    evaluateStreamlinedM02CohortReadout(makeStreamlinedInput({
+      repositoryId: 200005,
+      repository: 'example/family-hub',
+      policy: {minLinePercent: 99, minBranchPercent: 100},
+      exactHeadCoverage: {
+        headSha: WORKLOAD_SHA,
+        coveredLines: 1000,
+        totalLines: 1000,
+        coveredBranches: 1000,
+        totalBranches: 1000
+      },
+      portfolioTrainInputs: [{
+        stop: false,
+        budget: baseBudget({active: 0, maxActive: 4}),
+        repositories: [familyHubRepo({
+          candidates: [makeTrainCandidate(501, {
+            simulatedSquashSha: WORKLOAD_SHA,
+            coveredLines: 1000,
+            coveredBranches: 1000
+          })]
+        })],
+        workItems: []
+      }]
+    })).reason,
+    'POLICY_BELOW_MINIMUM'
+  );
+  assert.equal(
+    evaluateStreamlinedM02CohortReadout({
+      ...baseStreamlined,
+      portfolioTrainInputs: [
+        baseStreamlined.portfolioTrainInputs[0],
+        baseStreamlined.portfolioTrainInputs[0]
+      ]
+    }).reason,
+    'WAVE_CHAIN_DISCONTINUITY'
+  );
+  const dupPart1 = {
+    stop: false,
+    budget: baseBudget({active: 0, maxActive: 4}),
+    repositories: [factoryRepo({
+      candidates: [makeTrainCandidate(501, {simulatedSquashSha: WAVE_END_SHA, reviewState: 'APPROVED'})]
+    })],
+    workItems: []
+  };
+  assert.equal(
+    evaluateStreamlinedM02CohortReadout({
+      ...baseStreamlined,
+      portfolioTrainInputs: [dupPart1, baseStreamlined.portfolioTrainInputs[0]]
+    }).reason,
+    'DUPLICATE_TRAIN_CANDIDATE'
+  );
+  assert.equal(
+    evaluateStreamlinedM02CohortReadout({
+      ...baseStreamlined,
+      portfolioTrainInputs: [{
+        stop: false,
+        budget: baseBudget({active: 0, maxActive: 4}),
+        repositories: [factoryRepo({
+          candidates: [makeTrainCandidate(501, {simulatedSquashSha: SQUASH_1, reviewState: 'APPROVED'})]
+        })],
+        workItems: []
+      }]
+    }).reason,
+    'HEAD_SHA_MISMATCH'
+  );
+  assert.equal(
+    evaluateStreamlinedM02CohortReadout({
+      ...baseStreamlined,
+      benchmarkInput: {...benchmarkInput(), stop: true}
+    }).reason,
+    'STOPPED'
+  );
+  assert.equal(
+    evaluateStreamlinedM02CohortReadout({
+      ...baseStreamlined,
+      benchmarkInput: benchmarkInput({
+        workload: SQUASH_1,
+        nodeBaseline: {...nodeBaselineProfile(), workload: SQUASH_1},
+        dotnetMafCandidate: {...dotnetMafCandidateProfile(), workload: SQUASH_1},
+        cohorts: null
+      })
+    }).reason,
+    'HEAD_SHA_MISMATCH'
+  );
+  assert.equal(
+    evaluateStreamlinedM02CohortReadout({
+      ...baseStreamlined,
+      benchmarkInput: benchmarkInput({dotnetMafCandidate: null, cohorts: null})
+    }).reason,
+    'MAF_CANDIDATE_REQUIRED'
+  );
+  assert.equal(
+    evaluateStreamlinedM02CohortReadout({
+      ...baseStreamlined,
+      benchmarkInput: benchmarkInput({
+        dotnetMafCandidate: {...dotnetMafCandidateProfile(), checkpointResumeVerified: false}
+      })
+    }).reason,
+    'MAF_ARCHITECTURE_OR_SAFETY_UNVERIFIED'
+  );
+  assert.equal(
+    evaluateStreamlinedM02CohortReadout({
+      ...baseStreamlined,
+      benchmarkInput: benchmarkInput({
+        dotnetMafCandidate: {...dotnetMafCandidateProfile(), coveredLines: 970}
+      })
+    }).reason,
+    'MAF_COVERAGE_BELOW_POLICY'
+  );
+  assert.equal(
+    evaluateStreamlinedM02CohortReadout({
+      ...baseStreamlined,
+      benchmarkInput: benchmarkInput({
+        dotnetMafCandidate: {...dotnetMafCandidateProfile(), coveredLines: 985, rollbackReady: false}
+      })
+    }).reason,
+    'REVIEW_OR_ROLLBACK_UNREADY'
+  );
+  assert.equal(
+    evaluateStreamlinedM02CohortReadout({
+      ...baseStreamlined,
+      engineeringWaves: [{...baseStreamlined.engineeringWaves[0], postMergeMainFailures: 1}]
+    }).reason,
+    'WAVE_MAIN_FAILURE_DETECTED'
+  );
+  assert.equal(
+    evaluateStreamlinedM02CohortReadout({
+      ...baseStreamlined,
+      engineeringWaves: [{...baseStreamlined.engineeringWaves[0], finalMainSha: SQUASH_1}]
+    }).reason,
+    'HEAD_SHA_MISMATCH'
+  );
+  assert.equal(
+    evaluateStreamlinedM02CohortReadout({
+      ...baseStreamlined,
+      engineeringWaves: [{
+        ...baseStreamlined.engineeringWaves[1],
+        initialMainSha: sha('4')
+      }]
+    }).reason,
+    'WAVE_CHAIN_DISCONTINUITY'
+  );
+  // Wave vs. train PR sequence, merge-queue duration, and intermediate wave finalMainSha parity checks
+  for (const badWaves of [
+    [
+      baseStreamlined.engineeringWaves[0],
+      {...baseStreamlined.engineeringWaves[1], prNumbers: [501, 502, 503, 504, 599]}
+    ],
+    [
+      baseStreamlined.engineeringWaves[0],
+      {...baseStreamlined.engineeringWaves[1], mergeQueueDurationsMs: [180000, 180000, 180000, 180000, 181000]}
+    ],
+    [
+      baseStreamlined.engineeringWaves[0],
+      {
+        ...baseStreamlined.engineeringWaves[1],
+        prNumbers: [501, 502, 503, 504],
+        mergeQueueDurationsMs: [180000, 180000, 180000, 180000],
+        finalMainSha: String(4).padStart(40, '8')
+      },
+      {
+        waveId: 'wave-6',
+        provenanceKind: 'session-orchestrated-merge-queue-wave',
+        initialMainSha: String(4).padStart(40, '8'),
+        finalMainSha: WORKLOAD_SHA,
+        windowStartMs: 1795905000000,
+        windowEndMs: 1795906000000,
+        prNumbers: [505, 506],
+        mergeQueueDurationsMs: [180000, 180000],
+        postMergeMainFailures: 0,
+        recoveredBeforeNextWave: false,
+        incrementalSpendMicros: 0
+      }
+    ],
+    [
+      baseStreamlined.engineeringWaves[0],
+      {
+        ...baseStreamlined.engineeringWaves[1],
+        waveId: 'wave-5a',
+        prNumbers: [501, 502],
+        mergeQueueDurationsMs: [180000, 180000],
+        finalMainSha: sha('3')
+      },
+      {
+        waveId: 'wave-5b',
+        provenanceKind: 'session-orchestrated-merge-queue-wave',
+        initialMainSha: sha('3'),
+        finalMainSha: WORKLOAD_SHA,
+        windowStartMs: 1795905000000,
+        windowEndMs: 1795906000000,
+        prNumbers: [503, 504, 505],
+        mergeQueueDurationsMs: [180000, 180000, 180000],
+        postMergeMainFailures: 0,
+        recoveredBeforeNextWave: false,
+        incrementalSpendMicros: 0
+      }
+    ],
+    [
+      baseStreamlined.engineeringWaves[0],
+      {
+        ...baseStreamlined.engineeringWaves[1],
+        prNumbers: [501, 502, 503, 504],
+        mergeQueueDurationsMs: [180000, 180000, 180000, 180000]
+      }
+    ]
+  ]) {
+    assert.equal(
+      evaluateStreamlinedM02CohortReadout({
+        ...baseStreamlined,
+        engineeringWaves: badWaves
+      }).reason,
+      'WAVE_TRAIN_PARITY_MISMATCH'
+    );
+  }
+
+  // Trailing train candidates cycling back to WORKLOAD_SHA beyond engineeringWaves PR list are rejected
+  const extraCycleTrainA = {
+    stop: false,
+    budget: baseBudget({active: 0, maxActive: 4}),
+    repositories: [factoryRepo({
+      overrides: {
+        train: {
+          defaultBranch: 'main',
+          mainSha: WORKLOAD_SHA,
+          mainHealthy: true,
+          mergeQueue: {
+            mode: 'native-merge-queue',
+            supported: true,
+            ownerApproved: true,
+            costVerified: true,
+            incrementalSpendMicros: 0
+          },
+          candidates: [
+            makeTrainCandidate(601, {
+              expectedBase: WORKLOAD_SHA,
+              simulatedSquashSha: SQUASH_1,
+              eligibleToMergeMs: 180000,
+              reviewState: 'APPROVED'
+            })
+          ]
+        }
+      }
+    })],
+    workItems: []
+  };
+  const extraCycleTrainB = {
+    stop: false,
+    budget: baseBudget({active: 0, maxActive: 4}),
+    repositories: [factoryRepo({
+      overrides: {
+        train: {
+          defaultBranch: 'main',
+          mainSha: SQUASH_1,
+          mainHealthy: true,
+          mergeQueue: {
+            mode: 'native-merge-queue',
+            supported: true,
+            ownerApproved: true,
+            costVerified: true,
+            incrementalSpendMicros: 0
+          },
+          candidates: [
+            makeTrainCandidate(602, {
+              expectedBase: SQUASH_1,
+              simulatedSquashSha: WORKLOAD_SHA,
+              eligibleToMergeMs: 180000,
+              ownedPaths: ['src/cycle-602'],
+              reviewState: 'APPROVED'
+            })
+          ]
+        }
+      }
+    })],
+    workItems: []
+  };
+  assert.equal(
+    evaluateStreamlinedM02CohortReadout({
+      ...baseStreamlined,
+      portfolioTrainInputs: [baseStreamlined.portfolioTrainInputs[0], extraCycleTrainA, extraCycleTrainB]
+    }).reason,
+    'WAVE_TRAIN_PARITY_MISMATCH'
+  );
+
+  // Outcome-level schema, cross-repo, provenance, co-author, ancestry, wave health, spend, and safety gates
+  for (const badOutcome of [
+    makeStreamlinedOutcome(1, 1, {supportingWavePrs: [501]}),
+    makeStreamlinedOutcome(1, 1, {issueClosedOnGitHub: false, issueClosedAtMs: 1795999999999}),
+    makeStreamlinedOutcome(1, 1, {incrementalSpendMicros: -1})
+  ]) {
+    assert.equal(
+      evaluateStreamlinedM02CohortReadout({
+        ...baseStreamlined,
+        acceptedIssueOutcomes: [badOutcome]
+      }).reason,
+      'OUTCOME_SCHEMA_INVALID'
+    );
+  }
+  assert.equal(
+    evaluateStreamlinedM02CohortReadout({
+      ...baseStreamlined,
+      acceptedIssueOutcomes: [baseStreamlined.acceptedIssueOutcomes[0], baseStreamlined.acceptedIssueOutcomes[0]]
+    }).reason,
+    'OUTCOME_SCHEMA_INVALID'
+  );
+  assert.equal(
+    evaluateStreamlinedM02CohortReadout({
+      ...baseStreamlined,
+      acceptedIssueOutcomes: [
+        {...baseStreamlined.acceptedIssueOutcomes[0], repositoryId: 999999}
+      ]
+    }).reason,
+    'CROSS_REPO_OUTCOME_MISMATCH'
+  );
+  assert.equal(
+    evaluateStreamlinedM02CohortReadout({
+      ...baseStreamlined,
+      acceptedIssueOutcomes: [
+        {...baseStreamlined.acceptedIssueOutcomes[0], provenanceKind: 'unattended-copilot-issue-outcome'}
+      ]
+    }).reason,
+    'PROVENANCE_CONFLATION_REJECTED'
+  );
+  assert.equal(
+    evaluateStreamlinedM02CohortReadout({
+      ...baseStreamlined,
+      acceptedIssueOutcomes: [
+        {...baseStreamlined.acceptedIssueOutcomes[0], copilotCoAuthored: false}
+      ]
+    }).reason,
+    'COPILOT_CO_AUTHOR_REQUIRED'
+  );
+  for (const ancestryPatch of [
+    {waveId: 'wave-4'},
+    {supportingWavePrs: [999]},
+    {headSha: sha('6')},
+    {expectedBaseSha: sha('5')},
+    {parentMainSha: sha('4')},
+    {squashMergeSha: sha('3')},
+    {ownedPaths: ['tools/mismatch.mjs']}
+  ]) {
+    assert.equal(
+      evaluateStreamlinedM02CohortReadout({
+        ...baseStreamlined,
+        acceptedIssueOutcomes: [{...baseStreamlined.acceptedIssueOutcomes[0], ...ancestryPatch}]
+      }).reason,
+      'UNVERIFIED_MAIN_ANCESTRY'
+    );
+  }
+  // Closing train wave claiming postMergeMainFailures > 0 in engineeringWaves is rejected
+  const trainWave4 = {
+    stop: false,
+    budget: baseBudget({active: 0, maxActive: 4}),
+    repositories: [factoryRepo({
+      candidates: [
+        makeTrainCandidate(166, {
+          expectedBase: MAIN_SHA,
+          simulatedSquashSha: SQUASH_1,
+          eligibleToMergeMs: 138000,
+          reviewState: 'APPROVED'
+        }),
+        makeTrainCandidate(167, {
+          expectedBase: SQUASH_1,
+          simulatedSquashSha: WAVE_END_SHA,
+          eligibleToMergeMs: 204000,
+          ownedPaths: ['src/w4-167'],
+          reviewState: 'APPROVED'
+        })
+      ]
+    })],
+    workItems: []
+  };
+  assert.equal(
+    evaluateStreamlinedM02CohortReadout({
+      ...baseStreamlined,
+      portfolioTrainInputs: [trainWave4, baseStreamlined.portfolioTrainInputs[0]],
+      engineeringWaves: [
+        {
+          ...baseStreamlined.engineeringWaves[0],
+          postMergeMainFailures: 1,
+          recoveredBeforeNextWave: true
+        },
+        baseStreamlined.engineeringWaves[1]
+      ]
+    }).reason,
+    'ACCEPTED_WAVE_MAIN_FAILURE_DETECTED'
+  );
+  assert.equal(
+    evaluateStreamlinedM02CohortReadout({
+      ...baseStreamlined,
+      acceptedIssueOutcomes: [{...baseStreamlined.acceptedIssueOutcomes[0], incrementalSpendMicros: null}]
+    }).reason,
+    'SPEND_UNKNOWN_OR_EXCEEDED'
+  );
+  assert.equal(
+    evaluateStreamlinedM02CohortReadout({
+      ...baseStreamlined,
+      acceptedIssueOutcomes: [{...baseStreamlined.acceptedIssueOutcomes[0], unresolvedFindings: 1}]
+    }).reason,
+    'QUALITY_OR_SAFETY_GATE_FAILED'
   );
 });

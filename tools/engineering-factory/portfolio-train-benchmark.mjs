@@ -21,6 +21,10 @@ export const SHARED_M01_ANCHOR_TARGET_OUTCOMES = 3;
 export const SHARED_M02_EXIT_ISSUES = Object.freeze([14, 16, 18, 137]);
 export const M01_EXIT_ANCHOR_ISSUE = 10;
 export const UNATTENDED_COPILOT_ACTOR = 'copilot-swe-agent[bot]';
+export const STREAMLINED_M02_MIN_ACCEPTED_ISSUES = 5;
+export const COORDINATOR_DISPATCHED_WAVE_PROVENANCE =
+  'coordinator-dispatched-worktree-and-cloud-agent-wave';
+export const FUTURE_GH_AW_CRON_PROVENANCE = 'future-gh-aw-cron-unattended-wave';
 
 const DAY_MS = 86400000;
 const YEAR_MS = 31536000000;
@@ -1304,6 +1308,7 @@ function sharedCohortDenied(reason) {
 function parseEngineeringWaves(waves) {
   const seenWaveIds = new Set();
   const wavePrNumbers = new Set();
+  const waveByPr = new Map();
   const allMqMs = [];
   const summaries = [];
   let earliestStartMs = Infinity;
@@ -1348,6 +1353,7 @@ function parseEngineeringWaves(waves) {
       const pr = w.prNumbers[j];
       if (wavePrNumbers.has(pr)) return {ok: false, reason: 'ENGINEERING_WAVE_UNKNOWN'};
       wavePrNumbers.add(pr);
+      waveByPr.set(pr, w);
     }
     seenWaveIds.add(w.waveId);
     earliestStartMs = Math.min(earliestStartMs, w.windowStartMs);
@@ -1376,6 +1382,7 @@ function parseEngineeringWaves(waves) {
   return {
     ok: true,
     wavePrNumbers,
+    waveByPr,
     finalMainSha: waves[waves.length - 1].finalMainSha,
     summary: Object.freeze({
       provenanceKind: 'session-orchestrated-merge-queue-wave',
@@ -1808,5 +1815,447 @@ export function evaluateSharedFiveOutcomeM02Cohort(input) {
     engineeringWaveSummary: wavesParsed.summary,
     unattendedCohortSummary: outcomesParsed.summary,
     sharedCohortMeasurements: measurementsParsed.summary
+  });
+}
+
+const STREAMLINED_READOUT_INPUT_KEYS = [
+  'stop', 'repositoryId', 'repository', 'headSha', 'policy',
+  'billingHardStopVerified', 'incrementalSpendMicros',
+  'futureGhAwCronDisclosure', 'exactHeadCoverage',
+  'portfolioTrainInputs', 'benchmarkInput',
+  'engineeringWaves', 'acceptedIssueOutcomes'
+];
+const FUTURE_GHAW_DISCLOSURE_KEYS = [
+  'provenanceKind', 'status', 'completedCronOutcomes', 'conflatedWithCoordinatorWaves'
+];
+const EXACT_HEAD_COVERAGE_KEYS = [
+  'headSha', 'coveredLines', 'totalLines', 'coveredBranches', 'totalBranches'
+];
+const STREAMLINED_ISSUE_OUTCOME_KEYS = [
+  'repositoryId', 'repository', 'issue', 'milestone',
+  'waveId', 'acceptingPr', 'supportingWavePrs',
+  'provenanceKind', 'copilotCoAuthored',
+  'issueClosedOnGitHub', 'allAcceptanceCriteriaDelivered',
+  'expectedBaseSha', 'parentMainSha', 'headSha', 'squashMergeSha',
+  'prCreatedAtMs', 'addedToMergeQueueAtMs', 'mergedAtMs', 'issueClosedAtMs',
+  'mergeQueueDurationMs', 'ownedPaths',
+  'checksPassed', 'securityClear', 'independentReview',
+  'reviewThreadsTotal', 'unresolvedFindings',
+  'mainHealthyAfterMerge', 'rollbackReady',
+  'reworkCommits', 'branchSyncMergeCommits',
+  'duplicateDispatches', 'unauthorizedWrites',
+  'incrementalSpendMicros'
+];
+
+function streamlinedCohortDenied(reason) {
+  return Object.freeze({
+    valid: false,
+    shadow: true,
+    liveDispatch: false,
+    liveMerge: false,
+    multiCohortLadderRetired: true,
+    streamlinedM02MinAcceptedIssues: STREAMLINED_M02_MIN_ACCEPTED_ISSUES,
+    streamlinedM02CohortVerified: false,
+    provenanceSeparated: false,
+    issue16ExitReady: false,
+    keepIssue16Open: true,
+    status: 'BLOCKED',
+    reason
+  });
+}
+
+function validStreamlinedOutcomeShape(o) {
+  if (!exactRecord(o, STREAMLINED_ISSUE_OUTCOME_KEYS) ||
+      !positiveInt(o.repositoryId) || !isRepoSlug(o.repository) ||
+      !positiveInt(o.issue, 1000000) || !token(o.milestone) || !cohortSlug(o.waveId) ||
+      !positiveInt(o.acceptingPr, 1000000) ||
+      !denseDataArray(o.supportingWavePrs, 16) ||
+      !o.supportingWavePrs.every(pr => positiveInt(pr, 1000000) && pr !== o.acceptingPr) ||
+      new Set(o.supportingWavePrs).size !== o.supportingWavePrs.length ||
+      typeof o.provenanceKind !== 'string' || typeof o.copilotCoAuthored !== 'boolean' ||
+      typeof o.issueClosedOnGitHub !== 'boolean' ||
+      typeof o.allAcceptanceCriteriaDelivered !== 'boolean' ||
+      !hex40(o.expectedBaseSha) || !hex40(o.parentMainSha) ||
+      !hex40(o.headSha) || !hex40(o.squashMergeSha) ||
+      o.headSha === o.squashMergeSha || o.parentMainSha === o.squashMergeSha ||
+      !positiveInt(o.prCreatedAtMs) || !positiveInt(o.addedToMergeQueueAtMs) ||
+      !positiveInt(o.mergedAtMs) ||
+      o.prCreatedAtMs >= o.addedToMergeQueueAtMs || o.addedToMergeQueueAtMs >= o.mergedAtMs ||
+      !positiveInt(o.mergeQueueDurationMs, DAY_MS) ||
+      o.mergeQueueDurationMs !== o.mergedAtMs - o.addedToMergeQueueAtMs ||
+      !validUniquePathList(o.ownedPaths) || hasInternalPathOverlap(o.ownedPaths) ||
+      ![o.checksPassed, o.securityClear, o.independentReview,
+        o.mainHealthyAfterMerge, o.rollbackReady].every(b => typeof b === 'boolean') ||
+      !nonnegInt(o.reviewThreadsTotal, 10000) || !nonnegInt(o.unresolvedFindings, 10000) ||
+      !nonnegInt(o.reworkCommits, 100) || !nonnegInt(o.branchSyncMergeCommits, 100) ||
+      !nonnegInt(o.duplicateDispatches, 1000) || !nonnegInt(o.unauthorizedWrites, 1000) ||
+      (o.incrementalSpendMicros !== null && !nonnegInt(o.incrementalSpendMicros, 1000000000))) {
+    return false;
+  }
+  if (o.issueClosedOnGitHub) {
+    return positiveInt(o.issueClosedAtMs) && o.mergedAtMs <= o.issueClosedAtMs;
+  }
+  return o.issueClosedAtMs === null;
+}
+
+function parseStreamlinedOutcomes(
+  outcomes,
+  expectedRepoId,
+  expectedRepo,
+  waveByPr,
+  mergedTrainCandidateByPr
+) {
+  const seenIssues = new Set();
+  const seenAcceptingPrs = new Set();
+  const seenSquashShas = new Set();
+  const acceptedIssueNumbers = [];
+  const acceptedWindows = [];
+  const leadDurations = [];
+  const mqDurations = [];
+  const reworkCounts = [];
+  let acceptedIssueCount = 0;
+  let partialOutcomeCount = 0;
+  let reviewRepairOutcomeCount = 0;
+  let totalReworkCommits = 0;
+  let totalBranchSyncMergeCommits = 0;
+  let totalReviewThreadsResolved = 0;
+  let earliestCreatedMs = Infinity;
+  let latestMergedMs = 0;
+
+  for (let i = 0; i < outcomes.length; i++) {
+    const o = outcomes[i];
+    if (!validStreamlinedOutcomeShape(o) ||
+        seenIssues.has(o.issue) || seenAcceptingPrs.has(o.acceptingPr) ||
+        seenSquashShas.has(o.squashMergeSha)) {
+      return {ok: false, reason: 'OUTCOME_SCHEMA_INVALID'};
+    }
+    if (o.repositoryId !== expectedRepoId || o.repository !== expectedRepo) {
+      return {ok: false, reason: 'CROSS_REPO_OUTCOME_MISMATCH'};
+    }
+    if (o.provenanceKind !== COORDINATOR_DISPATCHED_WAVE_PROVENANCE) {
+      return {ok: false, reason: 'PROVENANCE_CONFLATION_REJECTED'};
+    }
+    if (!o.copilotCoAuthored) {
+      return {ok: false, reason: 'COPILOT_CO_AUTHOR_REQUIRED'};
+    }
+    const wave = waveByPr.get(o.acceptingPr);
+    const mergedEntry = mergedTrainCandidateByPr.get(o.acceptingPr);
+    if (!wave || wave.waveId !== o.waveId ||
+        !o.supportingWavePrs.every(pr => waveByPr.has(pr)) ||
+        !mergedEntry ||
+        mergedEntry.candidate.head !== o.headSha ||
+        mergedEntry.candidate.expectedBase !== o.expectedBaseSha ||
+        mergedEntry.parentMainSha !== o.parentMainSha ||
+        mergedEntry.candidate.simulatedSquashSha !== o.squashMergeSha ||
+        mergedEntry.candidate.eligibleToMergeMs !== o.mergeQueueDurationMs ||
+        !samePathSet(o.ownedPaths, mergedEntry.candidate.ownedPaths)) {
+      return {ok: false, reason: 'UNVERIFIED_MAIN_ANCESTRY'};
+    }
+    if (o.incrementalSpendMicros !== 0) {
+      return {ok: false, reason: 'SPEND_UNKNOWN_OR_EXCEEDED'};
+    }
+    if (!o.checksPassed || !o.securityClear || !o.independentReview ||
+        o.unresolvedFindings !== 0 || !o.mainHealthyAfterMerge || !o.rollbackReady ||
+        o.duplicateDispatches !== 0 || o.unauthorizedWrites !== 0) {
+      return {ok: false, reason: 'QUALITY_OR_SAFETY_GATE_FAILED'};
+    }
+
+    seenIssues.add(o.issue);
+    seenAcceptingPrs.add(o.acceptingPr);
+    seenSquashShas.add(o.squashMergeSha);
+    if (!o.issueClosedOnGitHub || !o.allAcceptanceCriteriaDelivered) {
+      partialOutcomeCount += 1;
+      continue;
+    }
+
+    acceptedIssueCount += 1;
+    acceptedIssueNumbers.push(o.issue);
+    acceptedWindows.push({assignedAtMs: o.prCreatedAtMs, mergedAtMs: o.mergedAtMs});
+    leadDurations.push(o.mergedAtMs - o.prCreatedAtMs);
+    mqDurations.push(o.mergeQueueDurationMs);
+    reworkCounts.push(o.reworkCommits);
+    if (o.reworkCommits >= 1 && o.reviewThreadsTotal >= 1) {
+      reviewRepairOutcomeCount += 1;
+    }
+    totalReworkCommits += o.reworkCommits;
+    totalBranchSyncMergeCommits += o.branchSyncMergeCommits;
+    totalReviewThreadsResolved += o.reviewThreadsTotal;
+    earliestCreatedMs = Math.min(earliestCreatedMs, o.prCreatedAtMs);
+    latestMergedMs = Math.max(latestMergedMs, o.mergedAtMs);
+  }
+
+  const windowMs = acceptedIssueCount > 0 ? latestMergedMs - earliestCreatedMs : null;
+  const sortedLead = [...leadDurations].sort((a, b) => a - b);
+  const sortedMq = [...mqDurations].sort((a, b) => a - b);
+  const sortedRework = [...reworkCounts].sort((a, b) => a - b);
+  const parallelTrainVerified = hasConcurrentExecutionWindowPair(acceptedWindows);
+  const reviewRepairVerified = reviewRepairOutcomeCount >= 1;
+  const reworkRateBps = acceptedIssueCount > 0
+    ? Math.round((totalReworkCommits * 10000) / acceptedIssueCount)
+    : null;
+
+  return {
+    ok: true,
+    acceptedIssueCount,
+    parallelTrainVerified,
+    reviewRepairVerified,
+    summary: Object.freeze({
+      provenanceKind: COORDINATOR_DISPATCHED_WAVE_PROVENANCE,
+      acceptedIssueCount,
+      partialOutcomeCount,
+      remainingRequiredCount: Math.max(0, STREAMLINED_M02_MIN_ACCEPTED_ISSUES - acceptedIssueCount),
+      acceptedIssueNumbers: Object.freeze([...acceptedIssueNumbers].sort((a, b) => a - b)),
+      parallelTrainVerified,
+      reviewRepairVerified,
+      reviewRepairOutcomeCount,
+      windowMs,
+      acceptedPerDay: acceptedIssueCount > 0 ? (acceptedIssueCount * DAY_MS) / windowMs : null,
+      p50LeadTimeMs: percentile(sortedLead, 0.5),
+      p95LeadTimeMs: percentile(sortedLead, 0.95),
+      p50MergeQueueMs: percentile(sortedMq, 0.5),
+      p95MergeQueueMs: percentile(sortedMq, 0.95),
+      totalReworkCommits,
+      p50ReworkCommits: percentile(sortedRework, 0.5),
+      p95ReworkCommits: percentile(sortedRework, 0.95),
+      reworkRateBps,
+      totalBranchSyncMergeCommits,
+      totalReviewThreadsResolved,
+      unresolvedFindings: 0,
+      acceptedTrainMainBreakages: 0,
+      incrementalSpendMicros: 0
+    })
+  };
+}
+
+export function evaluateStreamlinedM02CohortReadout(input) {
+  if (!exactRecord(input, STREAMLINED_READOUT_INPUT_KEYS) ||
+      typeof input.stop !== 'boolean' ||
+      !positiveInt(input.repositoryId) || !isRepoSlug(input.repository) ||
+      !hex40(input.headSha) ||
+      !exactRecord(input.policy, COHORT_POLICY_KEYS) ||
+      !nonnegInt(input.policy.minLinePercent, 100) ||
+      !nonnegInt(input.policy.minBranchPercent, 100) ||
+      typeof input.billingHardStopVerified !== 'boolean' ||
+      (input.incrementalSpendMicros !== null && !nonnegInt(input.incrementalSpendMicros, 1000000000)) ||
+      !exactRecord(input.futureGhAwCronDisclosure, FUTURE_GHAW_DISCLOSURE_KEYS) ||
+      typeof input.futureGhAwCronDisclosure.provenanceKind !== 'string' ||
+      typeof input.futureGhAwCronDisclosure.status !== 'string' ||
+      !nonnegInt(input.futureGhAwCronDisclosure.completedCronOutcomes, 100000) ||
+      typeof input.futureGhAwCronDisclosure.conflatedWithCoordinatorWaves !== 'boolean' ||
+      !exactRecord(input.exactHeadCoverage, EXACT_HEAD_COVERAGE_KEYS) ||
+      !hex40(input.exactHeadCoverage.headSha) ||
+      !validCoverageCounts(input.exactHeadCoverage.coveredLines, input.exactHeadCoverage.totalLines) ||
+      !validCoverageCounts(input.exactHeadCoverage.coveredBranches, input.exactHeadCoverage.totalBranches) ||
+      !denseDataArray(input.portfolioTrainInputs, 16) || input.portfolioTrainInputs.length === 0 ||
+      !denseDataArray(input.engineeringWaves, 16) || input.engineeringWaves.length === 0 ||
+      !denseDataArray(input.acceptedIssueOutcomes, 100)) {
+    return streamlinedCohortDenied('INPUT_UNKNOWN');
+  }
+  if (input.stop !== false) return streamlinedCohortDenied('STOPPED');
+
+  const lowerRepo = input.repository.toLowerCase();
+  const isFactoryId = input.repositoryId === SOFTWARE_FACTORY_REPOSITORY_ID;
+  const isFactorySlug = lowerRepo === SOFTWARE_FACTORY_REPOSITORY.toLowerCase();
+  if (isFactoryId !== isFactorySlug || (isFactoryId && input.repository !== SOFTWARE_FACTORY_REPOSITORY)) {
+    return streamlinedCohortDenied('REPOSITORY_IDENTITY_MISMATCH');
+  }
+  const isSpellbook = isSpellbookSlug(input.repository);
+  const lineFloor = isFactoryId ? 98 : (isSpellbook ? 97 : 95);
+  const branchFloor = isFactoryId ? 95 : 90;
+  if (input.policy.minLinePercent < lineFloor || input.policy.minBranchPercent < branchFloor) {
+    return streamlinedCohortDenied('POLICY_BELOW_MINIMUM');
+  }
+  if (!input.billingHardStopVerified || input.incrementalSpendMicros !== 0) {
+    return streamlinedCohortDenied('SPEND_UNKNOWN_OR_EXCEEDED');
+  }
+
+  const ghAw = input.futureGhAwCronDisclosure;
+  if (ghAw.provenanceKind !== FUTURE_GH_AW_CRON_PROVENANCE ||
+      ghAw.conflatedWithCoordinatorWaves !== false) {
+    return streamlinedCohortDenied('PROVENANCE_CONFLATION_REJECTED');
+  }
+  if (ghAw.status !== 'DEFERRED_PENDING_GHAW_CRON_ENABLEMENT' || ghAw.completedCronOutcomes !== 0) {
+    return streamlinedCohortDenied('GHAW_CRON_DISCLOSURE_INVALID');
+  }
+
+  const headCov = input.exactHeadCoverage;
+  if (headCov.headSha !== input.headSha) {
+    return streamlinedCohortDenied('HEAD_SHA_MISMATCH');
+  }
+  if (!meetsCoverageFloor(
+    headCov.coveredLines, headCov.totalLines,
+    headCov.coveredBranches, headCov.totalBranches,
+    input.policy.minLinePercent, input.policy.minBranchPercent
+  )) {
+    return streamlinedCohortDenied('COVERAGE_BELOW_POLICY');
+  }
+
+  const mergedTrainCandidateByPr = new Map();
+  const orderedMergedTrainCands = [];
+  let firstTrainInitialSha = null;
+  let prevTrainFinalSha = null;
+  for (let i = 0; i < input.portfolioTrainInputs.length; i++) {
+    const ptInput = input.portfolioTrainInputs[i];
+    const ptEval = allocatePortfolioCapacityAndSimulateTrains(ptInput);
+    if (!ptEval.valid) return streamlinedCohortDenied(ptEval.reason);
+    const targetRepo = ptEval.repositoryResults.find(r => r.repositoryId === input.repositoryId);
+    if (!targetRepo || targetRepo.killSwitch || !targetRepo.train.mainHealthyAfter ||
+        targetRepo.train.isolatedCandidates.length > 0 ||
+        targetRepo.train.mergedPrs.length === 0) {
+      return streamlinedCohortDenied('INTEGRATION_TRAIN_UNHEALTHY');
+    }
+    if (targetRepo.repository !== input.repository) {
+      return streamlinedCohortDenied('REPOSITORY_IDENTITY_MISMATCH');
+    }
+    const enrolledRepo = ptInput.repositories.find(r => r.repositoryId === input.repositoryId);
+    if (input.policy.minLinePercent < enrolledRepo.minLinePercent ||
+        input.policy.minBranchPercent < enrolledRepo.minBranchPercent) {
+      return streamlinedCohortDenied('POLICY_BELOW_MINIMUM');
+    }
+    if (i === 0) {
+      firstTrainInitialSha = targetRepo.train.initialMainSha;
+    } else if (targetRepo.train.initialMainSha !== prevTrainFinalSha) {
+      return streamlinedCohortDenied('WAVE_CHAIN_DISCONTINUITY');
+    }
+    prevTrainFinalSha = targetRepo.train.finalMainSha;
+
+    const cands = enrolledRepo.train.candidates;
+    for (let j = 0; j < cands.length; j++) {
+      const cand = cands[j];
+      if (mergedTrainCandidateByPr.has(cand.pr)) {
+        return streamlinedCohortDenied('DUPLICATE_TRAIN_CANDIDATE');
+      }
+      const parentMainSha = j === 0 ? enrolledRepo.train.mainSha : cands[j - 1].simulatedSquashSha;
+      mergedTrainCandidateByPr.set(cand.pr, {candidate: cand, parentMainSha});
+      orderedMergedTrainCands.push(cand);
+    }
+  }
+  if (prevTrainFinalSha !== input.headSha) {
+    return streamlinedCohortDenied('HEAD_SHA_MISMATCH');
+  }
+
+  const benchmarkEval = evaluateDotnetConsolidationBenchmark(input.benchmarkInput);
+  if (!benchmarkEval.valid) return streamlinedCohortDenied(benchmarkEval.reason);
+  if (benchmarkEval.workload !== input.headSha) return streamlinedCohortDenied('HEAD_SHA_MISMATCH');
+  if (benchmarkEval.dotnetMafCandidate === null) return streamlinedCohortDenied('MAF_CANDIDATE_REQUIRED');
+  if (benchmarkEval.reason === 'MAF_ARCHITECTURE_OR_SAFETY_UNVERIFIED') {
+    return streamlinedCohortDenied(benchmarkEval.reason);
+  }
+  if (!meetsCoverageFloor(
+    benchmarkEval.dotnetMafCandidate.coveredLines,
+    benchmarkEval.dotnetMafCandidate.totalLines,
+    benchmarkEval.dotnetMafCandidate.coveredBranches,
+    benchmarkEval.dotnetMafCandidate.totalBranches,
+    98,
+    95
+  )) {
+    return streamlinedCohortDenied('MAF_COVERAGE_BELOW_POLICY');
+  }
+  const rawCand = input.benchmarkInput.dotnetMafCandidate;
+  if (!rawCand.securityReviewed || !rawCand.independentReview || !rawCand.rollbackReady) {
+    return streamlinedCohortDenied('REVIEW_OR_ROLLBACK_UNREADY');
+  }
+  const rawNode = input.benchmarkInput.nodeBaseline;
+  if (isFactoryId && (
+    headCov.coveredLines !== rawNode.coveredLines ||
+    headCov.totalLines !== rawNode.totalLines ||
+    headCov.coveredBranches !== rawNode.coveredBranches ||
+    headCov.totalBranches !== rawNode.totalBranches
+  )) {
+    return streamlinedCohortDenied('HEAD_COVERAGE_MISMATCH');
+  }
+
+  const wavesParsed = parseEngineeringWaves(input.engineeringWaves);
+  if (!wavesParsed.ok) return streamlinedCohortDenied(wavesParsed.reason);
+  if (wavesParsed.finalMainSha !== input.headSha) {
+    return streamlinedCohortDenied('HEAD_SHA_MISMATCH');
+  }
+  const startWaveIdx = input.engineeringWaves.findIndex(w => w.initialMainSha === firstTrainInitialSha);
+  if (startWaveIdx === -1) {
+    return streamlinedCohortDenied('WAVE_CHAIN_DISCONTINUITY');
+  }
+  let candCursor = 0;
+  for (let wIdx = startWaveIdx; wIdx < input.engineeringWaves.length; wIdx++) {
+    const wave = input.engineeringWaves[wIdx];
+    if (wave.postMergeMainFailures !== 0) {
+      return streamlinedCohortDenied('ACCEPTED_WAVE_MAIN_FAILURE_DETECTED');
+    }
+    for (let pIdx = 0; pIdx < wave.prNumbers.length; pIdx++) {
+      const cand = orderedMergedTrainCands[candCursor];
+      if (!cand ||
+          cand.pr !== wave.prNumbers[pIdx] ||
+          cand.eligibleToMergeMs !== wave.mergeQueueDurationsMs[pIdx]) {
+        return streamlinedCohortDenied('WAVE_TRAIN_PARITY_MISMATCH');
+      }
+      candCursor += 1;
+    }
+    if (orderedMergedTrainCands[candCursor - 1].simulatedSquashSha !== wave.finalMainSha) {
+      return streamlinedCohortDenied('WAVE_TRAIN_PARITY_MISMATCH');
+    }
+  }
+  if (candCursor !== orderedMergedTrainCands.length) {
+    return streamlinedCohortDenied('WAVE_TRAIN_PARITY_MISMATCH');
+  }
+
+  const outcomesParsed = parseStreamlinedOutcomes(
+    input.acceptedIssueOutcomes,
+    input.repositoryId,
+    input.repository,
+    wavesParsed.waveByPr,
+    mergedTrainCandidateByPr
+  );
+  if (!outcomesParsed.ok) return streamlinedCohortDenied(outcomesParsed.reason);
+
+  let streamlinedM02CohortVerified = false;
+  let status = 'PENDING_STREAMLINED_M02_COHORT';
+  let reason = 'INSUFFICIENT_ACCEPTED_OUTCOMES';
+  if (outcomesParsed.acceptedIssueCount >= STREAMLINED_M02_MIN_ACCEPTED_ISSUES) {
+    if (outcomesParsed.parallelTrainVerified && outcomesParsed.reviewRepairVerified) {
+      streamlinedM02CohortVerified = true;
+      status = 'STREAMLINED_M02_COHORT_VERIFIED';
+      reason = 'STREAMLINED_M02_EXIT_ELIGIBLE';
+    } else {
+      status = 'INCOMPLETE_COHORT_COMPOSITION';
+      reason = 'COHORT_COMPOSITION_REQUIREMENTS_UNMET';
+    }
+  }
+
+  return Object.freeze({
+    valid: true,
+    shadow: true,
+    liveDispatch: false,
+    liveMerge: false,
+    repositoryId: input.repositoryId,
+    repository: input.repository,
+    headSha: input.headSha,
+    multiCohortLadderRetired: true,
+    streamlinedM02MinAcceptedIssues: STREAMLINED_M02_MIN_ACCEPTED_ISSUES,
+    streamlinedM02CohortVerified,
+    issue16ExitReady: streamlinedM02CohortVerified,
+    keepIssue16Open: !streamlinedM02CohortVerified,
+    provenanceSeparated: true,
+    coordinatorWaveProvenance: COORDINATOR_DISPATCHED_WAVE_PROVENANCE,
+    futureGhAwCronDisclosure: Object.freeze({
+      provenanceKind: FUTURE_GH_AW_CRON_PROVENANCE,
+      status: ghAw.status,
+      completedCronOutcomes: 0,
+      conflatedWithCoordinatorWaves: false
+    }),
+    runtimePosture: benchmarkEval.consolidationEligible
+      ? 'dotnet-10-single-runtime-consolidation-eligible'
+      : 'dual-runtime-retain-node-authoritative',
+    consolidationRecommendation: benchmarkEval.recommendation,
+    consolidationReason: benchmarkEval.reason,
+    status,
+    reason,
+    exactHeadCoverage: Object.freeze({
+      headSha: headCov.headSha,
+      coveredLines: headCov.coveredLines,
+      totalLines: headCov.totalLines,
+      coveredBranches: headCov.coveredBranches,
+      totalBranches: headCov.totalBranches
+    }),
+    engineeringWaveSummary: wavesParsed.summary,
+    acceptedCohortSummary: outcomesParsed.summary
   });
 }
