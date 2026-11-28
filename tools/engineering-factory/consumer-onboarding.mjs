@@ -1291,6 +1291,8 @@ const validRollbackProofShape = rp =>
 
 const validAutonomousProofShape = ap =>
   exact(ap, [
+    'repository',
+    'repositoryId',
     'synthetic',
     'agent',
     'unattendedCopilotIssuesLanded',
@@ -1303,6 +1305,8 @@ const validAutonomousProofShape = ap =>
     'productionDeployments',
     'incrementalBilledUsdCents'
   ]) &&
+  repoSlug(ap.repository) &&
+  posInt(ap.repositoryId) &&
   typeof ap.synthetic === 'boolean' &&
   text(ap.agent, 80) &&
   nonNegInt(ap.unattendedCopilotIssuesLanded) &&
@@ -1399,6 +1403,10 @@ export function evaluateConsumerOnboardingSuccess(input) {
   const pkgCheck = verifyConsumerOnboardingPackage(input.onboardingPackage, peerRegistry);
   if (!pkgCheck.valid) {
     return denyBeforeStage1(pkgCheck.reason);
+  }
+  const catalogedCheckoutSha = TRUSTED_WORKFLOW_CHECKOUT_PINS[pkgCheck.pinnedWorkflowSha];
+  if (catalogedCheckoutSha !== undefined && pkgCheck.pinnedCheckoutSha !== catalogedCheckoutSha) {
+    return denyBeforeStage1('PIN_SHA_MISMATCH');
   }
 
   const pkg = input.onboardingPackage;
@@ -1513,6 +1521,10 @@ export function evaluateConsumerOnboardingSuccess(input) {
   if (input.synthetic || autonomousProof.synthetic) {
     return denyStage2('SYNTHETIC_RUN_CANNOT_ACCEPT_STAGE_2', summary);
   }
+  if (identity(autonomousProof.repository) !== identity(pkg.policy.repository) ||
+      autonomousProof.repositoryId !== pkg.repositoryId) {
+    return denyStage2('AUTONOMOUS_PROOF_REPO_MISMATCH', summary);
+  }
   if (!ALLOWED_AUTONOMOUS_AGENTS.has(identity(autonomousProof.agent))) {
     return denyStage2('AUTONOMOUS_AGENT_INVALID', summary);
   }
@@ -1546,9 +1558,11 @@ export function evaluateConsumerOnboardingSuccess(input) {
     reason: ONBOARDING_SUCCESS_STAGES.STAGE_2_AUTONOMOUS_ACCEPTED,
     shadowOnboarded: true,
     autonomousAccepted: true,
-    liveActivation: true,
+    liveActivation: false,
     ...summary,
     autonomousReceipt: Object.freeze({
+      repository: pkg.policy.repository,
+      repositoryId: pkg.repositoryId,
       agent: autonomousProof.agent,
       unattendedCopilotIssuesLanded: autonomousProof.unattendedCopilotIssuesLanded,
       landedBranch: autonomousProof.landedBranch,

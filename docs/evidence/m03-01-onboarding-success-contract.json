@@ -10,11 +10,11 @@
   "verifierExport": "evaluateConsumerOnboardingSuccess",
   "measuredCoverage": {
     "component": "engineering-factory.consumer-onboarding",
-    "linesCovered": 1564,
-    "linesTotal": 1564,
+    "linesCovered": 1578,
+    "linesTotal": 1578,
     "lineCoveragePct": 100,
-    "branchesCovered": 698,
-    "branchesTotal": 698,
+    "branchesCovered": 706,
+    "branchesTotal": 706,
     "branchCoveragePct": 100
   },
   "rolloutOrder": [
@@ -79,9 +79,9 @@
       "verifier": "evaluateConsumerOnboardingSuccess",
       "expectedReason": "STAGE_2_AUTONOMOUS_ACCEPTED",
       "accepted": true,
-      "liveActivation": true,
+      "liveActivation": false,
       "syntheticEligible": false,
-      "summary": "All Stage 1 gates passed plus >= 1 real (non-synthetic) bounded unattended @copilot issue merged onto the healthy protected default branch with exact-head APPROVED review, 0 human interventions, 0 unauthorized writes, 0 production deployments, and $0 incremental spend."
+      "summary": "All Stage 1 gates passed plus >= 1 real (non-synthetic) repository-bound unattended @copilot issue merged onto the healthy protected default branch with exact-head APPROVED review, 0 human interventions, 0 unauthorized writes, 0 production deployments, and $0 incremental spend."
     }
   },
   "customerJourney": [
@@ -314,6 +314,16 @@
       "id": "synthetic-run-rejected-for-stage2",
       "expectedStage": "STAGE_1_SHADOW_ONBOARDED",
       "expectedReason": "SYNTHETIC_RUN_CANNOT_ACCEPT_STAGE_2"
+    },
+    {
+      "id": "autonomous-proof-repo-mismatch",
+      "expectedStage": "STAGE_1_SHADOW_ONBOARDED",
+      "expectedReason": "AUTONOMOUS_PROOF_REPO_MISMATCH"
+    },
+    {
+      "id": "cataloged-checkout-pin-mismatch",
+      "expectedStage": "NOT_ONBOARDED",
+      "expectedReason": "PIN_SHA_MISMATCH"
     },
     {
       "id": "invalid-autonomous-agent",

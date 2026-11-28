@@ -1984,6 +1984,8 @@ test('evaluateConsumerOnboardingSuccess verifies M03->M04->M05 rollout order, gr
 
   // Synthetic runs NEVER satisfy Stage 2 (neither synthetic top-level nor synthetic autonomousProof)
   const validStage2Receipt = {
+    repository: greenfieldPkg.policy.repository,
+    repositoryId: greenfieldPkg.repositoryId,
     synthetic: false,
     agent: '@copilot',
     unattendedCopilotIssuesLanded: 1,
@@ -2015,6 +2017,36 @@ test('evaluateConsumerOnboardingSuccess verifies M03->M04->M05 rollout order, gr
     'SYNTHETIC_RUN_CANNOT_ACCEPT_STAGE_2'
   );
 
+  // Uncataloged workflow SHA with matching verified checkoutRef also passes Stage 1
+  const uncatalogedWorkflowSha = '7'.repeat(40);
+  const uncatalogedCheckoutSha = '8'.repeat(40);
+  const uncatalogedGreenfieldPkg = {
+    ...greenfieldPkg,
+    workflowPin: {
+      uses: `${REUSABLE_WORKFLOW_PREFIX}${uncatalogedWorkflowSha}`,
+      reviewedWorkflowSha: uncatalogedWorkflowSha,
+      checkoutRef: uncatalogedCheckoutSha,
+      reviewedCheckoutSha: uncatalogedCheckoutSha,
+      permissions: 'contents:read',
+      persistCredentials: false
+    }
+  };
+  assert.equal(
+    evaluateConsumerOnboardingSuccess(
+      makeSuccessScorecardInput({
+        pkg: uncatalogedGreenfieldPkg,
+        peerPkg: familyTreeOnboardPkg,
+        existingGates: {
+          lineCoverage: 0,
+          branchCoverage: 0,
+          requiredChecks: [],
+          maxConcurrency: 1
+        }
+      })
+    ).stage,
+    'STAGE_1_SHADOW_ONBOARDED'
+  );
+
   // Spellbook Stage 1 (with explicit requireAutonomousAcceptance: false) & Stage 2 evaluator contract verification
   const spellbookInput = makeSuccessScorecardInput({
     pkg: spellbookOnboardPkg,
@@ -2041,6 +2073,8 @@ test('evaluateConsumerOnboardingSuccess verifies M03->M04->M05 rollout order, gr
     requireAutonomousAcceptance: true,
     autonomousProof: {
       ...validStage2Receipt,
+      repository: spellbookOnboardPkg.policy.repository,
+      repositoryId: spellbookOnboardPkg.repositoryId,
       agent: 'copilot-swe-agent[bot]',
       unattendedCopilotIssuesLanded: 2
     }
@@ -2053,7 +2087,9 @@ test('evaluateConsumerOnboardingSuccess verifies M03->M04->M05 rollout order, gr
   assert.equal(spellbookStage2.reason, 'STAGE_2_AUTONOMOUS_ACCEPTED');
   assert.equal(spellbookStage2.shadowOnboarded, true);
   assert.equal(spellbookStage2.autonomousAccepted, true);
-  assert.equal(spellbookStage2.liveActivation, true);
+  assert.equal(spellbookStage2.liveActivation, false);
+  assert.equal(spellbookStage2.autonomousReceipt.repository, 'example/spellbook');
+  assert.equal(spellbookStage2.autonomousReceipt.repositoryId, 900202);
   assert.equal(spellbookStage2.autonomousReceipt.unattendedCopilotIssuesLanded, 2);
 
   // FamilyTree Stage 1 verification
@@ -2121,6 +2157,8 @@ test('evaluateConsumerOnboardingSuccess fails closed across all usability, gover
     }
   });
   const validStage2 = {
+    repository: spellbookPkg.policy.repository,
+    repositoryId: spellbookPkg.repositoryId,
     synthetic: false,
     agent: '@copilot',
     unattendedCopilotIssuesLanded: 1,
@@ -2185,6 +2223,8 @@ test('evaluateConsumerOnboardingSuccess fails closed across all usability, gover
     { ...baseInput, rollbackProof: { ...baseInput.rollbackProof, commitsToRevert: -0 } },
     { ...baseInput, rollbackProof: { ...baseInput.rollbackProof, factoryRepositoryUntouched: 'true' } },
     { ...baseInput, autonomousProof: 'bad' },
+    { ...baseInput, autonomousProof: { ...validStage2, repository: 'invalid-slug' } },
+    { ...baseInput, autonomousProof: { ...validStage2, repositoryId: 0 } },
     { ...baseInput, autonomousProof: { ...validStage2, synthetic: 'false' } },
     { ...baseInput, autonomousProof: { ...validStage2, agent: '' } },
     { ...baseInput, autonomousProof: { ...validStage2, unattendedCopilotIssuesLanded: -1 } },
@@ -2320,7 +2360,7 @@ test('evaluateConsumerOnboardingSuccess fails closed across all usability, gover
     'AI_CREDIT_HARD_STOP_REQUIRED'
   );
 
-  // Underlying onboarding package verifier propagation
+  // Underlying onboarding package verifier propagation & cataloged checkout SHA enforcement
   assert.equal(
     evaluateConsumerOnboardingSuccess({
       ...baseInput,
@@ -2330,6 +2370,20 @@ test('evaluateConsumerOnboardingSuccess fails closed across all usability, gover
       }
     }).reason,
     'PIN_REF_NOT_IMMUTABLE_SHA'
+  );
+  assert.equal(
+    evaluateConsumerOnboardingSuccess({
+      ...baseInput,
+      onboardingPackage: {
+        ...spellbookPkg,
+        workflowPin: {
+          ...spellbookPkg.workflowPin,
+          checkoutRef: altSha,
+          reviewedCheckoutSha: altSha
+        }
+      }
+    }).reason,
+    'PIN_SHA_MISMATCH'
   );
   assert.equal(
     evaluateConsumerOnboardingSuccess({
@@ -2557,6 +2611,8 @@ test('evaluateConsumerOnboardingSuccess fails closed across all usability, gover
   assert.equal(requireStage2WithoutProof.reason, 'AUTONOMOUS_PROOF_REQUIRED');
 
   for (const [badAutonomous, expectedReason] of [
+    [{ ...validStage2, repository: 'example/family-tree' }, 'AUTONOMOUS_PROOF_REPO_MISMATCH'],
+    [{ ...validStage2, repositoryId: 900101 }, 'AUTONOMOUS_PROOF_REPO_MISMATCH'],
     [{ ...validStage2, agent: 'manual-developer' }, 'AUTONOMOUS_AGENT_INVALID'],
     [{ ...validStage2, unattendedCopilotIssuesLanded: 0 }, 'UNATTENDED_ISSUE_NOT_LANDED'],
     [{ ...validStage2, landedBranch: 'feature-branch' }, 'DEFAULT_BRANCH_UNHEALTHY'],
