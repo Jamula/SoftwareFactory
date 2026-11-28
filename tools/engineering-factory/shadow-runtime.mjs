@@ -1,4 +1,5 @@
 // Shadow scheduling and public metadata inventory. No mutation, agent dispatch or merge.
+import {createHash} from 'node:crypto';
 import {types} from 'node:util';
 import {
   exportJournalSnapshot,
@@ -28,8 +29,12 @@ const DEFAULT_SCOPE = resolveTrustedScope({});
 const SCOPE_KEYS = new Set(['repository','repositoryId','branch','workflowPath']);
 const INVENTORY_OPTION_KEYS = new Set(['scope',...SCOPE_KEYS]);
 const ORCHESTRATOR_EVAL_OPTION_KEYS = new Set([
-  'scope',...SCOPE_KEYS,'request','clock','snapshot','maxRecoveryItems'
+  'scope',...SCOPE_KEYS,'request','clock','snapshot','maxRecoveryItems','pullCursor'
 ]);
+const HANDOFF_INPUT_KEYS = new Set(['expectedWorkQueueOid','snapshot','pullCursor','repositoryId','now']);
+const HANDOFF_RECORD_KEYS = new Set(['schemaVersion','repositoryId','expectedWorkQueueOid','pullCursor','snapshot']);
+const HEX40_RE = /^[a-f0-9]{40}$/;
+const HEX64_RE = /^[a-f0-9]{64}$/;
 const ORCHESTRATOR_EVENTS = new Set([
   'schedule','workflow_dispatch','issues','pull_request_target','workflow_run','push'
 ]);
@@ -195,8 +200,10 @@ export async function reconcileShadowOrchestratorRun(env,options={}) {
   const request=options.request??fetch;
   const clock=options.clock??Date.now;
   const maxRecoveryItems=options.maxRecoveryItems??10;
+  const pullCursor=options.pullCursor??0;
   if(typeof request!=='function' || typeof clock!=='function' ||
-     !positive(maxRecoveryItems) || maxRecoveryItems>50) {
+     !positive(maxRecoveryItems) || maxRecoveryItems>50 ||
+     !Number.isSafeInteger(pullCursor) || pullCursor<0) {
     return blockedOrchestratorEval('TRUST_UNKNOWN');
   }
   const scopeInput={};
@@ -232,7 +239,7 @@ export async function reconcileShadowOrchestratorRun(env,options={}) {
       ...(options.snapshot!==undefined?{snapshot:options.snapshot}:{})
     });
     const {snapshot:exportedSnapshot=null,...publicResult}=raw;
-    return {...publicResult,snapshot:exportedSnapshot};
+    return {...publicResult,pullCursor,snapshot:exportedSnapshot};
   }
 
   let now;
@@ -254,41 +261,77 @@ export async function reconcileShadowOrchestratorRun(env,options={}) {
     const priorEntries=exportJournalSnapshot(store,{repositoryId:resolved.repositoryId}).entries;
     if(inv.issues.length>0) {
       const mainId=await readMainIdentity(request,explicitScope);
-      if(mainId.reason==='IDENTITY_ONLY') {
-        for(const issueNum of inv.issues.slice(0,maxRecoveryItems)) {
-          const seen=priorEntries.some(e=>e.kind==='issue' && e.subject===issueNum &&
-            (e.completed || e.head===mainId.head));
-          if(!seen) {
-            store.enqueue({
-              repositoryId:resolved.repositoryId,
-              deliveryId:`recovery-issue-${issueNum}-${mainId.head.slice(0,12)}`,
-              kind:'issue',
-              subject:issueNum,
-              head:mainId.head
-            });
-          }
-        }
+      if(mainId.reason!=='IDENTITY_ONLY') {
+        const exported=exportJournalSnapshot(store,{repositoryId:resolved.repositoryId});
+        return {
+          shadow:true,
+          evidenceComplete:false,
+          reconciled:false,
+          liveDispatch:false,
+          liveMerge:false,
+          reason:mainId.reason,
+          repository:resolved.repository,
+          repositoryId:resolved.repositoryId,
+          issues:inv.issues,
+          pulls:inv.pulls,
+          recoveredCount:0,
+          deferredCount:0,
+          pullCursor,
+          workflowSha,
+          snapshot:exported
+        };
+      }
+      const unseenIssues=inv.issues.filter(issueNum=>
+        !priorEntries.some(e=>e.kind==='issue' && e.subject===issueNum &&
+          (e.completed || e.head===mainId.head))
+      );
+      for(const issueNum of unseenIssues.slice(0,maxRecoveryItems)) {
+        store.enqueue({
+          repositoryId:resolved.repositoryId,
+          deliveryId:`recovery-issue-${issueNum}-${mainId.head.slice(0,12)}`,
+          kind:'issue',
+          subject:issueNum,
+          head:mainId.head
+        });
       }
     }
-    for(const pullNum of inv.pulls.slice(0,maxRecoveryItems)) {
-      const pullId=await readPullIdentity(pullNum,request,explicitScope);
-      if(pullId.reason==='IDENTITY_ONLY') {
-        const seen=priorEntries.some(e=>e.kind==='pull' && e.subject===pullNum && e.head===pullId.head);
-        if(!seen) {
-          store.enqueue({
-            repositoryId:resolved.repositoryId,
-            deliveryId:`recovery-pull-${pullNum}-${pullId.head.slice(0,12)}`,
-            kind:'pull',
-            subject:pullNum,
-            head:pullId.head
-          });
+    let nextPullCursor=0;
+    let pullBatch=[];
+    if(inv.pulls.length>0) {
+      if(inv.pulls.length<=maxRecoveryItems) {
+        pullBatch=inv.pulls;
+      } else {
+        const nextIdx=inv.pulls.findIndex(num=>num>pullCursor);
+        const startIdx=nextIdx===-1?0:nextIdx;
+        for(let i=0;i<maxRecoveryItems;i++) {
+          pullBatch.push(inv.pulls[(startIdx+i)%inv.pulls.length]);
         }
+        nextPullCursor=pullBatch[pullBatch.length-1];
+      }
+    }
+    let discoveryBlockedReason=null;
+    for(const pullNum of pullBatch) {
+      const pullId=await readPullIdentity(pullNum,request,explicitScope);
+      if(pullId.reason!=='IDENTITY_ONLY') {
+        discoveryBlockedReason??=pullId.reason;
+        continue;
+      }
+      const seen=priorEntries.some(e=>e.kind==='pull' && e.subject===pullNum && e.head===pullId.head);
+      if(!seen) {
+        store.enqueue({
+          repositoryId:resolved.repositoryId,
+          deliveryId:`recovery-pull-${pullNum}-${pullId.head.slice(0,12)}`,
+          kind:'pull',
+          subject:pullNum,
+          head:pullId.head
+        });
       }
     }
     const reader=createScopedJournalReader(explicitScope,{request});
     const maxDrain=maxRecoveryItems*2+4;
     let recoveredCount=0;
     let deferredCount=0;
+    let terminalDrainError=null;
     for(let pass=0;pass<maxDrain;pass++) {
       const outcome=await reconcileJournalOnce({
         journal:store,
@@ -306,10 +349,32 @@ export async function reconcileShadowOrchestratorRun(env,options={}) {
       } else if(outcome.reason==='EVIDENCE_UNKNOWN') {
         deferredCount++;
       } else {
+        terminalDrainError=outcome.reason;
         break;
       }
     }
     const exported=exportJournalSnapshot(store,{repositoryId:resolved.repositoryId});
+    const failureReason=terminalDrainError ?? discoveryBlockedReason ??
+      (deferredCount>0 && recoveredCount===0?'EVIDENCE_UNKNOWN':null);
+    if(failureReason!==null) {
+      return {
+        shadow:true,
+        evidenceComplete:false,
+        reconciled:false,
+        liveDispatch:false,
+        liveMerge:false,
+        reason:failureReason,
+        repository:resolved.repository,
+        repositoryId:resolved.repositoryId,
+        issues:inv.issues,
+        pulls:inv.pulls,
+        recoveredCount,
+        deferredCount,
+        pullCursor:discoveryBlockedReason!==null || terminalDrainError!==null?pullCursor:nextPullCursor,
+        workflowSha,
+        snapshot:exported
+      };
+    }
     return {
       shadow:true,
       evidenceComplete:false,
@@ -323,10 +388,76 @@ export async function reconcileShadowOrchestratorRun(env,options={}) {
       pulls:inv.pulls,
       recoveredCount,
       deferredCount,
+      pullCursor:nextPullCursor,
       workflowSha,
       snapshot:exported
     };
   } finally {
     store.close();
+  }
+}
+
+export function buildShadowJournalHandoff(input) {
+  if(!isStrictPlainMap(input,HANDOFF_INPUT_KEYS)) return {ok:false,reason:'INVALID_HANDOFF'};
+  const expectedWorkQueueOid=input.expectedWorkQueueOid;
+  const repositoryId=input.repositoryId??DEFAULT_SCOPE.repositoryId;
+  const pullCursor=input.pullCursor??0;
+  const now=input.now??Date.now();
+  if(typeof expectedWorkQueueOid!=='string' || !HEX40_RE.test(expectedWorkQueueOid) ||
+     !positive(repositoryId) || !Number.isSafeInteger(pullCursor) || pullCursor<0 ||
+     !Number.isSafeInteger(now) || now<0 || input.snapshot===undefined) {
+    return {ok:false,reason:'INVALID_HANDOFF'};
+  }
+  const verifyStore=openEventJournal(':memory:');
+  try {
+    const imported=importJournalSnapshot(verifyStore,input.snapshot,{now});
+    if(!imported.imported) return {ok:false,reason:imported.reason};
+    const canonicalSnapshot=exportJournalSnapshot(verifyStore,{repositoryId});
+    const handoff={
+      schemaVersion:1,
+      repositoryId,
+      expectedWorkQueueOid,
+      pullCursor,
+      snapshot:canonicalSnapshot
+    };
+    const serialized=JSON.stringify(handoff);
+    if(Buffer.byteLength(serialized,'utf8')>2097152) return {ok:false,reason:'RESPONSE_LIMIT'};
+    const sha256=createHash('sha256').update(serialized,'utf8').digest('hex');
+    return {ok:true,handoff,serialized,sha256};
+  } finally {
+    verifyStore.close();
+  }
+}
+
+export function verifyShadowJournalHandoff(rawText,expectedSha256,expectedWorkQueueOid,now=Date.now()) {
+  if(typeof rawText!=='string' || Buffer.byteLength(rawText,'utf8')>2097152 ||
+     typeof expectedSha256!=='string' || !HEX64_RE.test(expectedSha256) ||
+     typeof expectedWorkQueueOid!=='string' || !HEX40_RE.test(expectedWorkQueueOid) ||
+     !Number.isSafeInteger(now) || now<0) {
+    return {ok:false,reason:'INVALID_HANDOFF'};
+  }
+  const actualSha256=createHash('sha256').update(rawText,'utf8').digest('hex');
+  if(actualSha256!==expectedSha256) return {ok:false,reason:'HANDOFF_DIGEST_MISMATCH'};
+  let parsed;
+  try { parsed=JSON.parse(rawText); } catch { return {ok:false,reason:'INVALID_HANDOFF'}; }
+  if(!isStrictPlainMap(parsed,HANDOFF_RECORD_KEYS) ||
+     parsed.schemaVersion!==1 || !positive(parsed.repositoryId) ||
+     parsed.expectedWorkQueueOid!==expectedWorkQueueOid ||
+     !Number.isSafeInteger(parsed.pullCursor) || parsed.pullCursor<0) {
+    return {ok:false,reason:'INVALID_HANDOFF'};
+  }
+  const verifyStore=openEventJournal(':memory:');
+  try {
+    const imported=importJournalSnapshot(verifyStore,parsed.snapshot,{now});
+    if(!imported.imported) return {ok:false,reason:imported.reason};
+    return {
+      ok:true,
+      repositoryId:parsed.repositoryId,
+      expectedWorkQueueOid:parsed.expectedWorkQueueOid,
+      pullCursor:parsed.pullCursor,
+      snapshot:exportJournalSnapshot(verifyStore,{repositoryId:parsed.repositoryId})
+    };
+  } finally {
+    verifyStore.close();
   }
 }

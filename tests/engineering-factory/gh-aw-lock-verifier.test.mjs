@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import {spawnSync} from 'node:child_process';
-import {chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync} from 'node:fs';
+import {copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
-import {delimiter, dirname, join, resolve} from 'node:path';
+import {dirname, join, resolve} from 'node:path';
 import test from 'node:test';
 import {fileURLToPath, pathToFileURL} from 'node:url';
 import {
@@ -2577,44 +2577,40 @@ test('enforces verifyGhAwWorkflowLock trigger parity, workflow_run repo guard, e
     'UNTRUSTED_PR_TEXT_INTERPOLATION'
   );
 
-  // Execute the tracked evaluate & policy_scan shell scripts offline across all modes & triggers
+  // Execute the tracked evaluate, policy_scan, and safe-outputs-persist-journal scripts end-to-end across fresh runners
   const evalScriptMatch = /name: Verify gh-aw workflow lock and execute shadow evaluation[\s\S]*?run: \|\n((?: {10}.*\n)+)/.exec(trackedLock);
   const scanScriptMatch = /id: policy_scan\n {8}run: \|\n((?: {10}.*\n)+)/.exec(trackedLock);
+  const persistScriptMatch = /name: Persist journal snapshot to refs\/heads\/work-queue via non-force CAS[\s\S]*?run: \|\n((?: {10}.*(?:\n|$))+)/.exec(trackedLock);
   assert.ok(evalScriptMatch !== null);
   assert.ok(scanScriptMatch !== null);
+  assert.ok(persistScriptMatch !== null);
   const evalScript = evalScriptMatch[1].split('\n').map(line => line.slice(10)).join('\n');
   const scanScript = scanScriptMatch[1].split('\n').map(line => line.slice(10)).join('\n');
+  const persistScript = persistScriptMatch[1].split('\n').map(line => line.slice(10)).join('\n');
   assert.equal(computeNormalizedScriptSha256(scanScript), PINNED_FACTORY_POLICY_SCAN_RUN_SHA256);
 
-  const validSha = 'a'.repeat(40);
   const prHeadSha = 'b'.repeat(40);
   const tmpDir = mkdtempSync(join(tmpdir(), 'sf-policy-scan-'));
   try {
-    const binDir = join(tmpDir, 'bin');
-    const runnerTempA = join(tmpDir, 'runner-a');
-    const runnerTempB = join(tmpDir, 'runner-b');
-    mkdirSync(binDir);
-    mkdirSync(runnerTempA);
-    mkdirSync(runnerTempB);
-    const remoteWorkQueueSnap = join(tmpDir, 'remote-work-queue-snapshot.json');
-    const fakeGitPath = join(binDir, 'git');
-    writeFileSync(fakeGitPath, [
-      '#!/usr/bin/env bash',
-      'if [ "$1" = rev-parse ]; then',
-      '  echo "${MOCK_GIT_HEAD}"',
-      '  exit 0',
-      'fi',
-      'if [ "$1" = fetch ]; then',
-      '  test -s "${MOCK_REMOTE_WQ_SNAP:-}"',
-      '  exit $?',
-      'fi',
-      'if [ "$1" = show ]; then',
-      '  cat "${MOCK_REMOTE_WQ_SNAP}"',
-      '  exit $?',
-      'fi',
-      'exit 1'
-    ].join('\n') + '\n', 'utf8');
-    chmodSync(fakeGitPath, 0o755);
+    // Initialize a real bare origin repository + isolated checkout so evaluate -> safe-outputs CAS handoff uses real Git
+    const bareOriginDir = join(tmpDir, 'origin.git');
+    const workRepoDir = join(tmpDir, 'work-repo');
+    mkdirSync(bareOriginDir);
+    mkdirSync(workRepoDir);
+    assert.equal(spawnSync('git', ['init', '--bare', '-q'], {cwd: bareOriginDir}).status, 0);
+    assert.equal(spawnSync('git', ['init', '-q'], {cwd: workRepoDir}).status, 0);
+    assert.equal(spawnSync('git', ['config', 'user.name', 'test'], {cwd: workRepoDir}).status, 0);
+    assert.equal(spawnSync('git', ['config', 'user.email', 'test@users.noreply.github.com'], {cwd: workRepoDir}).status, 0);
+    assert.equal(spawnSync('git', ['remote', 'add', 'origin', bareOriginDir], {cwd: workRepoDir}).status, 0);
+    writeFileSync(join(workRepoDir, 'seed.txt'), 'trusted main seed\n', 'utf8');
+    assert.equal(spawnSync('git', ['add', 'seed.txt'], {cwd: workRepoDir}).status, 0);
+    assert.equal(spawnSync('git', ['-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'seed'], {cwd: workRepoDir}).status, 0);
+    const validSha = spawnSync('git', ['rev-parse', 'HEAD'], {cwd: workRepoDir, encoding: 'utf8'}).stdout.trim();
+    assert.match(validSha, /^[a-f0-9]{40}$/);
+    const gitEnv = {
+      GIT_DIR: join(workRepoDir, '.git'),
+      GIT_WORK_TREE: workRepoDir
+    };
 
     const mockFetchFile = join(tmpDir, 'mock-fetch.mjs');
     writeFileSync(mockFetchFile, [
@@ -2647,13 +2643,48 @@ test('enforces verifyGhAwWorkflowLock trigger parity, workflow_run repo guard, e
       '};'
     ].join('\n'), 'utf8');
 
+    const parseGitHubOutputs = text => Object.fromEntries(
+      text.trim().split('\n').filter(Boolean).map(line => {
+        const eq = line.indexOf('=');
+        return [line.slice(0, eq), line.slice(eq + 1)];
+      })
+    );
+
+    const runPersistHandoff = (evalRunnerDir, evalOutFile) => {
+      const outputs = parseGitHubOutputs(readFileSync(evalOutFile, 'utf8'));
+      const persistRunnerDir = mkdtempSync(join(tmpDir, 'runner-persist-'));
+      mkdirSync(join(persistRunnerDir, 'factory-handoff'), {recursive: true});
+      copyFileSync(
+        join(evalRunnerDir, 'factory-work-queue-handoff.json'),
+        join(persistRunnerDir, 'factory-handoff', 'factory-work-queue-handoff.json')
+      );
+      const persistRun = spawnSync('bash', ['-c', persistScript], {
+        cwd: repoRoot,
+        env: {
+          ...process.env,
+          ...gitEnv,
+          RUNNER_TEMP: persistRunnerDir,
+          EXPECTED_HANDOFF_SHA256: outputs.handoff_sha256,
+          EXPECTED_WORK_QUEUE_OID: outputs.expected_work_queue_oid
+        },
+        encoding: 'utf8'
+      });
+      return {persistRun, outputs};
+    };
+
+    const runnerTempA = join(tmpDir, 'runner-a');
+    const runnerTempB = join(tmpDir, 'runner-b');
+    mkdirSync(runnerTempA);
+    mkdirSync(runnerTempB);
+    const evalOutA = join(runnerTempA, 'gh_out.txt');
+    writeFileSync(evalOutA, '', 'utf8');
+
     const baseEvalEnv = {
       ...process.env,
-      PATH: `${binDir}${delimiter}${process.env.PATH ?? ''}`,
+      ...gitEnv,
       NODE_OPTIONS: `--import=${pathToFileURL(mockFetchFile).href}`,
       RUNNER_TEMP: runnerTempA,
-      MOCK_GIT_HEAD: validSha,
-      MOCK_REMOTE_WQ_SNAP: remoteWorkQueueSnap,
+      GITHUB_OUTPUT: evalOutA,
       FACTORY_GHAW_ENABLED: 'true',
       FACTORY_EXPECTED_WORKFLOW_PATH: '.github/workflows/factory-orchestrator.lock.yml',
       GITHUB_REPOSITORY: 'Jamula/SoftwareFactory',
@@ -2675,19 +2706,42 @@ test('enforces verifyGhAwWorkflowLock trigger parity, workflow_run repo guard, e
       FACTORY_MAIN_HEAD: validSha
     };
 
-    // Missed-event -> scheduled wake replay: first schedule wake discovers & reconciles open issue #5 + PR #42 and persists snapshot
+    // Runner 1 (schedule): discovers & reconciles missed issue #5 + PR #42 -> stages handoff -> safe-outputs CAS persists to origin!
     const scheduleRun = spawnSync('bash', ['-c', evalScript], {cwd: repoRoot, env: baseEvalEnv, encoding: 'utf8'});
     assert.equal(scheduleRun.status, 0, scheduleRun.stderr);
     assert.match(scheduleRun.stdout, /"SHADOW_PLAN"/);
     assert.match(scheduleRun.stdout, /"recoveredCount":2/);
     assert.match(scheduleRun.stdout, /"reason":"SHADOW_RECONCILED"/);
 
-    // Promote persisted snapshot to simulated refs/heads/work-queue and verify fresh runner restores & deduplicates!
-    const snapAPath = join(runnerTempA, 'factory-event-journal-snapshot.json');
-    writeFileSync(remoteWorkQueueSnap, readFileSync(snapAPath, 'utf8'), 'utf8');
+    const ghOutScan = join(tmpDir, 'github_output_scan.txt');
+    writeFileSync(ghOutScan, '', 'utf8');
+    const scanRun = spawnSync('bash', ['-c', scanScript], {
+      cwd: repoRoot,
+      env: {...process.env, GITHUB_OUTPUT: ghOutScan},
+      encoding: 'utf8'
+    });
+    assert.equal(scanRun.status, 0, scanRun.stderr);
+    assert.equal(readFileSync(ghOutScan, 'utf8').trim(), 'scan_verified=true');
+
+    const {persistRun: firstPersist} = runPersistHandoff(runnerTempA, evalOutA);
+    assert.equal(firstPersist.status, 0, firstPersist.stderr);
+
+    // Replaying the same CAS handoff with stale expected_work_queue_oid (0000...) MUST fail closed on CAS conflict!
+    const {persistRun: staleCasPersist} = runPersistHandoff(runnerTempA, evalOutA);
+    assert.notEqual(staleCasPersist.status, 0);
+
+    // Fresh Runner 2 (completely empty RUNNER_TEMP): fetches refs/heads/work-queue from origin & deduplicates!
+    const evalOutB = join(runnerTempB, 'gh_out.txt');
+    writeFileSync(evalOutB, '', 'utf8');
     const secondScheduleOnFreshRunner = spawnSync('bash', ['-c', evalScript], {
       cwd: repoRoot,
-      env: {...baseEvalEnv, RUNNER_TEMP: runnerTempB, GITHUB_EVENT_NAME: 'workflow_dispatch', FACTORY_GHAW_MODE: 'shadow'},
+      env: {
+        ...baseEvalEnv,
+        RUNNER_TEMP: runnerTempB,
+        GITHUB_OUTPUT: evalOutB,
+        GITHUB_EVENT_NAME: 'workflow_dispatch',
+        FACTORY_GHAW_MODE: 'shadow'
+      },
       encoding: 'utf8'
     });
     assert.equal(secondScheduleOnFreshRunner.status, 0, secondScheduleOnFreshRunner.stderr);
@@ -2713,7 +2767,7 @@ test('enforces verifyGhAwWorkflowLock trigger parity, workflow_run repo guard, e
     assert.equal(verifyOnlyRun.status, 0, verifyOnlyRun.stderr);
     assert.doesNotMatch(verifyOnlyRun.stdout, /"SHADOW_PLAN"/);
 
-    // Scoped journal reconciliation runs across workflow_dispatch(issue), issues, pull_request_target, workflow_run, and push
+    // Scoped journal reconciliation + CAS handoff across fresh runners for workflow_dispatch(issue), issues, pull_request_target, workflow_run, and push
     let runCounter = 100;
     for (const [eventEnv, expectedKind] of [
       [{...baseEvalEnv, GITHUB_EVENT_NAME: 'workflow_dispatch', FACTORY_GHAW_MODE: 'shadow', FACTORY_ISSUE_NUMBER: '5'}, 'manual'],
@@ -2731,26 +2785,44 @@ test('enforces verifyGhAwWorkflowLock trigger parity, workflow_run repo guard, e
       ],
       [{...baseEvalEnv, GITHUB_EVENT_NAME: 'push'}, 'main']
     ]) {
-      const freshRunnerDir = join(tmpDir, `runner-ev-${++runCounter}`);
-      mkdirSync(freshRunnerDir);
-      const runEnv = {...eventEnv, RUNNER_TEMP: freshRunnerDir, GITHUB_RUN_ID: `4610${runCounter}`};
-      const reconciledRun = spawnSync('bash', ['-c', evalScript], {cwd: repoRoot, env: runEnv, encoding: 'utf8'});
+      const runner1Dir = join(tmpDir, `runner-ev-${++runCounter}-a`);
+      const runner2Dir = join(tmpDir, `runner-ev-${runCounter}-b`);
+      mkdirSync(runner1Dir);
+      mkdirSync(runner2Dir);
+      const out1 = join(runner1Dir, 'gh_out.txt');
+      const out2 = join(runner2Dir, 'gh_out.txt');
+      writeFileSync(out1, '', 'utf8');
+      writeFileSync(out2, '', 'utf8');
+      const deliveryId = `4610${runCounter}`;
+
+      const reconciledRun = spawnSync('bash', ['-c', evalScript], {
+        cwd: repoRoot,
+        env: {...eventEnv, RUNNER_TEMP: runner1Dir, GITHUB_OUTPUT: out1, GITHUB_RUN_ID: deliveryId},
+        encoding: 'utf8'
+      });
       assert.equal(reconciledRun.status, 0, reconciledRun.stderr);
       assert.match(reconciledRun.stdout, /"reconciled":true/);
       assert.match(reconciledRun.stdout, /"reason":"SHADOW_RECONCILED"/);
       assert.match(reconciledRun.stdout, new RegExp(`"kind":"${expectedKind}"`));
 
-      // Replaying the exact same deliveryId against persisted snapshot deduplicates across runs!
-      const replayRun = spawnSync('bash', ['-c', evalScript], {cwd: repoRoot, env: runEnv, encoding: 'utf8'});
-      assert.equal(replayRun.status, 0, replayRun.stderr);
-      assert.match(replayRun.stdout, /"reconciled":false/);
-      assert.match(replayRun.stdout, /"reason":"DUPLICATE_DELIVERY"/);
+      // Persist via safe-outputs CAS to origin, then replay same deliveryId on a brand-new runner2Dir!
+      const {persistRun} = runPersistHandoff(runner1Dir, out1);
+      assert.equal(persistRun.status, 0, persistRun.stderr);
+
+      const replayOnFreshRunner = spawnSync('bash', ['-c', evalScript], {
+        cwd: repoRoot,
+        env: {...eventEnv, RUNNER_TEMP: runner2Dir, GITHUB_OUTPUT: out2, GITHUB_RUN_ID: deliveryId},
+        encoding: 'utf8'
+      });
+      assert.equal(replayOnFreshRunner.status, 0, replayOnFreshRunner.stderr);
+      assert.match(replayOnFreshRunner.stdout, /"reconciled":false/);
+      assert.match(replayOnFreshRunner.stdout, /"reason":"DUPLICATE_DELIVERY"/);
     }
 
     // Fork workflow_run, checkout SHA mismatch, PR merge-ref revisions, unknown events, and malformed inputs fail closed
     for (const rejectedEnv of [
       {...baseEvalEnv, GITHUB_EVENT_NAME: 'workflow_run', FACTORY_WORKFLOW_HEAD_REPO_ID: '999999'},
-      {...baseEvalEnv, MOCK_GIT_HEAD: prHeadSha},
+      {...baseEvalEnv, GITHUB_WORKFLOW_SHA: prHeadSha},
       {...baseEvalEnv, GITHUB_WORKFLOW_SHA: ''},
       {...baseEvalEnv, GITHUB_EVENT_NAME: 'repository_dispatch'},
       {
@@ -2776,17 +2848,6 @@ test('enforces verifyGhAwWorkflowLock trigger parity, workflow_run repo guard, e
       const failedRun = spawnSync('bash', ['-c', evalScript], {cwd: repoRoot, env: rejectedEnv, encoding: 'utf8'});
       assert.notEqual(failedRun.status, 0);
     }
-
-    // Execute policy_scan script and verify scan_verified=true output
-    const ghOutFile = join(tmpDir, 'github_output.txt');
-    writeFileSync(ghOutFile, '', 'utf8');
-    const scanRun = spawnSync('bash', ['-c', scanScript], {
-      cwd: repoRoot,
-      env: {...process.env, GITHUB_OUTPUT: ghOutFile},
-      encoding: 'utf8'
-    });
-    assert.equal(scanRun.status, 0, scanRun.stderr);
-    assert.equal(readFileSync(ghOutFile, 'utf8').trim(), 'scan_verified=true');
   } finally {
     rmSync(tmpDir, {recursive: true, force: true});
   }

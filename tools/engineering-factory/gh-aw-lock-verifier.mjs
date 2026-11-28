@@ -1435,7 +1435,7 @@ function isTrustedControlPlaneCheckout(withMap, releaseCommit, trustedShas) {
   return trimmedRef === 'refs/heads/main' || trustedShas.has(trimmedRef);
 }
 
-function isTrustedEvalOrHelperCheckout(
+function classifyNonScanCheckoutTrust(
   checkoutWith,
   releaseCommit,
   trustedShas,
@@ -1443,21 +1443,23 @@ function isTrustedEvalOrHelperCheckout(
   stepIdx,
   workflowEnvSafe
 ) {
-  if (isTrustedControlPlaneCheckout(checkoutWith, releaseCommit, trustedShas)) return true;
+  if (isTrustedControlPlaneCheckout(checkoutWith, releaseCommit, trustedShas)) return 'trusted';
   if (checkoutWith.repository !== undefined) {
-    if (typeof checkoutWith.repository !== 'string') return false;
+    if (typeof checkoutWith.repository !== 'string') return 'untrusted';
     const trimmedRepo = checkoutWith.repository.trim();
     if (trimmedRepo !== 'Jamula/SoftwareFactory' && trimmedRepo !== '${{ github.repository }}') {
-      return false;
+      return 'untrusted';
     }
   }
   if (classifyEventMatrixCheckoutRef(checkoutWith.ref, 'main', trustedShas) !== 'workflow_sha') {
-    return false;
+    return 'untrusted';
   }
   const jobAst = job.if === undefined ? null : parseIfExpression(job.if);
   return resolveJobProtectedBranchProvenance(job, jobAst, 'refs/heads/main', workflowEnvSafe)
     .trustedCheckoutStepIndices
-    .has(stepIdx);
+    .has(stepIdx)
+    ? 'trusted'
+    : 'needs_upstream';
 }
 
 function isTrustedScanJobCheckout(checkoutWith, releaseCommit, trustedShas, lockOn) {
@@ -1611,6 +1613,7 @@ export function verifyGhAwWorkflowLock(input) {
   const evaluationJobIds = [];
   const threatScanJobs = [];
   const safeOutputJobs = [];
+  const nonScanUpstreamProvenanceJobs = [];
   const workflowEnvSafeForScan = lockDoc.defaults === undefined && isSafeScanEnv(lockDoc.env);
 
   for (const [jobId, job] of Object.entries(lockDoc.jobs)) {
@@ -1727,17 +1730,20 @@ export function verifyGhAwWorkflowLock(input) {
               );
               if (!scanCheckout.ok) return deny('MISSING_THREAT_SCAN_GATE');
               if (scanCheckout.needsUpstreamRefProvenance) scanNeedsRefProvenance = true;
-            } else if (!jobHasWriteScope && hasPrRefExposureTrigger &&
-                       (!isSafeScanEnv(lockDoc.env) || !isSafeScanEnv(job.env) || !isSafeScanEnv(step.env) ||
-                        !isTrustedEvalOrHelperCheckout(
-                          checkoutWith,
-                          releaseCheck.release.commit,
-                          trustedShas,
-                          job,
-                          stepIdx,
-                          workflowEnvSafeForScan
-                        ))) {
-              return deny('UNTRUSTED_PR_CHECKOUT');
+            } else if (!jobHasWriteScope && hasPrRefExposureTrigger) {
+              if (!isSafeScanEnv(lockDoc.env) || !isSafeScanEnv(job.env) || !isSafeScanEnv(step.env)) {
+                return deny('UNTRUSTED_PR_CHECKOUT');
+              }
+              const trustKind = classifyNonScanCheckoutTrust(
+                checkoutWith,
+                releaseCheck.release.commit,
+                trustedShas,
+                job,
+                stepIdx,
+                workflowEnvSafeForScan
+              );
+              if (trustKind === 'untrusted') return deny('UNTRUSTED_PR_CHECKOUT');
+              if (trustKind === 'needs_upstream') nonScanUpstreamProvenanceJobs.push(job);
             }
           }
           if (isThreatScan) {
@@ -1874,6 +1880,24 @@ export function verifyGhAwWorkflowLock(input) {
       )
       .map(({jobId}) => jobId)
   );
+  for (const upstreamDepJob of nonScanUpstreamProvenanceJobs) {
+    const depNeeds = normalizeNeeds(upstreamDepJob.needs);
+    if (depNeeds === null) return deny('UNTRUSTED_PR_CHECKOUT');
+    if (upstreamDepJob.if === undefined) {
+      if (!depNeeds.some(dep => evalRefProvenanceIds.has(dep))) return deny('UNTRUSTED_PR_CHECKOUT');
+      continue;
+    }
+    const depAst = parseIfExpression(upstreamDepJob.if);
+    if (depAst === null) return deny('UNTRUSTED_PR_CHECKOUT');
+    if (depAst.kind === 'Literal' && depAst.value === false) continue;
+    if (astHasUnsafeStatusOverride(depAst)) return deny('UNTRUSTED_PR_CHECKOUT');
+    const depConjuncts = collectMandatoryConjuncts(depAst);
+    const inheritsEvalRef = depNeeds.some(dep =>
+      evalRefProvenanceIds.has(dep) &&
+      depConjuncts.some(c => isIdentCompareLiteral(c, '==', `needs.${dep}.result`, 'success'))
+    );
+    if (!inheritsEvalRef) return deny('UNTRUSTED_PR_CHECKOUT');
+  }
   const threatScanById = new Map(threatScanJobs.map(entry => [entry.jobId, entry]));
   for (const scanEntry of threatScanJobs) {
     const {job, validScanOutputStepIds, actionConclusionGuardDeps, getNeedsRefProvenance} = scanEntry;

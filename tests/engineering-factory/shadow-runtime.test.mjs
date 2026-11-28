@@ -1,8 +1,17 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
+import {createHash} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 import {spawnSync} from 'node:child_process';
-import {plan,readInventory,reconcileShadowOrchestratorRun,smoke} from '../../tools/engineering-factory/shadow-runtime.mjs';
+import {
+  buildShadowJournalHandoff,
+  plan,
+  readInventory,
+  reconcileShadowOrchestratorRun,
+  smoke,
+  verifyShadowJournalHandoff
+} from '../../tools/engineering-factory/shadow-runtime.mjs';
+const createHashHex=s=>createHash('sha256').update(s,'utf8').digest('hex');
 const task=(id,over={})=>({id,priority:0,state:'approved',dependencies:[],paths:['src/'+id],...over});
 const input=(tasks,over={})=>({enabled:true,stop:false,capacity:2,quotaVerified:true,tasks,...over});
 test('shadow smoke and dependency ranking',()=>{
@@ -290,7 +299,7 @@ test('orchestrator shadow evaluation deduplicates persisted snapshots, retries d
   assert.equal(freshMissedWake.recoveredCount,2);
   assert.equal(freshMissedWake.reason,'SHADOW_RECONCILED');
 
-  // Heartbeat with deferred pull read during drain increments deferredCount cleanly
+  // Heartbeat with deferred pull read during drain reports reconciled:false and EVIDENCE_UNKNOWN while preserving snapshot
   let pullCall=0;
   const flakyPullReq=async rawUrl=>{
     const url=String(rawUrl);
@@ -307,16 +316,154 @@ test('orchestrator shadow evaluation deduplicates persisted snapshots, retries d
     {...baseEnv,GITHUB_EVENT_NAME:'schedule',FACTORY_ISSUE_NUMBER:''},
     {request:flakyPullReq,clock:()=>1000}
   );
+  assert.equal(deferredDrain.reconciled,false);
+  assert.equal(deferredDrain.reason,'EVIDENCE_UNKNOWN');
   assert.equal(deferredDrain.deferredCount,1);
+  assert.equal(deferredDrain.snapshot.exported,true);
 
-  // Clock skew mid-drain breaks cleanly; readInventory failure returns READ_FAILED; invalid inputs fail closed!
+  // Multi-heartbeat >10 open issues (12 issues, limit 10): filters seen issues BEFORE slicing so issues 11-12 recover on tick 2!
+  const twelveIssues=Array.from({length:12},(_,i)=>({number:i+1,repository_url:apiBase}));
+  const manyIssuesReq=async rawUrl=>{
+    const url=String(rawUrl);
+    if(url.startsWith(apiBase+'/issues?')) return json(twelveIssues);
+    if(url.startsWith(apiBase+'/pulls?')) return json([]);
+    const m=/\/issues\/(\d+)$/.exec(url);
+    if(m) return json({number:Number(m[1]),state:'open',repository_url:apiBase});
+    return mockRequest(rawUrl);
+  };
+  const issueTick1=await reconcileShadowOrchestratorRun(
+    {...baseEnv,GITHUB_EVENT_NAME:'schedule',FACTORY_ISSUE_NUMBER:''},
+    {request:manyIssuesReq,clock:()=>1000,maxRecoveryItems:10}
+  );
+  assert.equal(issueTick1.reconciled,true);
+  assert.equal(issueTick1.recoveredCount,10);
+  const issueTick2=await reconcileShadowOrchestratorRun(
+    {...baseEnv,GITHUB_EVENT_NAME:'schedule',FACTORY_ISSUE_NUMBER:''},
+    {request:manyIssuesReq,clock:()=>2000,maxRecoveryItems:10,snapshot:issueTick1.snapshot}
+  );
+  assert.equal(issueTick2.reconciled,true);
+  assert.equal(issueTick2.recoveredCount,2);
+  const issueTick3=await reconcileShadowOrchestratorRun(
+    {...baseEnv,GITHUB_EVENT_NAME:'schedule',FACTORY_ISSUE_NUMBER:''},
+    {request:manyIssuesReq,clock:()=>3000,maxRecoveryItems:10,snapshot:issueTick2.snapshot}
+  );
+  assert.equal(issueTick3.recoveredCount,0);
+  assert.equal(issueTick3.reason,'NO_CLAIM');
+
+  // Multi-heartbeat >10 open PRs (12 PRs, limit 10): rotating pullCursor scans PRs 11-12 on tick 2 AND detects moved head on PR 1!
+  const prHeads=new Map(Array.from({length:12},(_,i)=>[i+1,prSha]));
+  const twelvePulls=Array.from({length:12},(_,i)=>({
+    number:i+1,base:{repo:{id:1471342715,full_name:'Jamula/SoftwareFactory'}}
+  }));
+  const manyPullsReq=async rawUrl=>{
+    const url=String(rawUrl);
+    if(url.startsWith(apiBase+'/issues?')) return json([]);
+    if(url.startsWith(apiBase+'/pulls?')) return json(twelvePulls);
+    const m=/\/pulls\/(\d+)$/.exec(url);
+    if(m) {
+      const n=Number(m[1]);
+      return json({
+        number:n,state:'open',draft:false,
+        head:{sha:prHeads.get(n),repo:{id:1471342715,full_name:'Jamula/SoftwareFactory'}},
+        base:{ref:'main',sha:mainSha,repo:{id:1471342715,full_name:'Jamula/SoftwareFactory'}}
+      });
+    }
+    return mockRequest(rawUrl);
+  };
+  const prTick1=await reconcileShadowOrchestratorRun(
+    {...baseEnv,GITHUB_EVENT_NAME:'schedule',FACTORY_ISSUE_NUMBER:''},
+    {request:manyPullsReq,clock:()=>1000,maxRecoveryItems:10,pullCursor:0}
+  );
+  assert.equal(prTick1.recoveredCount,10);
+  assert.equal(prTick1.pullCursor,10);
+  prHeads.set(1,'d'.repeat(40));
+  const prTick2=await reconcileShadowOrchestratorRun(
+    {...baseEnv,GITHUB_EVENT_NAME:'schedule',FACTORY_ISSUE_NUMBER:''},
+    {request:manyPullsReq,clock:()=>2000,maxRecoveryItems:10,pullCursor:prTick1.pullCursor,snapshot:prTick1.snapshot}
+  );
+  // PRs 11 & 12 recovered + moved head on PR 1 discovered during wraparound!
+  assert.equal(prTick2.recoveredCount,3);
+  assert.equal(prTick2.pullCursor,8);
+  const prWrapEnd=await reconcileShadowOrchestratorRun(
+    {...baseEnv,GITHUB_EVENT_NAME:'schedule',FACTORY_ISSUE_NUMBER:''},
+    {request:manyPullsReq,clock:()=>3000,maxRecoveryItems:10,pullCursor:999,snapshot:prTick2.snapshot}
+  );
+  assert.equal(prWrapEnd.recoveredCount,0);
+  assert.equal(prWrapEnd.pullCursor,10);
+
+  // Blocked main identity read (429) or blocked PR discovery read (429) fails closed with reconciled:false & preserves snapshot/cursor!
+  const mainRateLimited=await reconcileShadowOrchestratorRun(
+    {...baseEnv,GITHUB_EVENT_NAME:'schedule',FACTORY_ISSUE_NUMBER:''},
+    {
+      request:async rawUrl=>{
+        const url=String(rawUrl);
+        if(url===apiBase+'/branches/main') return new Response('rate limit',{status:429});
+        return mockRequest(rawUrl);
+      },
+      clock:()=>4000,
+      snapshot:recoveredSchedule.snapshot
+    }
+  );
+  assert.equal(mainRateLimited.reconciled,false);
+  assert.equal(mainRateLimited.reason,'RATE_OR_PERMISSION_UNKNOWN');
+  assert.equal(mainRateLimited.snapshot.exported,true);
+
+  const prDiscoveryRateLimited=await reconcileShadowOrchestratorRun(
+    {...baseEnv,GITHUB_EVENT_NAME:'schedule',FACTORY_ISSUE_NUMBER:''},
+    {
+      request:async rawUrl=>{
+        const url=String(rawUrl);
+        if(url.startsWith(apiBase+'/issues?')) return json([]);
+        if(url===apiBase+'/pulls/42') return new Response('rate limit',{status:429});
+        return mockRequest(rawUrl);
+      },
+      clock:()=>4000,
+      pullCursor:7,
+      snapshot:recoveredSchedule.snapshot
+    }
+  );
+  assert.equal(prDiscoveryRateLimited.reconciled,false);
+  assert.equal(prDiscoveryRateLimited.reason,'RATE_OR_PERMISSION_UNKNOWN');
+  assert.equal(prDiscoveryRateLimited.pullCursor,7);
+  assert.equal(prDiscoveryRateLimited.snapshot.exported,true);
+
+  // Terminal drain failure (clock skew -> LEASE_OR_CLOCK_UNKNOWN) propagates reconciled:false while preserving snapshot!
   let tick=0;
   const skewClock=()=>tick++<2?1000:500;
   const skewDrain=await reconcileShadowOrchestratorRun(
     {...baseEnv,GITHUB_EVENT_NAME:'schedule',FACTORY_ISSUE_NUMBER:''},
     {request:mockRequest,clock:skewClock}
   );
-  assert.equal(skewDrain.recoveredCount,0);
+  assert.equal(skewDrain.reconciled,false);
+  assert.equal(skewDrain.reason,'LEASE_OR_CLOCK_UNKNOWN');
+  assert.equal(skewDrain.snapshot.exported,true);
+
+  // Handoff builder and verifier enforce SHA-256 digest, expectedWorkQueueOid, cursor, and snapshot schema
+  const zeroOid='0'.repeat(40);
+  const builtHandoff=buildShadowJournalHandoff({
+    expectedWorkQueueOid:zeroOid,
+    snapshot:recoveredSchedule.snapshot,
+    pullCursor:8,
+    now:3606000
+  });
+  assert.equal(builtHandoff.ok,true);
+  const verifiedHandoff=verifyShadowJournalHandoff(builtHandoff.serialized,builtHandoff.sha256,zeroOid,3606000);
+  assert.equal(verifiedHandoff.ok,true);
+  assert.equal(verifiedHandoff.pullCursor,8);
+  assert.equal(verifyShadowJournalHandoff(builtHandoff.serialized,'f'.repeat(64),zeroOid,3606000).reason,'HANDOFF_DIGEST_MISMATCH');
+  assert.equal(verifyShadowJournalHandoff(builtHandoff.serialized,builtHandoff.sha256,'e'.repeat(40),3606000).reason,'INVALID_HANDOFF');
+  assert.equal(verifyShadowJournalHandoff('not-json',createHashHex('not-json'),zeroOid,3606000).reason,'INVALID_HANDOFF');
+  const badSnapRaw=JSON.stringify({schemaVersion:1,repositoryId:1471342715,expectedWorkQueueOid:zeroOid,pullCursor:0,snapshot:{}});
+  assert.equal(verifyShadowJournalHandoff(badSnapRaw,createHashHex(badSnapRaw),zeroOid,3606000).reason,'INVALID_SNAPSHOT');
+  for(const badBuild of [
+    null,
+    {expectedWorkQueueOid:'bad',snapshot:recoveredSchedule.snapshot},
+    {expectedWorkQueueOid:zeroOid,snapshot:{}},
+    {expectedWorkQueueOid:zeroOid,snapshot:recoveredSchedule.snapshot,pullCursor:-1}
+  ]) {
+    assert.equal(buildShadowJournalHandoff(badBuild).ok,false);
+  }
+  assert.equal(verifyShadowJournalHandoff(123,builtHandoff.sha256,zeroOid).ok,false);
 
   assert.equal((await reconcileShadowOrchestratorRun(
     {...baseEnv,GITHUB_EVENT_NAME:'schedule',FACTORY_ISSUE_NUMBER:''},
@@ -343,6 +490,7 @@ test('orchestrator shadow evaluation deduplicates persisted snapshots, retries d
     [baseEnv,{clock:'bad'}],
     [baseEnv,{maxRecoveryItems:0}],
     [baseEnv,{maxRecoveryItems:51}],
+    [baseEnv,{pullCursor:-1}],
     [{...baseEnv,GITHUB_REPOSITORY:'Other/Repo'},{repository:'Jamula/SoftwareFactory',repositoryId:1471342715}],
     [{...baseEnv,GITHUB_EVENT_NAME:'repository_dispatch'},{}],
     [{...baseEnv,FACTORY_CHECKOUT_SHA:'c'.repeat(40)},{}]
