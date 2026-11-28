@@ -751,6 +751,18 @@ test('correlateAutonomousExecutionReceipt correlates OTel traceparent, authorita
   taskState:'completed',
   accountingState:'authoritative-zero-incremental'
  });
+ // Omitted top-level execution cost and quota stay unknown rather than fabricated from AI-credit accounting alone
+ assert.deepEqual(correlated.receipt.cost,{
+  state:'unknown',
+  verified:false,
+  currency:null,
+  amountMicros:null
+ });
+ assert.deepEqual(correlated.receipt.quota,{
+  state:'unknown',
+  verified:false,
+  includedOnly:null
+ });
  assert.deepEqual(telemetrySummary(correlated),{outcome:'eligible',reason:'NONE'});
 
  // Ensure zero secret/prompt leakage and zero unbounded IDs in OTel attributes
@@ -782,6 +794,7 @@ test('correlateAutonomousExecutionReceipt correlates OTel traceparent, authorita
   reason:'REVIEW',
   durationMs:50,
   quota:{verified:true,includedOnly:true,available:false},
+  cost:{verified:true,currency:'USD',amountMicros:0},
   correlation:{traceId,spanId}
  });
  for(const taskState of ALLOWED_MISSION_CONTROL_TASK_STATES){
@@ -811,15 +824,30 @@ test('correlateAutonomousExecutionReceipt correlates OTel traceparent, authorita
   assert.equal(res.telemetry.sampled,false);
   assert.equal(res.telemetry.parentSpanId,null);
   assert.equal(res.receipt.quota.state,'exhausted');
+  assert.deepEqual(res.receipt.cost,{
+   state:'verified-zero',
+   verified:true,
+   currency:'USD',
+   amountMicros:0
+  });
   assert.equal(res.aiCreditAccounting.remainingAiCredits,0);
   assert.equal(res.missionControl.actor,null);
   assert.deepEqual(telemetrySummary(res),{outcome:'blocked',reason:'REVIEW'});
  }
 
- // Stored receipt with non-enumerable stage durations and humanTouches fields preserves all validated fields
+ // Stored receipt with non-enumerable stage durations, quota, cost, and humanTouches fields preserves all validated fields
  const nonEnumStages={};
  Object.defineProperty(nonEnumStages,'review',{value:50,enumerable:false});
  Object.defineProperty(nonEnumStages,'reconcile',{value:15,enumerable:false});
+ const nonEnumQuota={};
+ Object.defineProperty(nonEnumQuota,'state',{value:'unknown',enumerable:false});
+ Object.defineProperty(nonEnumQuota,'verified',{value:false,enumerable:false});
+ Object.defineProperty(nonEnumQuota,'includedOnly',{value:null,enumerable:false});
+ const nonEnumCost={};
+ Object.defineProperty(nonEnumCost,'state',{value:'unknown',enumerable:false});
+ Object.defineProperty(nonEnumCost,'verified',{value:false,enumerable:false});
+ Object.defineProperty(nonEnumCost,'currency',{value:null,enumerable:false});
+ Object.defineProperty(nonEnumCost,'amountMicros',{value:null,enumerable:false});
  const nonEnumTouches={};
  Object.defineProperty(nonEnumTouches,'state',{value:'verified',enumerable:false});
  Object.defineProperty(nonEnumTouches,'verified',{value:true,enumerable:false});
@@ -827,6 +855,8 @@ test('correlateAutonomousExecutionReceipt correlates OTel traceparent, authorita
  const storedNonEnumNested={
   ...storedBlockedReceipt,
   stages:nonEnumStages,
+  quota:nonEnumQuota,
+  cost:nonEnumCost,
   humanTouches:nonEnumTouches
  };
  const preservedNested=correlateAutonomousExecutionReceipt({
@@ -850,6 +880,8 @@ test('correlateAutonomousExecutionReceipt correlates OTel traceparent, authorita
  });
  assert.equal(preservedNested.valid,true);
  assert.deepEqual(preservedNested.receipt.stages,{review:50,reconcile:15});
+ assert.deepEqual(preservedNested.receipt.quota,{state:'unknown',verified:false,includedOnly:null});
+ assert.deepEqual(preservedNested.receipt.cost,{state:'unknown',verified:false,currency:null,amountMicros:null});
  assert.deepEqual(preservedNested.receipt.humanTouches,{state:'verified',verified:true,count:2});
  assert.deepEqual(receiptStageRows(preservedNested.receipt),{
   valid:true,

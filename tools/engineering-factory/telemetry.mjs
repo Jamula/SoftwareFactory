@@ -651,8 +651,17 @@ export function correlateAutonomousExecutionReceipt(input) {
     reason:baseReceipt.reason,
     durationMs:baseReceipt.durationMs,
     stages:Object.freeze({...normalizedStages}),
-    quota:Object.freeze({state:expectedQuotaState,verified:true,includedOnly:true}),
-    cost:Object.freeze({state:'verified-zero',verified:true,currency:'USD',amountMicros:0}),
+    quota:Object.freeze({
+      state:baseReceipt.quota.state,
+      verified:baseReceipt.quota.verified,
+      includedOnly:baseReceipt.quota.includedOnly
+    }),
+    cost:Object.freeze({
+      state:baseReceipt.cost.state,
+      verified:baseReceipt.cost.verified,
+      currency:baseReceipt.cost.currency,
+      amountMicros:baseReceipt.cost.amountMicros
+    }),
     humanTouches:Object.freeze({
       state:baseReceipt.humanTouches.state,
       verified:baseReceipt.humanTouches.verified,
