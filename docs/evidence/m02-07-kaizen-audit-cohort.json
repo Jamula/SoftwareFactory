@@ -26,7 +26,8 @@
     "keepOpenReason": "All #137 deterministic evaluators and this pre-cohort readout are verified on main @ ec438f54088f30856c2df6ff626e894dde2a0100, but 0 unattended gh-aw -> @copilot cohort outcomes have executed in live production yet. Closes alongside #14, #16, and #18 only after owner #10/#105 cutover and >=5 comparable live @copilot cohort outcomes.",
     "realRepositoryArtifactsBound": [
       "Waves 3-4 merged PRs #160, #164, #161, #167, and #168 with exact candidate commit SHAs, squash merge SHAs, file ownership sets, and copilot-pull-request-reviewer[bot] review IDs",
-      "Push on main runs on ec438f54088f30856c2df6ff626e894dde2a0100: Factory validation run 46112285635 (test-coverage job 140878293132 in 39s, upload-coverage-javascript job 140878452795), Windows Aspire runtime run 46112285658 (job 140878293210 in 133s), CodeQL run 46112285838, and Reusable replay smoke run 46112285750",
+      "PR #168 exact-candidate receipts on 11ca4d4af822f4507c3bd1867db86dc592286875 (Factory validation run 46111510947 test-coverage job 140876091369 and upload-coverage-javascript job 140876259372; CodeQL run 46111508430)",
+      "Push on main runs on ec438f54088f30856c2df6ff626e894dde2a0100: Factory validation run 46112285635 (test-coverage job 140878293132 in 39s), Windows Aspire runtime run 46112285658 (job 140878293210 in 133s), CodeQL run 46112285838, and Reusable replay smoke run 46112285750",
       "Real Waves 3-4 bottleneck and review-failure observations across #15, #168, and #161"
     ],
     "syntheticPreCohortElements": [
@@ -802,9 +803,9 @@
             "traceparent": "00-16800000000000000000000000000168-0000000000000038-01",
             "parentSpanId": "0000000000000037",
             "headSha": "11ca4d4af822f4507c3bd1867db86dc592286875",
-            "ciReceiptId": "job-140878293132",
-            "codeqlReceiptId": "run-46112285838",
-            "coverageReceiptId": "job-140878452795",
+            "ciReceiptId": "job-140876091369",
+            "codeqlReceiptId": "run-46111508430",
+            "coverageReceiptId": "job-140876259372",
             "expectedComponents": [
               "engineering-factory.gh-aw-lock-verifier"
             ],

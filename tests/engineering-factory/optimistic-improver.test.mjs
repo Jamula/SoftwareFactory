@@ -1898,9 +1898,19 @@ test('evaluateKaizenCohortReadout binds 100% 9-link provenance, human-approved p
   assert.equal(insufficientPre.readoutStatus, 'INSUFFICIENT_COHORT');
   assert.equal(insufficientPre.liveCohortVerified, false);
 
-  // Live autonomous cohort mode succeeds ONLY with >=5 verified copilot-swe-agent[bot] chains inside afterCohort window
+  // Live autonomous cohort mode succeeds ONLY when shippedCandidate rolled out at/before afterCohort.windowStartMs and >=5 verified copilot-swe-agent[bot] chains completed inside afterCohort window
+  const rolloutChain = buildBoundAuditChain({
+    traceSeed: 'e',
+    commitSeed: 'a',
+    squashSeed: '4',
+    deliveryId: 'live-rollout-0',
+    startedAtMs: 195_000,
+    completedAtMs: 200_000,
+    pullNumber: 199,
+    issueNumber: 137
+  });
   const liveSeeds = ['1', '2', '3', '4', '5'];
-  const liveChains = liveSeeds.map((seed, idx) => buildBoundAuditChain({
+  const livePostRolloutChains = liveSeeds.map((seed, idx) => buildBoundAuditChain({
     traceSeed: seed,
     commitSeed: seed,
     squashSeed: (idx + 5).toString(16),
@@ -1909,6 +1919,20 @@ test('evaluateKaizenCohortReadout binds 100% 9-link provenance, human-approved p
     completedAtMs: 210_000 + idx * 10_000,
     pullNumber: 200 + idx
   }));
+  const liveChains = [rolloutChain, ...livePostRolloutChains];
+  const liveBottleneckId = preInput.proposalInput.scorecard.bottlenecks[0].id;
+  const liveShippedMeta = {
+    proposalId: `bottleneck:${SF_REPO_ID}:${liveBottleneckId}`,
+    repositoryId: SF_REPO_ID,
+    laneId: 'sf-velocity-lane',
+    scope: 'factory-velocity',
+    ownedPaths: ['tools/engineering-factory/stage-latency.mjs'],
+    touchedPaths: ['tools/engineering-factory/stage-latency.mjs'],
+    targetPaths: ['tools/engineering-factory/stage-latency.mjs'],
+    squashCommitSha: '4'.repeat(40),
+    pullNumber: 199,
+    issueNumber: 137
+  };
   const liveImproved = evaluateKaizenCohortReadout(buildValidReadoutInput({
     evaluatedHeadSha: '9'.repeat(40),
     evidenceMode: 'live-autonomous-cohort',
@@ -1923,18 +1947,7 @@ test('evaluateKaizenCohortReadout binds 100% 9-link provenance, human-approved p
         aiCreditsTotal: 140
       })
     },
-    shippedCandidate: {
-      proposalId: `bottleneck:${SF_REPO_ID}:provenance-completeness-gap`,
-      repositoryId: SF_REPO_ID,
-      laneId: 'sf-velocity-lane',
-      scope: 'factory-velocity',
-      ownedPaths: ['tools/engineering-factory/stage-latency.mjs'],
-      touchedPaths: ['tools/engineering-factory/stage-latency.mjs'],
-      targetPaths: ['tools/engineering-factory/stage-latency.mjs'],
-      squashCommitSha: '9'.repeat(40),
-      pullNumber: 204,
-      issueNumber: 137
-    }
+    shippedCandidate: liveShippedMeta
   }));
   assert.equal(liveImproved.valid, true);
   assert.equal(liveImproved.syntheticReplayOnly, false);
@@ -1951,15 +1964,43 @@ test('evaluateKaizenCohortReadout binds 100% 9-link provenance, human-approved p
     cohortInput: {
       beforeCohort: buildBaselineCohort({acceptedOutcomes: 5, aiCreditsTotal: 150}),
       afterCohort: buildCandidateCohort({acceptedOutcomes: 5, aiCreditsTotal: 150})
-    }
+    },
+    shippedCandidate: liveShippedMeta
   }));
   assert.equal(liveNeutral.valid, true);
   assert.equal(liveNeutral.readoutStatus, 'NO_MATERIAL_GAIN');
   assert.equal(liveNeutral.liveCohortVerified, false);
   assert.equal(liveNeutral.issue137ReadyToClose, false);
 
+  // Live mode missing shippedCandidate or with rollout after afterCohort.windowStartMs fails closed
+  const liveWithoutShipped = buildValidReadoutInput({
+    evaluatedHeadSha: '9'.repeat(40),
+    evidenceMode: 'live-autonomous-cohort',
+    liveAutonomousOutcomesCount: 5,
+    auditChains: liveChains,
+    cohortInput: {
+      beforeCohort: buildBaselineCohort({acceptedOutcomes: 5}),
+      afterCohort: buildCandidateCohort({acceptedOutcomes: 5, medianCycleTimeMs: 310_000})
+    }
+  });
+  assert.equal(
+    evaluateKaizenCohortReadout(liveWithoutShipped).reason,
+    'MISSING_SHIPPED_CANDIDATE_META'
+  );
+  assert.equal(
+    evaluateKaizenCohortReadout({
+      ...liveWithoutShipped,
+      shippedCandidate: {
+        ...liveShippedMeta,
+        squashCommitSha: '9'.repeat(40),
+        pullNumber: 204
+      }
+    }).reason,
+    'CANDIDATE_NOT_SHIPPED_BEFORE_COHORT'
+  );
+
   // Regression with inline provenanceChain, billed-spend regression, and contract-touching proposal propagates requiresHumanApproval: true
-  const rawInlineChain = {stages: liveChains[4].stages};
+  const rawInlineChain = {stages: livePostRolloutChains[4].stages};
   const contractRollout = evaluateKaizenCohortReadout(buildValidReadoutInput({
     evaluatedHeadSha: '9'.repeat(40),
     auditChains: liveChains,
@@ -2074,7 +2115,7 @@ test('evaluateKaizenCohortReadout binds 100% 9-link provenance, human-approved p
       policy: {profile: 'consumer', minLinePercent: 97, minBranchPercent: 92}
     },
     shippedCandidate: {
-      proposalId: 'unlisted-prior-ft-proposal',
+      proposalId: `feedback:${FAMILYTREE_REPO_ID}:ft-perf`,
       repositoryId: FAMILYTREE_REPO_ID,
       laneId: 'ft-product-lane',
       targetPaths: ['src/tree/pedigree.ts'],
@@ -2087,6 +2128,48 @@ test('evaluateKaizenCohortReadout binds 100% 9-link provenance, human-approved p
   assert.equal(consumerRollback.revertCandidateSpec.provenanceVerified, true);
   assert.equal(consumerRollback.revertCandidateSpec.requiresHumanApproval, false);
   assert.equal(consumerRollback.revertCandidateSpec.deliveryKind, 'candidate-revert-pr');
+
+  // Unrecognized proposalId on shippedCandidate fails closed without bypassing proposal approval checks
+  assert.equal(
+    evaluateKaizenCohortReadout({
+      repositoryId: FAMILYTREE_REPO_ID,
+      evaluatedHeadSha: 'c'.repeat(40),
+      evidenceMode: 'pre-cohort-synthetic',
+      liveAutonomousOutcomesCount: 0,
+      auditChains: [consumerChain],
+      proposalInput: {
+        scorecard: consumerScorecard,
+        knowledgeLanes: [buildKnowledgeLanes()[4]],
+        failureTaxonomy: [],
+        feedbackItems: [
+          {
+            id: 'ft-perf',
+            repositoryId: FAMILYTREE_REPO_ID,
+            laneId: 'ft-product-lane',
+            source: 'product',
+            metricName: 'renderMs',
+            baselineValue: 120,
+            targetValue: 60,
+            targetPaths: ['src/tree/pedigree.ts'],
+            touchesContract: true
+          }
+        ]
+      },
+      cohortInput: {
+        beforeCohort: buildBaselineCohort({repositoryId: FAMILYTREE_REPO_ID, coveredLines: 975, coveredBranches: 465}),
+        afterCohort: buildCandidateCohort({repositoryId: FAMILYTREE_REPO_ID, coveredLines: 965, coveredBranches: 465}),
+        policy: {profile: 'consumer', minLinePercent: 97, minBranchPercent: 92}
+      },
+      shippedCandidate: {
+        proposalId: 'unrecognized-proposal',
+        repositoryId: FAMILYTREE_REPO_ID,
+        laneId: 'ft-product-lane',
+        targetPaths: ['src/tree/pedigree.ts'],
+        squashCommitSha: 'c'.repeat(40)
+      }
+    }).reason,
+    'UNKNOWN_CANDIDATE_PROPOSAL'
+  );
 
   // Claiming pullNumber when verified audit chain had pullNumber: null fails closed
   assert.equal(
@@ -2119,7 +2202,7 @@ test('evaluateKaizenCohortReadout binds 100% 9-link provenance, human-approved p
         policy: {profile: 'consumer', minLinePercent: 97, minBranchPercent: 92}
       },
       shippedCandidate: {
-        proposalId: 'unlisted-prior-ft-proposal',
+        proposalId: `feedback:${FAMILYTREE_REPO_ID}:ft-perf`,
         repositoryId: FAMILYTREE_REPO_ID,
         laneId: 'ft-product-lane',
         targetPaths: ['src/tree/pedigree.ts'],
@@ -2554,6 +2637,12 @@ test('docs/evidence/m02-07-kaizen-audit-cohort.json deterministically replays Wa
   assert.equal(receipt.liveExecutionDisclosure.liveCohortVerified, false);
   assert.equal(receipt.liveExecutionDisclosure.issue137ReadyToClose, false);
   assert.equal(receipt.observedWaves3To4Signals.length, 3);
+
+  const pr168Chain = receipt.readoutInput.auditChains.find(c => c.pullNumber === 168 && c.stages.eventDelivery.repositoryId === SF_REPO_ID);
+  assert.equal(pr168Chain.stages.exactHeadValidation.ciReceiptId, 'job-140876091369');
+  assert.equal(pr168Chain.stages.exactHeadValidation.codeqlReceiptId, 'run-46111508430');
+  assert.equal(pr168Chain.stages.exactHeadValidation.coverageReceiptId, 'job-140876259372');
+  assert.equal(pr168Chain.stages.verifiedMain.receiptId, 'run-46112285635');
 
   // Direct replay across queryCausalAuditTrail, proposeOptimisticImprovements, and verifyCohortImprovementOrRollback
   const auditRes = queryCausalAuditTrail(receipt.readoutInput.auditChains, {repositoryId: SF_REPO_ID});

@@ -1442,6 +1442,9 @@ export function evaluateKaizenCohortReadout(input) {
     if (cohortVerdict.rollbackRequired) {
       return invalidKaizenReadout('MISSING_REVERT_CANDIDATE_META', repositoryId);
     }
+    if (evidenceMode === 'live-autonomous-cohort') {
+      return invalidKaizenReadout('MISSING_SHIPPED_CANDIDATE_META', repositoryId);
+    }
   } else {
     const initialCheck = buildAutomaticRevertCandidateSpec(cohortVerdict, input.shippedCandidate);
     if (cohortVerdict.rollbackRequired
@@ -1457,6 +1460,10 @@ export function evaluateKaizenCohortReadout(input) {
     const matchingAuditRecord = auditTrail.records.find(rec => rec.squashCommitSha === targetSha);
     if (!matchingAuditRecord) {
       return invalidKaizenReadout('UNVERIFIED_CANDIDATE_PROVENANCE', repositoryId);
+    }
+    if (evidenceMode === 'live-autonomous-cohort' &&
+        matchingAuditRecord.completedAtMs > afterCohort.windowStartMs) {
+      return invalidKaizenReadout('CANDIDATE_NOT_SHIPPED_BEFORE_COHORT', repositoryId);
     }
 
     const hasInlineProvenance = hasOwnEnumerableData(candidateMeta, 'provenanceChain');
@@ -1484,25 +1491,24 @@ export function evaluateKaizenCohortReadout(input) {
     const matchingProposal = repositoryProposals.find(
       proposal => proposal.proposalId === candidateMeta.proposalId
     );
-    if (matchingProposal) {
-      if (matchingProposal.laneId !== candidateMeta.laneId ||
-          !samePathSet(matchingProposal.targetPaths, candidateMeta.targetPaths) ||
-          (hasOwnEnumerableData(candidateMeta, 'scope') &&
-            matchingProposal.scope !== candidateMeta.scope) ||
-          (matchingProposal.requiresHumanApproval &&
-            hasOwnEnumerableData(candidateMeta, 'requiresHumanApproval') &&
-            candidateMeta.requiresHumanApproval === false)) {
-        return invalidKaizenReadout('CANDIDATE_PROPOSAL_MISMATCH', repositoryId);
-      }
+    if (!matchingProposal) {
+      return invalidKaizenReadout('UNKNOWN_CANDIDATE_PROPOSAL', repositoryId);
+    }
+    if (matchingProposal.laneId !== candidateMeta.laneId ||
+        !samePathSet(matchingProposal.targetPaths, candidateMeta.targetPaths) ||
+        (hasOwnEnumerableData(candidateMeta, 'scope') &&
+          matchingProposal.scope !== candidateMeta.scope) ||
+        (matchingProposal.requiresHumanApproval &&
+          hasOwnEnumerableData(candidateMeta, 'requiresHumanApproval') &&
+          candidateMeta.requiresHumanApproval === false)) {
+      return invalidKaizenReadout('CANDIDATE_PROPOSAL_MISMATCH', repositoryId);
     }
 
     if (cohortVerdict.rollbackRequired) {
       const enrichedMeta = {
         ...candidateMeta,
         ...(hasInlineProvenance ? {} : {provenanceChain: expectedProvenancePayload}),
-        ...(matchingProposal && matchingProposal.requiresHumanApproval
-          ? {requiresHumanApproval: true}
-          : {})
+        ...(matchingProposal.requiresHumanApproval ? {requiresHumanApproval: true} : {})
       };
       revertCandidateSpec = buildAutomaticRevertCandidateSpec(cohortVerdict, enrichedMeta);
     }
