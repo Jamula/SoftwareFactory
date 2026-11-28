@@ -21,17 +21,42 @@ Measure elapsed wall-clock time and report p50/p95, sample size, observation per
 
 Establish a reproducible baseline before claiming gains. Report end-to-end acceptance latency, rework, failure rate and cost per accepted unit alongside speed. Do not multiply overlapping speedups. A missing metric is unknown, not zero. Report security/quality blockers immediately; use existing supervisory reporting cadence, not a new duplicate schedule.
 
+### Hard gates vs. velocity SLOs and Kaizen feedback data flow diagram
+
+```mermaid
+flowchart TB
+  subgraph HARD["Non-Bypassable Mandatory Merge Gates (Block Action on Unknown/Failure)"]
+    G1["Exact-Head Coverage:<br/>SF >=98%/95% (Node + .NET)<br/>Consumers >=95%/90% or Stricter"]
+    G2["Security & Provenance:<br/>CodeQL + Secret Scan + Zero Python +<br/>gh-aw .lock.yml SHA-256"]
+    G3["Independent Exact-Head Review:<br/>0 Unresolved Inline or Summary Findings<br/>(Ruleset 28054442 review_on_push: false)"]
+    G4["Budget & Anti-Rogue Guard:<br/>#105 $0 Overage Hard-Stops +<br/>9-Link W3C traceparent + Disjoint Paths"]
+  end
+
+  subgraph MQ_GATE["Protected Integration"]
+    SQ["GitHub Native Squash Merge Queue (ALLGREEN)<br/>+ Post-Merge main Health Verification"]
+  end
+
+  subgraph SLO["Measured Velocity & Quality Readout (Never Overrides Hard Gates)"]
+    S1["Stage SLOs: CI p50 <75s, PR Turnaround p50 <=10m, Merge <=2m"]
+    S2["#18 AI-Credit & Autonomy Scorecard (1 AI credit = $0.01)"]
+    S3["#137 Kaizen Loop: >=5-Outcome Matched Cohort<br/>(Isolated PR Proposals + Auto-Revert on Regression)"]
+  end
+
+  G1 & G2 & G3 & G4 --> SQ --> S1 --> S2 --> S3
+  S3 -. "Candidate PRs Re-Enter Full Gate Pipeline<br/>(Human Sign-Off for Control-Plane Paths)" .-> HARD
+```
+
 ## Mandatory quality and acceptance gates
 
 | Gate | Required policy |
 | --- | --- |
-| Source line coverage | SoftwareFactory >=98% per executable component and overall; shared consumer baseline >=95% |
-| Source branch coverage | SoftwareFactory >=95% per executable component and overall; shared consumer baseline >=90% |
-| Stronger consumer gates | Retain the stricter existing threshold (e.g., Spellbook >=97% application line coverage) |
-| Tests | All required build, unit, integration, E2E, platform and negative-path tests pass for the exact candidate |
-| Security | Required scanning, dependency and secret checks pass; no unresolved blocking findings; independent security review for auth, persistence, CI, policy, privileges and other high-risk changes |
-| Independent review | Verified current-head review from authorized independent reviewer, no unresolved material inline threads or summary-only findings; retain stricter repo-specific approval semantics |
-| Merge | Exact expected head, verified required check producers, effective branch protections, compatible base, explicit authorization, no unresolved conversation; final `main` integration runs through SoftwareFactory's deterministic `98%/95%` + summary-only review gate (`core.mjs` / `protected-squash.mjs`) and GitHub Native Squash Merge Queue (`gh-aw` refuses merges to `main`) |
+| Source line coverage | SoftwareFactory >=98% per executable component and overall (enforced across both Node.js `26.13.1` `.mjs` modules and `.NET 10.0.404` `SoftwareFactory.Agents` via Coverlet); shared consumer baseline >=95% |
+| Source branch coverage | SoftwareFactory >=95% per executable component and overall (Node.js `26.13.1` + `.NET 10.0.404`); shared consumer baseline >=90% |
+| Stronger consumer gates | Retain the stricter existing threshold (e.g., `Jamula/Spellbook` >=97% application line / >=90% branch coverage in `M03`) |
+| Tests | All required build, unit, integration, E2E, platform and negative-path tests pass for the exact candidate (`npm ci --ignore-scripts && npm run test:coverage`, `dotnet test --configuration Release -p:CollectCoverage=true`, `node tools/engineering-factory/run.mjs --smoke`) |
+| Security | Required scanning, dependency and secret checks pass (`CodeQL` + secret scanning); zero tracked Python files (`no-python-guard.mjs`); no unresolved blocking findings; independent security review for auth, persistence, CI, policy, privileges and other high-risk changes |
+| Independent review | Verified current-head review from authorized independent reviewer (`Default-Branch-Ruleset` `28054442` with `review_on_push: false` + `required_review_thread_resolution: true`), no unresolved material inline threads or summary-only findings; retain stricter repo-specific formal `APPROVED` semantics on all consumers |
+| Merge | Exact expected head, verified required check producers, effective branch protections, compatible base, explicit authorization, no unresolved conversation; final `main` integration runs through SoftwareFactory's deterministic `98%/95%` + summary-only review gate (`core.mjs` / `protected-squash.mjs`) and GitHub Native Squash Merge Queue (`ALLGREEN`; `gh-aw` refuses merges to `main`) |
 | Post-merge | Verify main and affected integration; block dependents and trip the repository kill switch if verification fails |
 | Auditability & anti-rogue guardrails | Unbroken W3C `traceparent` / OTel causal provenance chain (`Issue/Event deliveryId -> gh-aw .lock.yml SHA-256 -> git-ref CAS lease generation -> Mission Control taskId/sessionId -> signed commit SHA -> exact-head CI/CodeQL/coverage receipts -> independent review ID -> Merge Queue squash SHA -> verified main receipt`); protected files (`.github/workflows/`, `.lock.yml`, rulesets, policy, gate evaluators, kill switches) cannot be self-modified or self-merged by autonomous runs, and out-of-lane edits, retry-cap breaches, AI-credit burn spikes, `safe-outputs` threat flags, or post-merge `main` failures trip the repository kill switch immediately outside the agent loop |
 | Acceptance | Close only after all linked acceptance criteria are evidenced; partial PRs use non-closing linkage |
@@ -61,8 +86,17 @@ Use two-digit milestones M01, M02, etc., optional MNN.NN sub-milestones, and evi
 1. Document and independently review the standards.
 2. Implement measured coverage gates and evidence validation, including negative tests; demonstrate exact-head CI and fail-closed behavior.
 3. Implement trusted read-only event ingestion, idempotent reconciliation and metrics; compare shadow decisions with actual protected repository decisions.
-4. Prove supported provider permissions, included quota, enforced branch protection, independent review and emergency stop before separately authorized dispatch or merge.
-5. Demonstrate three independently accepted unattended SoftwareFactory issues on GitHub (M01), including parallel candidates and review repair, then pilot FamilyTree (M03); expand independently to Spellbook (M04) and FamilyHub (M05). M02 speed work may overlap without gating autonomy or consumer readiness. Each consumer can pause, pin or roll back independently.
+4. Prove supported provider permissions, included quota, enforced branch protection, independent review and emergency stop before separately authorized dispatch or merge (`9 / 10` `M01` foundation issues closed across `#4–#9, #17, #105, #118`).
+5. Demonstrate three independently accepted unattended SoftwareFactory issues on GitHub (`M01`, `#10`), including parallel non-overlapping candidates and review repair, then pilot **Consumer #1 `Jamula/Spellbook` (`M03`, `#11` P0)** behind shared contract `#13` (closed); expand independently to **Consumer #2 `Jamula/FamilyTree` (`M04`, `#36` P1)** and **Consumer #3 `FamilyHub` (`M05`, `#12` P1)**. `M02` speed work (`.NET 10.0.404` + Microsoft Agent Framework `1.28.0` GA, poison-safe CI caching `#15`/`#174`, `factory-board` Canvas `#135`, Kaizen loop `#137`, deferred MCP connector `#136`) may overlap without gating autonomy or consumer readiness. Each consumer can pause, pin or roll back in `1` commit independently.
+
+## Chronicle retrospective implementation invariants
+
+Every contributor and autonomous agent session must uphold four hard-won retrospective rules:
+
+1. **Fail closed in 10 lines over 300-line partial-recovery heuristics**: Reject malformed, missing, stale, or proxy/getter inputs immediately at the boundary with a stable reason code instead of writing complex recovery heuristics that cause multi-round review churn.
+2. **Zero literal secret-like strings in tests, fixtures, or docs**: Never commit literal token-shaped strings (`ghp_`..., `github_pat_`..., `sk-`..., `AKIA`...) in unit tests or fixtures; construct secret-scanner test inputs at runtime via string concatenation so GitHub Secret Scanning never blocks Merge Queue integration.
+3. **Strict non-overlapping file-ownership lanes & bounded worktree concurrency**: Enforce `0` concurrent owners on shared barrel, lock, or schema files, never modify SHA-256 hash-locked `.github/workflows/factory-orchestrator.md` ↔ `.lock.yml` outside dedicated workflow lanes, and batch `<= 3` concurrent `git worktree add` operations to avoid `.git/config.lock` races.
+4. **Preserve Apache-2.0 provenance, exact-head independent review, and `$0` spend**: Retain upstream `LICENSE`/`NOTICE` notices, satisfy `Default-Branch-Ruleset` `28054442` (`review_on_push: false` + Squash Merge Queue `ALLGREEN`) plus exact-head summary-finding disposition, and enforce `#105` provider-level `$0` overage hard-stops across AI Credits, Copilot Premium Requests, and Cloud Sandboxes/Actions.
 
 Until steps 1–4 pass for the intended scope, remain shadow-only. After those minimum capabilities are independently verified and separately scoped live authorization, included capacity, $0 incremental cost controls, durable ownership and stop/recovery are established, a bounded SoftwareFactory acceptance pilot may execute step 5. Its actual independently accepted cycles supply M01 exit evidence; M01 completion is not a prerequisite to that pilot. This does not grant general dispatch, consumer activation or deployment authority. No self-issued approvals or synthetic success signals may authorize a live action.
 
