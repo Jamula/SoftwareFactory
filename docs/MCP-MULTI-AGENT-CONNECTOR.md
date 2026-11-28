@@ -90,6 +90,8 @@ or consumer-specific gates.
 - Accepts either a dense plain array of single-line JSON strings or a `\n` / `\r\n`-delimited stream chunk, enforcing `MAX_MCP_FRAMED_LINES = 100` (`FRAMED_BATCH_LIMIT_EXCEEDED` above `100` lines), rejecting empty batches (`EMPTY_FRAMED_BATCH`) and embedded `\r` / `\n` frame-injection characters (`EMBEDDED_NEWLINE_IN_FRAME`), and validating `context` fail-closed (`INVALID_CONNECTOR_CONTEXT`).
 - Enforces `MAX_MCP_REQUEST_BYTES = 65,536` UTF-8 bytes per line (`-32600` `PAYLOAD_TOO_LARGE` without parsing oversized frames), omits responses for JSON-RPC notifications, and escapes `\u2028` / `\u2029` so every entry in `responses` (and `framedOutput`) is guaranteed newline-free.
 
+`startMcpStdioServer({ input, output, env, context })` streams newline-delimited JSON-RPC `2.0` frames over `input` / `output` (defaulting to `process.stdin` / `process.stdout`), enforces `MAX_MCP_REQUEST_BYTES` and fatal UTF-8 decoding before parsing, preserves request ordering under backpressure, omits notification responses, and keeps `output` strictly reserved for JSON-RPC frames.
+
 | Method | Purpose | Response Contract |
 | --- | --- | --- |
 | `initialize` | Negotiate MCP `2025-06-18` capabilities | Returns `{ protocolVersion: "2025-06-18", capabilities: { tools: { listChanged: false } }, serverInfo: { name: "softwarefactory-mcp-connector", version: "1.0.0" } }` |
@@ -114,13 +116,13 @@ or consumer-specific gates.
 4. **`validate_provider_isolation`**:
    - Executes `validateMultiAgentConnectorConfig(arguments)` for `github-copilot`, `openai-codex`, or `anthropic-claude` adapters.
 5. **`plan_disjoint_lanes`**:
-   - Plans non-overlapping lane ownership and task dependencies without dispatching agents.
+   - Wraps `planLanes` (`tools/engineering-coordinator/planner.mjs`) to verify non-overlapping lane ownership, DAG dependencies, protected-path exclusions, and exact enrolled `trustedFiles` inventories without dispatching agents.
 6. **`build_consumer_onboarding_plan`**:
-   - Builds and evaluates read-only consumer onboarding evidence without enrolling or activating a consumer.
+   - Wraps `buildReadOnlyOnboardingPlan` and optional `evaluateConsumerOnboardingSuccess` (`tools/engineering-factory/consumer-onboarding.mjs`), binding outcomes to enrolled identity, stricter coverage floors, and discovered repository security gates without enrolling or activating a consumer.
 7. **`select_scoped_guidance_and_lessons`**:
-   - Selects guidance and lessons within the supplied scope; selection is not authorization.
+   - Wraps `selectScopedGuidanceAndLessons` (`tools/engineering-factory/curated-lessons.mjs`) within the enrolled repository, revision, clock, and coverage floors; selection is not authorization.
 8. **`get_factory_board_snapshot`**:
-   - Provides an informational read-only factory board snapshot when a trusted read-only transport is explicitly injected. The default CLI does not make live provider calls and fails closed when that transport is unavailable; board data does not authorize actions.
+   - Wraps `fetchFactoryBoardSnapshot` (`tools/engineering-factory/factory-board.mjs`) for read-only milestone, issue, PR, and Merge Queue inspection when a trusted read-only `boardTransport` is explicitly injected into `startMcpStdioServer`. The default CLI makes zero live provider calls and fails closed (`BOARD_TRANSPORT_REQUIRED`) when no transport is injected; board data does not authorize actions.
 
 ---
 

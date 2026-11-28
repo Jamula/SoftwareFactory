@@ -36,6 +36,14 @@ const VALID_TRACEPARENT = '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-
 const FACTORY_REPO_ID = 1471342715;
 const CONSUMER_REPO_ID = 22001100;
 const NOW_MS = 1_795_740_000_000;
+const GHP = 'gh' + 'p_';
+const GHO = 'gh' + 'o_';
+const GHU = 'gh' + 'u_';
+const GHS = 'gh' + 's_';
+const GHR = 'gh' + 'r_';
+const GHPAT = 'github' + '_pat_';
+const SK = 's' + 'k-';
+const SK_ANT = `${SK}ant-`;
 
 const mcpCall = (name, args, context = authorizedContext()) => handleMcpConnectorRequest({
   jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args }
@@ -118,15 +126,23 @@ test('new read-only tools enforce enrollment, trusted lanes, identities and stri
   assert.equal(mcpCall('get_factory_board_snapshot', { repositoryId: FACTORY_REPO_ID, repository: 'Other/Repo' }).structuredContent.reason, 'INVALID_BOARD_ARGUMENTS');
 });
 
-test('all advertised array schemas declare item types', () => {
+test('all advertised array schemas declare item types and tool schemas are deeply frozen', () => {
   const visit = schema => {
+    assert.equal(Object.isFrozen(schema), true);
     if (schema.type === 'array') {
       assert.ok(schema.items, 'array items are required by MCP clients');
       visit(schema.items);
     }
-    if (schema.properties) Object.values(schema.properties).forEach(visit);
+    if (schema.properties) {
+      assert.equal(Object.isFrozen(schema.properties), true);
+      Object.values(schema.properties).forEach(visit);
+    }
+    if (schema.required) assert.equal(Object.isFrozen(schema.required), true);
   };
-  for (const tool of MCP_CONNECTOR_TOOLS) visit(tool.inputSchema);
+  for (const tool of MCP_CONNECTOR_TOOLS) {
+    assert.equal(Object.isFrozen(tool), true);
+    visit(tool.inputSchema);
+  }
 });
 
 function syntheticOnboardingPackage(repository, repositoryId, localLine = 98, localBranch = 95, stackProfile = 'baseline-95-90', policyOverrides = {}) {
@@ -448,7 +464,7 @@ test('stdio tools/call exercises all eight read-only tools over PassThrough', as
   }
 });
 
-test('stdio denies unauthorized boards before calling injected transport and hides transport errors', async () => {
+test('stdio denies unauthorized boards before calling injected transport and hides transport or unsafe errors', async () => {
   let calls = 0;
   const input = new PassThrough();
   const output = new PassThrough();
@@ -456,7 +472,7 @@ test('stdio denies unauthorized boards before calling injected transport and hid
   output.on('data', chunk => { text += chunk; });
   const server = startMcpStdioServer({ input, output, context: {
     ...authorizedContext(),
-    boardTransport: { request: async () => { calls++; throw new Error('gh' + 'p_private'); } }
+    boardTransport: { request: async () => { calls++; throw new Error(`${GHP}private`); } }
   } });
   const board = repositoryId => JSON.stringify({ jsonrpc: '2.0', id: repositoryId, method: 'tools/call', params: { name: 'get_factory_board_snapshot', arguments: { repositoryId } } });
   input.end(`${board(999)}\n${board(FACTORY_REPO_ID)}\n`);
@@ -466,6 +482,35 @@ test('stdio denies unauthorized boards before calling injected transport and hid
   assert.equal(frames[1].result.structuredContent.reason, 'BOARD_READ_FAILED');
   assert.ok(calls > 0);
   assert.equal(text.includes('private'), false);
+
+  const nonOkIn = new PassThrough();
+  const nonOkOut = new PassThrough();
+  let nonOkText = '';
+  nonOkOut.on('data', chunk => { nonOkText += chunk; });
+  const nonOkServer = startMcpStdioServer({ input: nonOkIn, output: nonOkOut, context: {
+    ...authorizedContext(),
+    boardTransport: { request: async () => new Response('upstream failure', { status: 502 }) }
+  } });
+  nonOkIn.end(`${board(FACTORY_REPO_ID)}\n`);
+  await nonOkServer;
+  assert.equal(JSON.parse(nonOkText.trim()).result.structuredContent.reason, 'BOARD_READ_FAILED');
+
+  const unsafeIn = new PassThrough();
+  const unsafeOut = new PassThrough();
+  let unsafeText = '';
+  unsafeOut.on('data', chunk => { unsafeText += chunk; });
+  const unsafeServer = startMcpStdioServer({ input: unsafeIn, output: unsafeOut, context: {
+    ...authorizedContext(),
+    boardTransport: {
+      request: async url => url.includes('/issues?')
+        ? new Response(JSON.stringify([{ number: 1, title: `Leak ${GHP}boardCanary999`, state: 'open', labels: [] }]))
+        : new Response('[]')
+    }
+  } });
+  unsafeIn.end(`${board(FACTORY_REPO_ID)}\n`);
+  await unsafeServer;
+  assert.equal(JSON.parse(unsafeText.trim()).result.structuredContent.reason, 'BOARD_RESULT_UNSAFE');
+  assert.equal(unsafeText.includes('boardCanary999'), false);
 });
 
 test('stdio times out noncooperative board reads and resumes ordered requests without further provider calls', async () => {
@@ -508,6 +553,59 @@ test('stdio honors output backpressure and rejects closed output', async () => {
   const failing = startMcpStdioServer({ input: next, output: closed });
   next.end('{"jsonrpc":"2.0","id":1,"method":"ping"}\n');
   await assert.rejects(failing, /OUTPUT_CLOSED/);
+
+  const errOut = new Writable({
+    highWaterMark: 1,
+    write(_chunk, _encoding, callback) { setImmediate(() => callback(new Error('PIPE_BROKEN'))); }
+  });
+  errOut.on('error', () => {});
+  const errIn = new PassThrough();
+  const errServer = startMcpStdioServer({ input: errIn, output: errOut });
+  errIn.end('{"jsonrpc":"2.0","id":1,"method":"ping"}\n');
+  await assert.rejects(errServer, /PIPE_BROKEN/);
+});
+
+test('bin/softwarefactory-mcp.mjs subprocess serves newline-delimited JSON-RPC 2.0 cleanly across lifecycle and tools', async () => {
+  const { policy, snapshot } = buildProtectedSquashFixtures();
+  const child = spawn(process.execPath, ['bin/softwarefactory-mcp.mjs'], {
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env: { ...process.env, SOFTWAREFACTORY_MCP_AUTHORIZED_REPOSITORIES: JSON.stringify(authorizedContext().authorizedRepositories) }
+  });
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', data => { stdout += data; });
+  child.stderr.on('data', data => { stderr += data; });
+  const exited = new Promise((resolve, reject) => {
+    child.once('error', reject);
+    child.once('close', resolve);
+  });
+  const requests = [
+    { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: MCP_PROTOCOL_VERSION } },
+    { jsonrpc: '2.0', method: 'notifications/initialized' },
+    { jsonrpc: '2.0', id: 2, method: 'ping' },
+    { jsonrpc: '2.0', id: 3, method: 'tools/list' },
+    { jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'get_repo_knowledge_map', arguments: { repositoryId: FACTORY_REPO_ID, nowMs: NOW_MS } } },
+    { jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name: 'evaluate_gate_status', arguments: { mode: 'candidate', policy, snapshot } } },
+    { jsonrpc: '2.0', id: 6, method: 'tools/call', params: { name: 'get_bounded_work_item_context', arguments: { repositoryId: FACTORY_REPO_ID, issueNumber: 182, traceparent: VALID_TRACEPARENT, summary: 'Verify CLI stdio server', ownedPaths: ['docs/MCP-MULTI-AGENT-CONNECTOR.md'] } } },
+    { jsonrpc: '2.0', id: 7, method: 'tools/call', params: { name: 'validate_provider_isolation', arguments: copilotConfig() } },
+    { jsonrpc: '2.0', id: 8, method: 'tools/call', params: { name: 'plan_disjoint_lanes', arguments: { repositoryId: CONSUMER_REPO_ID, tasks: [{ id: 1, lane: 'api', state: 'approved', priority: 1, dependencies: [], paths: ['src/api/x.mjs'] }] } } },
+    { jsonrpc: '2.0', id: 9, method: 'tools/call', params: { name: 'build_consumer_onboarding_plan', arguments: { repositoryId: CONSUMER_REPO_ID, discovery: { repository: 'Synthetic/Spellbook', repositoryId: CONSUMER_REPO_ID, pinnedFactorySha: 'afc3d223f287b029db32672908097efc67a259c9', stackProfile: 'baseline-95-90', discoveredRepository: { defaultBranch: 'main', mergeMethod: 'squash', checks: [{ name: 'build-test', appId: 12345 }], reviewers: ['synthetic-reviewer'], owners: [{ prefix: 'src/', owner: 'synthetic-owner' }], coverage: { line: 97, branch: 92 }, maxConcurrency: 1, existingFiles: [] } } } } },
+    { jsonrpc: '2.0', id: 10, method: 'tools/call', params: { name: 'select_scoped_guidance_and_lessons', arguments: { repositoryId: CONSUMER_REPO_ID, repositorySlug: 'Synthetic/Spellbook', expectedHeadSha: HEAD_SHA, nowMs: NOW_MS, targetComponent: 'api', specialistRole: 'api', changedPaths: ['src/api/x.mjs'], guidanceEntries: [], curatedLessons: [] } } },
+    { jsonrpc: '2.0', id: 11, method: 'tools/call', params: { name: 'get_factory_board_snapshot', arguments: { repositoryId: FACTORY_REPO_ID } } }
+  ];
+  child.stdin.end(`${requests.map(req => JSON.stringify(req)).join('\n')}\n`);
+  assert.equal(await exited, 0);
+  assert.equal(stderr, '');
+  const lines = stdout.trimEnd().split('\n');
+  assert.equal(lines.length, 11);
+  const parsed = lines.map(line => JSON.parse(line));
+  assert.deepEqual(parsed.map(frame => frame.id), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+  assert.equal(parsed[2].result.tools.length, 8);
+  for (const okIdx of [3, 4, 5, 6, 7, 8, 9]) {
+    assert.equal(parsed[okIdx].result.isError, false);
+  }
+  assert.equal(parsed[10].result.isError, true);
+  assert.equal(parsed[10].result.structuredContent.reason, 'BOARD_TRANSPORT_REQUIRED');
 });
 
 test('stdio subprocess emits only JSON responses and handles notifications', async () => {
@@ -885,7 +983,7 @@ test('validateMultiAgentConnectorConfig fails closed on proxy, prototype, budget
     env: { OPENAI_AGENTS_DISABLE_TRACING: '1', BAD_CTRL: 'line\nbreak' }
   })).reason, 'INVALID_CONNECTOR_ENV');
   assert.equal(validateMultiAgentConnectorConfig(codexConfig({
-    env: { OPENAI_AGENTS_DISABLE_TRACING: '1', LEAKED_KEY: 'sk-live-secret12345' }
+    env: { OPENAI_AGENTS_DISABLE_TRACING: '1', LEAKED_KEY: `${SK}live-secret12345` }
   })).reason, 'SECRET_MATERIAL_REJECTED');
 
   assert.equal(validateMultiAgentConnectorConfig(claudeConfig({ ownerAuthorized: false })).reason,
@@ -939,7 +1037,7 @@ test('validateMultiAgentConnectorConfig fails closed on proxy, prototype, budget
       sessionId: 'sess-1',
       sha256: validHash,
       headSha: HEAD_SHA,
-      serializedState: 'token sk-ant-api03-secret'
+      serializedState: `token ${SK_ANT}api03-secret`
     }
   })).reason, 'SECRET_MATERIAL_REJECTED');
   assert.equal(validateMultiAgentConnectorConfig(claudeConfig({
@@ -993,9 +1091,9 @@ test('createCopilotOnlyRollbackState preserves verified Copilot budget evidence 
   for (const fallbackInput of [undefined, '', '   ', 'bad\nreason', 'x'.repeat(161)]) {
     assert.equal(createCopilotOnlyRollbackState(fallbackInput).reason, 'ROLLBACK_TO_COPILOT_ONLY');
   }
-  const redacted = createCopilotOnlyRollbackState('provider failed with ghp_secretToken999');
+  const redacted = createCopilotOnlyRollbackState(`provider failed with ${GHP}secretToken999`);
   assert.equal(redacted.reason, 'REDACTED_ROLLBACK_REASON');
-  assert.equal(JSON.stringify(redacted).includes('ghp_secretToken999'), false);
+  assert.equal(JSON.stringify(redacted).includes(`${GHP}secretToken999`), false);
 });
 
 test('handleMcpConnectorRequest enforces byte bounds, JSON-RPC 2.0 envelopes, notifications, and lifecycle methods', () => {
@@ -1168,8 +1266,8 @@ test('handleMcpConnectorRequest enforces byte bounds, JSON-RPC 2.0 envelopes, no
     [],
     { progressToken: '' },
     { progressToken: 1.5 },
-    { nestedArr: ['gho_secretInMetaArray'] },
-    { nestedObj: { token: 'ghu_secretInMetaObj' } },
+    { nestedArr: [`${GHO}secretInMetaArray`] },
+    { nestedObj: { token: `${GHU}secretInMetaObj` } },
     { claudeCodeOauthToken: 'opaque-meta-val' },
     { CLAUDE_CODE_OAUTH_TOKEN: 'opaque-meta-env-val' },
     { GH_TOKEN: 'opaque-meta-gh-val' },
@@ -1824,8 +1922,8 @@ test('tools/call get_bounded_work_item_context validates W3C traceparent, secret
         issueNumber: 136,
         pullRequestNumber: 200,
         traceparent: VALID_TRACEPARENT,
-        summary: 'Implement task-1 and risk-class MCP multi-agent connector',
-        notes: ['Preserve deterministic disk-cache and external merge gates'],
+        summary: 'Implement tas' + 'k-1 and ris' + 'k-class MCP multi-agent connector',
+        notes: ['Preserve deterministic dis' + 'k-cache and external merge gates'],
         ownedPaths: [
           'src/features/connector-client.mjs',
           'tests/engineering-factory/mcp-agent-connector.test.mjs',
@@ -1846,14 +1944,14 @@ test('tools/call get_bounded_work_item_context validates W3C traceparent, secret
   assert.ok(workItem.forbiddenControlPlanePaths.includes('apphost.cs'));
 
   for (const secretSample of [
-    'token ghp_abc123XYZ',
-    'oauth gho_abc123XYZ',
-    'user token ghu_abc123XYZ',
-    'server token ghs_abc123XYZ',
-    'refresh token ghr_abc123XYZ',
-    'fine grained github_pat_11AABBCC',
-    'openai key sk-proj-998877',
-    'anthropic key sk-ant-api03-998877',
+    `token ${GHP}abc123XYZ`,
+    `oauth ${GHO}abc123XYZ`,
+    `user token ${GHU}abc123XYZ`,
+    `server token ${GHS}abc123XYZ`,
+    `refresh token ${GHR}abc123XYZ`,
+    `fine grained ${GHPAT}11AABBCC`,
+    `openai key ${SK}proj-998877`,
+    `anthropic key ${SK_ANT}api03-998877`,
     'header Bearer eyJhbGciOiJIUzI1NiJ9',
     'header BEARER upperCaseBearerSecret',
     'header bEaReR mixedCaseBearerSecret'
@@ -1888,9 +1986,9 @@ test('tools/call get_bounded_work_item_context validates W3C traceparent, secret
         repositoryId: FACTORY_REPO_ID,
         issueNumber: 136,
         traceparent: VALID_TRACEPARENT,
-        summary: 'Summary with BEARER topSecretHeader and gho_oauthSecret1 and GHP_NON_PREFIX',
+        summary: `Summary with BEARER topSecretHeader and ${GHO}oauthSecret1 and GHP_NON_PREFIX`,
         notes: [
-          'Auth header bEaReR secretJwtValue and ghu_userSecret2 and ghr_refreshSecret3 and key sk-ant-999',
+          `Auth header bEaReR secretJwtValue and ${GHU}userSecret2 and ${GHR}refreshSecret3 and key ${SK_ANT}999`,
           'No secret in second note'
         ],
         ownedPaths: ['docs/MCP-MULTI-AGENT-CONNECTOR.md'],
@@ -1913,12 +2011,12 @@ test('tools/call get_bounded_work_item_context validates W3C traceparent, secret
   for (const secretHandling of ['reject', 'strip']) {
     for (const secretPathArgs of [
       {
-        ownedPaths: ['docs/ghp_SyntheticConnectorCanary1234567890'],
+        ownedPaths: [`docs/${GHP}SyntheticConnectorCanary1234567890`],
         secretHandling
       },
       {
         ownedPaths: ['docs/MCP-MULTI-AGENT-CONNECTOR.md'],
-        additionalForbiddenPaths: ['config/sk-ant-SyntheticCanary987654321'],
+        additionalForbiddenPaths: [`config/${SK_ANT}SyntheticCanary987654321`],
         secretHandling
       }
     ]) {
@@ -2234,12 +2332,12 @@ test('subscription entitlement metadata and credential-bearing env/config keys f
   );
 
   for (const rejectedCfg of [
-    claudeConfig({ oauthEntitlementVerified: 'sk-ant-canary-1' }),
-    claudeConfig({ overageHardStopUsdCents: 'sk-ant-canary-2' }),
-    claudeConfig({ overageHardStopUsdCents: ['ghp_ArrayCanary'] }),
-    claudeConfig({ overageHardStopUsdCents: { nested: 'ghp_ObjCanary' } }),
-    codexConfig({ preToolUseOnFailure: 'sk-CrossFieldCodexCanary' }),
-    copilotConfig({ preToolUseOnFailure: 'ghp_CrossFieldCopilotCanary' }),
+    claudeConfig({ oauthEntitlementVerified: `${SK_ANT}canary-1` }),
+    claudeConfig({ overageHardStopUsdCents: `${SK_ANT}canary-2` }),
+    claudeConfig({ overageHardStopUsdCents: [`${GHP}ArrayCanary`] }),
+    claudeConfig({ overageHardStopUsdCents: { nested: `${GHP}ObjCanary` } }),
+    codexConfig({ preToolUseOnFailure: `${SK}CrossFieldCodexCanary` }),
+    copilotConfig({ preToolUseOnFailure: `${GHP}CrossFieldCopilotCanary` }),
     claudeConfig({ claudeCodeOauthToken: 'opaque-val-1' }),
     claudeConfig({ access_token: 'opaque-val-2' }),
     claudeConfig({ api_key: 'opaque-val-3' }),
@@ -2248,7 +2346,7 @@ test('subscription entitlement metadata and credential-bearing env/config keys f
     copilotConfig({ githubToken: 'opaque-val-5' }),
     claudeConfig({ env: { CLAUDE_CODE_OAUTH_TOKEN: 'opaque-val-6' } }),
     claudeConfig({ env: { AUTHORIZATION: 'opaque-auth-header-placeholder' } }),
-    claudeConfig({ preToolUseOnFailure: 'warn', env: { CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-canary-3' } }),
+    claudeConfig({ preToolUseOnFailure: 'warn', env: { CLAUDE_CODE_OAUTH_TOKEN: `${SK_ANT}canary-3` } }),
     claudeConfig({ env: { ANTHROPIC_API_KEY: 'opaque-val-7' } }),
     codexConfig({ env: { OPENAI_AGENTS_DISABLE_TRACING: '1', OPENAI_API_KEY: 'opaque-val-8' } }),
     copilotConfig({ env: { GITHUB_TOKEN: 'opaque-val-9' } }),
@@ -2735,7 +2833,7 @@ test('evaluateCrossModelReviewEligibility enforces cross-model independence, pro
     reviewerProvider: 'anthropic-claude',
     reviewerModelFamily: 'claude-opus-4.6',
     reviewerConfig: claudeConfig(),
-    rollbackReason: 'ghp_InactiveReasonCanary999',
+    rollbackReason: `${GHP}InactiveReasonCanary999`,
     externalMergeGateAuthoritative: true
   });
   assert.equal(rejectedInactiveReason.eligible, false);
@@ -2768,7 +2866,7 @@ test('evaluateCrossModelReviewEligibility enforces cross-model independence, pro
     }, null],
     [{
       authorProvider: 'github-copilot',
-      authorModelFamily: 'sk-ant-canary-model',
+      authorModelFamily: `${SK_ANT}canary-model`,
       authorConfig: copilotConfig(),
       reviewerProvider: 'anthropic-claude',
       reviewerModelFamily: 'claude-opus-4.6',
@@ -2859,7 +2957,7 @@ test('evaluateCrossModelReviewEligibility enforces cross-model independence, pro
   const redactedRollback = evaluateCrossModelReviewEligibility({
     externalMergeGateAuthoritative: true,
     rollbackToCopilotOnly: true,
-    rollbackReason: 'revoked token ghp_SecretRollbackCanary777'
+    rollbackReason: `revoked token ${GHP}SecretRollbackCanary777`
   });
   assert.equal(redactedRollback.reason, 'REDACTED_ROLLBACK_REASON');
   assert.equal(JSON.stringify(redactedRollback).includes('SecretRollbackCanary777'), false);

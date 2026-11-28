@@ -84,6 +84,14 @@ const READ_ONLY_TOOL_ANNOTATIONS = Object.freeze({
   openWorldHint: false
 });
 
+const freezeDeep = value => {
+  if (value !== null && typeof value === 'object' && !Object.isFrozen(value)) {
+    Object.values(value).forEach(freezeDeep);
+    Object.freeze(value);
+  }
+  return value;
+};
+
 export const MCP_CONNECTOR_TOOLS = Object.freeze([
   Object.freeze({
     name: 'get_repo_knowledge_map',
@@ -224,9 +232,9 @@ export const MCP_CONNECTOR_TOOLS = Object.freeze([
     ['get_factory_board_snapshot', 'Read an authorized board using an injected read-only transport.', ['repositoryId'], {
       repositoryId: { type: 'integer', minimum: 1 }, repository: { type: 'string', maxLength: 160 }
     }]
-  ].map(([name, description, required, properties]) => Object.freeze({
+  ].map(([name, description, required, properties]) => freezeDeep({
     name, description,
-    inputSchema: Object.freeze({ type: 'object', additionalProperties: false, required: Object.freeze(required), properties: Object.freeze(properties) }),
+    inputSchema: { type: 'object', additionalProperties: false, required, properties },
     annotations: READ_ONLY_TOOL_ANNOTATIONS
   }))
 ]);
