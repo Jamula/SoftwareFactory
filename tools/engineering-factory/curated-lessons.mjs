@@ -165,7 +165,7 @@ const SECRET_PATTERNS = [
 ];
 
 const PROMPT_INJECTION_OVERRIDE_PATTERN =
-  /\b(?:ignore|disregard|forget|override)\s+(?:(?:all|any|the|these|those|our|your|existing|current)[\s_-]+)*(?:(?:previous|prior|above|system|developer|repository|safety|security)[\s_-]+)+(?:instructions?|prompts?|rules?|constraints?|polic(?:y|ies)|gates?|directives?|guardrails?)\b/gi;
+  /(?:\b|(?<=_))(?:ignore|disregard|forget|override)[\s_-]+(?:(?:all|any|the|these|those|our|your|existing|current)[\s_-]+)*(?:(?:previous|prior|above|system|developer|repository|safety|security)[\s_-]+)+(?:instructions?|prompts?|rules?|constraints?|polic(?:y|ies)|gates?|directives?|guardrails?)(?=\b|_)/gi;
 
 const UNCONDITIONAL_PROMPT_INJECTION_PATTERNS = [
   /(?:<\s*\/?\s*(?:system|developer|assistant|user|tool_call|system_instruction)\s*>|\[\s*(?:SYSTEM|INST|ADMIN_OVERRIDE)\s*\]|\byou\s+are\s+now\s+(?:unrestricted|in\s+developer\s+mode|authorized\s+to\s+bypass)\b)/i,
@@ -173,7 +173,7 @@ const UNCONDITIONAL_PROMPT_INJECTION_PATTERNS = [
 ];
 
 const PRIVATE_CROSS_REPO_PHRASE =
-  /\b(?:private[\s_-]+cross[\s_-]+repo|cross[\s_-]+repo[\s_-]+private|internal[\s_-]+only[\s_-]+repo|customer[\s_-]+private[\s_-]+repo|copied[\s_-]+from[\s_-]+private[\s_-]+repo)\b/i;
+  /(?:\b|(?<=_))(?:private[\s_-]+cross[\s_-]+repo|cross[\s_-]+repo[\s_-]+private|internal[\s_-]+only[\s_-]+repo|customer[\s_-]+private[\s_-]+repo|copied[\s_-]+from[\s_-]+private[\s_-]+repo)(?=\b|_)/i;
 
 const CANONICAL_GITHUB_HTTPS_PATTERN =
   /^(?:https?:\/\/)?github\.com\/([A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+?)(?:\.git)?(?:(?:\/[A-Za-z0-9_./-]*)?(?:#[A-Za-z0-9_.-]*)?)?$/i;
@@ -189,11 +189,13 @@ const VERIFIED_GITHUB_URL_SPAN_PATTERN =
 
 const OUTER_WRAPPER_TRIM_PATTERN =
   /^[`'"([<{*_~“”‘’«»\u2012-\u2015]+|[`'")\]>},;.!?*_~“”‘’«»\u2012-\u2015]+$/g;
+const MARKDOWN_LINK_PATTERN =
+  /(?<![A-Za-z0-9_./:\\-])\[([^\[\]\r\n]+)\]\(([^\s()]+)\)(?!\S*\.\.)(?=(?:[`'")\]>},;.!?*_~“”‘’«»\u2012-\u2015])*(?:$|\s))/g;
 const IDNA_DOT_PATTERN = /[\u3002\uFF0E\uFF61]/g;
 const PERCENT_RUN_PATTERN = /(?:%[0-9a-fA-F]{2})+/g;
 const UTF8_DECODER = new TextDecoder('utf-8', {fatal: false});
 const PREFIX_WRAPPER_PATTERN =
-  /^(?:[A-Za-z0-9_-]+=|#[0-9]+[\u2012-\u2015]+|\[[^\]/:\\.]+\]\()(.+)$/;
+  /^(?:[A-Za-z0-9_-]+=|#[0-9]+[\u2012-\u2015]+)(.+)$/;
 
 const REPO_QUALIFIER_PATTERN =
   /(?:(?<![A-Za-z0-9])repo[:=]|--repo\s+)([A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+)/gi;
@@ -202,8 +204,8 @@ const SHORTHAND_REPO_REF_PATTERN =
   /(?<![A-Za-z0-9])([A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+)#\d+\b/g;
 
 const POLICY_WEAKENING_PATTERNS = [
-  /\b(?:skip|bypass|disable|deactivate|waive|relax|lower|reduce|drop|ignore|override|weaken|circumvent|turn[\s_-]+off|suppress)\s+(?:(?:the|a|an|all|any|our|these|those|required|mandatory|strict|independent|existing|current|enforced|blocking|full|consumer|stricter|automated)[\s_-]+)*(?:coverage(?:[\s_-]+(?:gate|check|floor|threshold)s?)?|lines?[\s_-]+coverage(?:[\s_-]+(?:gate|check|floor|threshold)s?)?|branch(?:es)?[\s_-]+coverage(?:[\s_-]+(?:gate|check|floor|threshold)s?)?|codeql(?:[\s_-]+(?:gate|check|scan)s?)?|security[\s_-]+(?:gate|check|scan|review|guard)s?|independent[\s_-]+reviews?(?:[\s_-]+gates?)?|review[\s_-]+(?:gate|check|requirement)s?|merge[\s_-]+queues?|ci[\s_-]+(?:gate|check)s?|validations?(?:[\s_-]+(?:gate|check)s?)?|ownership[\s_-]+(?:guard|gate|check)s?|budget[\s_-]+(?:gate|check|guard|cap)s?|zero[\s_-]+spend(?:[\s_-]+(?:gate|policy|guard)s?)?)\b/gi,
-  /\b(?:allow|enable|authorize|permit)\s+(?:(?:the|a|an|all|any|optional|temporary|manual|emergency)[\s_-]+)*(?:self[\s_-]+approvals?|self[\s_-]+merges?|unreviewed[\s_-]+merges?|direct[\s_-]+push(?:es)?[\s_-]+to[\s_-]+main|live[\s_-]+dispatch(?:es)?|live[\s_-]+merges?|paid[\s_-]+fallbacks?|unapproved[\s_-]+spend|--no-verify)\b/gi
+  /(?:\b|(?<=_))(?:skip|bypass|disable|deactivate|waive|relax|lower|reduce|drop|ignore|override|weaken|circumvent|turn[\s_-]+off|suppress)[\s_-]+(?:(?:the|a|an|all|any|our|these|those|required|mandatory|strict|independent|existing|current|enforced|blocking|full|consumer|stricter|automated)[\s_-]+)*(?:coverage(?:[\s_-]+(?:gate|check|floor|threshold)s?)?|lines?[\s_-]+coverage(?:[\s_-]+(?:gate|check|floor|threshold)s?)?|branch(?:es)?[\s_-]+coverage(?:[\s_-]+(?:gate|check|floor|threshold)s?)?|codeql(?:[\s_-]+(?:gate|check|scan)s?)?|security[\s_-]+(?:gate|check|scan|review|guard)s?|independent[\s_-]+reviews?(?:[\s_-]+gates?)?|review[\s_-]+(?:gate|check|requirement)s?|merge[\s_-]+queues?|ci[\s_-]+(?:gate|check)s?|validations?(?:[\s_-]+(?:gate|check)s?)?|ownership[\s_-]+(?:guard|gate|check)s?|budget[\s_-]+(?:gate|check|guard|cap)s?|zero[\s_-]+spend(?:[\s_-]+(?:gate|policy|guard)s?)?)(?=\b|_)/gi,
+  /(?:\b|(?<=_))(?:allow|enable|authorize|permit)[\s_-]+(?:(?:the|a|an|all|any|optional|temporary|manual|emergency)[\s_-]+)*(?:self[\s_-]+approvals?|self[\s_-]+merges?|unreviewed[\s_-]+merges?|direct[\s_-]+push(?:es)?[\s_-]+to[\s_-]+main|live[\s_-]+dispatch(?:es)?|live[\s_-]+merges?|paid[\s_-]+fallbacks?|unapproved[\s_-]+spend|--no-verify)(?=\b|_)/gi
 ];
 
 const CARVEOUT_CLAUSE_SOURCE =
@@ -235,17 +237,17 @@ const UPPER_BOUND_OP_PATTERN = /^(?:<=?|(?:under|below|at[\s_-]+most|up[\s_-]+to
 const COVERAGE_PAIR_PATTERN =
   /(?:([<>]=?|\b(?:under|below|at[\s_-]+most|up[\s_-]+to|max|maximum)\b)\s*)?(\d+(?:\.\d+)?)\s*%\s*\/\s*(\d+(?:\.\d+)?)\s*%/gi;
 const LINE_PCT_BEFORE_PATTERN =
-  /(?:([<>]=?|\b(?:under|below|at[\s_-]+most|up[\s_-]+to|max|maximum)\b)\s*)?(\d+(?:\.\d+)?)\s*%\s*(?:(?:minimum|min|source)[\s_-]+)*(?:lines?(?:[\s_-]+coverage)?|overall[\s_-]+coverage)(?:[\s_-]+(?:threshold|floor|gate|target)s?)*\b/gi;
+  /(?:([<>]=?|\b(?:under|below|at[\s_-]+most|up[\s_-]+to|max|maximum)\b)\s*)?(\d+(?:\.\d+)?)\s*%\s*(?:(?:minimum|min|source)[\s_-]+)*(?:lines?(?:[\s_-]+coverage)?|overall[\s_-]+coverage)(?:[\s_-]+(?:threshold|floor|gate|target)s?)*(?=\b|_)/gi;
 const LINE_PCT_AFTER_PATTERN =
-  /\b(?:lines?|overall)[\s_-]+coverage(?:[\s_-]+(?:threshold|floor|gate|target|min|minimum|of|to|is|at))*(?:\s*([<>]=?|==?|:|\b(?:under|below|at[\s_-]+most|up[\s_-]+to|max|maximum)\b))?\s*(\d+(?:\.\d+)?)\s*%/gi;
+  /(?:\b|(?<=_))(?:lines?|overall)[\s_-]+coverage(?:[\s_-]+(?:threshold|floor|gate|target|min|minimum|of|to|is|at))*(?:\s*([<>]=?|==?|:|\b(?:under|below|at[\s_-]+most|up[\s_-]+to|max|maximum)\b))?\s*(\d+(?:\.\d+)?)\s*%/gi;
 const BRANCH_PCT_BEFORE_PATTERN =
-  /(?:([<>]=?|\b(?:under|below|at[\s_-]+most|up[\s_-]+to|max|maximum)\b)\s*)?(\d+(?:\.\d+)?)\s*%\s*(?:(?:minimum|min)[\s_-]+)*branch(?:es)?(?:[\s_-]+coverage)?(?:[\s_-]+(?:threshold|floor|gate|target)s?)*\b/gi;
+  /(?:([<>]=?|\b(?:under|below|at[\s_-]+most|up[\s_-]+to|max|maximum)\b)\s*)?(\d+(?:\.\d+)?)\s*%\s*(?:(?:minimum|min)[\s_-]+)*branch(?:es)?(?:[\s_-]+coverage)?(?:[\s_-]+(?:threshold|floor|gate|target)s?)*(?=\b|_)/gi;
 const BRANCH_PCT_AFTER_PATTERN =
-  /\bbranch(?:es)?[\s_-]+coverage(?:[\s_-]+(?:threshold|floor|gate|target|min|minimum|of|to|is|at))*(?:\s*([<>]=?|==?|:|\b(?:under|below|at[\s_-]+most|up[\s_-]+to|max|maximum)\b))?\s*(\d+(?:\.\d+)?)\s*%/gi;
+  /(?:\b|(?<=_))branch(?:es)?[\s_-]+coverage(?:[\s_-]+(?:threshold|floor|gate|target|min|minimum|of|to|is|at))*(?:\s*([<>]=?|==?|:|\b(?:under|below|at[\s_-]+most|up[\s_-]+to|max|maximum)\b))?\s*(\d+(?:\.\d+)?)\s*%/gi;
 const GENERAL_COVERAGE_BEFORE_PATTERN =
-  /(?:([<>]=?|\b(?:under|below|at[\s_-]+most|up[\s_-]+to|max|maximum)\b)\s*)?(\d+(?:\.\d+)?)\s*%\s*(?:(?:minimum|min)[\s_-]+)*coverage(?:[\s_-]+(?:threshold|floor|gate|target)s?)*\b/gi;
+  /(?:([<>]=?|\b(?:under|below|at[\s_-]+most|up[\s_-]+to|max|maximum)\b)\s*)?(\d+(?:\.\d+)?)\s*%\s*(?:(?:minimum|min)[\s_-]+)*coverage(?:[\s_-]+(?:threshold|floor|gate|target)s?)*(?=\b|_)/gi;
 const GENERAL_COVERAGE_AFTER_PATTERN =
-  /\bcoverage(?:[\s_-]+(?:threshold|floor|gate|target|min|minimum|of|to|is|at))*(?:\s*([<>]=?|==?|:|\b(?:under|below|at[\s_-]+most|up[\s_-]+to|max|maximum)\b))?\s*(\d+(?:\.\d+)?)\s*%/gi;
+  /(?:\b|(?<=_))coverage(?:[\s_-]+(?:threshold|floor|gate|target|min|minimum|of|to|is|at))*(?:\s*([<>]=?|==?|:|\b(?:under|below|at[\s_-]+most|up[\s_-]+to|max|maximum)\b))?\s*(\d+(?:\.\d+)?)\s*%/gi;
 
 function isPlainObject(value) {
   return value !== null && typeof value === 'object' && !types.isProxy(value) &&
@@ -546,7 +548,15 @@ function unwrapOuterCandidate(rawToken) {
 }
 
 function hasDisallowedGithubHostToken(text, expectedSlugLower) {
-  for (const rawPart of text.split(/\s+/)) {
+  for (const linkMatch of text.matchAll(MARKDOWN_LINK_PATTERN)) {
+    const destination = linkMatch[2];
+    if (mentionsGithubAuthority(destination) &&
+        isDisallowedRawOrUnwrappedCandidate(destination, destination, expectedSlugLower)) {
+      return true;
+    }
+  }
+  const remainingText = text.replace(MARKDOWN_LINK_PATTERN, (_, label) => ` ${label} `);
+  for (const rawPart of remainingText.split(/\s+/)) {
     if (rawPart.length === 0) continue;
     const candidate = unwrapOuterCandidate(rawPart);
     if ((mentionsGithubAuthority(rawPart) || mentionsGithubAuthority(candidate)) &&
