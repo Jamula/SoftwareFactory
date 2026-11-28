@@ -1255,6 +1255,9 @@ test('hardens hyphenated/underscored gate names, prefixed foreign GitHub referen
     'See https://github.com/Jamula/SoftwareFactory/..',
     'See https://github.com/Jamula/SoftwareFactory/.',
     'See [PR #14](https://github.com/other/repo/pull/14).',
+    'See [ref](<https://github.com/other/repo/pull/14>).',
+    'See [ref](<https://github.com/Jamula/SoftwareFactory/.>).',
+    'See [ref](https://github.com/Jamula/SoftwareFactory/pull/14 "https://github.com/other/repo").',
     'See [docs.md](https://github.com/Jamula/SoftwareFactory/—/../../../other/repo).',
     'See [https://github.com/other/repo](https://github.com/Jamula/SoftwareFactory/pull/14).',
     'See [PR #14](https://github.com/Jamula/SoftwareFactory/pull/14)..',
@@ -1279,11 +1282,19 @@ test('hardens hyphenated/underscored gate names, prefixed foreign GitHub referen
     assert.equal(lessonRes.reason, 'CROSS_REPO_PRIVATE_DATA_REJECTED');
   }
 
-  // Same-repo counterparts with Markdown multiword/dotted links, prose dashes/quotes, see:, target:repo:, and --repo remain allowed
+  // Same-repo counterparts with Markdown multiword/dotted/angle-bracket/titled links, prose dashes/quotes, see:, target:repo:, and --repo remain allowed
   assert.equal(
     selectScopedGuidanceAndLessons(makeSelectionInput({
       curatedLessons: [makeLesson({
-        guidanceText: 'Track [PR #14](https://github.com/Jamula/SoftwareFactory/pull/14), [docs.md](https://github.com/Jamula/SoftwareFactory/blob/main/docs/ROADMAP.md), #14—https://github.com/Jamula/SoftwareFactory/issues/14, “https://github.com/Jamula/SoftwareFactory/pull/161”, see:Jamula/SoftwareFactory#14, target:repo:Jamula/SoftwareFactory, and --repo Jamula/SoftwareFactory.'
+        guidanceText: 'Track [plain](https://github.com/Jamula/SoftwareFactory/issues/14), [PR #14](https://github.com/Jamula/SoftwareFactory/pull/14 "PR title"), [docs.md](<https://github.com/Jamula/SoftwareFactory/pull/14#1> \'Anchor\'), [guide](https://github.com/Jamula/SoftwareFactory/blob/main/docs/ROADMAP.md (Roadmap)), #14—https://github.com/Jamula/SoftwareFactory/issues/14, and see:Jamula/SoftwareFactory#14.'
+      })]
+    })).valid,
+    true
+  );
+  assert.equal(
+    selectScopedGuidanceAndLessons(makeSelectionInput({
+      curatedLessons: [makeLesson({
+        guidanceText: 'Reference “https://github.com/Jamula/SoftwareFactory/pull/161”, target:repo:Jamula/SoftwareFactory, and --repo Jamula/SoftwareFactory.'
       })]
     })).valid,
     true

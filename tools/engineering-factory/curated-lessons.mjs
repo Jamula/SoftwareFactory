@@ -190,7 +190,7 @@ const VERIFIED_GITHUB_URL_SPAN_PATTERN =
 const OUTER_WRAPPER_TRIM_PATTERN =
   /^[`'"([<{*_~“”‘’«»\u2012-\u2015]+|[`'")\]>},;.!?*_~“”‘’«»\u2012-\u2015]+$/g;
 const MARKDOWN_LINK_PATTERN =
-  /(?<![A-Za-z0-9_./:\\-])\[([^\[\]\r\n]+)\]\(([^\s()]+)\)(?!\S*\.\.)(?=(?:[`'")\]>},;.!?*_~“”‘’«»\u2012-\u2015])*(?:$|\s))/g;
+  /(?<![A-Za-z0-9_./:\\-])\[([^\[\]\r\n]+)\]\(\s*(<[^<>\s]+>|[^\s()]+)(?:\s+(?:"([^"\r\n]*)"|'([^'\r\n]*)'|\(([^()\r\n]*)\)))?\s*\)(?!\S*\.\.)(?=(?:[`'")\]>},;.!?*_~“”‘’«»\u2012-\u2015])*(?:$|\s))/g;
 const IDNA_DOT_PATTERN = /[\u3002\uFF0E\uFF61]/g;
 const PERCENT_RUN_PATTERN = /(?:%[0-9a-fA-F]{2})+/g;
 const UTF8_DECODER = new TextDecoder('utf-8', {fatal: false});
@@ -549,13 +549,20 @@ function unwrapOuterCandidate(rawToken) {
 
 function hasDisallowedGithubHostToken(text, expectedSlugLower) {
   for (const linkMatch of text.matchAll(MARKDOWN_LINK_PATTERN)) {
-    const destination = linkMatch[2];
-    if (mentionsGithubAuthority(destination) &&
-        isDisallowedRawOrUnwrappedCandidate(destination, destination, expectedSlugLower)) {
+    const rawDestination = linkMatch[2];
+    const unwrappedDestination = rawDestination.startsWith('<') && rawDestination.endsWith('>')
+      ? rawDestination.slice(1, -1)
+      : rawDestination;
+    if ((mentionsGithubAuthority(rawDestination) || mentionsGithubAuthority(unwrappedDestination)) &&
+        isDisallowedRawOrUnwrappedCandidate(rawDestination, unwrappedDestination, expectedSlugLower)) {
       return true;
     }
   }
-  const remainingText = text.replace(MARKDOWN_LINK_PATTERN, (_, label) => ` ${label} `);
+  const remainingText = text.replace(
+    MARKDOWN_LINK_PATTERN,
+    (_, label, _dest, dqTitle, sqTitle, parenTitle) =>
+      ` ${label} ${dqTitle ?? sqTitle ?? parenTitle ?? ''} `
+  );
   for (const rawPart of remainingText.split(/\s+/)) {
     if (rawPart.length === 0) continue;
     const candidate = unwrapOuterCandidate(rawPart);
