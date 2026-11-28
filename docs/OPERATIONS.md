@@ -70,7 +70,7 @@ sequenceDiagram
 
   W1->>WQ: Acquire lease gen=7 (issue #42, TTL=3600s)
   Note over W1: Runner lost / timed out without terminal release
-  Rec->>WQ: Read current ref OID + reconcileExpiredLeases(nowMs > expiresAtMs)
+  Rec->>WQ: reconcileWorkQueueRunStates({refStore, observedRuns, nowMs})
   WQ-->>Rec: Non-force CAS advances to gen=8 (gen=7 fenced & expired)
   W1--xWQ: Late write with stale gen=7 rejected (CAS_GENERATION_MISMATCH)
   Rec->>W2: Re-admit issue #42 cleanly under gen=8 (0 duplicate active leases)
@@ -85,22 +85,26 @@ sequenceDiagram
 
 ### 3. Unified `run.mjs` CLI and Kaizen telemetry data flow diagram
 
+`run.mjs --receipt` serializes a sanitized JSON execution receipt to `stdout` only—its default `observe` adapter is a no-op and `run.mjs` constructs no OTLP SDK or exporter. Loopback OTLP export occurs only when an explicit local/AppHost bootstrap (`local-otel-sdk.mjs` + `telemetry.mjs` `createSignals`) injects an `observe` callback around the runner.
+
 ```mermaid
 flowchart LR
-  IN["FACTORY_INPUT_JSON (<=262KB)<br/>or Bounded Public REST Metadata"] --> CLI["tools/engineering-factory/run.mjs"]
+  IN["FACTORY_INPUT_JSON (<=262KB)<br/>or Bounded Public REST Metadata"] --> CLI["tools/engineering-factory/run.mjs<br/>(Default observe: no-op)"]
   CLI --> M1["--smoke / --inventory"]
   CLI --> M2["--reconcile-pull / --reconcile-issue / --reconcile-event"]
   CLI --> M3["--plan-lanes / --evaluate-squash"]
   CLI --> M4["--verify-admission / --verify-m01-readiness"]
-  M1 & M2 & M3 & M4 --> REC["telemetry.mjs (--receipt)<br/>Low-Cardinality Stage Receipt"]
-  REC --> OTLP["Loopback OTLP<br/>(Aspire 17.0.0 Dashboard)"]
+  M1 & M2 & M3 & M4 --> REC["createExecutionReceipt (--receipt)<br/>Sanitized JSON Receipt on stdout"]
+  CLI -. "Optional Explicit Bootstrap Injection<br/>(local-otel-sdk.mjs + createSignals)" .-> OTLP["Loopback OTLP<br/>(Aspire 17.0.0 Dashboard)"]
   REC --> KAIZEN["ai-credit-scorecard.mjs (#18) +<br/>optimistic-improver.mjs (#137)<br/>(>=5-Outcome Cohort & Auto-Revert Spec)"]
 ```
+
+## Incident response and troubleshooting
 
 | Symptom / reason code | Operational response |
 | --- | --- |
 | `.lock.yml` hash or trigger drift (`gh-aw-lock-verifier.mjs`) | Do **not** hand-edit `.github/workflows/factory-orchestrator.md` or `.lock.yml` independently; recompile with pinned `gh aw compile` (`v1.2.2`) in a dedicated workflow lane with human owner review |
-| `refs/heads/work-queue` CAS conflict or expired lease (`work-queue-cas.mjs`) | Allow bounded CAS re-read/reconciliation (`reconcileExpiredLeases`) to fence the stale generation; never force-push `refs/heads/work-queue` |
+| `refs/heads/work-queue` CAS conflict or expired lease (`work-queue-cas.mjs`) | Run bounded CAS reconciliation via `reconcileWorkQueueRunStates({refStore, observedRuns, nowMs})` to fence stale generations; never force-push `refs/heads/work-queue` |
 | Anti-rogue circuit breaker tripped (`anti-rogue-audit.mjs`) | Triggered outside the agent loop on protected control-plane edits (`.github/workflows/`, `*.lock.yml`, rulesets, policy, gate evaluators, kill switches), out-of-lane edits, retry-cap breaches, AI-credit burn spikes, `safe-outputs` threat flags, or post-merge `main` failures; keep `killSwitch: true` / `FACTORY_GHAW_ENABLED != 'true'` until human root-cause sign-off |
 | Missing/estimated quota or overage risk (`BUDGET_UNKNOWN` / `PAID_OVERAGE_ALLOWED`) | Block dispatch immediately; re-verify GitHub Billing `$0` overage hard-stops across all 3 meters (`#105`) before resuming |
 | Post-merge `main` check or CodeQL failure (`main-health-audit.mjs`) | Halt subsequent Merge Queue wave dispatch (`HALTED_ON_POST_MERGE_MAIN_FAILURE`), remediate via reviewed PR through Squash Merge Queue, and record `mainRecoveryVerified: true` before unblocking dependents |

@@ -42,7 +42,7 @@ Complete index of all shipped guides under `docs/`, organized by domain. See als
 | [Coordinator event journal](COORDINATOR-EVENT-JOURNAL.md) | Engineers | Bounded 10,000-entry deduplicated local SQLite reconciliation journal (`event-journal.mjs`) |
 | [Coordinator review provider](COORDINATOR-REVIEW-PROVIDER.md) | Engineers | Atomic `repo:pr:head` Copilot review-request intent store and capacity-gated shadow review provider |
 | [Durable local shadow host](LOCAL-SHADOW-HOST.md) | Developers | Local SQLite-fenced shadow tick harness (`local-shadow-host.mjs`) for offline testing |
-| [SoftwareFactory live board Canvas](FACTORY-BOARD-CANVAS.md) | Developers / operators | `#135` read-only `.github/extensions/factory-board` live lane, queue, and telemetry board |
+| [SoftwareFactory live board Canvas](FACTORY-BOARD-CANVAS.md) | Developers / operators | `#135` read-only `.github/extensions/factory-board` live milestones, issue activity, PR checks/reviews, and merge-queue status board |
 | [MCP server and multi-agent isolation connector](MCP-MULTI-AGENT-CONNECTOR.md) | Engineers | `#136` (`M02.06 P2` deferred) read-only MCP tool boundary and external-gate isolation for Codex/Claude connectors |
 
 ## 4. Observability, Aspire `17.0.0`, CI acceleration, and Kaizen (`M01.02` / `M02`)

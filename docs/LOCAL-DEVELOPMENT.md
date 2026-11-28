@@ -55,18 +55,20 @@ Use low-cardinality allowlists for metric labels; never attach raw repository/is
 
 ### Hosted Linux & Windows OTLP verification sequence diagram (`#17`, `#118`)
 
+> **Resource scope note:** Both hosted Aspire workflows (`validate.yml` and `windows-aspire.yml`) explicitly start and verify dashboard/SQLite telemetry reception for the Node **`synthetic-shadow`** resource; `maf-specialist-shadow` (`.NET 10.0.404` + MAF `1.28.0` GA) is registered with `WithExplicitStart()` and remains stopped during those hosted dashboard jobs (its headless smoke/benchmark runs in `dotnet-agents.yml`, and hosted dashboard telemetry verification for `maf-specialist-shadow` remains outstanding).
+
 ```mermaid
 sequenceDiagram
   autonumber
   participant CI as GitHub-Hosted Runner (Linux / Windows)
   participant TLS as Ephemeral PEM CA (NODE_EXTRA_CA_CERTS)
   participant Host as Aspire 17.0.0 AppHost (apphost.cs)
-  participant App as synthetic-shadow (Node 26) + maf-specialist-shadow (.NET 10)
+  participant App as synthetic-shadow (Node 26; maf-specialist-shadow stopped)
   participant Ver as Node-Only Dashboard & SQLite Verifiers
 
   CI->>TLS: Generate scoped loopback certificate (never touch OS root store on Windows)
   CI->>Host: Launch apphost.cs (ASPIRE_ALLOW_UNSECURED_TRANSPORT=false, login required)
-  CI->>App: Explicit start -> emit span, counter, histogram, correlated log -> clean 3s drain
+  CI->>App: Explicit start synthetic-shadow -> emit span, counter, histogram, correlated log -> clean 3s drain
   App-->>CI: Emit STOPPED + LOCAL_SDK_SHUTDOWN_COMPLETE
   alt Linux Runner
     CI->>Ver: verify-dashboard-export.mjs (ZIP traceId/spanId correlation)
@@ -91,7 +93,7 @@ flowchart LR
 ## Verification checklist
 
 - Headless Node (`70` `.mjs` components) and `.NET 10` (`SoftwareFactory.Agents`) suites pass independently at `>=98%` lines and `>=95%` branches, preserving stricter consumer gates (`M03` `Jamula/Spellbook` `>=97%/90%` → `M04` `Jamula/FamilyTree` `>=95%/90%` → `M05` `FamilyHub` migration-freeze + strict `trunk`).
-- Hosted Linux (`validate.yml`) and Windows (`windows-aspire.yml`) runners launch `apphost.cs`, verify `STOPPED` + `LOCAL_SDK_SHUTDOWN_COMPLETE`, validate trace/log correlation plus SQLite metric persistence, and shut down cleanly ([#17](https://github.com/Jamula/SoftwareFactory/issues/17), [#118](https://github.com/Jamula/SoftwareFactory/issues/118)); optional developer workstation preflight is tracked separately in [#66](https://github.com/Jamula/SoftwareFactory/issues/66) ([workstation compatibility](WORKSTATION-COMPATIBILITY.md)).
+- Hosted Linux (`validate.yml`) and Windows (`windows-aspire.yml`) runners launch `apphost.cs`, explicitly start the Node `synthetic-shadow` resource, verify `STOPPED` + `LOCAL_SDK_SHUTDOWN_COMPLETE`, validate trace/log correlation plus SQLite metric persistence, and shut down cleanly ([#17](https://github.com/Jamula/SoftwareFactory/issues/17), [#118](https://github.com/Jamula/SoftwareFactory/issues/118)); hosted dashboard telemetry verification for the `.NET` `maf-specialist-shadow` resource remains outstanding, and optional developer workstation preflight is tracked separately in [#66](https://github.com/Jamula/SoftwareFactory/issues/66) ([workstation compatibility](WORKSTATION-COMPATIBILITY.md)).
 - Consumer adoption remains independently SHA-pinned and opt-in (`#13`), requiring no framework rewrite or shared credentials. See [Aspire consumer reference](ASPIRE-CONSUMER-REFERENCE.md).
 
 Official references: [Aspire existing app integration](https://aspire.dev/get-started/add-aspire-existing-app/), [JavaScript AppHost integration](https://aspire.dev/integrations/frameworks/javascript/), [Aspire telemetry](https://aspire.dev/fundamentals/telemetry/), [OpenTelemetry JavaScript](https://opentelemetry.io/docs/languages/js/).

@@ -8,8 +8,8 @@ Thank you for helping build a reusable, deterministic, fail-closed engineering f
 2. **Isolate file ownership per lane**: Work in an isolated branch/worktree owning a disjoint path set. Never overlap files owned by an active sibling PR or touch SHA-256 hash-locked workflows (`.github/workflows/factory-orchestrator.md` ↔ `.lock.yml`) outside a dedicated workflow lane.
 3. **Keep fixtures synthetic and least-privileged**: Use synthetic repository identities, check producers, and disabled policies (`mode: "disabled"`, `killSwitch: true`). Never include private consumer data, real tokens, or live provider calls.
 4. **Validate locally before pushing**: Run the exact pinned Node.js `26.13.1` and `.NET SDK 10.0.404` suites below, verify `>=98%` line and `>=95%` branch coverage per executable component and overall, and delete temporary local coverage files (`rm -rf .local coverage-evidence.json cobertura-coverage.xml`) before committing.
-5. **Open ready-for-review PRs cleanly**: `Default-Branch-Ruleset` (`28054442`) sets `review_on_push: false` and `review_draft_pull_requests: false` so Copilot reviews once when a PR is ready for review. Batch local fixes before pushing, link the tracking issue (use non-closing `Relates to #N` linkage for partial increments so parent acceptance issues stay open until all exit criteria are proven), and resolve every inline and summary-only review finding on the exact candidate head.
-6. **Integrate exclusively through Squash Merge Queue**: Merge to `main` only via GitHub's Native Squash Merge Queue (`enqueuePullRequest` with `ALLGREEN` grouping) after all required status checks (`build-test`, `upload-coverage-javascript`, `windows-aspire-runtime`), `CodeQL`, `minimum_coverage >= 98`, and review-thread resolution pass with `$0` unapproved spend.
+5. **Open ready-for-review PRs cleanly and re-review final heads**: `Default-Branch-Ruleset` (`28054442`) sets `review_on_push: false` and `review_draft_pull_requests: false` so Copilot does not auto-re-review every push. Batch local fixes before pushing, link the tracking issue (use non-closing `Relates to #N` linkage for partial increments so parent acceptance issues stay open until all exit criteria are proven), resolve every inline and summary-only review finding, and **whenever a repair commit changes `HEAD`, explicitly re-request and wait for a clear independent review on the final pushed `HEAD` SHA** (`core.mjs` rejects stale reviews from earlier commits).
+6. **Integrate exclusively through Squash Merge Queue**: Merge to `main` only via GitHub's Native Squash Merge Queue (`enqueuePullRequest` with `ALLGREEN` grouping) after all required status checks (`build-test`, `upload-coverage-javascript`, `windows-aspire-runtime`), `CodeQL`, `minimum_coverage >= 98`, review-thread resolution, and a clear exact-head independent review pass with `$0` unapproved spend.
 
 ### Contributor PR-to-Merge-Queue sequence diagram
 
@@ -26,11 +26,16 @@ sequenceDiagram
   Dev->>Local: npm ci --ignore-scripts && npm run test:coverage (>=98%/95%)
   Dev->>Local: dotnet test --configuration Release -p:CollectCoverage=true (>=98%/95%)
   Dev->>Local: node tools/engineering-factory/run.mjs --smoke && rm -rf coverage artifacts
-  Dev->>PR: Push clean branch & open ready-for-review PR (non-closing if partial)
-  PR->>CI: Trigger Linux/Windows checks + single Copilot review (review_on_push: false)
-  CI-->>Dev: Review comments & check statuses on exact HEAD SHA
-  Dev->>PR: Batch fixes in 1 consolidated push & resolve all review threads
-  Dev->>MQ: enqueuePullRequest(expectedHeadOid) once 0 unresolved threads & green checks
+  Dev->>PR: Push HEAD_1 & open ready-for-review PR (non-closing if partial)
+  PR->>CI: Trigger Linux/Windows checks + initial Copilot review (review_on_push: false)
+  CI-->>Dev: Review comments & check statuses on HEAD_1
+  opt If review findings require code/doc changes (HEAD_2)
+    Dev->>PR: Batch all fixes into 1 consolidated push (HEAD_2) & resolve HEAD_1 threads
+    Dev->>PR: Explicitly re-request independent review on final HEAD_2 (review_on_push: false)
+    PR->>CI: Re-run exact-head checks + await clear review on final HEAD_2
+    CI-->>Dev: Final HEAD_2 checks green & final HEAD_2 review clear
+  end
+  Dev->>MQ: enqueuePullRequest(expectedHeadOid: final HEAD) once 0 unresolved threads & green checks
   MQ->>CI: Re-verify merge_group (checks_requested)
   CI-->>MQ: ALLGREEN
   MQ->>PR: Atomic squash merge into protected main

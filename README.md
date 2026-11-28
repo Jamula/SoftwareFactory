@@ -48,13 +48,13 @@ flowchart TB
   ISS --> GHAW --> SAFE --> PLAN
   PLAN <--> CAS
   PLAN --> ADMIT --> CA
-  CA <--> MAF
+  CA -. "Target M02 Inner Specialist Handoff" .-> MAF
   CA --> CI --> EVAL --> MQ
   MQ --> AUDIT --> OBS
   EVAL -. "Immutable 40-Hex SHA Pin" .-> M03 --> M04 --> M05
 ```
 
-### 2. Sequence diagram (unattended issue-to-Squash-Merge-Queue loop)
+### 2. Target sequence diagram (unattended issue-to-Squash-Merge-Queue loop; Node-to-MAF handoff is target M02 integration)
 
 ```mermaid
 sequenceDiagram
@@ -63,7 +63,7 @@ sequenceDiagram
   participant AW as gh-aw Outer Orchestrator (.lock.yml)
   participant WQ as refs/heads/work-queue (Git-Ref CAS)
   participant AD as Admission & Anti-Rogue Moat (Node 26)
-  participant WK as @copilot + .NET 10 MAF 1.28.0 Worker
+  participant WK as Native @copilot Worker (Target: + .NET 10 MAF Inner Loop)
   participant CI as Exact-Head CI + Independent Review
   participant MQ as Native Squash Merge Queue (ALLGREEN)
 
@@ -71,8 +71,8 @@ sequenceDiagram
   AW->>AD: Verify .lock.yml SHA-256 + $0 billing hard-stops (#105)
   AD->>WQ: Non-force CAS claim (disjoint ownedPaths + TTL <= 3600s)
   WQ-->>AD: Fenced lease generation granted
-  AD->>WK: Dispatch bounded lane with W3C traceparent
-  WK->>WK: Pregel supersteps (Planner -> Coder -> FanOut Test/Security -> Checkpoint)
+  AD->>WK: Dispatch bounded @copilot lane with W3C traceparent
+  Note over WK: Target M02 inner integration: .NET 10 MAF Pregel supersteps + SHA-256 checkpoints (currently standalone synthetic CLI/AppHost)
   WK->>CI: Open ready-for-review PR (review_on_push: false)
   CI-->>AD: >=98%/95% coverage + CodeQL + exact-head review clear
   AD->>MQ: enqueuePullRequest(expectedHeadOid, jump: false)

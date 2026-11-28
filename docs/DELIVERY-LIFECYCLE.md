@@ -8,7 +8,7 @@ SoftwareFactory's delivery loop is event-driven, dependency-aware, and **orchest
 | --- | --- | --- |
 | **1. Discover** | Outer `github/gh-aw` (`v1.2.2+`) `.lock.yml` (`gh-aw-lock-verifier.mjs`) + `run.mjs --inventory` / `--reconcile-event` (`contents: read`, `safe-outputs` `staged: true`) | Verified trusted default-branch provenance, SHA-256 `.lock.yml` parity, stable `repositoryId`, and sanitized issue/PR metadata |
 | **2. Ready & Admit** | `planner.mjs` non-overlapping file-set/lane scheduler + `work-queue-cas.mjs` non-force git-ref CAS on `refs/heads/work-queue` + `cloud-agent-admission.mjs` / `billing-hardstop-smoke.mjs` (`#6`, `#7`, `#105`) | Acyclic dependencies clear, disjoint path lease fenced with bounded TTL (`<= 3,600,000 ms`), verified non-estimated quota, and `$0` overage hard-stops across AI Credits, Copilot Premium Requests, and Cloud Sandboxes/Actions |
-| **3. Specialist Execution** | Native GitHub Copilot Cloud Agent (`copilot-swe-agent[bot]`) / Cloud Automations (private/internal repos) + `.NET 10.0.404` Microsoft Agent Framework `1.28.0` GA Pregel superstep workflow (`src/SoftwareFactory.Agents/`, `curated-lessons.mjs`, `#14`, `#16`) | Scoped context loaded without private cross-repo data, SHA-256 JSON checkpoint integrity (`priorSuperstepsRepeated: 0`), zero protected control-plane or out-of-lane edits (`PathOwnershipGuard`), and Mission Control `taskId`/`sessionId` recorded |
+| **3. Specialist Execution** | Native GitHub Copilot Cloud Agent (`copilot-swe-agent[bot]`) / Cloud Automations (private/internal repos); **target `M02` inner integration**: `.NET 10.0.404` Microsoft Agent Framework `1.28.0` GA Pregel superstep workflow (`src/SoftwareFactory.Agents/`, currently standalone synthetic CLI/AppHost, `#14`, `#16`) + `curated-lessons.mjs` | Mission Control `taskId`/`sessionId` recorded and zero protected control-plane or out-of-lane edits; under target `M02` inner handoff, scoped context loaded without private cross-repo data and SHA-256 JSON checkpoint integrity (`priorSuperstepsRepeated: 0`) |
 | **4. Validate & Review** | Exact-head CI (`validate.yml` Node `26.13.1`, `dotnet-agents.yml` `.NET 10.0.404`, `windows-aspire.yml` Aspire `17.0.0`, `CodeQL`) + `Default-Branch-Ruleset` `28054442` (`review_on_push: false`) + `review-history.mjs` (`#4`, `#15`, `#17`, `#118`) | `>=98%` line / `>=95%` branch coverage per executable component and overall (or stricter consumer gates), zero `CodeQL`/secret alerts, exact-head independent review (`summaryDisposition: "clear"`), and zero unresolved inline or summary findings |
 | **5. Eligible** | `core.mjs`, `coverage-evidence.mjs` (`verifyCandidateGateReceipt`), `protected-squash.mjs`, and `anti-rogue-audit.mjs` (`run.mjs --evaluate-squash`) | Fresh authoritative head/base match, unbroken pre-merge W3C `traceparent` links, and zero tripped circuit breakers (shadow decision only—never self-merge authority) |
 | **6. Squash Merge Queue** | **GitHub Native Squash Merge Queue** (`Default-Branch-Ruleset` `28054442`, `grouping_strategy: "ALLGREEN"`, GraphQL `enqueuePullRequest` with `expectedHeadOid` and `jump: false`; `gh-aw` never merges directly) | Independent `merge_group` (`checks_requested`) green across required Linux/Windows checks and atomic squash commit on `main` |
@@ -30,7 +30,7 @@ stateDiagram-v2
   Admitted --> Leased: Non-force Git-Ref CAS claim on refs/heads/work-queue (disjoint ownedPaths)
   Admitted --> Blocked: CAS contention or lane already reserved
 
-  Leased --> Implementing: Dispatch @copilot / .NET 10 MAF 1.28.0 specialist workflow
+  Leased --> Implementing: Dispatch native @copilot worker (Target M02: + .NET 10 MAF inner workflow)
   Implementing --> Validating: Ready-for-review PR opened on exact HEAD SHA
   Implementing --> KillSwitchTripped: Protected control-plane or out-of-lane path touched
 
@@ -39,7 +39,7 @@ stateDiagram-v2
   Validating --> Blocked: Fork PR, failing required check, or repair cap exhausted
 
   Reviewing --> Eligible: Exact-head independent review clear (0 inline or summary findings)
-  Reviewing --> Implementing: Consolidated review-repair push on new HEAD SHA
+  Reviewing --> Implementing: Consolidated review-repair push + explicit final-head re-review request
   Reviewing --> Blocked: Stale/dismissed/CHANGES_REQUESTED review
 
   Eligible --> MergeQueued: enqueuePullRequest(expectedHeadOid, jump: false)
@@ -56,7 +56,7 @@ stateDiagram-v2
 ```mermaid
 sequenceDiagram
   autonumber
-  participant Worker as @copilot / .NET 10 MAF Lane
+  participant Worker as Native @copilot Lane (Target: + .NET 10 MAF)
   participant PR as Candidate PR
   participant Checks as validate.yml + dotnet-agents.yml + windows-aspire.yml + CodeQL
   participant Rev as Independent Reviewer (Ruleset 28054442)
@@ -65,16 +65,19 @@ sequenceDiagram
   participant Main as Protected refs/heads/main
 
   Worker->>PR: Push candidate HEAD_1 & mark ready for review
-  par Parallel Automated Checks & Single Review Trigger
+  par Parallel Automated Checks & Initial Review Trigger
     PR->>Checks: Run exact-head Linux/Windows 98%/95% + CodeQL
-    PR->>Rev: Trigger review once (review_on_push: false)
+    PR->>Rev: Trigger initial review (review_on_push: false)
   end
   Rev-->>PR: Inline comment or summary finding on HEAD_1
   Gate->>PR: Block eligibility (REVIEW_MISSING / unresolved thread)
-  Worker->>PR: Batch all fixes into HEAD_2 + reply & resolve review threads
-  PR->>Checks: Re-run exact-head checks on HEAD_2
+  Worker->>PR: Batch all fixes into HEAD_2 + reply & resolve HEAD_1 review threads
+  Worker->>Rev: Explicitly request fresh review on HEAD_2 (review_on_push: false)
+  par Re-Verify Final HEAD_2 Checks & Final HEAD_2 Review
+    PR->>Checks: Re-run exact-head checks on HEAD_2
+    Rev-->>Gate: Submit clear review on exact HEAD_2 (summaryDisposition: clear)
+  end
   Checks-->>Gate: All checks green + coverage >=98%/95% on HEAD_2
-  Rev-->>Gate: Exact-head HEAD_2 review clear (summaryDisposition: clear)
   Gate->>MQ: enqueuePullRequest(expectedHeadOid: HEAD_2, jump: false)
   MQ->>Checks: Trigger merge_group (checks_requested)
   Checks-->>MQ: ALLGREEN
@@ -82,14 +85,14 @@ sequenceDiagram
   Main->>Gate: Verify main-health-audit.mjs + emit 9-link W3C traceparent receipt
 ```
 
-### 3. Stage-gate evidence data flow diagram
+### 3. Stage-gate evidence data flow diagram (including target `M02` inner handoff)
 
 ```mermaid
 flowchart TD
   RAW["GitHub REST / Event Payloads"] --> STRIP["event-envelope.mjs + issue-event.mjs + pull-signals.mjs<br/>(Discard Untrusted Prose, Verify Repo ID & Head SHA)"]
   STRIP --> PLAN_DF["planner.mjs + work-queue-cas.mjs<br/>(Disjoint Path Lease + TTL <= 3600s)"]
   PLAN_DF --> ADMIT_DF["billing-hardstop-smoke.mjs + cloud-agent-admission.mjs<br/>(Verified Included Quota, $0 Overage Hard-Stops)"]
-  ADMIT_DF --> EXEC_DF["curated-lessons.mjs + SpecialistWorkflowEngine<br/>(Scoped Context + SHA-256 Checkpoints)"]
+  ADMIT_DF --> EXEC_DF["Native @copilot Worker Execution<br/>(Target M02 Inner Handoff: curated-lessons.mjs + SpecialistWorkflowEngine)"]
   EXEC_DF --> GATE_DF["coverage-evidence.mjs + review-history.mjs + protected-squash.mjs<br/>(Exact-Head 98%/95% + Summary Review + Ruleset Parity)"]
   GATE_DF --> AUDIT_DF["anti-rogue-audit.mjs + main-health-audit.mjs<br/>(9-Link W3C traceparent Receipt)"]
   AUDIT_DF --> KAIZEN_DF["ai-credit-scorecard.mjs (#18) + optimistic-improver.mjs (#137)<br/>(>=5-Outcome Matched Cohort Readout & Auto-Revert Guard)"]

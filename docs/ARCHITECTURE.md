@@ -6,7 +6,7 @@ SoftwareFactory ships two deterministic, fail-closed, 98%/95%-gated runtime surf
 
 1. **Node.js `26.13.1` ESM control plane (`70` `.mjs` modules across `tools/engineering-factory/` and `tools/engineering-coordinator/`)**: Enforces `>=98%` source line and `>=95%` branch coverage per `.mjs` component and overall via `tests/engineering-factory/coverage-reporter.mjs`.
 2. **`.NET 10.0.404` + Microsoft Agent Framework `1.28.0` GA inner specialist engine (`src/SoftwareFactory.Agents/`)**: Supersedes the earlier optional Rust execution-engine experiment and retired July 2026 GitHub Models (`Microsoft.Agents.AI`, `Microsoft.Agents.AI.Workflows`, `Microsoft.Agents.AI.GitHub.Copilot`), enforcing `>=98%` line and `>=95%` branch coverage via Coverlet across `18` xUnit tests (`tests/SoftwareFactory.Agents.Tests/`).
-3. **Read-only live Canvas extension (`.github/extensions/factory-board/`, `#135`)**: Renders lane ownership, CAS queue leases, Merge Queue train state, and sanitized telemetry without write credentials.
+3. **Read-only live Canvas extension (`.github/extensions/factory-board/`, `#135`)**: Renders live milestones, open/closed issue activity, open/merged PR checks and review decisions, and merge-queue position/status without write credentials (it does not display lane ownership, CAS leases, or OTLP telemetry).
 
 Every evaluator, inner workflow, and shadow adapter is deterministic, fail-closed, and non-mutating (`shadow: true`, `liveMerge: false` / `liveDispatch: false`, `$0` unapproved spend).
 
@@ -28,9 +28,9 @@ flowchart TB
     CLI["run.mjs Unified CLI (9 stage flags + --receipt, <=262KB plain-JSON guard)"]
   end
 
-  subgraph L3["Layer 3: Inner Specialist Engine & Cloud Workers (M01 & M02)"]
+  subgraph L3["Layer 3: Native Cloud Workers (M01) & Standalone .NET 10 MAF Engine (M02)"]
     CLOUD["Native Workers: copilot-swe-agent[bot] (Public/Private) & Cloud Automations (Private/Internal)"]
-    DOTNET["src/SoftwareFactory.Agents/ (.NET 10.0.404 + MAF 1.28.0 GA)"]
+    DOTNET["src/SoftwareFactory.Agents/ (.NET 10.0.404 + MAF 1.28.0 GA; standalone synthetic CLI/AppHost today)"]
     CP["IntegrityVerifiedJsonCheckpointStore (SHA-256 JSON Digests, priorSuperstepsRepeated: 0)"]
     MEM["curated-lessons.mjs (Provenance-Bound Scoped Context Selector)"]
   end
@@ -38,7 +38,7 @@ flowchart TB
   subgraph L4["Layer 4: Protected Integration, Observability & Consumers (M01-M05)"]
     RULES["Default-Branch-Ruleset 28054442 + Org Ruleset 16162572 + Squash Merge Queue (ALLGREEN)"]
     ASPIRE["apphost.cs (Aspire 17.0.0 Loopback OTLP + Run-Mode SQLite Metrics)"]
-    BOARD[".github/extensions/factory-board (Read-Only Live Canvas #135)"]
+    BOARD[".github/extensions/factory-board (Read-Only Milestones, Issues, PRs & Merge Queue #135)"]
     CONS["Consumer Onboarding (#13): M03 Spellbook (#11) -> M04 FamilyTree (#36) -> M05 FamilyHub (#12)"]
   end
 
@@ -46,22 +46,25 @@ flowchart TB
   CLI --> COORD & FACT
   COORD <--> WQ
   FACT --> CLOUD
-  MEM --> DOTNET
-  CLOUD <--> DOTNET <--> CP
-  DOTNET --> FACT
+  MEM -. "Target M02 Context Feed" .-> DOTNET
+  FACT -. "Target M02 WorkItemContract Handoff" .-> DOTNET
+  DOTNET <--> CP
   FACT --> RULES
-  FACT & DOTNET --> ASPIRE & BOARD
+  FACT & DOTNET --> ASPIRE
+  EV --> BOARD
   FACT -. "Dual 40-Hex SHA Pin" .-> CONS
 ```
 
-### 2. Cross-runtime orchestration and checkpoint resume sequence diagram
+### 2. Target cross-runtime orchestration and checkpoint resume sequence diagram
+
+> **Implementation boundary note:** Today `run.mjs` does **not** spawn `SoftwareFactory.Agents` or transmit a live `WorkItemContract`; `src/SoftwareFactory.Agents/` runs independently via its synthetic CLI (`--smoke` / `--benchmark`) and explicit-start AppHost resource while live `M01` worker tasks use native `copilot-swe-agent[bot]` / Cloud Automations. The sequence below illustrates the **target `M02` cross-runtime integration** combining outer `gh-aw`/Node admission with inner `.NET 10` MAF specialist supersteps.
 
 ```mermaid
 sequenceDiagram
   autonumber
   participant Lock as factory-orchestrator.lock.yml
   participant CLI as Node 26 run.mjs + work-queue-cas.mjs
-  participant Plan as MAF PlannerExecutor & CoderExecutor (.NET 10)
+  participant Plan as Target Handoff: MAF PlannerExecutor & CoderExecutor (.NET 10)
   participant Fan as Parallel TestAndCoverage + SecurityAndReview
   participant Agg as GateAggregator + SHA-256 CheckpointStore
   participant Squash as protected-squash.mjs + Squash Merge Queue
@@ -69,7 +72,7 @@ sequenceDiagram
   Lock->>CLI: Trigger read-only reconcile with deliveryId & traceparent
   CLI->>CLI: Verify .lock.yml SHA-256, $0 billing meters (#105), non-estimated quota (#7)
   CLI->>CLI: Claim disjoint ownedPaths via non-force CAS on refs/heads/work-queue
-  CLI->>Plan: Start WorkItemContract (RepositoryId, HeadSha, OwnedPaths, TraceParent)
+  CLI-->>Plan: Target M02 handoff: supply WorkItemContract (RepositoryId, HeadSha, OwnedPaths, TraceParent)
   Plan->>Plan: PathOwnershipGuard blocks protected control-plane & out-of-lane paths
   Plan->>Fan: AddFanOutEdge (execute Test/Coverage & Security/Review in same superstep)
   Fan->>Agg: AddFanInBarrierEdge synchronize results
@@ -104,8 +107,8 @@ flowchart LR
 
 ### `tools/engineering-factory/` (`60` modules) — policy evaluators, admission/audit gates, metadata adapters, and telemetry
 
-- **Pure policy, coverage, review, and Squash Merge Queue evaluators** (zero I/O, rejecting sparse arrays and stale heads; boundary verifiers inspect own data descriptors to reject `Proxy` traps, getters, and custom prototypes):
-  - `core.mjs`: validates closed version-1 repository policies (`validPolicy`) and normalized plain-JSON snapshots (`evaluate`), returning frozen `{ state, reason, shadow: true }` decisions.
+- **Pure policy, coverage, review, and Squash Merge Queue evaluators** (zero I/O, rejecting sparse arrays and stale heads; receipt/boundary verifiers such as `coverage-evidence.mjs`, `platform-merge-gates.mjs`, `protected-squash.mjs`, `queue-reread.mjs`, `anti-rogue-audit.mjs`, `curated-lessons.mjs`, `consumer-onboarding.mjs`, and `run.mjs` inspect own enumerable data descriptors to reject `Proxy` traps, getters, and custom prototypes, whereas `core.mjs`, `review-history.mjs`, `review-batch.mjs`, and remaining snapshot evaluators check own-key presence and read properties directly—requiring callers/adapters or `protected-squash.mjs` to strip getters/proxies and supply trusted, normalized plain JSON data upstream):
+  - `core.mjs`: validates closed version-1 repository policies (`validPolicy`) and normalized plain-JSON snapshots (`evaluate`), returning frozen `{ state, reason, shadow: true }` decisions. `policySource: "trusted-default-branch"` and snapshot fields are caller assertions rather than proof of live authority—adapters must enforce independent upstream default-branch provenance validation before invoking `evaluate`.
   - `coverage-evidence.mjs`: validates exact-head component and aggregate line/branch counts (`coverageEvidence`, `coverageFromNodeSummary`) against SoftwareFactory's `98%/95%` floor or consumer `>=95%/90%` (preserving stricter floors such as Spellbook `97%/90%`), requires reviewed justifications for branchless (`0/0`) components, and reconciles effective `main` ruleset, fork-PR, `merge_group`, `CodeQL`, summary-finding, and `minimum_coverage >= 98` gates (`verifyCandidateGateReceipt`).
   - `review-history.mjs` and `review-batch.mjs`: normalize chronological review sequences (permitting exact-head allowlisted `copilot-pull-request-reviewer[bot]` `COMMENTED` reviews with `summaryDisposition: "clear"` only on `Jamula/SoftwareFactory`, while requiring formal `APPROVED` for all consumers) and batch inline plus summary-only findings.
   - `platform-merge-gates.mjs`, `protected-squash.mjs`, `merge-queue-slo.mjs`, `integration-train.mjs`, `portfolio-train-benchmark.mjs`, `queue-inspection.mjs`, `queue-reread.mjs`, and `main-health-audit.mjs`: compose candidate platform checks, serialized shadow squash state machines with post-merge `main` health verification, inert GraphQL `enqueuePullRequest` (`expectedHeadOid`, `jump: false`) request builders, queue SLOs, and multi-wave integration-train simulations (`#16`).
@@ -113,12 +116,12 @@ flowchart LR
   - `gh-aw-lock-verifier.mjs` (`#5`): verifies pinned `github/gh-aw` (`v1.2.2`) `.github/workflows/factory-orchestrator.md` ↔ `.lock.yml` SHA-256 frontmatter/body integrity, trigger parity, `safe-outputs` read/write separation, and `persist-credentials: false`.
   - `billing-hardstop-smoke.mjs` (`#105`), `cloud-agent-admission.mjs` (`#7`), `budget.mjs`, `capacity-scale.mjs`, and `worker-ladder-handoff.mjs`: enforce provider-level `$0` overage hard-stops (`1 AI credit = $0.01`) across AI Credits, Copilot Premium Requests, and Cloud Sandboxes/Actions, reject missing or estimated AI-credit accounting before dispatch (treating `gh-aw` `max-ai-credits` / `max-daily-ai-credits` as soft caps only), and gate `1→2→4→8→10→12` worker scaling.
   - `anti-rogue-audit.mjs` (`#9` / `#137`), `ai-credit-scorecard.mjs` (`#18`), and `optimistic-improver.mjs` (`#137`): verify the unbroken **9-link W3C `traceparent` causal provenance chain** (`Issue/Event deliveryId -> gh-aw .lock.yml SHA-256 -> git-ref CAS lease generation -> Mission Control taskId/sessionId -> signed commit SHA -> exact-head CI/CodeQL/coverage receipts -> independent review ID -> Merge Queue squash SHA -> verified main receipt`), trip deterministic kill-switch circuit breakers outside the agent loop on protected control-plane touches or out-of-lane edits, compute read-only AI-credit scorecards, and evaluate bounded `>=5`-outcome Kaizen improvement/auto-revert cohorts.
-  - `curated-lessons.mjs` (`#14`), `contract-routing.mjs`, `locked-build-cache.mjs` (`#15`), `ci-stage-benchmark.mjs` (`#15`), `validation-diagnosis.mjs`, `factory-board.mjs` (`#135`), `mcp-agent-connector.mjs` (`#136`), and `workstation-preflight.mjs` (`#66`): selective provenance-bound repository guidance/lessons memory, subsystem fast-feedback routing, poison-safe build-cache verification, read-only Canvas state projection, deferred Codex/Claude MCP isolation, and optional workstation preflight.
+  - `curated-lessons.mjs` (`#14`), `contract-routing.mjs`, `locked-build-cache.mjs` (`#15`), `ci-stage-benchmark.mjs` (`#15`), `validation-diagnosis.mjs`, `factory-board.mjs` (`#135` live milestone, issue, PR check/review, and merge-queue snapshot projection), `mcp-agent-connector.mjs` (`#136`), and `workstation-preflight.mjs` (`#66`): selective provenance-bound repository guidance/lessons memory, subsystem fast-feedback routing, poison-safe build-cache verification, read-only Canvas board snapshots, deferred Codex/Claude MCP isolation, and optional workstation preflight.
   - `consumer-onboarding.mjs` (`#13`), `customer-one-usability-scorecard.mjs`, `spellbook-pilot-readiness.mjs` (`#11`), `familytree-pilot-readiness.mjs` (`#36`), `familyhub-pilot-readiness.mjs` (`#12`), and `pilot-readiness.mjs` (`#10`): enforce the 3-stage consumer onboarding rubric, independent `1`-commit rollback, and pilot exit dossiers across **`M03` Spellbook → `M04` FamilyTree → `M05` FamilyHub**.
 - **Read-only GitHub metadata adapters and unified shadow CLI** (bounded unauthenticated reads, `<= 262,144`-byte payload cap, no write credentials):
   - `run.mjs`, `shadow-runtime.mjs`, `event-envelope.mjs`, `issue-event.mjs`, `pull-signals.mjs`, `shadow-dispatch-ledger.mjs`, and `local-shadow-host.mjs`: provide the unified CLI (`--smoke`, `--inventory`, `--reconcile-pull`, `--reconcile-issue`, `--reconcile-event`, `--plan-lanes`, `--evaluate-squash`, `--verify-admission`, `--verify-m01-readiness`, plus `--receipt`), bounded same-repository REST reads that discard raw user prose, and cross-run `work-queue-cas`-bound reservation checks.
 - **Local and hosted synthetic Aspire `17.0.0` / OpenTelemetry boundary**:
-  - `apphost.cs`, `telemetry.mjs`, `local-otel-sdk.mjs`, `aspire-smoke.mjs`, `aspire-telemetry-smoke.mjs`, `aspire-hosted-receipt.mjs`, `verify-dashboard-export.mjs`, `verify-dashboard-api.mjs`, `verify-dashboard-metric-receipt.mjs`, `inspect-dashboard-metric-schema.mjs`, and `no-python-guard.mjs`: orchestrate both `synthetic-shadow` (Node `26.13.1`) and `maf-specialist-shadow` (`.NET 10.0.404`) under Aspire AppHost (`17.0.0`) and verify authenticated loopback OTLP traces, correlated structured logs, and SQLite-persisted metrics on hosted Linux and Windows runners (`#17`, `#118`).
+  - `apphost.cs`, `telemetry.mjs`, `local-otel-sdk.mjs`, `aspire-smoke.mjs`, `aspire-telemetry-smoke.mjs`, `aspire-hosted-receipt.mjs`, `verify-dashboard-export.mjs`, `verify-dashboard-api.mjs`, `verify-dashboard-metric-receipt.mjs`, `inspect-dashboard-metric-schema.mjs`, and `no-python-guard.mjs`: register both `synthetic-shadow` (Node `26.13.1`) and `maf-specialist-shadow` (`.NET 10.0.404`) with `WithExplicitStart()` under Aspire AppHost (`17.0.0`). Hosted Linux and Windows CI workflows currently start and verify authenticated loopback OTLP traces, correlated structured logs, and SQLite-persisted metrics for the Node `synthetic-shadow` resource (`#17`, `#118`), while `maf-specialist-shadow` runs headlessly in `dotnet-agents.yml` and hosted dashboard telemetry verification for the `.NET` resource remains outstanding.
 
 ### `tools/engineering-coordinator/` (`10` modules) — lane planner, git-ref CAS queue, and SQLite fencing
 
