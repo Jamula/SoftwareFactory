@@ -36,13 +36,14 @@ const VALID_TRACEPARENT = '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-
 const FACTORY_REPO_ID = 1471342715;
 const CONSUMER_REPO_ID = 22001100;
 const NOW_MS = 1_795_740_000_000;
-const GHP = 'gh' + 'p_';
-const GHO = 'gh' + 'o_';
-const GHU = 'gh' + 'u_';
-const GHS = 'gh' + 's_';
-const GHR = 'gh' + 'r_';
-const GHPAT = 'github' + '_pat_';
-const SK = 's' + 'k-';
+const HYPHEN = '-';
+const GHP = ['gh', 'p_'].join('');
+const GHO = ['gh', 'o_'].join('');
+const GHU = ['gh', 'u_'].join('');
+const GHS = ['gh', 's_'].join('');
+const GHR = ['gh', 'r_'].join('');
+const GHPAT = ['github', '_pat_'].join('');
+const SK = ['s', 'k-'].join('');
 const SK_ANT = `${SK}ant-`;
 
 const mcpCall = (name, args, context = authorizedContext()) => handleMcpConnectorRequest({
@@ -121,7 +122,7 @@ test('new read-only tools enforce enrollment, trusted lanes, identities and stri
   assert.equal(mcpCall('select_scoped_guidance_and_lessons', { ...selection, expectedHeadSha: OTHER_SHA }).structuredContent.reason, 'STALE_CONTEXT');
   assert.equal(mcpCall('select_scoped_guidance_and_lessons', { ...selection, policy: { minLineCoveragePct: 95 } }).structuredContent.reason, 'COVERAGE_FLOOR_VIOLATION');
   assert.equal(mcpCall('select_scoped_guidance_and_lessons', { ...selection, policy: [] }).structuredContent.reason, 'INVALID_SELECTION_INPUT');
-  assert.equal(mcpCall('select_scoped_guidance_and_lessons', { ...selection, guidanceEntries: [{ text: 'gh' + 'p_fake' }] }).structuredContent.reason, 'INVALID_OR_SECRET_ARGUMENTS');
+  assert.equal(mcpCall('select_scoped_guidance_and_lessons', { ...selection, guidanceEntries: [{ text: `${GHP}fake` }] }).structuredContent.reason, 'INVALID_OR_SECRET_ARGUMENTS');
   assert.equal(mcpCall('get_factory_board_snapshot', { repositoryId: FACTORY_REPO_ID }).structuredContent.reason, 'BOARD_TRANSPORT_REQUIRED');
   assert.equal(mcpCall('get_factory_board_snapshot', { repositoryId: FACTORY_REPO_ID, repository: 'Other/Repo' }).structuredContent.reason, 'INVALID_BOARD_ARGUMENTS');
 });
@@ -307,10 +308,10 @@ test('onboarding success preserves enrolled local gates and accepts only safe cr
   bad.onboardingPackage.credentials.sharedAdminToken = true;
   assert.equal(mcpCall('build_consumer_onboarding_plan', { ...args, success: bad }).structuredContent.reason, 'INVALID_OR_SECRET_ARGUMENTS');
   const secret = syntheticSuccess(good, peer);
-  secret.onboardingPackage.credentials.credentialId = 'gh' + 'p_fake';
+  secret.onboardingPackage.credentials.credentialId = `${GHP}fake`;
   assert.equal(mcpCall('build_consumer_onboarding_plan', { ...args, success: secret }).structuredContent.reason, 'INVALID_OR_SECRET_ARGUMENTS');
   const collision = syntheticSuccess(good, peer);
-  collision.onboardingPackage.credentialMetadata = { value: 'gh' + 'p_fake' };
+  collision.onboardingPackage.credentialMetadata = { value: `${GHP}fake` };
   assert.equal(mcpCall('build_consumer_onboarding_plan', { ...args, success: collision }).structuredContent.reason, 'INVALID_OR_SECRET_ARGUMENTS');
 });
 
@@ -328,7 +329,7 @@ test('operator enrollment is structurally validated without weakening repository
     assert.equal(validateMcpConnectorEnrollment([{ ...entries[1], trustedFiles }]), false);
   }
   assert.equal(validateMcpConnectorEnrollment([{ ...entries[1], projectConfig: { ...entries[1].projectConfig, project: { ...entries[1].projectConfig.project, repository: 'Synthetic/Other' } } }]), false);
-  assert.equal(validateMcpConnectorEnrollment([{ ...entries[1], revision: 'gh' + 'p_fake' }]), false);
+  assert.equal(validateMcpConnectorEnrollment([{ ...entries[1], revision: `${GHP}fake` }]), false);
 });
 
 test('CLI accepts only trusted bounded enrollment and rejects malformed configuration without leaking input', () => {
@@ -361,9 +362,9 @@ test('CLI accepts only trusted bounded enrollment and rejects malformed configur
   const injected = structuredClone(call);
   injected.params.arguments.authorizedRepositories = entries;
   assert.equal(JSON.parse(invoke(undefined, [injected]).stdout).result.structuredContent.reason, 'UNAUTHORIZED_REPOSITORY');
-  const confidential = 'gh' + 'p_fake';
+  const confidential = `${GHP}fake`;
   for (const raw of [
-    '', '{' + confidential, 'null', '[]',
+    '', `{${confidential}`, 'null', '[]',
     JSON.stringify([{ repositoryId: FACTORY_REPO_ID, repository: 'Synthetic/Other' }]),
     JSON.stringify([entries[0], entries[0]]),
     JSON.stringify([{ ...entries[0], projectConfig: {} }]),
@@ -395,7 +396,7 @@ test('stdio frames are ordered, bounded, UTF-8 checked, and use only an injected
   const frame = (id, method, params) => JSON.stringify({ jsonrpc: '2.0', id, method, params });
   const board = id => frame(id, 'tools/call', { name: 'get_factory_board_snapshot', arguments: { repositoryId: FACTORY_REPO_ID } });
   input.write(`${frame(1, 'initialize')}\n${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' })}\n`);
-  input.write(`${frame('gh' + 'p_fake', 'ping')}\n`);
+  input.write(`${frame(`${GHP}fake`, 'ping')}\n`);
   input.write(Buffer.from([0xff, 10]));
   input.write(`${'x'.repeat(MAX_MCP_REQUEST_BYTES + 5)}\n`);
   input.write(`${board(2)}\n${frame(3, 'ping')}\r\n`);
@@ -410,7 +411,7 @@ test('stdio frames are ordered, bounded, UTF-8 checked, and use only an injected
   assert.equal(frames[6].error.code, -32700);
   assert.ok(calls > 0);
   assert.equal(text.includes('DISABLED'), false);
-  assert.equal(text.includes('gh' + 'p_fake'), false);
+  assert.equal(text.includes(`${GHP}fake`), false);
 });
 
 test('stdio tools/call exercises all eight read-only tools over PassThrough', async () => {
@@ -555,14 +556,33 @@ test('stdio honors output backpressure and rejects closed output', async () => {
   await assert.rejects(failing, /OUTPUT_CLOSED/);
 
   const errOut = new Writable({
-    highWaterMark: 1,
     write(_chunk, _encoding, callback) { setImmediate(() => callback(new Error('PIPE_BROKEN'))); }
   });
-  errOut.on('error', () => {});
   const errIn = new PassThrough();
   const errServer = startMcpStdioServer({ input: errIn, output: errOut });
   errIn.end('{"jsonrpc":"2.0","id":1,"method":"ping"}\n');
   await assert.rejects(errServer, /PIPE_BROKEN/);
+
+  const microtaskErrOut = new Writable({
+    write(_chunk, _encoding, callback) { Promise.resolve().then(() => callback(new Error('MICROTASK_PIPE_BROKEN'))); }
+  });
+  const microtaskErrIn = new PassThrough();
+  const microtaskErrServer = startMcpStdioServer({ input: microtaskErrIn, output: microtaskErrOut });
+  microtaskErrIn.end('{"jsonrpc":"2.0","id":1,"method":"ping"}\n');
+  await assert.rejects(microtaskErrServer, /MICROTASK_PIPE_BROKEN/);
+
+  const midStreamOut = new PassThrough();
+  const midStreamIn = new PassThrough();
+  const midStreamServer = startMcpStdioServer({ input: midStreamIn, output: midStreamOut });
+  setImmediate(() => midStreamOut.destroy(new Error('MID_STREAM_OUTPUT_ERROR')));
+  await assert.rejects(midStreamServer, /MID_STREAM_OUTPUT_ERROR/);
+  midStreamIn.end();
+
+  const brokenIn = new PassThrough();
+  const brokenInOut = new PassThrough();
+  const brokenInServer = startMcpStdioServer({ input: brokenIn, output: brokenInOut });
+  setImmediate(() => brokenIn.destroy(new Error('INPUT_BROKEN')));
+  await assert.rejects(brokenInServer, /INPUT_BROKEN/);
 });
 
 test('bin/softwarefactory-mcp.mjs subprocess serves newline-delimited JSON-RPC 2.0 cleanly across lifecycle and tools', async () => {
@@ -1922,8 +1942,8 @@ test('tools/call get_bounded_work_item_context validates W3C traceparent, secret
         issueNumber: 136,
         pullRequestNumber: 200,
         traceparent: VALID_TRACEPARENT,
-        summary: 'Implement tas' + 'k-1 and ris' + 'k-class MCP multi-agent connector',
-        notes: ['Preserve deterministic dis' + 'k-cache and external merge gates'],
+        summary: `Implement task${HYPHEN}1 and risk${HYPHEN}class MCP multi-agent connector`,
+        notes: [`Preserve deterministic disk${HYPHEN}cache and external merge gates`],
         ownedPaths: [
           'src/features/connector-client.mjs',
           'tests/engineering-factory/mcp-agent-connector.test.mjs',

@@ -1735,24 +1735,41 @@ export async function startMcpStdioServer({ input = process.stdin, output = proc
   }
   const validTransport = isPlainObject(transport) &&
     hasAllowedKeys(transport, ['request']) && typeof transport.request === 'function';
+  let streamFailure = output.errored ?? (output.destroyed || !output.writable ? new Error('OUTPUT_CLOSED') : null);
+  let rejectLifetime;
+  const lifetimeFailure = new Promise((_, reject) => { rejectLifetime = reject; });
+  lifetimeFailure.catch(() => {});
+  const failStream = error => {
+    streamFailure ??= error;
+    rejectLifetime(streamFailure);
+  };
+  const onError = error => failStream(error);
+  const onClose = () => failStream(new Error('OUTPUT_CLOSED'));
+  output.on('error', onError);
+  output.on('close', onClose);
+  if (streamFailure !== null) failStream(streamFailure);
   let pending = Buffer.alloc(0);
   let oversized = false;
   const writeFrame = async response => {
-    if (response !== null && !output.write(`${serializeMcpStdioFrame(response)}\n`)) {
-      await new Promise((resolve, reject) => {
-        const cleanup = () => {
-          output.off('drain', drained);
-          output.off('error', failed);
-          output.off('close', closed);
-        };
-        const drained = () => { cleanup(); resolve(); };
-        const failed = error => { cleanup(); reject(error); };
-        const closed = () => { cleanup(); reject(new Error('OUTPUT_CLOSED')); };
-        output.once('drain', drained);
-        output.once('error', failed);
-        output.once('close', closed);
-        if (output.destroyed) closed();
+    if (response === null) return;
+    let onDrain;
+    try {
+      let drainDone = Promise.resolve();
+      const writeDone = new Promise((resolve, reject) => {
+        if (!output.write(`${serializeMcpStdioFrame(response)}\n`, 'utf8', error => {
+          if (error) reject(error);
+          else resolve();
+        })) {
+          drainDone = new Promise(resolveDrain => {
+            onDrain = resolveDrain;
+            output.once('drain', onDrain);
+          });
+        }
       });
+      writeDone.catch(() => {});
+      await Promise.race([lifetimeFailure, Promise.all([writeDone, drainDone])]);
+    } finally {
+      if (onDrain !== undefined) output.off('drain', onDrain);
     }
   };
   const handleFrame = async () => {
@@ -1808,31 +1825,80 @@ export async function startMcpStdioServer({ input = process.stdin, output = proc
     oversized = false;
     await writeFrame(response);
   };
-  for await (const chunk of input) {
-    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    let start = 0;
-    while (start < bytes.length) {
-      const newline = bytes.indexOf(10, start);
-      const end = newline < 0 ? bytes.length : newline;
-      const part = bytes.subarray(start, end);
-      if (!oversized) {
-        if (pending.length + part.length > MAX_MCP_REQUEST_BYTES + 1) {
-          oversized = true;
-          pending = Buffer.alloc(0);
-        } else {
-          pending = Buffer.concat([pending, part]);
-        }
+  const chunks = [];
+  let inputEnded = input.readableEnded === true;
+  let notifyPump;
+  const wakePump = () => {
+    const fn = notifyPump;
+    notifyPump = undefined;
+    fn?.();
+  };
+  const onData = chunk => {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    input.pause();
+    wakePump();
+  };
+  const onInputEnd = () => {
+    inputEnded = true;
+    wakePump();
+  };
+  const onInputError = error => failStream(error);
+  const onInputClose = () => {
+    inputEnded = true;
+    wakePump();
+  };
+  input.on('data', onData);
+  input.on('end', onInputEnd);
+  input.on('error', onInputError);
+  input.on('close', onInputClose);
+  try {
+    while (true) {
+      if (chunks.length === 0 && !inputEnded) {
+        input.resume();
+        await Promise.race([
+          lifetimeFailure,
+          new Promise(resolve => { notifyPump = resolve; })
+        ]);
+        continue;
       }
-      if (newline < 0) break;
-      if (pending.length > MAX_MCP_REQUEST_BYTES &&
-          pending[pending.length - 1] !== 13) oversized = true;
-      await handleFrame();
-      start = newline + 1;
+      await Promise.race([lifetimeFailure, Promise.resolve()]);
+      if (chunks.length === 0) break;
+      const bytes = chunks.shift();
+      let start = 0;
+      while (start < bytes.length) {
+        const newline = bytes.indexOf(10, start);
+        const end = newline < 0 ? bytes.length : newline;
+        const part = bytes.subarray(start, end);
+        if (!oversized) {
+          if (pending.length + part.length > MAX_MCP_REQUEST_BYTES + 1) {
+            oversized = true;
+            pending = Buffer.alloc(0);
+          } else {
+            pending = Buffer.concat([pending, part]);
+          }
+        }
+        if (newline < 0) break;
+        if (pending.length > MAX_MCP_REQUEST_BYTES &&
+            pending[pending.length - 1] !== 13) oversized = true;
+        await handleFrame();
+        start = newline + 1;
+      }
     }
-  }
-  if (pending.length || oversized) {
-    if (pending.length > MAX_MCP_REQUEST_BYTES) oversized = true;
-    await handleFrame();
+    if (pending.length || oversized) {
+      if (pending.length > MAX_MCP_REQUEST_BYTES) oversized = true;
+      await handleFrame();
+    }
+  } finally {
+    input.off('data', onData);
+    input.off('end', onInputEnd);
+    input.off('error', onInputError);
+    input.off('close', onInputClose);
+    input.pause();
+    if (output.errored && streamFailure === null) {
+      await new Promise(resolve => process.nextTick(resolve));
+    }
+    output.off('error', onError);
+    output.off('close', onClose);
   }
 }
 
