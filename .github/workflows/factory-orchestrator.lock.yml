@@ -1,4 +1,4 @@
-# gh-aw-metadata: {"schema_version":"v4","frontmatter_hash":"7b4df380a115d2bd907518f650083cae13fb2c7fba4682a9383a5cbc4b7a3ad4","body_hash":"34593fee9e1fa32b7845cf757b19aef4ecda59b3414725417d85f386d3c4f417","compiler_version":"v1.2.2","strict":true,"agent_id":"copilot"}
+# gh-aw-metadata: {"schema_version":"v4","frontmatter_hash":"c718a4d4d2d61af5b25ad336e83e6f29c756814419a774a7c5111e056be693fe","body_hash":"5b40aece16871c16d19ef10c4d5af0a372425405a5dcfcec2984d12800623ff1","compiler_version":"v1.2.2","strict":true,"agent_id":"copilot"}
 # gh-aw-manifest: {"version":1,"secrets":[],"actions":[{"repo":"actions/checkout","sha":"3d3c42e5aac5ba805825da76410c181273ba90b1","version":"v7.0.1"},{"repo":"actions/setup-node","sha":"949feb2413d6458794dcd2491c4babbbce0c15c1","version":"v7.1.0"}]}
 # gh-aw-commit: 399a445fe2d8926c616b54b1b82a16b5b2be4445
 # gh-aw-work-queue-protocol: v3
@@ -27,8 +27,6 @@ on:
   pull_request_target:
     branches: [main]
     types: [opened, reopened, synchronize, ready_for_review, closed]
-  pull_request_review:
-    types: [submitted, edited, dismissed]
   workflow_run:
     workflows: ["Factory validation", "Windows Aspire runtime", ".NET MAF specialist agents"]
     types: [completed]
@@ -41,7 +39,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   evaluate:
-    if: ${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.repository == 'Jamula/SoftwareFactory' && github.repository_id == '1471342715' && ((github.ref == 'refs/heads/main' && github.ref_protected == true) || (github.event_name == 'pull_request_review' && github.event.pull_request.base.ref == 'main' && github.event.pull_request.base.repo.id == 1471342715 && github.event.pull_request.head.repo.id == 1471342715)) && !endsWith(github.actor, '[bot]') && (github.event_name != 'workflow_run' || github.event.workflow_run.head_repository.id == 1471342715) }}
+    if: ${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.repository == 'Jamula/SoftwareFactory' && github.repository_id == '1471342715' && github.ref == 'refs/heads/main' && github.ref_protected == true && !endsWith(github.actor, '[bot]') && (github.event_name != 'workflow_run' || github.event.workflow_run.head_repository.id == 1471342715) }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -65,10 +63,6 @@ jobs:
           FACTORY_ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue_number || '' }}
           FACTORY_PULL_NUMBER: ${{ github.event.pull_request.number || '' }}
           FACTORY_PULL_HEAD: ${{ github.event.pull_request.head.sha || '' }}
-          FACTORY_PULL_BASE_REF: ${{ github.event.pull_request.base.ref || '' }}
-          FACTORY_PULL_BASE_REPO_ID: ${{ github.event.pull_request.base.repo.id || '' }}
-          FACTORY_PULL_HEAD_REPO_ID: ${{ github.event.pull_request.head.repo.id || '' }}
-          FACTORY_REVIEW_ID: ${{ github.event.review.id || '' }}
           FACTORY_WORKFLOW_RUN_ID: ${{ github.event.workflow_run.id || '' }}
           FACTORY_CHECK_HEAD: ${{ github.event.workflow_run.head_sha || '' }}
           FACTORY_WORKFLOW_HEAD_REPO_ID: ${{ github.event.workflow_run.head_repository.id || '' }}
@@ -78,6 +72,12 @@ jobs:
           test "$FACTORY_GHAW_ENABLED" = true
           test "$GITHUB_REPOSITORY" = Jamula/SoftwareFactory
           test "$GITHUB_REPOSITORY_ID" = 1471342715
+          test "$GITHUB_REF" = refs/heads/main
+          test "$GITHUB_REF_PROTECTED" = true
+          test "$GITHUB_WORKFLOW_REF" = Jamula/SoftwareFactory/.github/workflows/factory-orchestrator.lock.yml@refs/heads/main
+          if [ "$GITHUB_EVENT_NAME" = workflow_run ]; then
+            test "$FACTORY_WORKFLOW_HEAD_REPO_ID" = 1471342715
+          fi
           FACTORY_GHAW_MODE="${FACTORY_GHAW_MODE:-shadow}"
           case "$FACTORY_GHAW_MODE" in
             shadow|verify-lock) ;;
@@ -87,7 +87,7 @@ jobs:
             echo "::error::Invalid issue_number input"
             exit 1
           fi
-          for numeric_id in "$FACTORY_PULL_NUMBER" "$FACTORY_REVIEW_ID" "$FACTORY_WORKFLOW_RUN_ID"; do
+          for numeric_id in "$FACTORY_PULL_NUMBER" "$FACTORY_WORKFLOW_RUN_ID"; do
             if [ -n "$numeric_id" ] && ! printf '%s' "$numeric_id" | grep -Eq '^[1-9][0-9]{0,15}$'; then
               echo "::error::Invalid numeric event identifier"
               exit 1
@@ -99,24 +99,6 @@ jobs:
               exit 1
             fi
           done
-          if [ "$GITHUB_EVENT_NAME" = pull_request_review ]; then
-            test -n "$FACTORY_PULL_NUMBER"
-            test -n "$FACTORY_PULL_HEAD"
-            test -n "$FACTORY_REVIEW_ID"
-            test "$FACTORY_PULL_BASE_REF" = main
-            test "$FACTORY_PULL_BASE_REPO_ID" = 1471342715
-            test "$FACTORY_PULL_HEAD_REPO_ID" = 1471342715
-            case "$GITHUB_WORKFLOW_REF" in
-              "Jamula/SoftwareFactory/.github/workflows/factory-orchestrator.lock.yml@refs/heads/main"|"Jamula/SoftwareFactory/.github/workflows/factory-orchestrator.lock.yml@refs/pull/$FACTORY_PULL_NUMBER/merge") ;;
-              *) echo "::error::Unexpected workflow_ref for pull_request_review"; exit 1 ;;
-            esac
-          else
-            test "$GITHUB_REF" = refs/heads/main
-            test "$GITHUB_REF_PROTECTED" = true
-          fi
-          if [ "$GITHUB_EVENT_NAME" = workflow_run ]; then
-            test "$FACTORY_WORKFLOW_HEAD_REPO_ID" = 1471342715
-          fi
           node --input-type=module -e '
             import {readFileSync} from "node:fs";
             import {verifyEventTriggerMatrix, verifyGhAwWorkflowLock} from "./tools/engineering-factory/gh-aw-lock-verifier.mjs";

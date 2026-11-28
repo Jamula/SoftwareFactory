@@ -1732,7 +1732,6 @@ test('verifies Issue #5 event trigger matrix, 10-minute default-off recovery sch
   assert.equal(orchestratorVerdict.reason, 'EVENT_TRIGGER_MATRIX_VERIFIED');
   assert.deepEqual(orchestratorVerdict.triggers, [
     'issues',
-    'pull_request_review',
     'pull_request_target',
     'push',
     'schedule',
@@ -2316,21 +2315,11 @@ test('verifies Issue #5 event trigger matrix, 10-minute default-off recovery sch
     assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({evalIf: foreignWrEvalIf})).reason, 'MISSING_WORKFLOW_RUN_REPO_GUARD');
   }
 
-  // Unconditional github.ref == 'refs/heads/main' or incomplete review disjunction when pull_request_review is enabled fails closed!
-  for (const incompatibleReviewIf of [
-    `\${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.ref == 'refs/heads/main' && !endsWith(github.actor, '[bot]')${wrGuardClause} }}`,
-    `\${{ vars.FACTORY_GHAW_ENABLED == 'true' && ((github.ref == 'refs/heads/main' && github.ref_protected == true) || github.event_name == 'pull_request_review') && !endsWith(github.actor, '[bot]')${wrGuardClause} }}`,
-    `\${{ vars.FACTORY_GHAW_ENABLED == 'true' && (github.event_name == 'pull_request_review' || (github.ref == 'refs/heads/main' && github.ref_protected == true)) && !endsWith(github.actor, '[bot]')${wrGuardClause} }}`,
-    `\${{ vars.FACTORY_GHAW_ENABLED == 'true' && ((github.ref == 'refs/heads/main' && github.ref_protected == true) || (github.event_name == 'pull_request_review' && github.event.pull_request.base.ref == 'main' && github.event.pull_request.base.repo.id == 1471342715 && github.event.pull_request.head.repo.id == 999999)) && !endsWith(github.actor, '[bot]')${wrGuardClause} }}`
-  ]) {
-    assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({evalIf: incompatibleReviewIf})).reason, 'INVALID_REVIEW_REF_GUARD');
-  }
-
   for (const validWrEvalIf of [
     "${{ vars.FACTORY_GHAW_ENABLED == 'true' && !endsWith(github.actor, '[bot]') && (github.event_name != 'workflow_run' || github.event.workflow_run.head_repository.id == 1471342715) }}",
     "${{ vars.FACTORY_GHAW_ENABLED == 'true' && !endsWith(github.actor, '[bot]') && ('1471342715' == github.event.workflow_run.head_repository.id || github.event_name != 'workflow_run') }}",
     "${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.repository == 'Synthetic/Consumer' && '200036' == github.repository_id && !endsWith(github.actor, '[bot]') && (github.event_name != 'workflow_run' || github.event.workflow_run.head_repository.id == 200036) }}",
-    "${{ vars.FACTORY_GHAW_ENABLED == 'true' && ((github.event_name == 'pull_request_review' && github.event.pull_request.base.ref == 'main' && github.event.pull_request.base.repo.id == github.repository_id && github.repository_id == github.event.pull_request.head.repo.id) || (github.ref == 'refs/heads/main' && github.ref_protected == true)) && !endsWith(github.actor, '[bot]') && (github.event_name != 'workflow_run' || github.event.workflow_run.head_repository.id == github.repository_id) }}",
+    "${{ vars.FACTORY_GHAW_ENABLED == 'true' && !endsWith(github.actor, '[bot]') && (github.event_name != 'workflow_run' || github.event.workflow_run.head_repository.id == github.repository_id) }}",
     "${{ vars.FACTORY_GHAW_ENABLED == 'true' && !endsWith(github.actor, '[bot]') && (github.event_name != 'workflow_run' || github.event.workflow_run.repository.id == github.event.workflow_run.head_repository.id) }}",
     "${{ vars.FACTORY_GHAW_ENABLED == 'true' && !endsWith(github.actor, '[bot]') && github.event_name != 'workflow_run' }}",
     "${{ vars.FACTORY_GHAW_ENABLED == 'true' && !endsWith(github.actor, '[bot]') && github.event.workflow_run.head_repository.id == 1471342715 }}"
@@ -2403,15 +2392,21 @@ test('enforces verifyGhAwWorkflowLock trigger parity, workflow_run repo guard, e
     assert.equal(rehashPair(mutatedMd, trackedLock).reason, 'INVALID_FRONTMATTER');
   }
 
-  // Unsupported trigger in frontmatter or lock fails closed
-  assert.equal(
-    rehashPair(trackedMd.replace('  push:\n    branches: [main]', '  pull_request:\n    branches: [main]'), trackedLock).reason,
-    'UNSUPPORTED_EVENT_TRIGGER'
-  );
-  assert.equal(
-    rehashPair(trackedMd, trackedLock.replace('  push:\n    branches: [main]', '  issue_comment:\n    types: [created]')).reason,
-    'UNSUPPORTED_EVENT_TRIGGER'
-  );
+  // Unsupported trigger (including PR-controlled pull_request_review) in frontmatter or lock fails closed
+  for (const unsupportedOrchestratorTrigger of [
+    '  pull_request:\n    branches: [main]',
+    '  pull_request_review:\n    types: [submitted, edited, dismissed]',
+    '  issue_comment:\n    types: [created]'
+  ]) {
+    assert.equal(
+      rehashPair(trackedMd.replace('  push:\n    branches: [main]', unsupportedOrchestratorTrigger), trackedLock).reason,
+      'UNSUPPORTED_EVENT_TRIGGER'
+    );
+    assert.equal(
+      rehashPair(trackedMd, trackedLock.replace('  push:\n    branches: [main]', unsupportedOrchestratorTrigger)).reason,
+      'UNSUPPORTED_EVENT_TRIGGER'
+    );
+  }
 
   // Invalid schedule or event trigger config in frontmatter or lock fails closed
   assert.equal(
@@ -2433,12 +2428,12 @@ test('enforces verifyGhAwWorkflowLock trigger parity, workflow_run repo guard, e
 
   // Trigger parity mismatch between .md and .lock.yml fails closed (both missing keys AND same-key config drift!)
   assert.equal(
-    rehashPair(trackedMd.replace('  pull_request_review:\n    types: [submitted, edited, dismissed]\n', ''), trackedLock).reason,
+    rehashPair(trackedMd.replace('  push:\n    branches: [main]\n', ''), trackedLock).reason,
     'TRIGGER_PARITY_MISMATCH'
   );
   for (const mutatedLockConfig of [
     trackedLock.replace('types: [opened, edited, labeled, unlabeled, closed, reopened]', 'types: [closed]'),
-    trackedLock.replace('types: [submitted, edited, dismissed]', 'types: [submitted]'),
+    trackedLock.replace('types: [opened, reopened, synchronize, ready_for_review, closed]', 'types: [opened]'),
     trackedLock.replace('workflows: ["Factory validation", "Windows Aspire runtime", ".NET MAF specialist agents"]', 'workflows: ["Factory validation"]'),
     trackedLock.replace("cron: '3,13,23,33,43,53 * * * *'", "cron: '7,17,27,37,47,57 * * * *'")
   ]) {
@@ -2464,17 +2459,6 @@ test('enforces verifyGhAwWorkflowLock trigger parity, workflow_run repo guard, e
       'MISSING_WORKFLOW_RUN_REPO_GUARD'
     );
   }
-
-  // Unconditional github.ref == 'refs/heads/main' in .md or .lock.yml when pull_request_review is present fails closed
-  const reviewRefDisjunction = "((github.ref == 'refs/heads/main' && github.ref_protected == true) || (github.event_name == 'pull_request_review' && github.event.pull_request.base.ref == 'main' && github.event.pull_request.base.repo.id == 1471342715 && github.event.pull_request.head.repo.id == 1471342715))";
-  assert.equal(
-    rehashPair(trackedMd.replace(reviewRefDisjunction, "github.ref == 'refs/heads/main' && github.ref_protected == true"), trackedLock).reason,
-    'INVALID_REVIEW_REF_GUARD'
-  );
-  assert.equal(
-    rehashPair(trackedMd, trackedLock.replace(reviewRefDisjunction, "github.ref == 'refs/heads/main' && github.ref_protected == true")).reason,
-    'INVALID_REVIEW_REF_GUARD'
-  );
 
   // Compiler-shaped activation -> agent helper inheritance for workflow_run repo guard
   const helperWrMd = [
@@ -2539,60 +2523,6 @@ test('enforces verifyGhAwWorkflowLock trigger parity, workflow_run repo guard, e
     lockYamlSource: buildHelperWrLock({activationWrGuard: ''})
   }).reason, 'MISSING_WORKFLOW_RUN_REPO_GUARD');
 
-  // Helper activation job blocking pull_request_review with unconditional github.ref == 'refs/heads/main' fails closed
-  const helperRevMd = [
-    '---',
-    'name: Compiler Review Helper',
-    'engine: copilot',
-    "if: \"vars.FACTORY_GHAW_ENABLED == 'true' && !endsWith(github.actor, '[bot]')\"",
-    'on:',
-    '  pull_request_review:',
-    '    types: [submitted]',
-    'permissions: {}',
-    '---',
-    '# Body'
-  ].join('\n');
-  const helperRevLock = [
-    makeMetadataLine({
-      frontmatterHash: computeFrontmatterSha256(helperRevMd),
-      bodyHash: computeBodySha256(helperRevMd)
-    }),
-    `# gh-aw-commit: ${PINNED_GHAW_RELEASE.commit}`,
-    'name: Compiler Review Helper',
-    'on:',
-    '  pull_request_review:',
-    '    types: [submitted]',
-    'permissions: {}',
-    'jobs:',
-    '  activation:',
-    "    if: vars.FACTORY_GHAW_ENABLED == 'true' && github.ref == 'refs/heads/main' && !endsWith(github.actor, '[bot]')",
-    '    runs-on: ubuntu-slim',
-    '    permissions:',
-    '      contents: read',
-    '    steps:',
-    '      - run: echo "activate"',
-    '  agent:',
-    '    needs: [activation]',
-    "    if: needs.activation.result == 'success'",
-    '    runs-on: ubuntu-latest',
-    '    permissions:',
-    '      contents: read',
-    '    steps:',
-    '      - run: echo "agent"',
-    '  threat-scan:',
-    '    needs: [agent]',
-    "    if: needs.agent.result == 'success'",
-    '    runs-on: ubuntu-latest',
-    '    permissions:',
-    '      contents: read',
-    '    steps:',
-    '      - run: echo "scan"'
-  ].join('\n');
-  assert.equal(verifyGhAwWorkflowLock({
-    markdownSource: helperRevMd,
-    lockYamlSource: helperRevLock
-  }).reason, 'INVALID_REVIEW_REF_GUARD');
-
   // Evaluate job checkout omitting ref/repository or poisoned env under pull_request_target/review fails closed
   assert.equal(
     rehashPair(
@@ -2640,10 +2570,6 @@ test('enforces verifyGhAwWorkflowLock trigger parity, workflow_run repo guard, e
     FACTORY_ISSUE_NUMBER: '',
     FACTORY_PULL_NUMBER: '',
     FACTORY_PULL_HEAD: '',
-    FACTORY_PULL_BASE_REF: '',
-    FACTORY_PULL_BASE_REPO_ID: '',
-    FACTORY_PULL_HEAD_REPO_ID: '',
-    FACTORY_REVIEW_ID: '',
     FACTORY_WORKFLOW_RUN_ID: '',
     FACTORY_CHECK_HEAD: '',
     FACTORY_WORKFLOW_HEAD_REPO_ID: '',
@@ -2655,32 +2581,6 @@ test('enforces verifyGhAwWorkflowLock trigger parity, workflow_run repo guard, e
   assert.equal(scheduleRun.status, 0, scheduleRun.stderr);
   assert.match(scheduleRun.stdout, /"SHADOW_PLAN"/);
 
-  // pull_request_review with GITHUB_REF=refs/pull/<n>/merge and GITHUB_REF_PROTECTED=false succeeds for same-repo main PRs!
-  for (const wfRef of [
-    'Jamula/SoftwareFactory/.github/workflows/factory-orchestrator.lock.yml@refs/pull/42/merge',
-    'Jamula/SoftwareFactory/.github/workflows/factory-orchestrator.lock.yml@refs/heads/main'
-  ]) {
-    const reviewRun = spawnSync('bash', ['-c', evalScript], {
-      cwd: repoRoot,
-      env: {
-        ...baseEvalEnv,
-        GITHUB_EVENT_NAME: 'pull_request_review',
-        GITHUB_REF: 'refs/pull/42/merge',
-        GITHUB_REF_PROTECTED: 'false',
-        GITHUB_WORKFLOW_REF: wfRef,
-        FACTORY_GHAW_MODE: 'verify-lock',
-        FACTORY_PULL_NUMBER: '42',
-        FACTORY_PULL_HEAD: validSha,
-        FACTORY_PULL_BASE_REF: 'main',
-        FACTORY_PULL_BASE_REPO_ID: '1471342715',
-        FACTORY_PULL_HEAD_REPO_ID: '1471342715',
-        FACTORY_REVIEW_ID: '777'
-      },
-      encoding: 'utf8'
-    });
-    assert.equal(reviewRun.status, 0, reviewRun.stderr);
-  }
-
   // verify-lock mode skips smoke and succeeds
   const verifyOnlyRun = spawnSync('bash', ['-c', evalScript], {
     cwd: repoRoot,
@@ -2690,7 +2590,7 @@ test('enforces verifyGhAwWorkflowLock trigger parity, workflow_run repo guard, e
   assert.equal(verifyOnlyRun.status, 0, verifyOnlyRun.stderr);
   assert.doesNotMatch(verifyOnlyRun.stdout, /"SHADOW_PLAN"/);
 
-  // workflow_run with matching head_repository.id succeeds; fork head_repository.id fails closed
+  // workflow_run with matching head_repository.id succeeds; fork head_repository.id and PR-controlled merge-ref revisions fail closed!
   const sameRepoWrRun = spawnSync('bash', ['-c', evalScript], {
     cwd: repoRoot,
     env: {
@@ -2706,44 +2606,21 @@ test('enforces verifyGhAwWorkflowLock trigger parity, workflow_run repo guard, e
 
   for (const rejectedEnv of [
     {...baseEvalEnv, GITHUB_EVENT_NAME: 'workflow_run', FACTORY_WORKFLOW_HEAD_REPO_ID: '999999'},
-    {...baseEvalEnv, GITHUB_EVENT_NAME: 'issues', GITHUB_REF: 'refs/pull/42/merge', GITHUB_REF_PROTECTED: 'false'},
     {
       ...baseEvalEnv,
       GITHUB_EVENT_NAME: 'pull_request_review',
       GITHUB_REF: 'refs/pull/42/merge',
       GITHUB_REF_PROTECTED: 'false',
+      GITHUB_WORKFLOW_REF: 'Jamula/SoftwareFactory/.github/workflows/factory-orchestrator.lock.yml@refs/pull/42/merge',
       FACTORY_PULL_NUMBER: '42',
-      FACTORY_PULL_HEAD: validSha,
-      FACTORY_PULL_BASE_REF: 'main',
-      FACTORY_PULL_BASE_REPO_ID: '1471342715',
-      FACTORY_PULL_HEAD_REPO_ID: '999999',
-      FACTORY_REVIEW_ID: '777'
+      FACTORY_PULL_HEAD: validSha
     },
     {
       ...baseEvalEnv,
-      GITHUB_EVENT_NAME: 'pull_request_review',
-      GITHUB_REF: 'refs/pull/42/merge',
-      GITHUB_REF_PROTECTED: 'false',
-      FACTORY_PULL_NUMBER: '42',
-      FACTORY_PULL_HEAD: validSha,
-      FACTORY_PULL_BASE_REF: 'develop',
-      FACTORY_PULL_BASE_REPO_ID: '1471342715',
-      FACTORY_PULL_HEAD_REPO_ID: '1471342715',
-      FACTORY_REVIEW_ID: '777'
+      GITHUB_WORKFLOW_REF: 'Jamula/SoftwareFactory/.github/workflows/factory-orchestrator.lock.yml@refs/pull/42/merge'
     },
-    {
-      ...baseEvalEnv,
-      GITHUB_EVENT_NAME: 'pull_request_review',
-      GITHUB_REF: 'refs/pull/42/merge',
-      GITHUB_REF_PROTECTED: 'false',
-      GITHUB_WORKFLOW_REF: 'Jamula/SoftwareFactory/.github/workflows/other.yml@refs/heads/main',
-      FACTORY_PULL_NUMBER: '42',
-      FACTORY_PULL_HEAD: validSha,
-      FACTORY_PULL_BASE_REF: 'main',
-      FACTORY_PULL_BASE_REPO_ID: '1471342715',
-      FACTORY_PULL_HEAD_REPO_ID: '1471342715',
-      FACTORY_REVIEW_ID: '777'
-    },
+    {...baseEvalEnv, GITHUB_REF: 'refs/heads/feature'},
+    {...baseEvalEnv, GITHUB_REF_PROTECTED: 'false'},
     {...baseEvalEnv, FACTORY_GHAW_MODE: 'live-dispatch'},
     {...baseEvalEnv, FACTORY_ISSUE_NUMBER: '0'},
     {...baseEvalEnv, FACTORY_PULL_NUMBER: 'abc'},

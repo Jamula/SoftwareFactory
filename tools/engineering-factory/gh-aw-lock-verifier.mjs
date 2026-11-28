@@ -820,24 +820,24 @@ function resolveTrustedRepoIdBinding(conjuncts) {
   return {ok: true, repoId: boundId ?? DEFAULT_SOFTWARE_FACTORY_REPO_ID};
 }
 
-function isRepoIdContextOrBoundLiteral(node, expectedRepoId, allowWorkflowRunRepoIdent) {
+function isRepoIdContextOrBoundLiteral(node, expectedRepoId) {
   if (node.kind === 'Literal') {
     return parsePositiveIdScalar(node.value) === expectedRepoId;
   }
   return node.kind === 'Ident' && (
     node.path === 'github.repository_id' ||
-    (allowWorkflowRunRepoIdent && node.path === 'github.event.workflow_run.repository.id')
+    node.path === 'github.event.workflow_run.repository.id'
   );
 }
 
-function isIdentEqBoundRepoId(node, identPath, expectedRepoId, allowWorkflowRunRepoIdent) {
+function isIdentEqBoundRepoId(node, identPath, expectedRepoId) {
   if (node.kind !== 'Compare' || node.op !== '==') return false;
   if (node.left.kind === 'Ident' && node.left.path === identPath) {
-    return isRepoIdContextOrBoundLiteral(node.right, expectedRepoId, allowWorkflowRunRepoIdent);
+    return isRepoIdContextOrBoundLiteral(node.right, expectedRepoId);
   }
   return node.right.kind === 'Ident' &&
     node.right.path === identPath &&
-    isRepoIdContextOrBoundLiteral(node.left, expectedRepoId, allowWorkflowRunRepoIdent);
+    isRepoIdContextOrBoundLiteral(node.left, expectedRepoId);
 }
 
 function onMapNeedsWorkflowRunRepoGuard(onMap) {
@@ -846,18 +846,18 @@ function onMapNeedsWorkflowRunRepoGuard(onMap) {
 
 function isWorkflowRunRepoGuardConjunct(node, expectedRepoId) {
   if (isIdentCompareLiteral(node, '!=', 'github.event_name', 'workflow_run') ||
-      isIdentEqBoundRepoId(node, 'github.event.workflow_run.head_repository.id', expectedRepoId, true)) {
+      isIdentEqBoundRepoId(node, 'github.event.workflow_run.head_repository.id', expectedRepoId)) {
     return true;
   }
   if (node.kind !== 'Or') return false;
   if (isIdentCompareLiteral(node.left, '!=', 'github.event_name', 'workflow_run')) {
     return collectMandatoryConjuncts(node.right).some(c =>
-      isIdentEqBoundRepoId(c, 'github.event.workflow_run.head_repository.id', expectedRepoId, true)
+      isIdentEqBoundRepoId(c, 'github.event.workflow_run.head_repository.id', expectedRepoId)
     );
   }
   return isIdentCompareLiteral(node.right, '!=', 'github.event_name', 'workflow_run') &&
     collectMandatoryConjuncts(node.left).some(c =>
-      isIdentEqBoundRepoId(c, 'github.event.workflow_run.head_repository.id', expectedRepoId, true)
+      isIdentEqBoundRepoId(c, 'github.event.workflow_run.head_repository.id', expectedRepoId)
     );
 }
 
@@ -868,45 +868,11 @@ function hasWorkflowRunSameRepoGuard(ast) {
   return binding.ok && conjuncts.some(c => isWorkflowRunRepoGuardConjunct(c, binding.repoId));
 }
 
-function isTrustedReviewAltBranch(branchNode, targetBranch, expectedRepoId) {
-  const parts = collectMandatoryConjuncts(branchNode);
-  return parts.some(p => isIdentCompareLiteral(p, '==', 'github.event_name', 'pull_request_review')) &&
-    parts.some(p => isIdentCompareLiteral(p, '==', 'github.event.pull_request.base.ref', targetBranch)) &&
-    parts.some(p => isIdentEqBoundRepoId(p, 'github.event.pull_request.base.repo.id', expectedRepoId, false)) &&
-    parts.some(p => isIdentEqBoundRepoId(p, 'github.event.pull_request.head.repo.id', expectedRepoId, false));
-}
-
-function isCompatibleWithPullRequestReview(ast, targetBranch) {
-  if (ast === null || astHasBypassCall(ast)) return false;
-  const expectedBranchRef = `refs/heads/${targetBranch}`;
-  const conjuncts = collectMandatoryConjuncts(ast);
-  const binding = resolveTrustedRepoIdBinding(conjuncts);
-  if (!binding.ok) return false;
-  const excludesReview = conjuncts.some(c =>
-    isIdentCompareLiteral(c, '!=', 'github.event_name', 'pull_request_review')
-  );
-  if (!excludesReview && conjuncts.some(c => isIdentCompareLiteral(c, '==', 'github.ref', expectedBranchRef))) {
-    return false;
-  }
-  for (const c of conjuncts) {
-    if (c.kind !== 'Or') continue;
-    const leftHasRef = collectMandatoryConjuncts(c.left).some(p =>
-      isIdentCompareLiteral(p, '==', 'github.ref', expectedBranchRef)
-    );
-    const rightHasRef = collectMandatoryConjuncts(c.right).some(p =>
-      isIdentCompareLiteral(p, '==', 'github.ref', expectedBranchRef)
-    );
-    if (leftHasRef && !isTrustedReviewAltBranch(c.right, targetBranch, binding.repoId)) return false;
-    if (rightHasRef && !isTrustedReviewAltBranch(c.left, targetBranch, binding.repoId)) return false;
-  }
-  return true;
-}
-
 function validateLockTriggerMap(onMap) {
   const keys = Object.keys(onMap);
   const singleTrigger = keys.length === 1;
   for (const triggerName of keys) {
-    if (!SUPPORTED_EVENT_MATRIX_TRIGGERS.has(triggerName)) {
+    if (triggerName === 'pull_request_review' || !SUPPORTED_EVENT_MATRIX_TRIGGERS.has(triggerName)) {
       return {ok: false, reason: 'UNSUPPORTED_EVENT_TRIGGER'};
     }
     if (triggerName === 'schedule') {
@@ -1402,10 +1368,6 @@ function inspectFrontmatterPolicy(frontmatter, isNewerVerified, headers, options
     if (onMapNeedsWorkflowRunRepoGuard(frontmatter.on) && !hasWorkflowRunSameRepoGuard(fmAst)) {
       return {ok: false, reason: 'MISSING_WORKFLOW_RUN_REPO_GUARD'};
     }
-    if (Object.hasOwn(frontmatter.on, 'pull_request_review') &&
-        !isCompatibleWithPullRequestReview(fmAst, 'main')) {
-      return {ok: false, reason: 'INVALID_REVIEW_REF_GUARD'};
-    }
   }
 
   const headerProtocol = headers['gh-aw-work-queue-protocol'];
@@ -1603,9 +1565,7 @@ export function verifyGhAwWorkflowLock(input) {
       marshalCanonicalJson(frontmatter.on) !== marshalCanonicalJson(lockDoc.on)) {
     return deny('TRIGGER_PARITY_MISMATCH');
   }
-  const hasPullRequestReviewTrigger = Object.hasOwn(lockDoc.on, 'pull_request_review');
-  const hasPrRefExposureTrigger = Object.hasOwn(lockDoc.on, 'pull_request_target') ||
-    hasPullRequestReviewTrigger;
+  const hasPrRefExposureTrigger = Object.hasOwn(lockDoc.on, 'pull_request_target');
   const needsWorkflowRunGuard = onMapNeedsWorkflowRunRepoGuard(lockDoc.on);
 
   const helperJobs = [];
@@ -1818,14 +1778,6 @@ export function verifyGhAwWorkflowLock(input) {
   const guardedHelperIds = new Set(
     helperJobs.filter(({job}) => verifyEvaluationGuards(job.if).ok).map(({jobId}) => jobId)
   );
-  const reviewCompatibleHelperIds = new Set(
-    helperJobs
-      .filter(({job}) =>
-        verifyEvaluationGuards(job.if).ok &&
-        isCompatibleWithPullRequestReview(parseIfExpression(job.if), 'main')
-      )
-      .map(({jobId}) => jobId)
-  );
   const workflowRunGuardedHelperIds = new Set(
     helperJobs
       .filter(({job}) => verifyEvaluationGuards(job.if).ok && hasWorkflowRunSameRepoGuard(parseIfExpression(job.if)))
@@ -1836,10 +1788,9 @@ export function verifyGhAwWorkflowLock(input) {
   for (const {job} of evaluationJobIds) {
     const evalAst = job.if === undefined ? null : parseIfExpression(job.if);
     const guardVerdict = verifyEvaluationGuards(job.if);
-    let matchingGuardedHelpers = [];
     if (!guardVerdict.ok) {
       const evalNeeds = normalizeNeeds(job.needs);
-      matchingGuardedHelpers = evalNeeds === null ? [] : evalNeeds.filter(dep => guardedHelperIds.has(dep));
+      const matchingGuardedHelpers = evalNeeds === null ? [] : evalNeeds.filter(dep => guardedHelperIds.has(dep));
       if (matchingGuardedHelpers.length === 0) return deny(guardVerdict.reason);
       if (job.if !== undefined) {
         if (evalAst === null || astHasBypassCall(evalAst)) return deny(guardVerdict.reason);
@@ -1864,14 +1815,6 @@ export function verifyGhAwWorkflowLock(input) {
         )
       );
       if (!inheritsWrGuard) return deny('MISSING_WORKFLOW_RUN_REPO_GUARD');
-    }
-    if (hasPullRequestReviewTrigger) {
-      if (evalAst !== null && !isCompatibleWithPullRequestReview(evalAst, 'main')) {
-        return deny('INVALID_REVIEW_REF_GUARD');
-      }
-      if (!guardVerdict.ok && !matchingGuardedHelpers.some(helperId => reviewCompatibleHelperIds.has(helperId))) {
-        return deny('INVALID_REVIEW_REF_GUARD');
-      }
     }
   }
 
@@ -2606,16 +2549,6 @@ export function verifyEventTriggerMatrix(lockYamlSource, options) {
   if (needsWorkflowRunGuard &&
       jobEntries.some(([jobId]) => !disabledJobIds.has(jobId) && !workflowRunGuardedJobIds.has(jobId))) {
     return deny('MISSING_WORKFLOW_RUN_REPO_GUARD');
-  }
-  if (hasPullRequestReviewTrigger) {
-    for (const [jobId] of jobEntries) {
-      if (disabledJobIds.has(jobId)) continue;
-      const jobAst = parsedJobIfs.get(jobId);
-      if (jobAst !== null && !astHasBypassCall(jobAst) &&
-          !isCompatibleWithPullRequestReview(jobAst, targetBranch)) {
-        return deny('INVALID_REVIEW_REF_GUARD');
-      }
-    }
   }
 
   for (const {jobId, stepIdx} of checkoutProvenanceReqs) {
