@@ -81,15 +81,23 @@
   "cohortProvenance": {
     "cohort": "wave-3-supervised-merge-queue",
     "provenance": "github-timeline",
-    "headHistorySource": "pull_request-workflow-runs-verified-against-reviews-and-force-push-events",
+    "captureKind": "readonly-github-api-snapshot",
+    "independentHostedProvenanceEstablished": false,
+    "offlineReplayEstablishesLiveProvenance": false,
+    "publicActionsMetadataEstablishesCompleteRefHistory": false,
     "windowStartIso": "2026-11-27T10:00:00.000Z",
     "windowEndIso": "2026-11-28T03:15:00.000Z",
-    "sourceComplete": true,
-    "supervisionModel": "supervised-coordinator-and-agent-merge",
+    "sourceComplete": false,
+    "humanTouchesComplete": false,
     "unattendedIssue10Claimed": false,
     "unattendedIssue10Status": "pending-future-unattended-cloud-agent-cohort",
     "closesIssue8": false,
-    "disclosure": "Wave 3 PRs #145-#165 were merged into protected main via GitHub Native Squash Merge Queue under supervised Wave 3 coordinator/Agent-Merge sessions authenticated via user-scoped GitHub CLI. Branch-head transitions (including pre-rebase heads overwritten by force-pushes) are reconstructed from pull_request workflow_runs and cross-checked against all review commits and HeadRefForcePushedEvent records. Routine coordinator touches are explicitly recorded (routineHumanTouchesCount=21, unattendedMergedCount=0, sloMet=false). This receipt proves serialized native Squash Merge Queue execution, merge_group check enforcement, parameterized queue-reread scope isolation, and deterministic latency/stage attribution, and explicitly does NOT claim unattended Issue #10 Cloud Agent completion or velocity-SLO attainment."
+    "captureLimitations": [
+      "Static JSON artifact captured via read-only gh api queries at 2026-11-28T03:15:00.000Z; offline unit-test replay validates deterministic schema and evaluator invariants only and does not independently authenticate live GitHub provenance.",
+      "Six force-pushed PRs (#145, #157, #161, #162, #163, #165) include pre-rebase heads reconstructed from public pull_request workflow_runs, reviews, and HeadRefForcePushedEvent records; any ref update that emitted neither a retained timeline/review event nor an Actions run cannot be ruled out solely from public Actions metadata, so cohort sourceComplete is recorded as false (PARTIAL_COHORT_EVIDENCE).",
+      "Public GitHub timeline events record user-account actors on AddedToMergeQueueEvent (observedRoutineCount=21, forcing unattendedMerge=false and zeroRoutineHumanTouchesMet=false), while off-GitHub operator/coordinator touches are not observable from public APIs (humanTouchesComplete=false)."
+    ],
+    "disclosure": "Contextual operator disclosure (non-authoritative for unattended gates): Wave 3 PRs #145-#165 were integrated into protected main through b0924c3807f797e6090e1dc3e1e65fc9caa07550 during supervised Wave 3 coordinator/Agent-Merge sessions rather than future Issue #10 unattended Cloud Agents. Both cohort completeness (sourceComplete=false -> status=partial, sloMet=null) and human-touch completeness (humanTouchesComplete=false, unattendedMergedCount=0, zeroRoutineHumanTouchesMet=false) fail closed; even under a hypothetical sourceComplete=true replay, publishToMergeMs, creationToMergeMs, eligibleToMergeMs, mergeToVerifiedMainMs, and zeroRoutineHumanTouchesMet all miss target (SLO_MISSED)."
   },
   "sloOptions": {
     "repositoryId": 1471342715,
@@ -100,18 +108,20 @@
     "observedAt": 1795835700000,
     "nowMs": 1795835700000,
     "maxAgeMs": 86400000,
-    "sourceComplete": true
+    "sourceComplete": false
   },
   "sloEvaluationSummary": {
     "valid": true,
-    "known": true,
-    "status": "complete",
-    "reason": "SLO_MISSED",
+    "known": false,
+    "status": "partial",
+    "reason": "PARTIAL_COHORT_EVIDENCE",
     "sampleCount": 21,
-    "sloMet": false,
-    "stretchMet": false,
+    "sloMet": null,
+    "stretchMet": null,
+    "humanTouchesComplete": false,
     "zeroRoutineHumanTouchesMet": false,
-    "routineHumanTouchesCount": 21,
+    "routineHumanTouchesCount": null,
+    "observedRoutineHumanTouchesCount": 21,
     "counts": {
       "total": 21,
       "createdReadyCount": 21,
@@ -123,7 +133,7 @@
       "verificationPendingCount": 0,
       "unattendedMergedCount": 0,
       "unknownUnattendedMergedCount": 0,
-      "unknownHumanTouchesCount": 0
+      "unknownHumanTouchesCount": 21
     },
     "rework": {
       "headChangesCount": 99,
@@ -154,12 +164,12 @@
         "stretchMissRate": 0,
         "overdueOpenCount": 0,
         "stretchOverdueOpenCount": 0,
-        "p50MeetsTarget": true,
-        "p95MeetsTarget": true,
-        "p50MeetsStretch": true,
-        "p95MeetsStretch": true,
-        "meetsTarget": true,
-        "meetsStretch": true
+        "p50MeetsTarget": null,
+        "p95MeetsTarget": null,
+        "p50MeetsStretch": null,
+        "p95MeetsStretch": null,
+        "meetsTarget": null,
+        "meetsStretch": null
       },
       "publishToMergeMs": {
         "metric": "publishToMergeMs",
@@ -179,12 +189,12 @@
         "stretchMissRate": 1,
         "overdueOpenCount": 0,
         "stretchOverdueOpenCount": 0,
-        "p50MeetsTarget": false,
-        "p95MeetsTarget": false,
-        "p50MeetsStretch": false,
-        "p95MeetsStretch": false,
-        "meetsTarget": false,
-        "meetsStretch": false
+        "p50MeetsTarget": null,
+        "p95MeetsTarget": null,
+        "p50MeetsStretch": null,
+        "p95MeetsStretch": null,
+        "meetsTarget": null,
+        "meetsStretch": null
       },
       "creationToMergeMs": {
         "metric": "creationToMergeMs",
@@ -204,12 +214,12 @@
         "stretchMissRate": 1,
         "overdueOpenCount": 0,
         "stretchOverdueOpenCount": 0,
-        "p50MeetsTarget": false,
-        "p95MeetsTarget": false,
-        "p50MeetsStretch": false,
-        "p95MeetsStretch": false,
-        "meetsTarget": false,
-        "meetsStretch": false
+        "p50MeetsTarget": null,
+        "p95MeetsTarget": null,
+        "p50MeetsStretch": null,
+        "p95MeetsStretch": null,
+        "meetsTarget": null,
+        "meetsStretch": null
       },
       "eligibleToMergeMs": {
         "metric": "eligibleToMergeMs",
@@ -229,12 +239,12 @@
         "stretchMissRate": 1,
         "overdueOpenCount": 0,
         "stretchOverdueOpenCount": 0,
-        "p50MeetsTarget": false,
-        "p95MeetsTarget": false,
-        "p50MeetsStretch": false,
-        "p95MeetsStretch": false,
-        "meetsTarget": false,
-        "meetsStretch": false
+        "p50MeetsTarget": null,
+        "p95MeetsTarget": null,
+        "p50MeetsStretch": null,
+        "p95MeetsStretch": null,
+        "meetsTarget": null,
+        "meetsStretch": null
       },
       "mergeToVerifiedMainMs": {
         "metric": "mergeToVerifiedMainMs",
@@ -254,12 +264,12 @@
         "stretchMissRate": 1,
         "overdueOpenCount": 0,
         "stretchOverdueOpenCount": 0,
-        "p50MeetsTarget": false,
-        "p95MeetsTarget": false,
-        "p50MeetsStretch": false,
-        "p95MeetsStretch": false,
-        "meetsTarget": false,
-        "meetsStretch": false
+        "p50MeetsTarget": null,
+        "p95MeetsTarget": null,
+        "p50MeetsStretch": null,
+        "p95MeetsStretch": null,
+        "meetsTarget": null,
+        "meetsStretch": null
       }
     },
     "stageAttribution": {
@@ -404,12 +414,12 @@
       "retryTimestamps": [],
       "mergedAt": 1795833052000,
       "mainVerifiedAt": 1795833186000,
-      "humanTouchesComplete": true,
+      "humanTouchesComplete": false,
       "humanTouches": [
         {
           "kind": "routine",
           "at": 1795832875000,
-          "summary": "Supervised Wave 3 coordinator session enqueued PR via user-authenticated GitHub CLI"
+          "summary": "Public AddedToMergeQueueEvent recorded user-account actor on merge queue enrollment"
         }
       ],
       "stages": {
@@ -453,12 +463,12 @@
       "retryTimestamps": [],
       "mergedAt": 1795833052000,
       "mainVerifiedAt": 1795833186000,
-      "humanTouchesComplete": true,
+      "humanTouchesComplete": false,
       "humanTouches": [
         {
           "kind": "routine",
           "at": 1795832877000,
-          "summary": "Supervised Wave 3 coordinator session enqueued PR via user-authenticated GitHub CLI"
+          "summary": "Public AddedToMergeQueueEvent recorded user-account actor on merge queue enrollment"
         }
       ],
       "stages": {
@@ -530,12 +540,12 @@
       "retryTimestamps": [],
       "mergedAt": 1795833083000,
       "mainVerifiedAt": 1795833470000,
-      "humanTouchesComplete": true,
+      "humanTouchesComplete": false,
       "humanTouches": [
         {
           "kind": "routine",
           "at": 1795832879000,
-          "summary": "Supervised Wave 3 coordinator session enqueued PR via user-authenticated GitHub CLI"
+          "summary": "Public AddedToMergeQueueEvent recorded user-account actor on merge queue enrollment"
         }
       ],
       "stages": {
@@ -591,12 +601,12 @@
       "retryTimestamps": [],
       "mergedAt": 1795833083000,
       "mainVerifiedAt": 1795833470000,
-      "humanTouchesComplete": true,
+      "humanTouchesComplete": false,
       "humanTouches": [
         {
           "kind": "routine",
           "at": 1795832882000,
-          "summary": "Supervised Wave 3 coordinator session enqueued PR via user-authenticated GitHub CLI"
+          "summary": "Public AddedToMergeQueueEvent recorded user-account actor on merge queue enrollment"
         }
       ],
       "stages": {
@@ -676,12 +686,12 @@
       "retryTimestamps": [],
       "mergedAt": 1795833083000,
       "mainVerifiedAt": 1795833470000,
-      "humanTouchesComplete": true,
+      "humanTouchesComplete": false,
       "humanTouches": [
         {
           "kind": "routine",
           "at": 1795832883000,
-          "summary": "Supervised Wave 3 coordinator session enqueued PR via user-authenticated GitHub CLI"
+          "summary": "Public AddedToMergeQueueEvent recorded user-account actor on merge queue enrollment"
         }
       ],
       "stages": {
@@ -729,12 +739,12 @@
       "retryTimestamps": [],
       "mergedAt": 1795833173000,
       "mainVerifiedAt": 1795833470000,
-      "humanTouchesComplete": true,
+      "humanTouchesComplete": false,
       "humanTouches": [
         {
           "kind": "routine",
           "at": 1795832886000,
-          "summary": "Supervised Wave 3 coordinator session enqueued PR via user-authenticated GitHub CLI"
+          "summary": "Public AddedToMergeQueueEvent recorded user-account actor on merge queue enrollment"
         }
       ],
       "stages": {
@@ -794,12 +804,12 @@
       "retryTimestamps": [],
       "mergedAt": 1795833200000,
       "mainVerifiedAt": 1795833470000,
-      "humanTouchesComplete": true,
+      "humanTouchesComplete": false,
       "humanTouches": [
         {
           "kind": "routine",
           "at": 1795832888000,
-          "summary": "Supervised Wave 3 coordinator session enqueued PR via user-authenticated GitHub CLI"
+          "summary": "Public AddedToMergeQueueEvent recorded user-account actor on merge queue enrollment"
         }
       ],
       "stages": {
@@ -847,12 +857,12 @@
       "retryTimestamps": [],
       "mergedAt": 1795812727000,
       "mainVerifiedAt": 1795812881000,
-      "humanTouchesComplete": true,
+      "humanTouchesComplete": false,
       "humanTouches": [
         {
           "kind": "routine",
           "at": 1795812542000,
-          "summary": "Supervised Wave 3 coordinator session enqueued PR via user-authenticated GitHub CLI"
+          "summary": "Public AddedToMergeQueueEvent recorded user-account actor on merge queue enrollment"
         }
       ],
       "stages": {
@@ -900,12 +910,12 @@
       "retryTimestamps": [],
       "mergedAt": 1795813500000,
       "mainVerifiedAt": 1795813691000,
-      "humanTouchesComplete": true,
+      "humanTouchesComplete": false,
       "humanTouches": [
         {
           "kind": "routine",
           "at": 1795813326000,
-          "summary": "Supervised Wave 3 coordinator session enqueued PR via user-authenticated GitHub CLI"
+          "summary": "Public AddedToMergeQueueEvent recorded user-account actor on merge queue enrollment"
         }
       ],
       "stages": {
@@ -957,12 +967,12 @@
       "retryTimestamps": [],
       "mergedAt": 1795812727000,
       "mainVerifiedAt": 1795812881000,
-      "humanTouchesComplete": true,
+      "humanTouchesComplete": false,
       "humanTouches": [
         {
           "kind": "routine",
           "at": 1795812557000,
-          "summary": "Supervised Wave 3 coordinator session enqueued PR via user-authenticated GitHub CLI"
+          "summary": "Public AddedToMergeQueueEvent recorded user-account actor on merge queue enrollment"
         }
       ],
       "stages": {
@@ -1018,12 +1028,12 @@
       "retryTimestamps": [],
       "mergedAt": 1795833217000,
       "mainVerifiedAt": 1795833470000,
-      "humanTouchesComplete": true,
+      "humanTouchesComplete": false,
       "humanTouches": [
         {
           "kind": "routine",
           "at": 1795832890000,
-          "summary": "Supervised Wave 3 coordinator session enqueued PR via user-authenticated GitHub CLI"
+          "summary": "Public AddedToMergeQueueEvent recorded user-account actor on merge queue enrollment"
         }
       ],
       "stages": {
@@ -1095,12 +1105,12 @@
       "retryTimestamps": [],
       "mergedAt": 1795813500000,
       "mainVerifiedAt": 1795813691000,
-      "humanTouchesComplete": true,
+      "humanTouchesComplete": false,
       "humanTouches": [
         {
           "kind": "routine",
           "at": 1795813312000,
-          "summary": "Supervised Wave 3 coordinator session enqueued PR via user-authenticated GitHub CLI"
+          "summary": "Public AddedToMergeQueueEvent recorded user-account actor on merge queue enrollment"
         }
       ],
       "stages": {
@@ -1160,12 +1170,12 @@
       "retryTimestamps": [],
       "mergedAt": 1795835459000,
       "mainVerifiedAt": 1795835580000,
-      "humanTouchesComplete": true,
+      "humanTouchesComplete": false,
       "humanTouches": [
         {
           "kind": "routine",
           "at": 1795835283000,
-          "summary": "Supervised Wave 3 coordinator session enqueued PR via user-authenticated GitHub CLI"
+          "summary": "Public AddedToMergeQueueEvent recorded user-account actor on merge queue enrollment"
         }
       ],
       "stages": {
@@ -1209,12 +1219,12 @@
       "retryTimestamps": [],
       "mergedAt": 1795813119000,
       "mainVerifiedAt": 1795813307000,
-      "humanTouchesComplete": true,
+      "humanTouchesComplete": false,
       "humanTouches": [
         {
           "kind": "routine",
           "at": 1795812940000,
-          "summary": "Supervised Wave 3 coordinator session enqueued PR via user-authenticated GitHub CLI"
+          "summary": "Public AddedToMergeQueueEvent recorded user-account actor on merge queue enrollment"
         }
       ],
       "stages": {
@@ -1270,12 +1280,12 @@
       "retryTimestamps": [],
       "mergedAt": 1795813605000,
       "mainVerifiedAt": 1795813832000,
-      "humanTouchesComplete": true,
+      "humanTouchesComplete": false,
       "humanTouches": [
         {
           "kind": "routine",
           "at": 1795813448000,
-          "summary": "Supervised Wave 3 coordinator session enqueued PR via user-authenticated GitHub CLI"
+          "summary": "Public AddedToMergeQueueEvent recorded user-account actor on merge queue enrollment"
         }
       ],
       "stages": {
@@ -1331,12 +1341,12 @@
       "retryTimestamps": [],
       "mergedAt": 1795833217000,
       "mainVerifiedAt": 1795833470000,
-      "humanTouchesComplete": true,
+      "humanTouchesComplete": false,
       "humanTouches": [
         {
           "kind": "routine",
           "at": 1795832892000,
-          "summary": "Supervised Wave 3 coordinator session enqueued PR via user-authenticated GitHub CLI"
+          "summary": "Public AddedToMergeQueueEvent recorded user-account actor on merge queue enrollment"
         }
       ],
       "stages": {
@@ -1412,12 +1422,12 @@
       "retryTimestamps": [],
       "mergedAt": 1795835459000,
       "mainVerifiedAt": 1795835580000,
-      "humanTouchesComplete": true,
+      "humanTouchesComplete": false,
       "humanTouches": [
         {
           "kind": "routine",
           "at": 1795835279000,
-          "summary": "Supervised Wave 3 coordinator session enqueued PR via user-authenticated GitHub CLI"
+          "summary": "Public AddedToMergeQueueEvent recorded user-account actor on merge queue enrollment"
         }
       ],
       "stages": {
@@ -1489,12 +1499,12 @@
       "retryTimestamps": [],
       "mergedAt": 1795833234000,
       "mainVerifiedAt": 1795833470000,
-      "humanTouchesComplete": true,
+      "humanTouchesComplete": false,
       "humanTouches": [
         {
           "kind": "routine",
           "at": 1795832896000,
-          "summary": "Supervised Wave 3 coordinator session enqueued PR via user-authenticated GitHub CLI"
+          "summary": "Public AddedToMergeQueueEvent recorded user-account actor on merge queue enrollment"
         }
       ],
       "stages": {
@@ -1552,12 +1562,12 @@
       ],
       "mergedAt": 1795814822000,
       "mainVerifiedAt": 1795814984000,
-      "humanTouchesComplete": true,
+      "humanTouchesComplete": false,
       "humanTouches": [
         {
           "kind": "routine",
           "at": 1795813491000,
-          "summary": "Supervised Wave 3 coordinator session enqueued PR via user-authenticated GitHub CLI"
+          "summary": "Public AddedToMergeQueueEvent recorded user-account actor on merge queue enrollment"
         }
       ],
       "stages": {
@@ -1625,12 +1635,12 @@
       "retryTimestamps": [],
       "mergedAt": 1795833336000,
       "mainVerifiedAt": 1795833599000,
-      "humanTouchesComplete": true,
+      "humanTouchesComplete": false,
       "humanTouches": [
         {
           "kind": "routine",
           "at": 1795832898000,
-          "summary": "Supervised Wave 3 coordinator session enqueued PR via user-authenticated GitHub CLI"
+          "summary": "Public AddedToMergeQueueEvent recorded user-account actor on merge queue enrollment"
         }
       ],
       "stages": {
@@ -1682,12 +1692,12 @@
       "retryTimestamps": [],
       "mergedAt": 1795814709000,
       "mainVerifiedAt": 1795814852000,
-      "humanTouchesComplete": true,
+      "humanTouchesComplete": false,
       "humanTouches": [
         {
           "kind": "routine",
           "at": 1795813532000,
-          "summary": "Supervised Wave 3 coordinator session enqueued PR via user-authenticated GitHub CLI"
+          "summary": "Public AddedToMergeQueueEvent recorded user-account actor on merge queue enrollment"
         }
       ],
       "stages": {

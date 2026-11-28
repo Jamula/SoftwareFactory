@@ -227,7 +227,7 @@ test('hardens record checks against custom prototypes, non-enumerable fields, an
  assert.equal(reconcileQueueSnapshot(intent,snapshot(pull,nullProto(entry))).reason,'QUEUE_REREAD_UNKNOWN');
 });
 
-test('validates m01-05-merge-queue-receipt.json against queue-reread, merge-queue-slo, and review invariants',()=>{
+test('verifies deterministic replay invariants on m01-05-merge-queue-receipt.json without asserting live hosted provenance',()=>{
  const receiptUrl=new URL('../../docs/evidence/m01-05-merge-queue-receipt.json',import.meta.url);
  const receipt=JSON.parse(readFileSync(receiptUrl,'utf8'));
 
@@ -235,6 +235,12 @@ test('validates m01-05-merge-queue-receipt.json against queue-reread, merge-queu
  assert.equal(receipt.milestone,'M01.05');
  assert.deepEqual(receipt.scope,DEFAULT_QUEUE_SCOPE);
  assert.equal(receipt.mainIntegrationRange.tipMainOid,'b0924c3807f797e6090e1dc3e1e65fc9caa07550');
+ assert.equal(receipt.cohortProvenance.captureKind,'readonly-github-api-snapshot');
+ assert.equal(receipt.cohortProvenance.independentHostedProvenanceEstablished,false);
+ assert.equal(receipt.cohortProvenance.offlineReplayEstablishesLiveProvenance,false);
+ assert.equal(receipt.cohortProvenance.publicActionsMetadataEstablishesCompleteRefHistory,false);
+ assert.equal(receipt.cohortProvenance.sourceComplete,false);
+ assert.equal(receipt.cohortProvenance.humanTouchesComplete,false);
  assert.equal(receipt.cohortProvenance.unattendedIssue10Claimed,false);
  assert.equal(receipt.cohortProvenance.closesIssue8,false);
  assert.equal(receipt.sloSamples.length,21);
@@ -243,20 +249,28 @@ test('validates m01-05-merge-queue-receipt.json against queue-reread, merge-queu
  for(const sample of receipt.sloSamples){
   const single=evaluatePullMergeLatencySample(sample);
   assert.equal(single.valid,true);
+  assert.equal(single.humanTouchesComplete,false);
   assert.equal(single.unattendedMerge,false);
  }
 
  const cohort=evaluatePullMergeLatencySlo(receipt.sloSamples,receipt.sloOptions);
  assert.equal(cohort.valid,true);
- assert.equal(cohort.known,true);
- assert.equal(cohort.status,'complete');
+ assert.equal(cohort.known,false);
+ assert.equal(cohort.status,'partial');
+ assert.equal(cohort.reason,'PARTIAL_COHORT_EVIDENCE');
  assert.equal(cohort.sampleCount,21);
- assert.equal(cohort.sloMet,false);
+ assert.equal(cohort.sloMet,null);
+ assert.equal(cohort.humanTouchesComplete,false);
+ assert.equal(cohort.zeroRoutineHumanTouchesMet,false);
  assert.equal(cohort.counts.unattendedMergedCount,0);
- assert.equal(cohort.routineHumanTouchesCount,21);
+ assert.equal(cohort.humanTouches.observedRoutineCount,21);
  assert.deepEqual(JSON.parse(JSON.stringify(cohort.rework)),receipt.sloEvaluationSummary.rework);
  assert.deepEqual(JSON.parse(JSON.stringify(cohort.metrics)),receipt.sloEvaluationSummary.metrics);
  assert.deepEqual(JSON.parse(JSON.stringify(cohort.stageAttribution)),receipt.sloEvaluationSummary.stageAttribution);
+
+ const ifWindowComplete=evaluatePullMergeLatencySlo(receipt.sloSamples,{...receipt.sloOptions,sourceComplete:true});
+ assert.equal(ifWindowComplete.sloMet,false);
+ assert.equal(ifWindowComplete.reason,'SLO_MISSED');
 
  const pr145Sample=receipt.sloSamples.find(s=>s.prNumber===145);
  assert.ok(pr145Sample.headCommits.some(h=>h.sha.startsWith('695827465b')));
