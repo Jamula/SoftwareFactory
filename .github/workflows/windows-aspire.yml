@@ -83,8 +83,8 @@ jobs:
         with:
           path: |
             ${{ runner.temp }}/nuget-packages
-            ${{ runner.temp }}/softwarefactory-aspire-tools
-          key: sf-aspire-nuget-v1-${{ runner.os }}-${{ runner.arch }}-dotnet-10.0.404-aspire-17.0.0-release-${{ hashFiles('global.json', 'apphost.cs', 'src/SoftwareFactory.Agents/SoftwareFactory.Agents.csproj', '**/packages.lock.json', 'Directory.Build.props', 'Directory.Packages.props') }}
+            ${{ runner.temp }}/aspire-cli-feed
+          key: sf-aspire-nuget-v2-${{ runner.os }}-${{ runner.arch }}-dotnet-10.0.404-aspire-17.0.0-release-${{ hashFiles('global.json', 'apphost.cs', 'src/SoftwareFactory.Agents/SoftwareFactory.Agents.csproj', '**/packages.lock.json', 'Directory.Build.props', 'Directory.Packages.props') }}
       - name: Restore and save locked NuGet and Aspire.Cli cache (protected main)
         id: aspire-cache-main
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.ref_protected == true && github.repository == 'Jamula/SoftwareFactory' && github.repository_id == '1471342715'
@@ -92,8 +92,8 @@ jobs:
         with:
           path: |
             ${{ runner.temp }}/nuget-packages
-            ${{ runner.temp }}/softwarefactory-aspire-tools
-          key: sf-aspire-nuget-v1-${{ runner.os }}-${{ runner.arch }}-dotnet-10.0.404-aspire-17.0.0-release-${{ hashFiles('global.json', 'apphost.cs', 'src/SoftwareFactory.Agents/SoftwareFactory.Agents.csproj', '**/packages.lock.json', 'Directory.Build.props', 'Directory.Packages.props') }}
+            ${{ runner.temp }}/aspire-cli-feed
+          key: sf-aspire-nuget-v2-${{ runner.os }}-${{ runner.arch }}-dotnet-10.0.404-aspire-17.0.0-release-${{ hashFiles('global.json', 'apphost.cs', 'src/SoftwareFactory.Agents/SoftwareFactory.Agents.csproj', '**/packages.lock.json', 'Directory.Build.props', 'Directory.Packages.props') }}
       - name: Restore pinned Aspire
         env:
           NUGET_PACKAGES: ${{ runner.temp }}/nuget-packages
@@ -103,23 +103,49 @@ jobs:
           $stageTimer = [System.Diagnostics.Stopwatch]::StartNew()
           $env:ASPIRE_HOME = Join-Path $env:RUNNER_TEMP 'softwarefactory-aspire'
           $toolDir = [System.IO.Path]::GetFullPath((Join-Path $env:RUNNER_TEMP 'softwarefactory-aspire-tools')).TrimEnd('\', '/')
+          $feedDir = [System.IO.Path]::GetFullPath((Join-Path $env:RUNNER_TEMP 'aspire-cli-feed')).TrimEnd('\', '/')
           $toolPrefix = $toolDir + [System.IO.Path]::DirectorySeparatorChar
-          $env:PATH = "$toolDir$([System.IO.Path]::PathSeparator)$env:PATH"
-          $aspireReused = $false
-          $aspireCmd = Get-Command aspire -ErrorAction SilentlyContinue
-          if ($null -ne $aspireCmd -and [System.IO.Path]::GetFullPath($aspireCmd.Source).StartsWith($toolPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
-            $cachedVersion = (& $aspireCmd.Source --version 2>$null | Out-String).Trim()
-            if ($LASTEXITCODE -eq 0 -and $cachedVersion -match '^17\.0\.0(?:\+[0-9a-f]+)?$') {
-              $aspireReused = $true
-            }
+          if (Test-Path -LiteralPath $toolDir) {
+            Remove-Item -Recurse -Force -LiteralPath $toolDir
           }
-          if (-not $aspireReused) {
-            if (Test-Path -LiteralPath $toolDir) {
-              Remove-Item -Recurse -Force -LiteralPath $toolDir
+          function Test-VerifiedAspireFeed([string]$dir) {
+            if (-not (Test-Path -LiteralPath $dir -PathType Container)) { return $false }
+            $dirItem = Get-Item -LiteralPath $dir -Force
+            if (($dirItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { return $false }
+            $entries = @(Get-ChildItem -LiteralPath $dir -Force)
+            if ($entries.Count -ne 2) { return $false }
+            foreach ($entry in $entries) {
+              if ($entry.PSIsContainer -or ($entry.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+                return $false
+              }
+            }
+            $metaPkg = Join-Path $dir 'aspire.cli.17.0.0.nupkg'
+            $ridPkg = Join-Path $dir 'aspire.cli.win-x64.17.0.0.nupkg'
+            if (-not (Test-Path -LiteralPath $metaPkg -PathType Leaf) -or -not (Test-Path -LiteralPath $ridPkg -PathType Leaf)) {
+              return $false
+            }
+            $metaHash = (Get-FileHash -LiteralPath $metaPkg -Algorithm SHA256).Hash.ToLowerInvariant()
+            $ridHash = (Get-FileHash -LiteralPath $ridPkg -Algorithm SHA256).Hash.ToLowerInvariant()
+            return ($metaHash -eq '31599e3906c24c5b05787651ac52859ca0e267973ff2bb9f38ca5f968e355f1d' -and
+                    $ridHash -eq '590e1d28d581fd532fa24a60a2adef8792cb3bd438585f57879551fc510458ea')
+          }
+          $aspireReused = $false
+          if (Test-VerifiedAspireFeed $feedDir) {
+            dotnet tool install Aspire.Cli --version 17.0.0 --tool-path $toolDir --source $feedDir
+            if ($LASTEXITCODE -ne 0) { throw 'Cached Aspire install failed' }
+            $aspireReused = $true
+          } else {
+            if (Test-Path -LiteralPath $feedDir) {
+              Remove-Item -Recurse -Force -LiteralPath $feedDir
             }
             dotnet tool install Aspire.Cli --version 17.0.0 --tool-path $toolDir --source https://api.nuget.org/v3/index.json
             if ($LASTEXITCODE -ne 0) { throw 'Aspire install failed' }
+            New-Item -ItemType Directory -Path $feedDir -Force | Out-Null
+            Copy-Item -LiteralPath (Join-Path $toolDir '.store\aspire.cli\17.0.0\aspire.cli\17.0.0\aspire.cli.17.0.0.nupkg') -Destination (Join-Path $feedDir 'aspire.cli.17.0.0.nupkg') -Force
+            Copy-Item -LiteralPath (Join-Path $toolDir '.store\aspire.cli\17.0.0\aspire.cli.win-x64\17.0.0\aspire.cli.win-x64.17.0.0.nupkg') -Destination (Join-Path $feedDir 'aspire.cli.win-x64.17.0.0.nupkg') -Force
+            if (-not (Test-VerifiedAspireFeed $feedDir)) { throw 'Populated Aspire feed SHA-256 mismatch' }
           }
+          $env:PATH = "$toolDir$([System.IO.Path]::PathSeparator)$env:PATH"
           $aspireCmd = Get-Command aspire -ErrorAction Stop
           if (-not [System.IO.Path]::GetFullPath($aspireCmd.Source).StartsWith($toolPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
             throw 'Aspire tool path mismatch'

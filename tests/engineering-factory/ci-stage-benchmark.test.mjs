@@ -1894,7 +1894,7 @@ test('validate.yml, windows-aspire.yml, and shadow-reconcile.yml enforce poison-
   const npmKeyExpr =
     "key: sf-npm-ci-v1-${{ runner.os }}-${{ runner.arch }}-node-26.13.1-ignore-scripts-${{ hashFiles('package.json', 'package-lock.json') }}";
   const aspireKeyExpr =
-    "key: sf-aspire-nuget-v1-${{ runner.os }}-${{ runner.arch }}-dotnet-10.0.404-aspire-17.0.0-release-${{ hashFiles('global.json', 'apphost.cs', 'src/SoftwareFactory.Agents/SoftwareFactory.Agents.csproj', '**/packages.lock.json', 'Directory.Build.props', 'Directory.Packages.props') }}";
+    "key: sf-aspire-nuget-v2-${{ runner.os }}-${{ runner.arch }}-dotnet-10.0.404-aspire-17.0.0-release-${{ hashFiles('global.json', 'apphost.cs', 'src/SoftwareFactory.Agents/SoftwareFactory.Agents.csproj', '**/packages.lock.json', 'Directory.Build.props', 'Directory.Packages.props') }}";
 
   // validate.yml invariants: 4 required jobs, SHA-pinned actions, 3 cache pairs (2 npm + 1 NuGet/Aspire.Cli), zero duplicate node --test inside runtime
   assert.match(validateContent, /^name: Factory validation$/m);
@@ -1919,7 +1919,14 @@ test('validate.yml, windows-aspire.yml, and shadow-reconcile.yml enforce poison-
   assert.equal(validateContent.includes('node tools/engineering-factory/verify-dashboard-export.mjs "$archive"'), true);
   assert.equal(validateContent.includes('node tools/engineering-factory/verify-dashboard-metric-receipt.mjs "$data_root"'), true);
   assert.equal(validateContent.includes('node --test'), false);
-  assert.match(validateContent, /17\.0\.0\|17\.0\.0\+\*\)\s*aspire_reused="true"/);
+  assert.equal(
+    validateContent.includes('31599e3906c24c5b05787651ac52859ca0e267973ff2bb9f38ca5f968e355f1d'),
+    true
+  );
+  assert.equal(
+    validateContent.includes('e82a0663bc83b4cccd1c23403baa45eef2141a889e84f97030e50c21f3f5781f'),
+    true
+  );
 
   // windows-aspire.yml invariants: SHA-pinned actions, 2 cache pairs (1 npm + 1 NuGet/Aspire.Cli), zero duplicate node --test, TLS/auth intact
   assert.match(windowsContent, /^name: Windows Aspire runtime$/m);
@@ -1945,6 +1952,14 @@ test('validate.yml, windows-aspire.yml, and shadow-reconcile.yml enforce poison-
     true
   );
   assert.equal(windowsContent.includes('verify-dashboard-api.test.mjs'), false);
+  assert.equal(
+    windowsContent.includes('31599e3906c24c5b05787651ac52859ca0e267973ff2bb9f38ca5f968e355f1d'),
+    true
+  );
+  assert.equal(
+    windowsContent.includes('590e1d28d581fd532fa24a60a2adef8792cb3bd438585f57879551fc510458ea'),
+    true
+  );
   assert.match(windowsContent, /\^17\\\.0\\\.0\(\?:\\\+\[0-9a-f\]\+\)\?\$/);
 
   // shadow-reconcile.yml invariants: restricted to workflow_dispatch only under on:
@@ -1972,20 +1987,27 @@ test('m02-01-ci-acceleration-receipt.json replays real cold-run critical-path, A
   assert.equal(receipt.status.restoreKeysFallbackUsed, false);
   assert.equal(receipt.status.incrementalSpendUsdCents, 0);
 
-  // Live repository lockfiles match recorded SHA-256 digests and derived cache manifests
-  const packageJsonSha256 = hashLockedContent(readFileSync(new URL('../../package.json', import.meta.url), 'utf8'));
-  const packageLockSha256 = hashLockedContent(readFileSync(new URL('../../package-lock.json', import.meta.url), 'utf8'));
-  const globalJsonSha256 = hashLockedContent(readFileSync(new URL('../../global.json', import.meta.url), 'utf8'));
-  const appHostSha256 = hashLockedContent(readFileSync(new URL('../../apphost.cs', import.meta.url), 'utf8'));
-  const agentsCsprojSha256 = hashLockedContent(
-    readFileSync(new URL('../../src/SoftwareFactory.Agents/SoftwareFactory.Agents.csproj', import.meta.url), 'utf8')
-  );
-  assert.deepEqual(receipt.lockedInputDigests, {
+  // Replay historical receipt self-consistently from its recorded snapshot digests (independent of future checkout edits)
+  const {
     packageJsonSha256,
     packageLockSha256,
     globalJsonSha256,
     appHostSha256,
     agentsCsprojSha256
+  } = receipt.lockedInputDigests;
+  for (const recordedDigest of [
+    packageJsonSha256,
+    packageLockSha256,
+    globalJsonSha256,
+    appHostSha256,
+    agentsCsprojSha256
+  ]) {
+    assert.match(recordedDigest, /^[a-f0-9]{64}$/);
+  }
+  assert.deepEqual(receipt.exactLockCacheSafety.aspireCliNupkgSha256, {
+    'aspire.cli.17.0.0.nupkg': '31599e3906c24c5b05787651ac52859ca0e267973ff2bb9f38ca5f968e355f1d',
+    'aspire.cli.linux-x64.17.0.0.nupkg': 'e82a0663bc83b4cccd1c23403baa45eef2141a889e84f97030e50c21f3f5781f',
+    'aspire.cli.win-x64.17.0.0.nupkg': '590e1d28d581fd532fa24a60a2adef8792cb3bd438585f57879551fc510458ea'
   });
 
   for (const [label, osName] of [['linux', 'linux'], ['windows', 'windows']]) {

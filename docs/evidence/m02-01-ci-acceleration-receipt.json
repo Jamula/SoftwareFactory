@@ -39,6 +39,12 @@
     "cacheWriteAction": "actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9",
     "readOnlyCondition": "github.event_name != 'push'",
     "protectedMainWriteCondition": "github.event_name == 'push' && github.ref == 'refs/heads/main' && github.ref_protected == true && github.repository == 'Jamula/SoftwareFactory' && github.repository_id == '1471342715'",
+    "lookupScopeModel": "actions/cache/restore resolves PR ref -> base branch (refs/heads/main); no workflow saves caches outside protected refs/heads/main and workflow modifications on pull_request gate on action_required, while ~/.npm tarballs are verified against package-lock.json SHA-512 integrity hashes and Aspire.Cli 17.0.0 .nupkg packages are verified against pinned SHA-256 digests before fresh extraction.",
+    "aspireCliNupkgSha256": {
+      "aspire.cli.17.0.0.nupkg": "31599e3906c24c5b05787651ac52859ca0e267973ff2bb9f38ca5f968e355f1d",
+      "aspire.cli.linux-x64.17.0.0.nupkg": "e82a0663bc83b4cccd1c23403baa45eef2141a889e84f97030e50c21f3f5781f",
+      "aspire.cli.win-x64.17.0.0.nupkg": "590e1d28d581fd532fa24a60a2adef8792cb3bd438585f57879551fc510458ea"
+    },
     "derivedKeys": {
       "linux": {
         "npmCi": "sf-npm-ci-v1-linux-x64-node-26.13.1-fc6ae157a039b1e053a213a3c31479bd1eff48bea79f5c9f33ea92fc0a11d837",

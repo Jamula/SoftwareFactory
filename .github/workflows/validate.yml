@@ -141,8 +141,8 @@ jobs:
         with:
           path: |
             ${{ runner.temp }}/nuget-packages
-            ${{ runner.temp }}/softwarefactory-aspire-tools
-          key: sf-aspire-nuget-v1-${{ runner.os }}-${{ runner.arch }}-dotnet-10.0.404-aspire-17.0.0-release-${{ hashFiles('global.json', 'apphost.cs', 'src/SoftwareFactory.Agents/SoftwareFactory.Agents.csproj', '**/packages.lock.json', 'Directory.Build.props', 'Directory.Packages.props') }}
+            ${{ runner.temp }}/aspire-cli-feed
+          key: sf-aspire-nuget-v2-${{ runner.os }}-${{ runner.arch }}-dotnet-10.0.404-aspire-17.0.0-release-${{ hashFiles('global.json', 'apphost.cs', 'src/SoftwareFactory.Agents/SoftwareFactory.Agents.csproj', '**/packages.lock.json', 'Directory.Build.props', 'Directory.Packages.props') }}
       - name: Restore and save locked NuGet and Aspire.Cli cache (protected main)
         id: aspire-cache-main
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.ref_protected == true && github.repository == 'Jamula/SoftwareFactory' && github.repository_id == '1471342715'
@@ -150,8 +150,8 @@ jobs:
         with:
           path: |
             ${{ runner.temp }}/nuget-packages
-            ${{ runner.temp }}/softwarefactory-aspire-tools
-          key: sf-aspire-nuget-v1-${{ runner.os }}-${{ runner.arch }}-dotnet-10.0.404-aspire-17.0.0-release-${{ hashFiles('global.json', 'apphost.cs', 'src/SoftwareFactory.Agents/SoftwareFactory.Agents.csproj', '**/packages.lock.json', 'Directory.Build.props', 'Directory.Packages.props') }}
+            ${{ runner.temp }}/aspire-cli-feed
+          key: sf-aspire-nuget-v2-${{ runner.os }}-${{ runner.arch }}-dotnet-10.0.404-aspire-17.0.0-release-${{ hashFiles('global.json', 'apphost.cs', 'src/SoftwareFactory.Agents/SoftwareFactory.Agents.csproj', '**/packages.lock.json', 'Directory.Build.props', 'Directory.Packages.props') }}
       - name: Restore and build the pinned Aspire AppHost
         env:
           DOTNET_CLI_TELEMETRY_OPTOUT: '1'
@@ -164,18 +164,29 @@ jobs:
           sdk_version="$(dotnet --version)"
           test "$sdk_version" = 10.0.404
           tool_dir="$RUNNER_TEMP/softwarefactory-aspire-tools"
+          feed_dir="$RUNNER_TEMP/aspire-cli-feed"
           export ASPIRE_HOME="$RUNNER_TEMP/softwarefactory-aspire"
-          aspire_bin="$tool_dir/aspire"
+          rm -rf -- "$tool_dir"
+          verify_aspire_feed() {
+            [ -d "$feed_dir" ] && [ ! -L "$feed_dir" ] || return 1
+            [ "$(find "$feed_dir" -mindepth 1 | wc -l | tr -d ' ')" = "2" ] || return 1
+            [ -f "$feed_dir/aspire.cli.17.0.0.nupkg" ] && [ ! -L "$feed_dir/aspire.cli.17.0.0.nupkg" ] || return 1
+            [ -f "$feed_dir/aspire.cli.linux-x64.17.0.0.nupkg" ] && [ ! -L "$feed_dir/aspire.cli.linux-x64.17.0.0.nupkg" ] || return 1
+            printf '%s  %s\n%s  %s\n' \
+              "31599e3906c24c5b05787651ac52859ca0e267973ff2bb9f38ca5f968e355f1d" "$feed_dir/aspire.cli.17.0.0.nupkg" \
+              "e82a0663bc83b4cccd1c23403baa45eef2141a889e84f97030e50c21f3f5781f" "$feed_dir/aspire.cli.linux-x64.17.0.0.nupkg" | sha256sum -c - >/dev/null 2>&1
+          }
           aspire_reused="false"
-          if [ -x "$aspire_bin" ]; then
-            cached_version="$("$aspire_bin" --version 2>/dev/null || true)"
-            case "$cached_version" in
-              17.0.0|17.0.0+*) aspire_reused="true" ;;
-            esac
-          fi
-          if [ "$aspire_reused" != "true" ]; then
-            rm -rf -- "$tool_dir"
+          if verify_aspire_feed; then
+            dotnet tool install Aspire.Cli --version 17.0.0 --tool-path "$tool_dir" --source "$feed_dir"
+            aspire_reused="true"
+          else
+            rm -rf -- "$feed_dir"
             dotnet tool install Aspire.Cli --version 17.0.0 --tool-path "$tool_dir" --source https://api.nuget.org/v3/index.json
+            mkdir -p "$feed_dir"
+            cp -f "$tool_dir/.store/aspire.cli/17.0.0/aspire.cli/17.0.0/aspire.cli.17.0.0.nupkg" "$feed_dir/aspire.cli.17.0.0.nupkg"
+            cp -f "$tool_dir/.store/aspire.cli/17.0.0/aspire.cli.linux-x64/17.0.0/aspire.cli.linux-x64.17.0.0.nupkg" "$feed_dir/aspire.cli.linux-x64.17.0.0.nupkg"
+            verify_aspire_feed
           fi
           export PATH="$tool_dir:$PATH"
           verified_aspire="$(aspire --version)"
