@@ -631,9 +631,6 @@ export function correlateAutonomousExecutionReceipt(input) {
     return autonomousDeny('TRACE_ID_MISMATCH','SECURITY');
   if(baseReceipt.correlation.spanId!==null&&baseReceipt.correlation.spanId!==spanId)
     return autonomousDeny('SPAN_LINKAGE_BROKEN','SECURITY');
-  const expectedQuotaState=aiCreditsUsed<maxAiCredits?'verified-included':'exhausted';
-  if(baseReceipt.quota.verified===true&&baseReceipt.quota.state!==expectedQuotaState)
-    return autonomousDeny('INVALID_RECEIPT','INVALID_EVIDENCE');
   const normalizedStages=normalizeStageDurations(baseReceipt.stages).stages;
 
   const correlatedReceipt=Object.freeze({

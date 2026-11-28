@@ -892,6 +892,45 @@ test('correlateAutonomousExecutionReceipt correlates OTel traceparent, authorita
   ]
  });
 
+ // Independent boundary combinations: per-run maxAiCredits cap vs. overall included-quota availability
+ const runCapAtLimitWithIncludedQuotaRemaining=correlateAutonomousExecutionReceipt({
+  ...baseInput,
+  receipt:createExecutionReceipt({
+   source:'github-hosted',
+   repositoryId:1471342715,
+   receiptId:'gh-aw-run-4003-dispatch',
+   observedMs:1764300020000,
+   stage:'dispatch',
+   outcome:'eligible',
+   reason:'NONE',
+   durationMs:80,
+   quota:{verified:true,includedOnly:true,available:true},
+   correlation:{traceId,spanId}
+  }),
+  aiCreditAccounting:{
+   ...baseInput.aiCreditAccounting,
+   aiCreditsUsed:25,
+   maxAiCredits:25
+  }
+ });
+ assert.equal(runCapAtLimitWithIncludedQuotaRemaining.valid,true);
+ assert.equal(runCapAtLimitWithIncludedQuotaRemaining.receipt.quota.state,'verified-included');
+ assert.equal(runCapAtLimitWithIncludedQuotaRemaining.aiCreditAccounting.remainingAiCredits,0);
+
+ const quotaExhaustedBeforeRunCap=correlateAutonomousExecutionReceipt({
+  ...baseInput,
+  traceparent:`00-${traceId}-${spanId}-00`,
+  receipt:storedBlockedReceipt,
+  aiCreditAccounting:{
+   ...baseInput.aiCreditAccounting,
+   aiCreditsUsed:4,
+   maxAiCredits:25
+  }
+ });
+ assert.equal(quotaExhaustedBeforeRunCap.valid,true);
+ assert.equal(quotaExhaustedBeforeRunCap.receipt.quota.state,'exhausted');
+ assert.equal(quotaExhaustedBeforeRunCap.aiCreditAccounting.remainingAiCredits,21);
+
  // 3. Missing/non-boolean flags, estimated / unknown / unverified accounting fail closed with AI_CREDIT_ACCOUNTING_UNVERIFIED -> QUOTA
  const missingIsEstimated={...baseInput.aiCreditAccounting};
  delete missingIsEstimated.isEstimated;
@@ -1047,8 +1086,7 @@ test('correlateAutonomousExecutionReceipt correlates OTel traceparent, authorita
   [{...baseInput,receipt:{...baseInput.receipt,stage:'invalid-stage'}},'INVALID_RECEIPT','INVALID_EVIDENCE'],
   [{...baseInput,receipt:{...storedBlockedReceipt,valid:false}},'INVALID_RECEIPT','INVALID_EVIDENCE'],
   [{...baseInput,receipt:{...storedBlockedReceipt,correlation:{traceId:'f'.repeat(32),spanId}}},'TRACE_ID_MISMATCH','SECURITY'],
-  [{...baseInput,receipt:{...storedBlockedReceipt,correlation:{traceId,spanId:'a'.repeat(16)}}},'SPAN_LINKAGE_BROKEN','SECURITY'],
-  [{...baseInput,receipt:storedBlockedReceipt},'INVALID_RECEIPT','INVALID_EVIDENCE']
+  [{...baseInput,receipt:{...storedBlockedReceipt,correlation:{traceId,spanId:'a'.repeat(16)}}},'SPAN_LINKAGE_BROKEN','SECURITY']
  ];
  for(const [candidate,reason,otelReason] of expectedDenials){
   const denied=correlateAutonomousExecutionReceipt(candidate);
