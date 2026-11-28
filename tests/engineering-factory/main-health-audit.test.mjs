@@ -688,6 +688,207 @@ test('fails closed on unhealthy protected main across all active workflows, inco
   assert.equal(auditProtectedMainAndCandidateGates(missingCandDotnetWhenChanged).reason, 'INVALID_INPUT');
 });
 
+test('accepts Factory automode Merge Queue gatekeeper conditional skips and main events while failing closed on actual failures', () => {
+  const makeGatekeeperRun = (overrides = {}) => ({
+    workflow: 'Factory automode Merge Queue gatekeeper',
+    runName: 'Factory automode Merge Queue gatekeeper',
+    runId: 310,
+    event: 'workflow_run',
+    headSha: MAIN_SHA,
+    status: 'completed',
+    conclusion: 'success',
+    jobs: [
+      {
+        name: 'evaluate',
+        jobId: 3101,
+        appId: GITHUB_ACTIONS_APP_ID,
+        headSha: MAIN_SHA,
+        status: 'completed',
+        conclusion: 'success'
+      },
+      {
+        name: 'apply-queue-actions',
+        jobId: 3102,
+        appId: GITHUB_ACTIONS_APP_ID,
+        headSha: MAIN_SHA,
+        status: 'completed',
+        conclusion: 'skipped'
+      }
+    ],
+    ...overrides
+  });
+
+  // 1. Complete 2-job no-action receipt across all valid main-executing gatekeeper events
+  for (const event of ['workflow_run', 'schedule', 'workflow_dispatch', 'pull_request_target', 'push', 'dynamic']) {
+    const noActionTick = makeHealthyMainInput();
+    noActionTick.main.workflowRuns.push(makeGatekeeperRun({event}));
+    const res = auditProtectedMainAndCandidateGates(noActionTick);
+    assert.equal(res.valid, true);
+    assert.equal(res.mainHealthy, true);
+    assert.equal(res.reason, 'MAIN_HEALTHY');
+    assert.deepEqual(res.failedMainWorkflows, []);
+    assert.deepEqual(res.failedMainJobs, []);
+  }
+
+  // Complete 2-job enqueue-action receipt where both jobs succeed
+  const actionTick = makeHealthyMainInput();
+  const bothSuccessRun = makeGatekeeperRun({event: 'pull_request_target'});
+  bothSuccessRun.jobs[1].conclusion = 'success';
+  actionTick.main.workflowRuns.push(bothSuccessRun);
+  assert.equal(auditProtectedMainAndCandidateGates(actionTick).mainHealthy, true);
+
+  // 2. All-skipped gatekeeper run (FACTORY_AUTOMODE_ENABLED=false or FACTORY_KILL_SWITCH=true)
+  const allSkippedTick = makeHealthyMainInput();
+  allSkippedTick.main.workflowRuns.push(
+    makeGatekeeperRun({
+      event: 'schedule',
+      conclusion: 'skipped',
+      jobs: [
+        {
+          name: 'evaluate',
+          jobId: 3111,
+          appId: GITHUB_ACTIONS_APP_ID,
+          headSha: MAIN_SHA,
+          status: 'completed',
+          conclusion: 'skipped'
+        },
+        {
+          name: 'apply-queue-actions',
+          jobId: 3112,
+          appId: GITHUB_ACTIONS_APP_ID,
+          headSha: MAIN_SHA,
+          status: 'completed',
+          conclusion: 'skipped'
+        }
+      ]
+    })
+  );
+  const allSkippedRes = auditProtectedMainAndCandidateGates(allSkippedTick);
+  assert.equal(allSkippedRes.valid, true);
+  assert.equal(allSkippedRes.mainHealthy, true);
+  assert.equal(allSkippedRes.reason, 'MAIN_HEALTHY');
+  assert.deepEqual(allSkippedRes.failedMainWorkflows, []);
+  assert.deepEqual(allSkippedRes.failedMainJobs, []);
+
+  // 3. Actual job/run failures, contradictory skip states, incomplete runs, and metadata mismatches fail closed
+  const applyFailed = makeHealthyMainInput();
+  const applyFailedRun = makeGatekeeperRun({conclusion: 'failure'});
+  applyFailedRun.jobs[1].conclusion = 'failure';
+  applyFailed.main.workflowRuns.push(applyFailedRun);
+  const applyFailedRes = auditProtectedMainAndCandidateGates(applyFailed);
+  assert.equal(applyFailedRes.mainHealthy, false);
+  assert.equal(applyFailedRes.reason, 'MAIN_WORKFLOW_FAILED');
+  assert.deepEqual(applyFailedRes.failedMainWorkflows, ['Factory automode Merge Queue gatekeeper']);
+  assert.equal(applyFailedRes.failedMainJobs.length, 1);
+  assert.equal(applyFailedRes.failedMainJobs[0].jobName, 'apply-queue-actions');
+
+  const evaluateFailed = makeHealthyMainInput();
+  const evaluateFailedRun = makeGatekeeperRun({conclusion: 'failure'});
+  evaluateFailedRun.jobs[0].conclusion = 'failure';
+  evaluateFailed.main.workflowRuns.push(evaluateFailedRun);
+  const evaluateFailedRes = auditProtectedMainAndCandidateGates(evaluateFailed);
+  assert.equal(evaluateFailedRes.mainHealthy, false);
+  assert.equal(evaluateFailedRes.reason, 'MAIN_WORKFLOW_FAILED');
+  assert.deepEqual(evaluateFailedRes.failedMainWorkflows, ['Factory automode Merge Queue gatekeeper']);
+  assert.equal(evaluateFailedRes.failedMainJobs.length, 1);
+  assert.equal(evaluateFailedRes.failedMainJobs[0].jobName, 'evaluate');
+
+  for (const badConclusion of ['failure', 'cancelled', 'timed_out', 'action_required', 'startup_failure']) {
+    const runFailed = makeHealthyMainInput();
+    runFailed.main.workflowRuns.push(makeGatekeeperRun({conclusion: badConclusion}));
+    const runFailedRes = auditProtectedMainAndCandidateGates(runFailed);
+    assert.equal(runFailedRes.mainHealthy, false);
+    assert.equal(runFailedRes.reason, 'MAIN_WORKFLOW_FAILED');
+  }
+
+  // Contradictory skip combinations fail closed
+  const bypassedEvaluate = makeHealthyMainInput();
+  const bypassedRun = makeGatekeeperRun({conclusion: 'success'});
+  bypassedRun.jobs[0].conclusion = 'skipped';
+  bypassedRun.jobs[1].conclusion = 'success';
+  bypassedEvaluate.main.workflowRuns.push(bypassedRun);
+  assert.equal(auditProtectedMainAndCandidateGates(bypassedEvaluate).reason, 'MAIN_WORKFLOW_FAILED');
+
+  const allSkippedClaimingSuccess = makeHealthyMainInput();
+  const allSkippedSuccessRun = makeGatekeeperRun({conclusion: 'success'});
+  allSkippedSuccessRun.jobs[0].conclusion = 'skipped';
+  allSkippedSuccessRun.jobs[1].conclusion = 'skipped';
+  allSkippedClaimingSuccess.main.workflowRuns.push(allSkippedSuccessRun);
+  assert.equal(auditProtectedMainAndCandidateGates(allSkippedClaimingSuccess).reason, 'MAIN_WORKFLOW_FAILED');
+
+  const ranJobClaimingSkipped = makeHealthyMainInput();
+  ranJobClaimingSkipped.main.workflowRuns.push(makeGatekeeperRun({conclusion: 'skipped'}));
+  assert.equal(auditProtectedMainAndCandidateGates(ranJobClaimingSkipped).reason, 'MAIN_WORKFLOW_FAILED');
+
+  const unexpectedSkippedJob = makeHealthyMainInput();
+  const unexpectedSkippedRun = makeGatekeeperRun();
+  unexpectedSkippedRun.jobs.push({
+    name: 'unexpected-gatekeeper-job',
+    jobId: 3120,
+    appId: GITHUB_ACTIONS_APP_ID,
+    headSha: MAIN_SHA,
+    status: 'completed',
+    conclusion: 'skipped'
+  });
+  unexpectedSkippedJob.main.workflowRuns.push(unexpectedSkippedRun);
+  assert.equal(auditProtectedMainAndCandidateGates(unexpectedSkippedJob).reason, 'MAIN_WORKFLOW_FAILED');
+
+  const missingEvaluateJob = makeHealthyMainInput();
+  missingEvaluateJob.main.workflowRuns.push(
+    makeGatekeeperRun({
+      conclusion: 'skipped',
+      jobs: [
+        {
+          name: 'apply-queue-actions',
+          jobId: 3121,
+          appId: GITHUB_ACTIONS_APP_ID,
+          headSha: MAIN_SHA,
+          status: 'completed',
+          conclusion: 'skipped'
+        }
+      ]
+    })
+  );
+  assert.equal(auditProtectedMainAndCandidateGates(missingEvaluateJob).reason, 'MAIN_REQUIRED_JOB_MISSING');
+
+  const gatekeeperIncomplete = makeHealthyMainInput();
+  const incompleteGatekeeperRun = makeGatekeeperRun({status: 'in_progress', conclusion: null});
+  incompleteGatekeeperRun.jobs[0].status = 'in_progress';
+  incompleteGatekeeperRun.jobs[0].conclusion = null;
+  gatekeeperIncomplete.main.workflowRuns.push(incompleteGatekeeperRun);
+  assert.equal(auditProtectedMainAndCandidateGates(gatekeeperIncomplete).reason, 'MAIN_WORKFLOW_INCOMPLETE');
+
+  const gatekeeperBadEvent = makeHealthyMainInput();
+  gatekeeperBadEvent.main.workflowRuns.push(makeGatekeeperRun({event: 'pull_request'}));
+  assert.equal(
+    auditProtectedMainAndCandidateGates(gatekeeperBadEvent).reason,
+    'MAIN_WORKFLOW_METADATA_MISMATCH'
+  );
+
+  const gatekeeperBadRunName = makeHealthyMainInput();
+  gatekeeperBadRunName.main.workflowRuns.push(makeGatekeeperRun({runName: 'Push on main'}));
+  assert.equal(
+    auditProtectedMainAndCandidateGates(gatekeeperBadRunName).reason,
+    'MAIN_WORKFLOW_METADATA_MISMATCH'
+  );
+
+  // Mandatory active workflows and CodeQL - Code Quality still reject skipped jobs and workflow_run events
+  const activeSkippedJob = makeHealthyMainInput();
+  activeSkippedJob.main.workflowRuns[0].jobs[0].conclusion = 'skipped';
+  assert.equal(auditProtectedMainAndCandidateGates(activeSkippedJob).reason, 'MAIN_WORKFLOW_FAILED');
+
+  const codeQualitySkippedJob = makeHealthyMainInput();
+  codeQualitySkippedJob.main.workflowRuns[5].jobs[0].conclusion = 'skipped';
+  assert.equal(auditProtectedMainAndCandidateGates(codeQualitySkippedJob).reason, 'MAIN_WORKFLOW_FAILED');
+
+  const activeWorkflowRunEvent = makeHealthyMainInput();
+  activeWorkflowRunEvent.main.workflowRuns[0].event = 'workflow_run';
+  assert.equal(
+    auditProtectedMainAndCandidateGates(activeWorkflowRunEvent).reason,
+    'MAIN_WORKFLOW_METADATA_MISMATCH'
+  );
+});
+
 test('fails closed on fork PR skipped runtime checks, summary-only review findings with 0 inline threads, and merge_group failures or SHA mismatches', () => {
   // Fork PR with skipped runtime checks
   const forkSkipped = makeFullHealthyInput();

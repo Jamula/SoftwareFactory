@@ -4,6 +4,9 @@ import {readFileSync} from 'node:fs';
 import {dirname, join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {
+  EXACT_PROTECTED_CONTROL_PLANE_PATHS
+} from '../../tools/engineering-factory/anti-rogue-audit.mjs';
+import {
   GITHUB_ACTIONS_APP_ID,
   GITHUB_CODE_SCANNING_APP_ID,
   MAX_ENQUEUE_PER_TICK,
@@ -138,17 +141,28 @@ function makeInput(pullRequests = [makeEligiblePr()], overrides = {}) {
   };
 }
 
-test('exports frozen protected control-plane prefixes and enforces kill-switch and repository scope', () => {
+test('exports frozen protected control-plane prefixes and enforces kill-switch, main health, and repository scope', () => {
   assert.equal(Object.isFrozen(PROTECTED_CONTROL_PLANE_PREFIXES), true);
+  for (const exactPath of EXACT_PROTECTED_CONTROL_PLANE_PATHS) {
+    assert.equal(PROTECTED_CONTROL_PLANE_PREFIXES.includes(exactPath), true);
+  }
   assert.deepEqual(PROTECTED_CONTROL_PLANE_PREFIXES, [
     '.github/workflows/',
     'config/',
+    'SECURITY.md',
+    'docs/POLICY.md',
+    'docs/ENGINEERING-STANDARDS.md',
     'tools/engineering-factory/core.mjs',
-    'tools/engineering-factory/automode-enqueuer.mjs',
+    'tools/engineering-factory/protected-squash.mjs',
+    'tools/engineering-factory/platform-merge-gates.mjs',
+    'tools/engineering-factory/coverage-evidence.mjs',
+    'tools/engineering-factory/budget.mjs',
     'tools/engineering-factory/anti-rogue-audit.mjs',
-    'tools/engineering-factory/main-health-audit.mjs',
+    'tools/engineering-factory/cloud-agent-admission.mjs',
     'tools/engineering-factory/gh-aw-lock-verifier.mjs',
-    'tools/engineering-factory/protected-squash.mjs'
+    'tools/engineering-factory/review-batch.mjs',
+    'tools/engineering-factory/automode-enqueuer.mjs',
+    'tools/engineering-factory/main-health-audit.mjs'
   ]);
   assert.equal(MAX_ENQUEUE_PER_TICK, 5);
 
@@ -166,13 +180,28 @@ test('exports frozen protected control-plane prefixes and enforces kill-switch a
   assert.equal(disabled.active, false);
   assert.equal(disabled.reason, 'AUTOMODE_DISABLED');
 
-  const wrongSlug = evaluateAutomodePullRequests(makeInput([makeEligiblePr()], {repository: 'other/repo'}));
+  const wrongSlug = evaluateAutomodePullRequests(makeInput([makeEligiblePr()], {repository: 'other/repo', mainHealthy: false}));
   assert.equal(wrongSlug.active, false);
   assert.equal(wrongSlug.reason, 'UNTRUSTED_REPOSITORY');
 
   const wrongId = evaluateAutomodePullRequests(makeInput([makeEligiblePr()], {repositoryId: 999}));
   assert.equal(wrongId.active, false);
   assert.equal(wrongId.reason, 'UNTRUSTED_REPOSITORY');
+
+  const unhealthyMain = evaluateAutomodePullRequests(makeInput([makeEligiblePr()], {mainHealthy: false}));
+  assert.deepEqual(unhealthyMain, {
+    active: false,
+    reason: 'MAIN_UNHEALTHY',
+    enqueue: [],
+    updateBranch: [],
+    decisions: []
+  });
+
+  const healthyMainExplicit = evaluateAutomodePullRequests(
+    makeInput([makeEligiblePr()], {mainHealthy: true, branchUpdateSupported: true})
+  );
+  assert.equal(healthyMainExplicit.active, true);
+  assert.equal(healthyMainExplicit.enqueue.length, 1);
 
   const defaultsOmitted = evaluateAutomodePullRequests({
     repository: SOFTWARE_FACTORY_REPO,
@@ -249,6 +278,51 @@ test('sorts PRs ascending for FIFO fairness, caps maxEnqueuePerTick, and suppres
     {number: 192, action: 'UPDATE_BRANCH', reason: 'BEHIND_UPDATE_BRANCH'},
     {number: 195, action: 'SKIP', reason: 'BEHIND_DEFERRED'}
   ]);
+
+  // When branchUpdateSupported is false, BEHIND PRs never emit updateBranch and skip with BRANCH_UPDATE_UNSUPPORTED
+  const behindUnsupported = evaluateAutomodePullRequests(
+    makeInput(
+      [
+        makeEligiblePr({
+          number: 192,
+          headRefOid: HEAD_A,
+          mergeStateStatus: 'BEHIND',
+          checkRunsComplete: false,
+          statusCheckRollupState: 'PENDING',
+          checkRuns: []
+        }),
+        makeEligiblePr({number: 193, mergeStateStatus: 'CLEAN'})
+      ],
+      {branchUpdateSupported: false}
+    )
+  );
+  assert.deepEqual(behindUnsupported.enqueue.map(e => e.number), [193]);
+  assert.deepEqual(behindUnsupported.updateBranch, []);
+  assert.deepEqual(behindUnsupported.decisions, [
+    {number: 192, action: 'SKIP', reason: 'BRANCH_UPDATE_UNSUPPORTED'},
+    {number: 193, action: 'ENQUEUE', reason: 'ELIGIBLE'}
+  ]);
+
+  const behindOnlyUnsupported = evaluateAutomodePullRequests(
+    makeInput(
+      [
+        makeEligiblePr({
+          number: 196,
+          headRefOid: HEAD_A,
+          mergeStateStatus: 'BEHIND',
+          checkRunsComplete: false,
+          statusCheckRollupState: null,
+          checkRuns: []
+        })
+      ],
+      {branchUpdateSupported: false}
+    )
+  );
+  assert.deepEqual(behindOnlyUnsupported.enqueue, []);
+  assert.deepEqual(behindOnlyUnsupported.updateBranch, []);
+  assert.deepEqual(behindOnlyUnsupported.decisions, [
+    {number: 196, action: 'SKIP', reason: 'BRANCH_UPDATE_UNSUPPORTED'}
+  ]);
 });
 
 test('enforces basic PR identity, same-repository origin, draft, queue, conflict, and changed-file path gates', () => {
@@ -287,6 +361,19 @@ test('enforces anti-rogue protected control-plane circuit breaker across all pre
   for (const prefix of PROTECTED_CONTROL_PLANE_PREFIXES) {
     const targetFile = prefix.endsWith('/') ? `${prefix}gate.yml` : prefix;
     const blocked = evaluateAutomodePullRequests(makeInput([makeEligiblePr({files: [targetFile]})]));
+    assert.equal(blocked.enqueue.length, 0);
+    assert.equal(blocked.decisions[0].reason, 'PROTECTED_CONTROL_PLANE_REQUIRES_HUMAN_APPROVAL');
+  }
+
+  for (const extraProtected of [
+    'Docs/Engineering-Standards.md',
+    'security.md',
+    '.github/aw/dispatcher.lock.yml',
+    '.github/aw/dispatcher.LOCK.YML',
+    'ops/rulesets/main.json',
+    'scripts/kill-switch.mjs'
+  ]) {
+    const blocked = evaluateAutomodePullRequests(makeInput([makeEligiblePr({files: [extraProtected]})]));
     assert.equal(blocked.enqueue.length, 0);
     assert.equal(blocked.decisions[0].reason, 'PROTECTED_CONTROL_PLANE_REQUIRES_HUMAN_APPROVAL');
   }
@@ -522,8 +609,30 @@ test('enforces review threads, blocking/in-progress reviews, Copilot summary cla
     );
   }
 
-  // review_on_push: false — prior-commit Copilot review with 0 unresolved threads and no CHANGES_REQUESTED is allowed
-  const priorCommitCopilotResolved = makeEligiblePr({
+  // review_on_push: false — actionable or uncertain prior-commit Copilot summary blocks without exact-head human approval
+  for (const badBody of [ACTIONABLE_COPILOT_BODY, 'Plain non-overview comment']) {
+    const priorCommitUnresolvedSummary = makeEligiblePr({
+      headRefOid: HEAD_B,
+      checkRuns: makePassingChecks(HEAD_B),
+      reviews: [
+        {
+          id: 7020,
+          reviewerLogin: 'copilot-pull-request-reviewer',
+          reviewerIsBot: true,
+          state: 'COMMENTED',
+          commitOid: HEAD_A,
+          body: badBody
+        }
+      ]
+    });
+    assert.equal(
+      evaluateAutomodePullRequests(makeInput([priorCommitUnresolvedSummary])).decisions[0].reason,
+      'COPILOT_SUMMARY_NOT_CLEAR'
+    );
+  }
+
+  // Actionable prior-commit Copilot summary is allowed when an independent human explicitly APPROVED exact headRefOid
+  const priorCommitHumanDispositioned = makeEligiblePr({
     headRefOid: HEAD_B,
     checkRuns: makePassingChecks(HEAD_B),
     reviews: [
@@ -534,10 +643,43 @@ test('enforces review threads, blocking/in-progress reviews, Copilot summary cla
         state: 'COMMENTED',
         commitOid: HEAD_A,
         body: ACTIONABLE_COPILOT_BODY
+      },
+      {
+        id: 7024,
+        reviewerLogin: 'cyrusjamula',
+        reviewerIsBot: false,
+        state: 'APPROVED',
+        commitOid: HEAD_B,
+        body: 'Verified summary finding fixed on HEAD_B'
       }
     ]
   });
-  assert.equal(evaluateAutomodePullRequests(makeInput([priorCommitCopilotResolved])).enqueue.length, 1);
+  assert.equal(evaluateAutomodePullRequests(makeInput([priorCommitHumanDispositioned])).enqueue.length, 1);
+
+  // Clear prior-commit Copilot review (including superseding an earlier actionable review) carries forward cleanly
+  const priorCommitCopilotClear = makeEligiblePr({
+    headRefOid: HEAD_B,
+    checkRuns: makePassingChecks(HEAD_B),
+    reviews: [
+      {
+        id: 7025,
+        reviewerLogin: 'copilot-pull-request-reviewer',
+        reviewerIsBot: true,
+        state: 'COMMENTED',
+        commitOid: OLD_SHA,
+        body: ACTIONABLE_COPILOT_BODY
+      },
+      {
+        id: 7026,
+        reviewerLogin: 'copilot-pull-request-reviewer[bot]',
+        reviewerIsBot: true,
+        state: 'COMMENTED',
+        commitOid: HEAD_A,
+        body: CLEAR_COPILOT_BODY
+      }
+    ]
+  });
+  assert.equal(evaluateAutomodePullRequests(makeInput([priorCommitCopilotClear])).enqueue.length, 1);
 
   // Prior-commit human-only COMMENTED or stale human APPROVED without Copilot review blocks
   const staleHumanOnly = makeEligiblePr({
@@ -707,6 +849,10 @@ test('fails closed on malformed inputs, duplicate PR numbers, proxies, getters, 
     makeInput([], {automodeEnabled: 1}),
     makeInput([], {maxEnqueuePerTick: 0}),
     makeInput([], {maxEnqueuePerTick: 6}),
+    makeInput([], {mainHealthy: 'bad'}),
+    makeInput([], {mainHealthy: 1}),
+    makeInput([], {branchUpdateSupported: 'bad'}),
+    makeInput([], {branchUpdateSupported: null}),
     makeInput('not-array'),
     makeInput([null]),
     makeInput([makeEligiblePr({number: 1}), makeEligiblePr({number: 1})]),
@@ -811,20 +957,26 @@ test('verifies factory-automode-enqueue.yml privilege separation, SHA pinning, a
   assert.doesNotMatch(yaml, /^\s+pull_request:\s*$/m);
   assert.doesNotMatch(yaml, /^\s+pull_request_review:\s*$/m);
 
-  assert.match(yaml, /actions\/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7\.0\.1/);
-  assert.match(yaml, /actions\/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7\.1\.0/);
-  assert.match(yaml, /ref: refs\/heads\/main/);
-  assert.match(yaml, /persist-credentials: false/);
+  const checkoutBlocks = [
+    ...yaml.matchAll(/uses: actions\/checkout@([0-9a-f]{40})[\s\S]*?(?=\n {6}- |\n  [a-z]|$)/g)
+  ];
+  assert.ok(checkoutBlocks.length >= 1);
+  for (const [block, sha] of checkoutBlocks) {
+    assert.equal(sha, '3d3c42e5aac5ba805825da76410c181273ba90b1');
+    assert.match(block, /ref: refs\/heads\/main/);
+    assert.match(block, /persist-credentials: false/);
+  }
+  assert.match(yaml, /actions\/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1/);
 
-  const applySection = yaml.slice(yaml.indexOf('  apply-queue-actions:'));
-  assert.ok(applySection.length > 0);
-  assert.doesNotMatch(applySection, /actions\/checkout/);
-  assert.match(applySection, /needs: \[evaluate\]/);
+  const applyIdx = yaml.indexOf('  apply-queue-actions:');
+  assert.ok(applyIdx > 0);
+  const applySection = yaml.slice(applyIdx);
+  assert.match(applySection, /needs:\s*(?:\[evaluate\]|evaluate)/);
   assert.match(applySection, /execFileSync/);
 
   // Ensure zero ${{ ... }} template interpolation inside run: blocks
-  const runMatches = [...yaml.matchAll(/^ {8}run: \|\n((?: {10}.*\n|\n)+)/gm)];
-  assert.equal(runMatches.length, 2);
+  const runMatches = [...yaml.matchAll(/^ {8}run: \|-?\n((?: {10}.*\n|\n)+)/gm)];
+  assert.ok(runMatches.length >= 2);
   for (const [, scriptBody] of runMatches) {
     assert.doesNotMatch(scriptBody, /\$\{\{/);
   }

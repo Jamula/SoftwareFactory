@@ -18,11 +18,22 @@ export const ACTIVE_MAIN_WORKFLOWS = Object.freeze([
   'CodeQL'
 ]);
 
+const AUTOMODE_GATEKEEPER_WORKFLOW = 'Factory automode Merge Queue gatekeeper';
+const AUTOMODE_GATEKEEPER_JOBS = new Set(['evaluate', 'apply-queue-actions']);
+const AUTOMODE_GATEKEEPER_EVENTS = new Set([
+  'push',
+  'dynamic',
+  'workflow_run',
+  'schedule',
+  'workflow_dispatch',
+  'pull_request_target'
+]);
+
 // Duplicate CodeQL - Code Quality is disabled in repository settings while security
 // CodeQL remains mandatory; historical receipts and optional main gatekeepers are still validated.
 export const OPTIONAL_MAIN_WORKFLOWS = Object.freeze([
   'CodeQL - Code Quality',
-  'Factory automode Merge Queue gatekeeper'
+  AUTOMODE_GATEKEEPER_WORKFLOW
 ]);
 
 export const DEFAULT_OFF_MAIN_WORKFLOWS = Object.freeze([
@@ -87,7 +98,8 @@ const MAIN_WORKFLOW_REQUIRED_JOBS = new Map([
   ['.NET MAF specialist agents', ['linux-dotnet-agents', 'windows-dotnet-agents']],
   ['Reusable replay smoke', ['pinned-synthetic-replay / replay']],
   ['CodeQL', ['Analyze (actions)', 'Analyze (csharp)', 'Analyze (javascript-typescript)']],
-  ['CodeQL - Code Quality', ['Analyze (csharp)', 'Analyze (javascript-typescript)']]
+  ['CodeQL - Code Quality', ['Analyze (csharp)', 'Analyze (javascript-typescript)']],
+  [AUTOMODE_GATEKEEPER_WORKFLOW, ['evaluate']]
 ]);
 
 const defaultOffSet = new Set(DEFAULT_OFF_MAIN_WORKFLOWS);
@@ -575,13 +587,47 @@ function auditDotnetCoverage(dotnetCov, expectedHead, lineMin, invalidReason) {
   };
 }
 
+function validMainRunEvent(workflow, event) {
+  if (workflow === AUTOMODE_GATEKEEPER_WORKFLOW) {
+    return AUTOMODE_GATEKEEPER_EVENTS.has(event);
+  }
+  return event === 'push' || event === 'dynamic';
+}
+
 function validMainRunName(workflow, runName) {
   if (workflow === 'CodeQL') return runName === 'Push on main' || runName === 'CodeQL';
   if (workflow === 'CodeQL - Code Quality') {
     return runName === 'Code Quality: Push on main' || runName === 'CodeQL - Code Quality';
   }
-  if (activeWorkflowSet.has(workflow)) return runName === workflow;
+  if (activeWorkflowSet.has(workflow) || workflow === AUTOMODE_GATEKEEPER_WORKFLOW) {
+    return runName === workflow;
+  }
   return runName === workflow || runName === 'Push on main';
+}
+
+function isAllowedMainJobConclusion(isDefaultOff, isAutomodeGatekeeper, job) {
+  if (isDefaultOff) return job.conclusion === 'skipped' || job.conclusion === 'success';
+  if (isAutomodeGatekeeper) {
+    return job.conclusion === 'success' ||
+      (job.conclusion === 'skipped' && AUTOMODE_GATEKEEPER_JOBS.has(job.name));
+  }
+  return job.conclusion === 'success';
+}
+
+function isAllowedMainRunConclusion(
+  isDefaultOff,
+  isAutomodeGatekeeper,
+  runConclusion,
+  allJobsSkipped,
+  evaluateConclusion
+) {
+  if (isDefaultOff) return runConclusion === 'skipped' || runConclusion === 'success';
+  if (isAutomodeGatekeeper) {
+    return allJobsSkipped
+      ? runConclusion === 'skipped'
+      : (runConclusion === 'success' && evaluateConclusion === 'success');
+  }
+  return runConclusion === 'success';
 }
 
 function auditMainSection(main, lineMin, requiredCheckMap) {
@@ -664,15 +710,22 @@ function auditMainSection(main, lineMin, requiredCheckMap) {
   for (let i = 0; i < main.workflowRuns.length; i++) {
     const run = main.workflowRuns[i];
     const isDefaultOff = Object.hasOwn(run, 'defaultOff') && run.defaultOff === true;
+    const isAutomodeGatekeeper = run.workflow === AUTOMODE_GATEKEEPER_WORKFLOW;
     if (run.headSha !== main.head) addReason(reasons, 'MAIN_HEAD_MISMATCH');
 
     const presentJobs = new Set();
     let runHasFailedJob = false;
     let runHasIncompleteJob = false;
+    let allJobsSkipped = true;
+    let gatekeeperEvaluateConclusion = null;
 
     for (let j = 0; j < run.jobs.length; j++) {
       const job = run.jobs[j];
       presentJobs.add(job.name);
+      if (job.conclusion !== 'skipped') allJobsSkipped = false;
+      if (isAutomodeGatekeeper && job.name === 'evaluate') {
+        gatekeeperEvaluateConclusion = job.conclusion;
+      }
       if (job.headSha !== main.head) addReason(reasons, 'MAIN_HEAD_MISMATCH');
       const forceActionsOnly =
         activeWorkflowSet.has(run.workflow) || optionalMainWorkflowSet.has(run.workflow) || isDefaultOff;
@@ -696,27 +749,22 @@ function auditMainSection(main, lineMin, requiredCheckMap) {
           status: job.status,
           conclusion: job.conclusion
         }));
-      } else {
-        const jobAllowed = isDefaultOff
-          ? (job.conclusion === 'skipped' || job.conclusion === 'success')
-          : job.conclusion === 'success';
-        if (!jobAllowed) {
-          runHasFailedJob = true;
-          failedJobs.push(Object.freeze({
-            workflow: run.workflow,
-            runName: run.runName,
-            runId: run.runId,
-            jobName: job.name,
-            jobId: job.jobId,
-            status: job.status,
-            conclusion: job.conclusion
-          }));
-        }
+      } else if (!isAllowedMainJobConclusion(isDefaultOff, isAutomodeGatekeeper, job)) {
+        runHasFailedJob = true;
+        failedJobs.push(Object.freeze({
+          workflow: run.workflow,
+          runName: run.runName,
+          runId: run.runId,
+          jobName: job.name,
+          jobId: job.jobId,
+          status: job.status,
+          conclusion: job.conclusion
+        }));
       }
     }
 
     if (!isDefaultOff) {
-      if ((run.event !== 'push' && run.event !== 'dynamic') || !validMainRunName(run.workflow, run.runName)) {
+      if (!validMainRunEvent(run.workflow, run.event) || !validMainRunName(run.workflow, run.runName)) {
         addReason(reasons, 'MAIN_WORKFLOW_METADATA_MISMATCH');
       }
     }
@@ -725,9 +773,13 @@ function auditMainSection(main, lineMin, requiredCheckMap) {
       if (!failedWorkflows.includes(run.workflow)) failedWorkflows.push(run.workflow);
       addReason(reasons, 'MAIN_WORKFLOW_INCOMPLETE');
     } else {
-      const runAllowed = isDefaultOff
-        ? (run.conclusion === 'skipped' || run.conclusion === 'success')
-        : run.conclusion === 'success';
+      const runAllowed = isAllowedMainRunConclusion(
+        isDefaultOff,
+        isAutomodeGatekeeper,
+        run.conclusion,
+        allJobsSkipped,
+        gatekeeperEvaluateConclusion
+      );
       if (!runAllowed || runHasFailedJob) {
         if (!failedWorkflows.includes(run.workflow)) failedWorkflows.push(run.workflow);
         addReason(reasons, 'MAIN_WORKFLOW_FAILED');

@@ -1,5 +1,6 @@
 // Deterministic, metadata-only, fail-closed Automode Merge Queue gatekeeper evaluator.
 import {types} from 'node:util';
+import {EXACT_PROTECTED_CONTROL_PLANE_PATHS, isProtectedControlPlanePath} from './anti-rogue-audit.mjs';
 import {classifyReviewSummary} from './review-batch.mjs';
 
 export const SOFTWARE_FACTORY_REPO = 'Jamula/SoftwareFactory';
@@ -9,15 +10,21 @@ export const GITHUB_CODE_SCANNING_APP_ID = 57789;
 export const MAX_ENQUEUE_PER_TICK = 5;
 
 export const PROTECTED_CONTROL_PLANE_PREFIXES = Object.freeze([
-  '.github/workflows/',
-  'config/',
-  'tools/engineering-factory/core.mjs',
-  'tools/engineering-factory/automode-enqueuer.mjs',
-  'tools/engineering-factory/anti-rogue-audit.mjs',
-  'tools/engineering-factory/main-health-audit.mjs',
-  'tools/engineering-factory/gh-aw-lock-verifier.mjs',
-  'tools/engineering-factory/protected-squash.mjs'
+  ...new Set([
+    '.github/workflows/',
+    'config/',
+    ...EXACT_PROTECTED_CONTROL_PLANE_PATHS,
+    'tools/engineering-factory/review-batch.mjs',
+    'tools/engineering-factory/automode-enqueuer.mjs',
+    'tools/engineering-factory/main-health-audit.mjs',
+    'tools/engineering-factory/gh-aw-lock-verifier.mjs',
+    'tools/engineering-factory/protected-squash.mjs'
+  ])
 ]);
+const PROTECTED_ENTRIES = PROTECTED_CONTROL_PLANE_PREFIXES.map(p => ({
+  lower: p.toLowerCase(),
+  isPrefix: p.endsWith('/')
+}));
 
 const REQUIRED_ACTIONS_CHECKS = Object.freeze(['build-test', 'upload-coverage-javascript', 'windows-aspire-runtime']);
 const CODEQL_ANALYZE_CHECKS = new Set(['Analyze (javascript-typescript)', 'Analyze (actions)', 'Analyze (csharp)']);
@@ -52,6 +59,12 @@ const COPILOT_REVIEW_CHECKS = new Set(['copilot-pull-request-reviewer', 'running
 const isCopilotReviewCheck = name => COPILOT_REVIEW_CHECKS.has(name.toLowerCase());
 const isCopilotReviewer = (login, isBot) =>
   isBot === true && /^copilot-pull-request-reviewer(?:\[bot\])?$/i.test(login);
+const isSummaryClear = rev => classifyReviewSummary(rev.id, rev.body).summaryDisposition === 'clear';
+const isProtectedPath = f => {
+  const lower = f.toLowerCase();
+  return isProtectedControlPlanePath(f) || isProtectedControlPlanePath(lower) ||
+    PROTECTED_ENTRIES.some(e => (e.isPrefix ? lower.startsWith(e.lower) : lower === e.lower));
+};
 const isPlainObject = v =>
   v !== null && typeof v === 'object' && !types.isProxy(v) && Object.getPrototypeOf(v) === Object.prototype;
 
@@ -121,7 +134,7 @@ function validatePrStructure(pr) {
   return true;
 }
 
-function evaluateSinglePr(pr) {
+function evaluateSinglePr(pr, branchUpdateSupported) {
   if (!PR_ID_RE.test(pr.id) || !isSha40(pr.headRefOid)) return {kind: 'SKIP', reason: 'INVALID_PR_IDENTITY'};
   if (pr.state !== 'OPEN') return {kind: 'SKIP', reason: 'NOT_OPEN'};
   if (pr.isDraft || pr.mergeStateStatus === 'DRAFT') return {kind: 'SKIP', reason: 'DRAFT_PR'};
@@ -136,11 +149,10 @@ function evaluateSinglePr(pr) {
 
   const authorLower = pr.authorLogin.toLowerCase();
   const authorIsBot = pr.authorIsBot || BOT_LOGIN_RE.test(pr.authorLogin);
-  const touchesProtected = pr.files.some(f => PROTECTED_CONTROL_PLANE_PREFIXES.some(p => f.toLowerCase().startsWith(p)));
+  const touchesProtected = pr.files.some(isProtectedPath);
   const latestStateByReviewer = new Map();
   let hasPendingReview = false;
-  let hasPriorIndependentReview = false;
-  let copilotReviewedPr = false;
+  let latestCopilotReview = null;
   let latestCopilotExact = null;
 
   if (pr.reviewsComplete) {
@@ -152,12 +164,10 @@ function evaluateSinglePr(pr) {
       if (DECISION_REVIEW_STATES.has(rev.state)) {
         latestStateByReviewer.set(revLower, {state: rev.state, commitOid: rev.commitOid, independent, revIsBot});
       }
-      if (independent && (rev.state === 'APPROVED' || rev.state === 'COMMENTED')) {
-        hasPriorIndependentReview = true;
-        if (isCopilotReviewer(rev.reviewerLogin, rev.reviewerIsBot)) {
-          copilotReviewedPr = true;
-          if (rev.commitOid === pr.headRefOid) latestCopilotExact = rev;
-        }
+      if (independent && (rev.state === 'APPROVED' || rev.state === 'COMMENTED') &&
+          isCopilotReviewer(rev.reviewerLogin, rev.reviewerIsBot)) {
+        latestCopilotReview = rev;
+        if (rev.commitOid === pr.headRefOid) latestCopilotExact = rev;
       }
     }
   }
@@ -181,14 +191,22 @@ function evaluateSinglePr(pr) {
   if (pr.checkRuns.some(c => isCopilotReviewCheck(c.name) && c.status.toLowerCase() !== 'completed')) {
     return {kind: 'SKIP', reason: 'COPILOT_REVIEW_IN_PROGRESS'};
   }
-  if (latestCopilotExact !== null &&
-      classifyReviewSummary(latestCopilotExact.id, latestCopilotExact.body).summaryDisposition !== 'clear') {
+  if (latestCopilotExact !== null && !isSummaryClear(latestCopilotExact)) {
     return {kind: 'SKIP', reason: 'COPILOT_SUMMARY_NOT_CLEAR'};
   }
-  if (!hasPriorIndependentReview || (!humanApprovedExactHead && !copilotReviewedPr)) {
-    return {kind: 'SKIP', reason: 'INDEPENDENT_REVIEW_REQUIRED'};
+  const copilotCarryForwardClear =
+    latestCopilotExact !== null || (latestCopilotReview !== null && isSummaryClear(latestCopilotReview));
+  if (!humanApprovedExactHead && !copilotCarryForwardClear) {
+    return {
+      kind: 'SKIP',
+      reason: latestCopilotReview !== null ? 'COPILOT_SUMMARY_NOT_CLEAR' : 'INDEPENDENT_REVIEW_REQUIRED'
+    };
   }
-  if (pr.mergeStateStatus === 'BEHIND') return {kind: 'BEHIND', number: pr.number, expectedHeadOid: pr.headRefOid};
+  if (pr.mergeStateStatus === 'BEHIND') {
+    return branchUpdateSupported
+      ? {kind: 'BEHIND', number: pr.number, expectedHeadOid: pr.headRefOid}
+      : {kind: 'SKIP', reason: 'BRANCH_UPDATE_UNSUPPORTED'};
+  }
   if (!pr.checkRunsComplete) return {kind: 'SKIP', reason: 'CHECK_RUNS_INCOMPLETE'};
   if (pr.statusCheckRollupState !== 'SUCCESS') return {kind: 'SKIP', reason: 'STATUS_ROLLUP_NOT_SUCCESS'};
 
@@ -217,20 +235,29 @@ function evaluateSinglePr(pr) {
 const closedResult = reason =>
   Object.freeze({active: false, reason, enqueue: Object.freeze([]), updateBranch: Object.freeze([]), decisions: Object.freeze([])});
 
+const INPUT_OPT_KEYS = [
+  'killSwitchActive', 'automodeEnabled', 'maxEnqueuePerTick', 'mainHealthy', 'branchUpdateSupported'
+];
+
 export function evaluateAutomodePullRequests(input) {
-  if (!exactPlainObject(input, ['repository', 'repositoryId', 'pullRequests'], ['killSwitchActive', 'automodeEnabled', 'maxEnqueuePerTick'])) {
+  if (!exactPlainObject(input, ['repository', 'repositoryId', 'pullRequests'], INPUT_OPT_KEYS)) {
     return closedResult('INVALID_INPUT');
   }
   const hasKill = Object.hasOwn(input, 'killSwitchActive');
   const hasEnabled = Object.hasOwn(input, 'automodeEnabled');
   const hasMax = Object.hasOwn(input, 'maxEnqueuePerTick');
+  const hasMainHealthy = Object.hasOwn(input, 'mainHealthy');
+  const hasBranchUpdate = Object.hasOwn(input, 'branchUpdateSupported');
   if (typeof input.repository !== 'string' || !Number.isSafeInteger(input.repositoryId) || !isDenseArray(input.pullRequests, 100) ||
       (hasKill && typeof input.killSwitchActive !== 'boolean') || (hasEnabled && typeof input.automodeEnabled !== 'boolean') ||
-      (hasMax && (!isPositiveInt(input.maxEnqueuePerTick) || input.maxEnqueuePerTick > MAX_ENQUEUE_PER_TICK))) {
+      (hasMax && (!isPositiveInt(input.maxEnqueuePerTick) || input.maxEnqueuePerTick > MAX_ENQUEUE_PER_TICK)) ||
+      (hasMainHealthy && typeof input.mainHealthy !== 'boolean') ||
+      (hasBranchUpdate && typeof input.branchUpdateSupported !== 'boolean')) {
     return closedResult('INVALID_INPUT');
   }
   if ((hasKill && input.killSwitchActive === true) || (hasEnabled && input.automodeEnabled === false)) return closedResult('AUTOMODE_DISABLED');
   if (input.repository !== SOFTWARE_FACTORY_REPO || input.repositoryId !== SOFTWARE_FACTORY_REPO_ID) return closedResult('UNTRUSTED_REPOSITORY');
+  if (hasMainHealthy && input.mainHealthy === false) return closedResult('MAIN_UNHEALTHY');
 
   const seenNumbers = new Set();
   for (const pr of input.pullRequests) {
@@ -239,7 +266,10 @@ export function evaluateAutomodePullRequests(input) {
   }
 
   const maxEnqueue = hasMax ? input.maxEnqueuePerTick : MAX_ENQUEUE_PER_TICK;
-  const outcomes = [...input.pullRequests].sort((a, b) => a.number - b.number).map(pr => ({number: pr.number, res: evaluateSinglePr(pr)}));
+  const branchUpdateSupported = hasBranchUpdate ? input.branchUpdateSupported : true;
+  const outcomes = [...input.pullRequests]
+    .sort((a, b) => a.number - b.number)
+    .map(pr => ({number: pr.number, res: evaluateSinglePr(pr, branchUpdateSupported)}));
   const enqueue = [];
   let behindCandidate = null;
   for (const {res} of outcomes) {
