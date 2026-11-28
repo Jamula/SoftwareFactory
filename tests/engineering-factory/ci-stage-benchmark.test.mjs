@@ -1783,6 +1783,10 @@ test('dotnet-agents.yml enforces SHA-pinned exact-input NuGet caching, 98/95 Cov
   assert.match(content, /^permissions:\n  contents: read$/m);
   assert.match(content, /runs-on: ubuntu-latest/);
   assert.match(content, /runs-on: windows-latest/);
+  assert.match(
+    content,
+    /^on:\n  pull_request:\n    paths:\n      - 'src\/\*\*'\n      - 'tests\/SoftwareFactory\.Agents\.Tests\/\*\*'\n      - 'apphost\.cs'\n      - 'global\.json'\n      - 'Directory\.Build\.props'\n      - 'Directory\.Packages\.props'\n      - '\.github\/workflows\/dotnet-agents\.yml'\n  merge_group:\n    types: \[checks_requested\]\n  push:\n    branches: \[main\]$/m
+  );
 
   // Every uses: line must be pinned to an exact 40-char lowercase hex commit SHA
   const usesMatches = [...content.matchAll(/^\s*-?\s*uses:\s*([^\s#]+)/gm)].map(m => m[1]);
@@ -1838,4 +1842,234 @@ test('dotnet-agents.yml enforces SHA-pinned exact-input NuGet caching, 98/95 Cov
     }
   }
   assert.equal(runBlocksChecked, 8);
+});
+
+function assertWorkflowPinnedAndSafe(content, expectedUsesCount, expectedJobEnvCount, expectedRunBlocks) {
+  const usesMatches = [...content.matchAll(/^\s*-?\s*uses:\s*([^\s#]+)/gm)].map(m => m[1]);
+  assert.equal(usesMatches.length, expectedUsesCount);
+  for (const ref of usesMatches) {
+    assert.match(ref, /^actions\/[a-z0-9/-]+@[a-f0-9]{40}$/);
+  }
+  assert.equal(content.includes('restore-keys:'), false);
+
+  const jobEnvMatches = [...content.matchAll(/^    env:\n((?:      .+\n)+)/gm)].map(m => m[1]);
+  assert.equal(jobEnvMatches.length, expectedJobEnvCount);
+  for (const jobEnv of jobEnvMatches) {
+    assert.equal(jobEnv.includes('runner.'), false, `runner context is invalid in job-level env: ${jobEnv}`);
+  }
+
+  const lines = content.split('\n');
+  let runIndent = null;
+  let runBlocksChecked = 0;
+  for (const line of lines) {
+    if (runIndent !== null) {
+      if (line.trim() === '') continue;
+      const indent = line.match(/^ */)[0].length;
+      if (indent > runIndent) {
+        assert.equal(line.includes('${{'), false, `forbidden expression interpolation in run script: ${line}`);
+        continue;
+      }
+      runIndent = null;
+    }
+    const startMatch = line.match(/^( *)(?:-\s*)?run:\s*(\||.+)$/);
+    if (startMatch) {
+      runBlocksChecked++;
+      assert.equal(startMatch[2].includes('${{'), false, `forbidden inline expression in run: ${line}`);
+      if (line.trimEnd().endsWith('|')) {
+        runIndent = startMatch[1].length;
+      }
+    }
+  }
+  assert.equal(runBlocksChecked, expectedRunBlocks);
+  return usesMatches;
+}
+
+test('validate.yml, windows-aspire.yml, and shadow-reconcile.yml enforce poison-safe exact-lockfile caching, deduplicated runtime verifiers, and dispatch-only legacy reconciliation', () => {
+  const validateContent = readFileSync(new URL('../../.github/workflows/validate.yml', import.meta.url), 'utf8');
+  const windowsContent = readFileSync(new URL('../../.github/workflows/windows-aspire.yml', import.meta.url), 'utf8');
+  const shadowContent = readFileSync(new URL('../../.github/workflows/shadow-reconcile.yml', import.meta.url), 'utf8');
+
+  const protectedMainGuard =
+    "if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.ref_protected == true && github.repository == 'Jamula/SoftwareFactory' && github.repository_id == '1471342715'";
+  const npmKeyExpr =
+    "key: sf-npm-ci-v1-${{ runner.os }}-${{ runner.arch }}-node-26.13.1-ignore-scripts-${{ hashFiles('package.json', 'package-lock.json') }}";
+  const aspireKeyExpr =
+    "key: sf-aspire-nuget-v2-${{ runner.os }}-${{ runner.arch }}-dotnet-10.0.404-aspire-17.0.0-release-${{ hashFiles('global.json', 'apphost.cs', 'src/SoftwareFactory.Agents/SoftwareFactory.Agents.csproj', '**/packages.lock.json', 'Directory.Build.props', 'Directory.Packages.props') }}";
+
+  // validate.yml invariants: 4 required jobs, SHA-pinned actions, 3 cache pairs (2 npm + 1 NuGet/Aspire.Cli), zero duplicate node --test inside runtime
+  assert.match(validateContent, /^name: Factory validation$/m);
+  assert.match(validateContent, /^permissions:\n  contents: read$/m);
+  for (const jobId of ['test-coverage', 'linux-aspire-runtime', 'build-test', 'upload-coverage-javascript']) {
+    assert.match(validateContent, new RegExp(`^  ${jobId}:$`, 'm'));
+  }
+  const validateUses = assertWorkflowPinnedAndSafe(validateContent, 14, 0, 9);
+  assert.equal(
+    validateUses.filter(u => u === 'actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9').length,
+    3
+  );
+  assert.equal(
+    validateUses.filter(u => u === 'actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9').length,
+    3
+  );
+  assert.equal(validateContent.split(protectedMainGuard).length - 1, 3);
+  assert.equal(validateContent.split("if: github.event_name != 'push'").length - 1, 3);
+  assert.equal(validateContent.split(npmKeyExpr).length - 1, 4);
+  assert.equal(validateContent.split(aspireKeyExpr).length - 1, 2);
+  assert.equal(validateContent.includes('npm run test:coverage'), true);
+  assert.equal(validateContent.includes('node tools/engineering-factory/verify-dashboard-export.mjs "$archive"'), true);
+  assert.equal(validateContent.includes('node tools/engineering-factory/verify-dashboard-metric-receipt.mjs "$data_root"'), true);
+  assert.equal(validateContent.includes('node --test'), false);
+  assert.equal(
+    validateContent.includes('31599e3906c24c5b05787651ac52859ca0e267973ff2bb9f38ca5f968e355f1d'),
+    true
+  );
+  assert.equal(
+    validateContent.includes('e82a0663bc83b4cccd1c23403baa45eef2141a889e84f97030e50c21f3f5781f'),
+    true
+  );
+
+  // windows-aspire.yml invariants: SHA-pinned actions, 2 cache pairs (1 npm + 1 NuGet/Aspire.Cli), zero duplicate node --test, TLS/auth intact
+  assert.match(windowsContent, /^name: Windows Aspire runtime$/m);
+  assert.match(windowsContent, /^permissions:\n  contents: read$/m);
+  assert.match(windowsContent, /^  windows-aspire-runtime:$/m);
+  const windowsUses = assertWorkflowPinnedAndSafe(windowsContent, 7, 1, 4);
+  assert.equal(
+    windowsUses.filter(u => u === 'actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9').length,
+    2
+  );
+  assert.equal(
+    windowsUses.filter(u => u === 'actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9').length,
+    2
+  );
+  assert.equal(windowsContent.split(protectedMainGuard).length - 1, 2);
+  assert.equal(windowsContent.split("if: github.event_name != 'push'").length - 1, 2);
+  assert.equal(windowsContent.split(npmKeyExpr).length - 1, 2);
+  assert.equal(windowsContent.split(aspireKeyExpr).length - 1, 2);
+  assert.equal(windowsContent.includes('node tools/engineering-factory/verify-dashboard-api.mjs'), true);
+  assert.equal(windowsContent.includes('node tools/engineering-factory/verify-dashboard-metric-receipt.mjs $dataRoot'), true);
+  assert.equal(
+    windowsContent.includes('node --test tests/engineering-factory/verify-dashboard-metric-receipt.test.mjs'),
+    true
+  );
+  assert.equal(windowsContent.includes('verify-dashboard-api.test.mjs'), false);
+  assert.equal(
+    windowsContent.includes('31599e3906c24c5b05787651ac52859ca0e267973ff2bb9f38ca5f968e355f1d'),
+    true
+  );
+  assert.equal(
+    windowsContent.includes('590e1d28d581fd532fa24a60a2adef8792cb3bd438585f57879551fc510458ea'),
+    true
+  );
+  assert.match(windowsContent, /\^17\\\.0\\\.0\(\?:\\\+\[0-9a-f\]\+\)\?\$/);
+
+  // shadow-reconcile.yml invariants: restricted to workflow_dispatch only under on:
+  assert.match(shadowContent, /^name: Factory shadow reconciliation$/m);
+  assert.match(
+    shadowContent,
+    /^on:\n  workflow_dispatch:\n    inputs:\n      issue_number:\n        description: Optional issue number for a read-only manual reconciliation\n        required: false\n        type: string\n        default: ''\npermissions:\n  contents: read$/m
+  );
+  assertWorkflowPinnedAndSafe(shadowContent, 2, 0, 6);
+});
+
+test('m02-01-ci-acceleration-receipt.json replays real cold-run critical-path, Aspire stage bottlenecks, and exact-lockfile cache keys fail-closed', () => {
+  const receipt = JSON.parse(
+    readFileSync(new URL('../../docs/evidence/m02-01-ci-acceleration-receipt.json', import.meta.url), 'utf8')
+  );
+  assert.equal(receipt.milestone, 'M02.01');
+  assert.equal(receipt.issueNumber, 15);
+  assert.equal(receipt.repository, 'Jamula/SoftwareFactory');
+  assert.equal(receipt.repositoryId, 1471342715);
+  assert.equal(receipt.status.coldBaselineCaptured, true);
+  assert.equal(receipt.status.exactLockCachingWired, true);
+  assert.equal(receipt.status.warmCohortVerified, false);
+  assert.equal(receipt.status.closesIssue15, false);
+  assert.equal(receipt.status.gatesWeakened, false);
+  assert.equal(receipt.status.restoreKeysFallbackUsed, false);
+  assert.equal(receipt.status.incrementalSpendUsdCents, 0);
+
+  // Replay historical receipt self-consistently from its recorded snapshot digests (independent of future checkout edits)
+  const {
+    packageJsonSha256,
+    packageLockSha256,
+    globalJsonSha256,
+    appHostSha256,
+    agentsCsprojSha256
+  } = receipt.lockedInputDigests;
+  for (const recordedDigest of [
+    packageJsonSha256,
+    packageLockSha256,
+    globalJsonSha256,
+    appHostSha256,
+    agentsCsprojSha256
+  ]) {
+    assert.match(recordedDigest, /^[a-f0-9]{64}$/);
+  }
+  assert.deepEqual(receipt.exactLockCacheSafety.aspireCliNupkgSha256, {
+    'aspire.cli.17.0.0.nupkg': '31599e3906c24c5b05787651ac52859ca0e267973ff2bb9f38ca5f968e355f1d',
+    'aspire.cli.linux-x64.17.0.0.nupkg': 'e82a0663bc83b4cccd1c23403baa45eef2141a889e84f97030e50c21f3f5781f',
+    'aspire.cli.win-x64.17.0.0.nupkg': '590e1d28d581fd532fa24a60a2adef8792cb3bd438585f57879551fc510458ea'
+  });
+
+  for (const [label, osName] of [['linux', 'linux'], ['windows', 'windows']]) {
+    const manifest = buildExactInputCacheManifest({
+      repositoryId: 1471342715,
+      repository: 'Jamula/SoftwareFactory',
+      trustedSource: true,
+      isFork: false,
+      branchProtected: true,
+      os: osName,
+      arch: 'x64',
+      toolchain: {
+        node: receipt.toolchain.node,
+        dotnet: receipt.toolchain.dotnet,
+        aspireCli: receipt.toolchain.aspireCli
+      },
+      packageJsonSha256,
+      packageLockSha256,
+      globalJsonSha256,
+      appHostSha256
+    });
+    assert.equal(manifest.valid, true);
+    assert.equal(manifest.allowProtectedCacheWrite, true);
+    assert.equal(manifest.skipRequiredChecks, false);
+    assert.deepEqual(manifest.keys, receipt.exactLockCacheSafety.manifestKeys[label]);
+    assert.deepEqual(
+      {
+        npmCi: manifest.entries.npm.lockedKey,
+        nugetApphost: manifest.entries.nuget.lockedKey,
+        aspireCli: manifest.entries['aspire-cli'].lockedKey
+      },
+      receipt.exactLockCacheSafety.derivedKeys[label]
+    );
+  }
+
+  // Replay Aspire stage breakdown on ec438f5 Linux & Windows runs
+  const linuxAnalysis = analyzeAspireRuntimeStages(receipt.aspireStageBaseline.linux.sample);
+  const windowsAnalysis = analyzeAspireRuntimeStages(receipt.aspireStageBaseline.windows.sample);
+  assert.deepEqual(linuxAnalysis, receipt.aspireStageBaseline.linux.analysis);
+  assert.deepEqual(windowsAnalysis, receipt.aspireStageBaseline.windows.analysis);
+  assert.equal(linuxAnalysis.dominantStage, 'restoreBuildMs');
+  assert.equal(windowsAnalysis.dominantStage, 'restoreBuildMs');
+  assert.equal(windowsAnalysis.meetsWindowsProvisionalTarget, false);
+
+  // Replay 5-PR cold critical-path cohort
+  const criticalPath = evaluateCiCriticalPath(receipt.coldPullRequestCohort.runs);
+  assert.equal(criticalPath.valid, true);
+  assert.equal(criticalPath.sloIsTimeoutOrGateWaiver, false);
+  assert.equal(criticalPath.skipRequiredChecks, false);
+  assert.deepEqual(
+    {
+      valid: criticalPath.valid,
+      reason: criticalPath.reason,
+      sampleCount: criticalPath.sampleCount,
+      p50Ms: criticalPath.p50Ms,
+      p95Ms: criticalPath.p95Ms,
+      p50MeetsStandardTarget: criticalPath.p50MeetsStandardTarget,
+      p50MeetsStretchTarget: criticalPath.p50MeetsStretchTarget,
+      sloMissCount: criticalPath.sloMissCount,
+      firstJobStartToLastCheckMs: criticalPath.firstJobStartToLastCheckMs,
+      runnerQueueWaitMs: criticalPath.runnerQueueWaitMs
+    },
+    receipt.coldPullRequestCohort.summary
+  );
 });

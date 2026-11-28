@@ -7,19 +7,6 @@ on:
         required: false
         type: string
         default: ''
-  # Best-effort recovery inventory; primary triggers remain event-driven.
-  schedule:
-    - cron: '3,13,23,33,43,53 * * * *'
-  issues:
-    types: [opened, edited, labeled, unlabeled, closed, reopened]
-  pull_request_target:
-    branches: [main]
-    types: [opened, reopened, synchronize, ready_for_review, closed]
-  push:
-    branches: [main]
-  workflow_run:
-    workflows: ["Factory validation", "Windows Aspire runtime"]
-    types: [completed]
 permissions:
   contents: read
 jobs:

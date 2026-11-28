@@ -15,7 +15,12 @@ export const ACTIVE_MAIN_WORKFLOWS = Object.freeze([
   'Windows Aspire runtime',
   '.NET MAF specialist agents',
   'Reusable replay smoke',
-  'CodeQL',
+  'CodeQL'
+]);
+
+// Duplicate CodeQL - Code Quality is disabled in repository settings while security
+// CodeQL remains mandatory; historical receipts including it are still validated.
+export const OPTIONAL_MAIN_WORKFLOWS = Object.freeze([
   'CodeQL - Code Quality'
 ]);
 
@@ -28,6 +33,23 @@ export const REQUIRED_STATUS_CHECK_CONTEXTS = Object.freeze([
   'build-test',
   'upload-coverage-javascript',
   'windows-aspire-runtime'
+]);
+
+// .NET MAF specialist agents is path-filtered on pull_request when C#/Aspire files
+// are unchanged, while remaining unconditional on merge_group and protected main.
+export const PATH_FILTERED_DOTNET_PULL_CHECKS = Object.freeze([
+  'linux-dotnet-agents',
+  'windows-dotnet-agents'
+]);
+
+export const DOTNET_AGENTS_PULL_PATH_FILTERS = Object.freeze([
+  'src/**',
+  'tests/SoftwareFactory.Agents.Tests/**',
+  'apphost.cs',
+  'global.json',
+  'Directory.Build.props',
+  'Directory.Packages.props',
+  '.github/workflows/dotnet-agents.yml'
 ]);
 
 export const REQUIRED_CANDIDATE_RUNTIME_CHECKS = Object.freeze([
@@ -69,6 +91,14 @@ const MAIN_WORKFLOW_REQUIRED_JOBS = new Map([
 
 const defaultOffSet = new Set(DEFAULT_OFF_MAIN_WORKFLOWS);
 const activeWorkflowSet = new Set(ACTIVE_MAIN_WORKFLOWS);
+const optionalMainWorkflowSet = new Set(OPTIONAL_MAIN_WORKFLOWS);
+const pathFilteredDotnetPullSet = new Set(PATH_FILTERED_DOTNET_PULL_CHECKS);
+const unconditionalCandidateRuntimeChecks = REQUIRED_CANDIDATE_RUNTIME_CHECKS.filter(
+  name => !pathFilteredDotnetPullSet.has(name)
+);
+const unconditionalCandidatePullChecks = REQUIRED_CANDIDATE_PULL_CHECKS.filter(
+  name => !pathFilteredDotnetPullSet.has(name)
+);
 const builtInActionsJobSet = new Set([
   ...REQUIRED_STATUS_CHECK_CONTEXTS,
   ...REQUIRED_CANDIDATE_PULL_CHECKS,
@@ -596,7 +626,7 @@ function auditMainSection(main, lineMin, requiredCheckMap) {
         return {structuralError: true};
       }
     }
-    if (activeWorkflowSet.has(run.workflow)) {
+    if (activeWorkflowSet.has(run.workflow) || optionalMainWorkflowSet.has(run.workflow)) {
       if (seenActiveRuns.has(run.workflow)) return {structuralError: true};
       seenActiveRuns.add(run.workflow);
     }
@@ -643,7 +673,8 @@ function auditMainSection(main, lineMin, requiredCheckMap) {
       const job = run.jobs[j];
       presentJobs.add(job.name);
       if (job.headSha !== main.head) addReason(reasons, 'MAIN_HEAD_MISMATCH');
-      const forceActionsOnly = activeWorkflowSet.has(run.workflow) || isDefaultOff;
+      const forceActionsOnly =
+        activeWorkflowSet.has(run.workflow) || optionalMainWorkflowSet.has(run.workflow) || isDefaultOff;
       const trustedApp = isExpectedCheckAppId(job.name, job.appId, requiredCheckMap, forceActionsOnly);
       if (!trustedApp) addReason(reasons, 'UNTRUSTED_CHECK_APP');
       if (!isDefaultOff &&
@@ -779,8 +810,7 @@ const CANDIDATE_KEYS = [
   'trustedReviewers',
   'review',
   'mergeGroup',
-  'jsCoverage',
-  'dotnetCoverage'
+  'jsCoverage'
 ];
 
 const REVIEW_REQUIRED_KEYS = [
@@ -811,7 +841,11 @@ function hasCoverageDrop(candidateSummary, mainSummary) {
 }
 
 function auditCandidateSection(candidate, mainHead, mainAudit, lineMin, requiredApprovals, requiredCheckMap) {
-  if (!exactPlainObject(candidate, CANDIDATE_KEYS, ['additionalReviews']) ||
+  if (!exactPlainObject(
+    candidate,
+    CANDIDATE_KEYS,
+    ['additionalReviews', 'dotnetCoverage', 'dotnetPathsChanged']
+  ) ||
       !isPositiveInt(candidate.prNumber) ||
       !isSha40(candidate.head) ||
       !isSha40(candidate.base) ||
@@ -822,6 +856,16 @@ function auditCandidateSection(candidate, mainHead, mainAudit, lineMin, required
       !isNonNegInt(candidate.unresolvedInlineThreads) ||
       !isDenseArray(candidate.trustedReviewers, 64) ||
       candidate.trustedReviewers.length === 0) {
+    return {structuralError: true};
+  }
+
+  const hasDotnetPathsChanged = Object.hasOwn(candidate, 'dotnetPathsChanged');
+  if (hasDotnetPathsChanged && typeof candidate.dotnetPathsChanged !== 'boolean') {
+    return {structuralError: true};
+  }
+  const dotnetPathsChanged = hasDotnetPathsChanged ? candidate.dotnetPathsChanged : true;
+  const hasCandidateDotnetCoverage = Object.hasOwn(candidate, 'dotnetCoverage');
+  if (!hasCandidateDotnetCoverage && dotnetPathsChanged) {
     return {structuralError: true};
   }
 
@@ -841,13 +885,18 @@ function auditCandidateSection(candidate, mainHead, mainAudit, lineMin, required
   const cs = candidate.codeScanning;
   if (!exactPlainObject(
     cs,
-    ['head', 'codeqlStatus', 'codeqlConclusion', 'codeQualityStatus', 'codeQualityConclusion', 'openAlerts'],
-    []
+    ['head', 'codeqlStatus', 'codeqlConclusion', 'openAlerts'],
+    ['codeQualityStatus', 'codeQualityConclusion']
   ) ||
       !isSha40(cs.head) ||
       !isValidStatusConclusion(cs.codeqlStatus, cs.codeqlConclusion) ||
-      !isValidStatusConclusion(cs.codeQualityStatus, cs.codeQualityConclusion) ||
       !isNonNegInt(cs.openAlerts)) {
+    return {structuralError: true};
+  }
+  const hasCodeQualityStatus = Object.hasOwn(cs, 'codeQualityStatus');
+  const hasCodeQualityConclusion = Object.hasOwn(cs, 'codeQualityConclusion');
+  if (hasCodeQualityStatus !== hasCodeQualityConclusion ||
+      (hasCodeQualityStatus && !isValidStatusConclusion(cs.codeQualityStatus, cs.codeQualityConclusion))) {
     return {structuralError: true};
   }
 
@@ -919,10 +968,17 @@ function auditCandidateSection(candidate, mainHead, mainAudit, lineMin, required
     candidate.headRepository !== SOFTWARE_FACTORY_REPO ||
     candidate.headRepositoryId !== SOFTWARE_FACTORY_REPO_ID;
 
+  const effectiveRuntimeChecks = dotnetPathsChanged
+    ? REQUIRED_CANDIDATE_RUNTIME_CHECKS
+    : unconditionalCandidateRuntimeChecks;
+  const effectivePullChecks = dotnetPathsChanged
+    ? REQUIRED_CANDIDATE_PULL_CHECKS
+    : unconditionalCandidatePullChecks;
+
   let anyRuntimeSkipped = false;
   let anyRuntimeMissing = false;
-  for (let i = 0; i < REQUIRED_CANDIDATE_RUNTIME_CHECKS.length; i++) {
-    const entries = pullByName.get(REQUIRED_CANDIDATE_RUNTIME_CHECKS[i]);
+  for (let i = 0; i < effectiveRuntimeChecks.length; i++) {
+    const entries = pullByName.get(effectiveRuntimeChecks[i]);
     if (entries === undefined) anyRuntimeMissing = true;
     else if (entries.some(e => e.conclusion === 'skipped')) anyRuntimeSkipped = true;
   }
@@ -933,7 +989,7 @@ function auditCandidateSection(candidate, mainHead, mainAudit, lineMin, required
     addReason(reasons, 'RUNTIME_CHECKS_SKIPPED');
   }
 
-  let pullAllGreen = REQUIRED_CANDIDATE_PULL_CHECKS.every(name => pullByName.has(name));
+  let pullAllGreen = effectivePullChecks.every(name => pullByName.has(name));
   const satisfiedPullChecks = new Set();
   for (let i = 0; i < candidate.pullChecks.length; i++) {
     const c = candidate.pullChecks[i];
@@ -958,13 +1014,15 @@ function auditCandidateSection(candidate, mainHead, mainAudit, lineMin, required
   }
   if (!pullAllGreen) addReason(reasons, 'CANDIDATE_PULL_CHECKS_FAILED');
 
+  const codeQualityFailed =
+    hasCodeQualityStatus &&
+    (cs.codeQualityStatus !== 'completed' || cs.codeQualityConclusion !== 'success');
   if (cs.head !== candidate.head) {
     addReason(reasons, 'CANDIDATE_SECURITY_HEAD_MISMATCH');
   } else if (
     cs.codeqlStatus !== 'completed' ||
     cs.codeqlConclusion !== 'success' ||
-    cs.codeQualityStatus !== 'completed' ||
-    cs.codeQualityConclusion !== 'success' ||
+    codeQualityFailed ||
     cs.openAlerts !== 0 ||
     !candidate.secretScanningClear
   ) {
@@ -1094,18 +1152,22 @@ function auditCandidateSection(candidate, mainHead, mainAudit, lineMin, required
     addReason(reasons, 'JS_COVERAGE_REGRESSION');
   }
 
-  const dotnetResult = auditDotnetCoverage(
-    candidate.dotnetCoverage,
-    candidate.head,
-    lineMin,
-    'CANDIDATE_DOTNET_COVERAGE_INVALID'
-  );
-  if (!dotnetResult.ok) {
-    addReason(reasons, dotnetResult.reason);
-  } else if (mainAudit.dotnetSummary === null) {
-    addReason(reasons, 'MAIN_BASE_COVERAGE_UNVERIFIED');
-  } else if (hasCoverageDrop(dotnetResult.summary, mainAudit.dotnetSummary)) {
-    addReason(reasons, 'DOTNET_COVERAGE_REGRESSION');
+  let candDotnetSummary = null;
+  if (hasCandidateDotnetCoverage) {
+    const dotnetResult = auditDotnetCoverage(
+      candidate.dotnetCoverage,
+      candidate.head,
+      lineMin,
+      'CANDIDATE_DOTNET_COVERAGE_INVALID'
+    );
+    candDotnetSummary = dotnetResult.summary;
+    if (!dotnetResult.ok) {
+      addReason(reasons, dotnetResult.reason);
+    } else if (mainAudit.dotnetSummary === null) {
+      addReason(reasons, 'MAIN_BASE_COVERAGE_UNVERIFIED');
+    } else if (hasCoverageDrop(dotnetResult.summary, mainAudit.dotnetSummary)) {
+      addReason(reasons, 'DOTNET_COVERAGE_REGRESSION');
+    }
   }
 
   return {
@@ -1114,7 +1176,7 @@ function auditCandidateSection(candidate, mainHead, mainAudit, lineMin, required
     mergeGroupHead: mg.head,
     reasons,
     jsSummary: jsResult.summary,
-    dotnetSummary: dotnetResult.summary
+    dotnetSummary: candDotnetSummary
   };
 }
 

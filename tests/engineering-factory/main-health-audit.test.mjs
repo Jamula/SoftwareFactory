@@ -6,8 +6,11 @@ import {dirname, join} from 'node:path';
 import {
   ACTIVE_MAIN_WORKFLOWS,
   DEFAULT_OFF_MAIN_WORKFLOWS,
+  DOTNET_AGENTS_PULL_PATH_FILTERS,
   GITHUB_ACTIONS_APP_ID,
   GITHUB_ADVANCED_SECURITY_APP_ID,
+  OPTIONAL_MAIN_WORKFLOWS,
+  PATH_FILTERED_DOTNET_PULL_CHECKS,
   REQUIRED_CANDIDATE_PULL_CHECKS,
   REQUIRED_CANDIDATE_RUNTIME_CHECKS,
   REQUIRED_MERGE_GROUP_CHECKS,
@@ -324,7 +327,10 @@ function makeFullHealthyInput() {
 }
 
 test('replays recorded b0924c38 main quality audit receipt with 13/13 green Push on main checks and flips to MAIN_HEALTHY once CodeQL code_scanning ruleset is present', () => {
-  assert.equal(ACTIVE_MAIN_WORKFLOWS.length, 6);
+  assert.equal(ACTIVE_MAIN_WORKFLOWS.length, 5);
+  assert.deepEqual(OPTIONAL_MAIN_WORKFLOWS, ['CodeQL - Code Quality']);
+  assert.deepEqual(PATH_FILTERED_DOTNET_PULL_CHECKS, ['linux-dotnet-agents', 'windows-dotnet-agents']);
+  assert.equal(DOTNET_AGENTS_PULL_PATH_FILTERS.length, 7);
   assert.equal(recordedEvidence.auditedHead, 'b0924c3807f797e6090e1dc3e1e65fc9caa07550');
   assert.equal(recordedEvidence.mainHealthy, false);
   assert.equal(recordedEvidence.statusSummary.allActiveWorkflowsGreen, true);
@@ -605,11 +611,59 @@ test('fails closed on unhealthy protected main across all active workflows, inco
   missingJob.main.workflowRuns[0].jobs = missingJob.main.workflowRuns[0].jobs.slice(0, 3);
   assert.equal(auditProtectedMainAndCandidateGates(missingJob).reason, 'MAIN_REQUIRED_JOB_MISSING');
 
-  for (let idx = 0; idx < 6; idx++) {
+  for (let idx = 0; idx < 5; idx++) {
     const missingWf = makeHealthyMainInput();
     missingWf.main.workflowRuns.splice(idx, 1);
     assert.equal(auditProtectedMainAndCandidateGates(missingWf).reason, 'MAIN_ACTIVE_WORKFLOW_MISSING');
   }
+
+  // Disabled duplicate CodeQL - Code Quality (index 5) is optional on new main pushes, while security CodeQL remains mandatory
+  const withoutCodeQuality = makeFullHealthyInput();
+  withoutCodeQuality.main.workflowRuns = withoutCodeQuality.main.workflowRuns.filter(
+    r => r.workflow !== 'CodeQL - Code Quality'
+  );
+  delete withoutCodeQuality.candidate.codeScanning.codeQualityStatus;
+  delete withoutCodeQuality.candidate.codeScanning.codeQualityConclusion;
+  const noCqRes = auditProtectedMainAndCandidateGates(withoutCodeQuality);
+  assert.equal(noCqRes.valid, true);
+  assert.equal(noCqRes.mainHealthy, true);
+  assert.equal(noCqRes.eligible, true);
+  assert.equal(noCqRes.reason, 'MAIN_AND_CANDIDATE_HEALTHY');
+
+  // Path-filtered .NET MAF specialist agents on pull_request when C#/Aspire files are unchanged (while remaining mandatory on merge_group & main)
+  const jsOnlyCandidate = cloneJson(withoutCodeQuality);
+  jsOnlyCandidate.candidate.dotnetPathsChanged = false;
+  jsOnlyCandidate.candidate.pullChecks = jsOnlyCandidate.candidate.pullChecks.filter(
+    c => !PATH_FILTERED_DOTNET_PULL_CHECKS.includes(c.name)
+  );
+  delete jsOnlyCandidate.candidate.dotnetCoverage;
+  const jsOnlyOk = auditProtectedMainAndCandidateGates(jsOnlyCandidate);
+  assert.equal(jsOnlyOk.valid, true);
+  assert.equal(jsOnlyOk.eligible, true);
+  assert.equal(jsOnlyOk.coverageSummary.candidateDotnet, null);
+
+  // Even when dotnetPathsChanged is false on pull_request, merge_group MUST still execute linux-dotnet-agents & windows-dotnet-agents
+  const jsOnlyMissingMgDotnet = cloneJson(jsOnlyCandidate);
+  jsOnlyMissingMgDotnet.candidate.mergeGroup.checks = jsOnlyMissingMgDotnet.candidate.mergeGroup.checks.filter(
+    c => c.name !== 'windows-dotnet-agents'
+  );
+  assert.equal(
+    auditProtectedMainAndCandidateGates(jsOnlyMissingMgDotnet).reason,
+    'MERGE_GROUP_CHECKS_FAILED'
+  );
+
+  // Structural guards on half-present codeQuality fields, non-boolean dotnetPathsChanged, or missing dotnetCoverage when dotnetPathsChanged=true
+  const halfCodeQuality = cloneJson(withoutCodeQuality);
+  halfCodeQuality.candidate.codeScanning.codeQualityStatus = 'completed';
+  assert.equal(auditProtectedMainAndCandidateGates(halfCodeQuality).reason, 'INVALID_INPUT');
+
+  const badDotnetPathsFlag = makeFullHealthyInput();
+  badDotnetPathsFlag.candidate.dotnetPathsChanged = 'false';
+  assert.equal(auditProtectedMainAndCandidateGates(badDotnetPathsFlag).reason, 'INVALID_INPUT');
+
+  const missingCandDotnetWhenChanged = makeFullHealthyInput();
+  delete missingCandDotnetWhenChanged.candidate.dotnetCoverage;
+  assert.equal(auditProtectedMainAndCandidateGates(missingCandDotnetWhenChanged).reason, 'INVALID_INPUT');
 });
 
 test('fails closed on fork PR skipped runtime checks, summary-only review findings with 0 inline threads, and merge_group failures or SHA mismatches', () => {
