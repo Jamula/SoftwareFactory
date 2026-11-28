@@ -1449,6 +1449,10 @@ test('verifies committed m02-04-maf-throughput-cohort.json receipt across Waves 
     ['wave4', 4, 'ec438f54088f30856c2df6ff626e894dde2a0100']
   ]) {
     const sim = receipt.waveTrainSimulations[waveKey];
+    assert.equal(
+      sim.gateInputProvenance,
+      'synthetic-gate-fixtures-over-measured-github-shas-paths-and-merge-queue-timestamps'
+    );
     const replayed = allocatePortfolioCapacityAndSimulateTrains(sim.input);
     assert.deepEqual(replayed, sim.evaluation);
     assert.equal(replayed.valid, true);
@@ -1460,7 +1464,12 @@ test('verifies committed m02-04-maf-throughput-cohort.json receipt across Waves 
   const wave3SortedPrs = [...receipt.waveTrainSimulations.wave3.evaluation.repositoryResults[0].train.mergedPrs].sort((a, b) => a - b);
   assert.deepEqual(wave3SortedPrs, Array.from({length: 21}, (_, idx) => 145 + idx));
 
-  // Deterministically replay single-runtime consolidation benchmark
+  // Deterministically replay single-runtime consolidation benchmark and verify provenance labels
+  assert.equal(receipt.nodeLogicalLaneReceipt.runtime, PINNED_NODE_RUNTIME);
+  assert.deepEqual(
+    receipt.consolidationBenchmark.metricProvenance.illustrativeFields,
+    ['cpuTimeMs', 'peakMemoryMb', 'p95LatencyMs', 'contentionWaitMs', 'cancellationMs']
+  );
   const replayedConsolidation = evaluateDotnetConsolidationBenchmark(receipt.consolidationBenchmark.input);
   assert.deepEqual(replayedConsolidation, receipt.consolidationBenchmark.evaluation);
   assert.equal(replayedConsolidation.valid, true);
@@ -1483,6 +1492,7 @@ test('verifies committed m02-04-maf-throughput-cohort.json receipt across Waves 
   assert.equal(replayedShared.reason, 'PENDING_M01_10_AND_SHARED_5_ISSUE_COHORT');
   assert.equal(replayedShared.engineeringWaveSummary.totalMergedPrs, 32);
   assert.equal(replayedShared.unattendedCohortSummary.acceptedCount, 0);
+  assert.equal(replayedShared.unattendedCohortSummary.partialOutcomeCount, 0);
   assert.equal(replayedShared.unattendedCohortSummary.remainingRequiredCount, 5);
 });
 
@@ -1495,6 +1505,8 @@ const makeUnattendedOutcome = (idx, total = 5, overrides = {}) => ({
   pr: 300 + idx,
   provenanceKind: 'unattended-copilot-issue-outcome',
   agentActor: UNATTENDED_COPILOT_ACTOR,
+  issueAccepted: true,
+  allRequiredPrsMerged: true,
   m01CohortMember: idx <= 3,
   parallelBatchGroup: idx <= 2 ? 'm01-parallel-pair' : null,
   reviewRepairVerified: idx === 3,
@@ -1529,7 +1541,7 @@ const buildTrainCandidatesFromOutcomes = outcomes =>
     observedHead: o.headSha,
     expectedBase: o.parentMainSha,
     simulatedSquashSha: idx === outcomes.length - 1 ? WORKLOAD_SHA : o.squashMergeSha,
-    ownedPaths: [`tools/train-slot-${idx}.mjs`],
+    ownedPaths: [...o.ownedPaths],
     coveredLines: Math.max(990, o.coveredLines),
     totalLines: o.totalLines,
     coveredBranches: Math.max(970, o.coveredBranches),
@@ -1804,7 +1816,9 @@ test('evaluates shared 5-outcome M02 cohort completion, composition requirements
     {pr: 999},
     {headSha: sha('6')},
     {parentMainSha: sha('5')},
-    {squashMergeSha: sha('4')}
+    {squashMergeSha: sha('4')},
+    {ownedPaths: ['tools/different-lane.mjs']},
+    {ownedPaths: ['tools/unattended-lane-1.mjs', 'tools/extra-lane.mjs']}
   ]) {
     const mutatedOutcomes = baseWithFive.unattendedOutcomes.map((o, i) =>
       i === 0 ? {...o, ...outcomePatch} : o
@@ -1818,7 +1832,21 @@ test('evaluates shared 5-outcome M02 cohort completion, composition requirements
     );
   }
 
-  // Actor, spend, repair cap, human intervention, gate, coverage, and parallel overlap regressions
+  // Healthy non-closing partial PRs are tracked under partialOutcomeCount and never complete the cohort
+  for (const partialPatch of [{issueAccepted: false}, {allRequiredPrsMerged: false}]) {
+    const partialRes = evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({
+      unattendedOutcomes: [1, 2, 3, 4, 5].map(idx => makeUnattendedOutcome(idx, 5, partialPatch))
+    }));
+    assert.equal(partialRes.valid, true);
+    assert.equal(partialRes.cohortComplete, false);
+    assert.equal(partialRes.m02ExitReady, false);
+    assert.equal(partialRes.keepIssue16Open, true);
+    assert.equal(partialRes.status, 'PENDING_UNATTENDED_COPILOT_COHORT');
+    assert.equal(partialRes.unattendedCohortSummary.acceptedCount, 0);
+    assert.equal(partialRes.unattendedCohortSummary.partialOutcomeCount, 5);
+  }
+
+  // Actor, spend, repair cap, human intervention, gate, coverage, and overlapping train-path regressions
   assert.equal(
     evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({
       unattendedOutcomes: [makeUnattendedOutcome(1, 1, {agentActor: 'cyrusjamula'})]
@@ -1869,14 +1897,15 @@ test('evaluates shared 5-outcome M02 cohort completion, composition requirements
     })).reason,
     'COVERAGE_BELOW_POLICY'
   );
+  // Overlapping outcome paths (even with null parallelBatchGroup) are rejected via train isolation
   assert.equal(
     evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({
       unattendedOutcomes: [
-        makeUnattendedOutcome(1, 2, {parallelBatchGroup: 'grp-1', ownedPaths: ['tools/shared']}),
-        makeUnattendedOutcome(2, 2, {parallelBatchGroup: 'grp-1', ownedPaths: ['tools/shared/file.mjs']})
+        makeUnattendedOutcome(1, 2, {parallelBatchGroup: null, ownedPaths: ['tools/shared']}),
+        makeUnattendedOutcome(2, 2, {parallelBatchGroup: null, ownedPaths: ['tools/shared/file.mjs']})
       ]
     })).reason,
-    'PARALLEL_LANE_PATH_OVERLAP'
+    'INTEGRATION_TRAIN_UNHEALTHY'
   );
 
   // Top-level, identity, policy, portfolio/train, benchmark, and wave failure gates

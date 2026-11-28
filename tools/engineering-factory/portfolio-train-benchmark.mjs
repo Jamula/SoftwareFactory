@@ -1254,6 +1254,7 @@ const ENGINEERING_WAVE_KEYS = [
 ];
 const UNATTENDED_OUTCOME_KEYS = [
   'repositoryId', 'repository', 'issue', 'pr', 'provenanceKind', 'agentActor',
+  'issueAccepted', 'allRequiredPrsMerged',
   'm01CohortMember', 'parallelBatchGroup', 'reviewRepairVerified',
   'parentMainSha', 'headSha', 'squashMergeSha',
   'assignedAtMs', 'mergedAtMs', 'mergeQueueDurationMs', 'ownedPaths',
@@ -1372,6 +1373,7 @@ function validUnattendedOutcomeShape(o) {
     positiveInt(o.repositoryId) && isRepoSlug(o.repository) &&
     positiveInt(o.issue, 1000000) && positiveInt(o.pr, 1000000) &&
     typeof o.provenanceKind === 'string' && typeof o.agentActor === 'string' &&
+    typeof o.issueAccepted === 'boolean' && typeof o.allRequiredPrsMerged === 'boolean' &&
     typeof o.m01CohortMember === 'boolean' &&
     (o.parallelBatchGroup === null || cohortSlug(o.parallelBatchGroup)) &&
     typeof o.reviewRepairVerified === 'boolean' &&
@@ -1390,6 +1392,12 @@ function validUnattendedOutcomeShape(o) {
     nonnegInt(o.duplicateDispatches, 1000) &&
     nonnegInt(o.unauthorizedWrites, 1000) &&
     (o.incrementalSpendMicros === null || nonnegInt(o.incrementalSpendMicros, 1000000000));
+}
+
+function samePathSet(leftPaths, rightPaths) {
+  if (leftPaths.length !== rightPaths.length) return false;
+  const rightSet = new Set(rightPaths);
+  return leftPaths.every(p => rightSet.has(p));
 }
 
 function hasConcurrentExecutionWindowPair(windows) {
@@ -1418,6 +1426,8 @@ function parseUnattendedOutcomes(
   const parallelGroups = new Map();
   const leadDurations = [];
   const mqDurations = [];
+  let acceptedCount = 0;
+  let partialOutcomeCount = 0;
   let m01MemberCount = 0;
   let m01ReviewRepairCount = 0;
   let totalReworkIterations = 0;
@@ -1448,7 +1458,8 @@ function parseUnattendedOutcomes(
     if (!mergedCand ||
         mergedCand.head !== o.headSha ||
         mergedCand.expectedBase !== o.parentMainSha ||
-        mergedCand.simulatedSquashSha !== o.squashMergeSha) {
+        mergedCand.simulatedSquashSha !== o.squashMergeSha ||
+        !samePathSet(o.ownedPaths, mergedCand.ownedPaths)) {
       return {ok: false, reason: 'UNVERIFIED_MAIN_ANCESTRY'};
     }
     if (o.incrementalSpendMicros !== 0) {
@@ -1471,24 +1482,24 @@ function parseUnattendedOutcomes(
     )) {
       return {ok: false, reason: 'COVERAGE_BELOW_POLICY'};
     }
-    if (o.parallelBatchGroup !== null) {
-      let group = parallelGroups.get(o.parallelBatchGroup);
-      if (!group) {
-        group = {paths: [], m01Windows: []};
-        parallelGroups.set(o.parallelBatchGroup, group);
-      }
-      if (hasAnyPathOverlap(o.ownedPaths, group.paths)) {
-        return {ok: false, reason: 'PARALLEL_LANE_PATH_OVERLAP'};
-      }
-      group.paths.push(...o.ownedPaths);
-      if (o.m01CohortMember) {
-        group.m01Windows.push({assignedAtMs: o.assignedAtMs, mergedAtMs: o.mergedAtMs});
-      }
-    }
 
     seenIssues.add(o.issue);
     seenPrs.add(o.pr);
     seenSquash.add(o.squashMergeSha);
+    if (!o.issueAccepted || !o.allRequiredPrsMerged) {
+      partialOutcomeCount += 1;
+      continue;
+    }
+
+    acceptedCount += 1;
+    if (o.parallelBatchGroup !== null && o.m01CohortMember) {
+      let windows = parallelGroups.get(o.parallelBatchGroup);
+      if (!windows) {
+        windows = [];
+        parallelGroups.set(o.parallelBatchGroup, windows);
+      }
+      windows.push({assignedAtMs: o.assignedAtMs, mergedAtMs: o.mergedAtMs});
+    }
     if (o.m01CohortMember) {
       m01MemberCount += 1;
       if (o.reviewRepairVerified) m01ReviewRepairCount += 1;
@@ -1504,13 +1515,12 @@ function parseUnattendedOutcomes(
     totalBranches += o.totalBranches;
   }
 
-  const acceptedCount = outcomes.length;
   const windowMs = acceptedCount > 0 ? latestMergedMs - earliestAssignedMs : null;
   const sortedLead = [...leadDurations].sort((a, b) => a - b);
   const sortedMq = [...mqDurations].sort((a, b) => a - b);
   const m01AnchorSatisfied = m01MemberCount >= SHARED_M01_ANCHOR_TARGET_OUTCOMES;
-  const parallelBatchVerified = [...parallelGroups.values()].some(g =>
-    hasConcurrentExecutionWindowPair(g.m01Windows)
+  const parallelBatchVerified = [...parallelGroups.values()].some(windows =>
+    hasConcurrentExecutionWindowPair(windows)
   );
   const reviewRepairLoopVerified = m01ReviewRepairCount >= 1;
 
@@ -1524,6 +1534,7 @@ function parseUnattendedOutcomes(
       provenanceKind: 'unattended-copilot-issue-outcome',
       agentActor: UNATTENDED_COPILOT_ACTOR,
       acceptedCount,
+      partialOutcomeCount,
       remainingRequiredCount: Math.max(0, SHARED_M02_COHORT_TARGET_OUTCOMES - acceptedCount),
       m01MemberCount,
       m01AnchorSatisfied,

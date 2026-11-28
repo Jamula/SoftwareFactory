@@ -21,7 +21,9 @@
     "keepIssue16Open": true,
     "unattendedCopilotOutcomesCompleted": 0,
     "unattendedCopilotOutcomesRequired": 5,
-    "incrementalSpendUsd": 0
+    "incrementalSpendUsd": 0,
+    "waveTrainCandidateInputsNote": "In waveTrainSimulations, pr, head, expectedBase, simulatedSquashSha, ownedPaths, and eligibleToMergeMs are exact GitHub API measurements per PR, whereas per-candidate gate check booleans, reviewState, batched postMergeVerifyMs fallbacks, and 980/1000 line + 950/1000 branch counts are synthetic policy-floor gate fixtures used solely to replay Squash Merge Queue base/path/order mechanics without claiming historical per-head coverage totals. Exact head-bound coverage is recorded only for ec438f54088f30856c2df6ff626e894dde2a0100 under hostedCiReceiptsOnMainHead.",
+    "consolidationProfileMetricsNote": "In consolidationBenchmark.input, hosted CI restore/compile/coverage durations and exact-head coverage counts come from GitHub Actions runs 46112285635 and 46112285657 on ec438f54088f30856c2df6ff626e894dde2a0100, and logical-lane wallClockMs/observedPeakConcurrency/duplicatePathLeases/crossRepoLeaks come from dotnetMafCliReceipts.benchmarkOutput and nodeLogicalLaneReceipt; schema-required cpuTimeMs, peakMemoryMb, p95LatencyMs, contentionWaitMs, and cancellationMs fields are illustrative inputs rather than CLI-emitted measurements."
   },
   "dotnetMafCliReceipts": {
     "dotnetSdkVersion": "10.0.404",
@@ -547,10 +549,10 @@
                   "securityClear": true,
                   "threadsResolved": true,
                   "authorityVerified": true,
-                  "coveredLines": 41787,
-                  "totalLines": 41816,
-                  "coveredBranches": 22069,
-                  "totalBranches": 22267,
+                  "coveredLines": 980,
+                  "totalLines": 1000,
+                  "coveredBranches": 950,
+                  "totalBranches": 1000,
                   "ownedPaths": [
                     "docs/MCP-MULTI-AGENT-CONNECTOR.md",
                     "tests/engineering-factory/mcp-agent-connector.test.mjs",
@@ -575,10 +577,10 @@
                   "securityClear": true,
                   "threadsResolved": true,
                   "authorityVerified": true,
-                  "coveredLines": 41787,
-                  "totalLines": 41816,
-                  "coveredBranches": 22069,
-                  "totalBranches": 22267,
+                  "coveredLines": 980,
+                  "totalLines": 1000,
+                  "coveredBranches": 950,
+                  "totalBranches": 1000,
                   "ownedPaths": [
                     "docs/ANTI-ROGUE-AND-OPTIMISTIC-IMPROVEMENT.md",
                     "tests/engineering-factory/ai-credit-scorecard.test.mjs",
@@ -607,10 +609,10 @@
                   "securityClear": true,
                   "threadsResolved": true,
                   "authorityVerified": true,
-                  "coveredLines": 41787,
-                  "totalLines": 41816,
-                  "coveredBranches": 22069,
-                  "totalBranches": 22267,
+                  "coveredLines": 980,
+                  "totalLines": 1000,
+                  "coveredBranches": 950,
+                  "totalBranches": 1000,
                   "ownedPaths": [
                     ".github/workflows/dotnet-agents.yml",
                     "agents/engineering-coordinator.md",
@@ -655,10 +657,10 @@
                   "securityClear": true,
                   "threadsResolved": true,
                   "authorityVerified": true,
-                  "coveredLines": 41787,
-                  "totalLines": 41816,
-                  "coveredBranches": 22069,
-                  "totalBranches": 22267,
+                  "coveredLines": 980,
+                  "totalLines": 1000,
+                  "coveredBranches": 950,
+                  "totalBranches": 1000,
                   "ownedPaths": [
                     "docs/WORKSTATION-COMPATIBILITY.md",
                     "tests/engineering-factory/ci-stage-benchmark.test.mjs",
@@ -683,10 +685,10 @@
                   "securityClear": true,
                   "threadsResolved": true,
                   "authorityVerified": true,
-                  "coveredLines": 41787,
-                  "totalLines": 41816,
-                  "coveredBranches": 22069,
-                  "totalBranches": 22267,
+                  "coveredLines": 980,
+                  "totalLines": 1000,
+                  "coveredBranches": 950,
+                  "totalBranches": 1000,
                   "ownedPaths": [
                     "docs/CLOUD-AGENT-ADMISSION.md",
                     "tests/engineering-factory/cloud-agent-admission.test.mjs",
@@ -713,10 +715,10 @@
                   "securityClear": true,
                   "threadsResolved": true,
                   "authorityVerified": true,
-                  "coveredLines": 41787,
-                  "totalLines": 41816,
-                  "coveredBranches": 22069,
-                  "totalBranches": 22267,
+                  "coveredLines": 980,
+                  "totalLines": 1000,
+                  "coveredBranches": 950,
+                  "totalBranches": 1000,
                   "ownedPaths": [
                     ".github/workflows/validate.yml",
                     ".github/workflows/windows-aspire.yml",
@@ -760,10 +762,10 @@
                   "securityClear": true,
                   "threadsResolved": true,
                   "authorityVerified": true,
-                  "coveredLines": 41787,
-                  "totalLines": 41816,
-                  "coveredBranches": 22069,
-                  "totalBranches": 22267,
+                  "coveredLines": 980,
+                  "totalLines": 1000,
+                  "coveredBranches": 950,
+                  "totalBranches": 1000,
                   "ownedPaths": [
                     ".github/workflows/factory-orchestrator.lock.yml",
                     ".github/workflows/factory-orchestrator.md",
@@ -852,7 +854,8 @@
             }
           }
         ]
-      }
+      },
+      "gateInputProvenance": "synthetic-gate-fixtures-over-measured-github-shas-paths-and-merge-queue-timestamps"
     },
     "wave3": {
       "input": {
@@ -926,10 +929,10 @@
                   "securityClear": true,
                   "threadsResolved": true,
                   "authorityVerified": true,
-                  "coveredLines": 41787,
-                  "totalLines": 41816,
-                  "coveredBranches": 22069,
-                  "totalBranches": 22267,
+                  "coveredLines": 980,
+                  "totalLines": 1000,
+                  "coveredBranches": 950,
+                  "totalBranches": 1000,
                   "ownedPaths": [
                     "docs/ENGINEERING-VELOCITY.md",
                     "tests/engineering-factory/portfolio-train-benchmark.test.mjs",
@@ -954,10 +957,10 @@
                   "securityClear": true,
                   "threadsResolved": true,
                   "authorityVerified": true,
-                  "coveredLines": 41787,
-                  "totalLines": 41816,
-                  "coveredBranches": 22069,
-                  "totalBranches": 22267,
+                  "coveredLines": 980,
+                  "totalLines": 1000,
+                  "coveredBranches": 950,
+                  "totalBranches": 1000,
                   "ownedPaths": [
                     ".github/workflows/dotnet-agents.yml",
                     "docs/CI-CONSOLIDATION.md",
@@ -983,10 +986,10 @@
                   "securityClear": true,
                   "threadsResolved": true,
                   "authorityVerified": true,
-                  "coveredLines": 41787,
-                  "totalLines": 41816,
-                  "coveredBranches": 22069,
-                  "totalBranches": 22267,
+                  "coveredLines": 980,
+                  "totalLines": 1000,
+                  "coveredBranches": 950,
+                  "totalBranches": 1000,
                   "ownedPaths": [
                     "docs/evidence/m05-01-familyhub-shadow-readiness.json",
                     "tests/engineering-factory/familyhub-pilot-readiness.test.mjs",
@@ -1011,10 +1014,10 @@
                   "securityClear": true,
                   "threadsResolved": true,
                   "authorityVerified": true,
-                  "coveredLines": 41787,
-                  "totalLines": 41816,
-                  "coveredBranches": 22069,
-                  "totalBranches": 22267,
+                  "coveredLines": 980,
+                  "totalLines": 1000,
+                  "coveredBranches": 950,
+                  "totalBranches": 1000,
                   "ownedPaths": [
                     "docs/HISTORICAL-GITHUB-PROXIES.md",
                     "tests/engineering-factory/historical-baseline-report.test.mjs",
@@ -1039,10 +1042,10 @@
                   "securityClear": true,
                   "threadsResolved": true,
                   "authorityVerified": true,
-                  "coveredLines": 41787,
-                  "totalLines": 41816,
-                  "coveredBranches": 22069,
-                  "totalBranches": 22267,
+                  "coveredLines": 980,
+                  "totalLines": 1000,
+                  "coveredBranches": 950,
+                  "totalBranches": 1000,
                   "ownedPaths": [
                     "docs/CONSUMER-ONBOARDING.md",
                     "tests/engineering-factory/consumer-onboarding.test.mjs",
@@ -1067,10 +1070,10 @@
                   "securityClear": true,
                   "threadsResolved": true,
                   "authorityVerified": true,
-                  "coveredLines": 41787,
-                  "totalLines": 41816,
-                  "coveredBranches": 22069,
-                  "totalBranches": 22267,
+                  "coveredLines": 980,
+                  "totalLines": 1000,
+                  "coveredBranches": 950,
+                  "totalBranches": 1000,
                   "ownedPaths": [
                     "docs/ANTI-ROGUE-AND-OPTIMISTIC-IMPROVEMENT.md",
                     "tests/engineering-factory/optimistic-improver.test.mjs",
@@ -1095,10 +1098,10 @@
                   "securityClear": true,
                   "threadsResolved": true,
                   "authorityVerified": true,
-                  "coveredLines": 41787,
-                  "totalLines": 41816,
-                  "coveredBranches": 22069,
-                  "totalBranches": 22267,
+                  "coveredLines": 980,
+                  "totalLines": 1000,
+                  "coveredBranches": 950,
+                  "totalBranches": 1000,
                   "ownedPaths": [
                     "docs/MCP-MULTI-AGENT-CONNECTOR.md",
                     "tests/engineering-factory/mcp-agent-connector.test.mjs",
@@ -1123,10 +1126,10 @@
                   "securityClear": true,
                   "threadsResolved": true,
                   "authorityVerified": true,
-                  "coveredLines": 41787,
-                  "totalLines": 41816,
-                  "coveredBranches": 22069,
-                  "totalBranches": 22267,
+                  "coveredLines": 980,
+                  "totalLines": 1000,
+                  "coveredBranches": 950,
+                  "totalBranches": 1000,
                   "ownedPaths": [
                     "docs/SHADOW-DISPATCH-LEDGER.md",
                     "tests/engineering-factory/worker-ladder-handoff.test.mjs",
@@ -1151,10 +1154,10 @@
                   "securityClear": true,
                   "threadsResolved": true,
                   "authorityVerified": true,
-                  "coveredLines": 41787,
-                  "totalLines": 41816,
-                  "coveredBranches": 22069,
-                  "totalBranches": 22267,
+                  "coveredLines": 980,
+                  "totalLines": 1000,
+                  "coveredBranches": 950,
+                  "totalBranches": 1000,
                   "ownedPaths": [
                     "docs/GITHUB-HOSTED-COPILOT-PILOT.md",
                     "tests/engineering-factory/billing-hardstop-smoke.test.mjs",
@@ -1179,10 +1182,10 @@
                   "securityClear": true,
                   "threadsResolved": true,
                   "authorityVerified": true,
-                  "coveredLines": 41787,
-                  "totalLines": 41816,
-                  "coveredBranches": 22069,
-                  "totalBranches": 22267,
+                  "coveredLines": 980,
+                  "totalLines": 1000,
+                  "coveredBranches": 950,
+                  "totalBranches": 1000,
                   "ownedPaths": [
                     "docs/evidence/m01-08-readiness-audit.json",
                     "tests/engineering-factory/pilot-readiness.test.mjs",
@@ -1207,10 +1210,10 @@
                   "securityClear": true,
                   "threadsResolved": true,
                   "authorityVerified": true,
-                  "coveredLines": 41787,
-                  "totalLines": 41816,
-                  "coveredBranches": 22069,
-                  "totalBranches": 22267,
+                  "coveredLines": 980,
+                  "totalLines": 1000,
+                  "coveredBranches": 950,
+                  "totalBranches": 1000,
                   "ownedPaths": [
                     "docs/evidence/m01-01-main-quality-audit.json",
                     "tests/engineering-factory/main-health-audit.test.mjs",
@@ -1235,10 +1238,10 @@
                   "securityClear": true,
                   "threadsResolved": true,
                   "authorityVerified": true,
-                  "coveredLines": 41787,
-                  "totalLines": 41816,
-                  "coveredBranches": 22069,
-                  "totalBranches": 22267,
+                  "coveredLines": 980,
+                  "totalLines": 1000,
+                  "coveredBranches": 950,
+                  "totalBranches": 1000,
                   "ownedPaths": [
                     "docs/MERGE-QUEUE-READINESS.md",
                     "tests/engineering-factory/merge-queue-slo.test.mjs",
@@ -1263,10 +1266,10 @@
                   "securityClear": true,
                   "threadsResolved": true,
                   "authorityVerified": true,
-                  "coveredLines": 41787,
-                  "totalLines": 41816,
-                  "coveredBranches": 22069,
-                  "totalBranches": 22267,
+                  "coveredLines": 980,
+                  "totalLines": 1000,
+                  "coveredBranches": 950,
+                  "totalBranches": 1000,
                   "ownedPaths": [
                     "docs/evidence/m03-02-familytree-shadow-readiness.json",
                     "tests/engineering-factory/familytree-pilot-readiness.test.mjs",
@@ -1291,10 +1294,10 @@
                   "securityClear": true,
                   "threadsResolved": true,
                   "authorityVerified": true,
-                  "coveredLines": 41787,
-                  "totalLines": 41816,
-                  "coveredBranches": 22069,
-                  "totalBranches": 22267,
+                  "coveredLines": 980,
+                  "totalLines": 1000,
+                  "coveredBranches": 950,
+                  "totalBranches": 1000,
                   "ownedPaths": [
                     "docs/evidence/m01-02-01-no-python-acceptance.json",
                     "tests/engineering-factory/no-python-guard.test.mjs",
@@ -1319,10 +1322,10 @@
                   "securityClear": true,
                   "threadsResolved": true,
                   "authorityVerified": true,
-                  "coveredLines": 41787,
-                  "totalLines": 41816,
-                  "coveredBranches": 22069,
-                  "totalBranches": 22267,
+                  "coveredLines": 980,
+                  "totalLines": 1000,
+                  "coveredBranches": 950,
+                  "totalBranches": 1000,
                   "ownedPaths": [
                     "docs/VERIFIED-OUTCOME-REPORTING.md",
                     "tests/engineering-factory/customer-one-usability-scorecard.test.mjs",
@@ -1347,10 +1350,10 @@
                   "securityClear": true,
                   "threadsResolved": true,
                   "authorityVerified": true,
-                  "coveredLines": 41787,
-                  "totalLines": 41816,
-                  "coveredBranches": 22069,
-                  "totalBranches": 22267,
+                  "coveredLines": 980,
+                  "totalLines": 1000,
+                  "coveredBranches": 950,
+                  "totalBranches": 1000,
                   "ownedPaths": [
                     "docs/evidence/m01-02-hosted-aspire-receipts.json",
                     "tests/engineering-factory/aspire-hosted-receipt.test.mjs",
@@ -1375,10 +1378,10 @@
                   "securityClear": true,
                   "threadsResolved": true,
                   "authorityVerified": true,
-                  "coveredLines": 41787,
-                  "totalLines": 41816,
-                  "coveredBranches": 22069,
-                  "totalBranches": 22267,
+                  "coveredLines": 980,
+                  "totalLines": 1000,
+                  "coveredBranches": 950,
+                  "totalBranches": 1000,
                   "ownedPaths": [
                     "docs/COORDINATOR-EVENT-JOURNAL.md",
                     "tests/engineering-coordinator/work-queue-cas.test.mjs",
@@ -1403,10 +1406,10 @@
                   "securityClear": true,
                   "threadsResolved": true,
                   "authorityVerified": true,
-                  "coveredLines": 41787,
-                  "totalLines": 41816,
-                  "coveredBranches": 22069,
-                  "totalBranches": 22267,
+                  "coveredLines": 980,
+                  "totalLines": 1000,
+                  "coveredBranches": 950,
+                  "totalBranches": 1000,
                   "ownedPaths": [
                     "docs/WORKSTATION-COMPATIBILITY.md",
                     "tests/engineering-factory/workstation-preflight.test.mjs",
@@ -1431,10 +1434,10 @@
                   "securityClear": true,
                   "threadsResolved": true,
                   "authorityVerified": true,
-                  "coveredLines": 41787,
-                  "totalLines": 41816,
-                  "coveredBranches": 22069,
-                  "totalBranches": 22267,
+                  "coveredLines": 980,
+                  "totalLines": 1000,
+                  "coveredBranches": 950,
+                  "totalBranches": 1000,
                   "ownedPaths": [
                     "docs/GH-AW-ORCHESTRATION.md",
                     "tests/engineering-factory/gh-aw-lock-verifier.test.mjs",
@@ -1459,10 +1462,10 @@
                   "securityClear": true,
                   "threadsResolved": true,
                   "authorityVerified": true,
-                  "coveredLines": 41787,
-                  "totalLines": 41816,
-                  "coveredBranches": 22069,
-                  "totalBranches": 22267,
+                  "coveredLines": 980,
+                  "totalLines": 1000,
+                  "coveredBranches": 950,
+                  "totalBranches": 1000,
                   "ownedPaths": [
                     "docs/MAF-INNER-ORCHESTRATION.md",
                     "tests/engineering-factory/curated-lessons.test.mjs",
@@ -1487,10 +1490,10 @@
                   "securityClear": true,
                   "threadsResolved": true,
                   "authorityVerified": true,
-                  "coveredLines": 41787,
-                  "totalLines": 41816,
-                  "coveredBranches": 22069,
-                  "totalBranches": 22267,
+                  "coveredLines": 980,
+                  "totalLines": 1000,
+                  "coveredBranches": 950,
+                  "totalBranches": 1000,
                   "ownedPaths": [
                     "docs/evidence/m04-01-spellbook-shadow-readiness.json",
                     "tests/engineering-factory/spellbook-pilot-readiness.test.mjs",
@@ -1589,7 +1592,8 @@
             }
           }
         ]
-      }
+      },
+      "gateInputProvenance": "synthetic-gate-fixtures-over-measured-github-shas-paths-and-merge-queue-timestamps"
     },
     "wave4": {
       "input": {
@@ -1663,10 +1667,10 @@
                   "securityClear": true,
                   "threadsResolved": true,
                   "authorityVerified": true,
-                  "coveredLines": 41787,
-                  "totalLines": 41816,
-                  "coveredBranches": 22069,
-                  "totalBranches": 22267,
+                  "coveredLines": 980,
+                  "totalLines": 1000,
+                  "coveredBranches": 950,
+                  "totalBranches": 1000,
                   "ownedPaths": [
                     "docs/evidence/m01-01-main-quality-audit.json",
                     "docs/evidence/m01-02-01-no-python-acceptance.json",
@@ -1694,10 +1698,10 @@
                   "securityClear": true,
                   "threadsResolved": true,
                   "authorityVerified": true,
-                  "coveredLines": 41787,
-                  "totalLines": 41816,
-                  "coveredBranches": 22069,
-                  "totalBranches": 22267,
+                  "coveredLines": 980,
+                  "totalLines": 1000,
+                  "coveredBranches": 950,
+                  "totalBranches": 1000,
                   "ownedPaths": [
                     "docs/evidence/m01-05-merge-queue-receipt.json",
                     "tests/engineering-factory/queue-reread.test.mjs",
@@ -1722,10 +1726,10 @@
                   "securityClear": true,
                   "threadsResolved": true,
                   "authorityVerified": true,
-                  "coveredLines": 41787,
-                  "totalLines": 41816,
-                  "coveredBranches": 22069,
-                  "totalBranches": 22267,
+                  "coveredLines": 980,
+                  "totalLines": 1000,
+                  "coveredBranches": 950,
+                  "totalBranches": 1000,
                   "ownedPaths": [
                     "docs/GITHUB-HOSTED-COPILOT-PILOT.md",
                     "docs/evidence/m01-08-readiness-audit.json",
@@ -1752,10 +1756,10 @@
                   "securityClear": true,
                   "threadsResolved": true,
                   "authorityVerified": true,
-                  "coveredLines": 41787,
-                  "totalLines": 41816,
-                  "coveredBranches": 22069,
-                  "totalBranches": 22267,
+                  "coveredLines": 980,
+                  "totalLines": 1000,
+                  "coveredBranches": 950,
+                  "totalBranches": 1000,
                   "ownedPaths": [
                     ".github/workflows/factory-orchestrator.lock.yml",
                     ".github/workflows/factory-orchestrator.md",
@@ -1870,7 +1874,8 @@
             }
           }
         ]
-      }
+      },
+      "gateInputProvenance": "synthetic-gate-fixtures-over-measured-github-shas-paths-and-merge-queue-timestamps"
     }
   },
   "consolidationBenchmark": {
@@ -2284,6 +2289,30 @@
           }
         ]
       }
+    },
+    "metricProvenance": {
+      "classification": "measured-ci-coverage-and-lane-wall-clock-with-illustrative-resource-and-cancellation-fields",
+      "measuredFields": [
+        "ciRestoreMs",
+        "ciCompileMs",
+        "ciCoverageMs",
+        "coveredLines",
+        "totalLines",
+        "coveredBranches",
+        "totalBranches",
+        "wallClockMs",
+        "configuredWorkerCap",
+        "observedPeakConcurrency",
+        "duplicatePathLeases",
+        "crossRepoLeaks"
+      ],
+      "illustrativeFields": [
+        "cpuTimeMs",
+        "peakMemoryMb",
+        "p95LatencyMs",
+        "contentionWaitMs",
+        "cancellationMs"
+      ]
     }
   },
   "sharedFiveOutcomeM02Cohort": {
@@ -2485,6 +2514,7 @@
         "provenanceKind": "unattended-copilot-issue-outcome",
         "agentActor": "copilot-swe-agent[bot]",
         "acceptedCount": 0,
+        "partialOutcomeCount": 0,
         "remainingRequiredCount": 5,
         "m01MemberCount": 0,
         "m01AnchorSatisfied": false,
@@ -2503,5 +2533,36 @@
         "coverage": null
       }
     }
+  },
+  "nodeLogicalLaneReceipt": {
+    "runtime": "node-26.13.1",
+    "evaluatedMainHeadSha": "ec438f54088f30856c2df6ff626e894dde2a0100",
+    "captureCommand": "node --input-type=module -e 'import {performance} from \"node:perf_hooks\"; import {SOFTWARE_FACTORY_REPOSITORY, SOFTWARE_FACTORY_REPOSITORY_ID, allocatePortfolioCapacityAndSimulateTrains} from \"./tools/engineering-factory/portfolio-train-benchmark.mjs\"; /* 12/50/100 logical lanes in configuredWorkerCap=12 batches */'",
+    "logicalLaneSimulations": [
+      {
+        "logicalLanes": 12,
+        "configuredWorkerCap": 12,
+        "executedBatches": 1,
+        "wallClockMs": 1.909,
+        "duplicatePathLeases": 0,
+        "crossRepoLeaks": 0
+      },
+      {
+        "logicalLanes": 50,
+        "configuredWorkerCap": 12,
+        "executedBatches": 5,
+        "wallClockMs": 3.954,
+        "duplicatePathLeases": 0,
+        "crossRepoLeaks": 0
+      },
+      {
+        "logicalLanes": 100,
+        "configuredWorkerCap": 12,
+        "executedBatches": 9,
+        "wallClockMs": 2.801,
+        "duplicatePathLeases": 0,
+        "crossRepoLeaks": 0
+      }
+    ]
   }
 }
