@@ -1307,6 +1307,7 @@ function sharedCohortDenied(reason) {
 
 function parseEngineeringWaves(waves) {
   const seenWaveIds = new Set();
+  const seenBoundaryShas = new Set();
   const wavePrNumbers = new Set();
   const waveByPr = new Map();
   const allMqMs = [];
@@ -1344,11 +1345,16 @@ function parseEngineeringWaves(waves) {
     if (w.postMergeMainFailures > 0 && (!w.recoveredBeforeNextWave || i === waves.length - 1)) {
       return {ok: false, reason: 'WAVE_MAIN_FAILURE_DETECTED'};
     }
-    if (i > 0 &&
-        (w.initialMainSha !== waves[i - 1].finalMainSha ||
-          w.windowEndMs < waves[i - 1].windowEndMs)) {
+    if (i === 0) {
+      seenBoundaryShas.add(w.initialMainSha);
+    } else if (w.initialMainSha !== waves[i - 1].finalMainSha ||
+        w.windowEndMs < waves[i - 1].windowEndMs) {
       return {ok: false, reason: 'WAVE_CHAIN_DISCONTINUITY'};
     }
+    if (seenBoundaryShas.has(w.finalMainSha)) {
+      return {ok: false, reason: 'WAVE_CHAIN_DISCONTINUITY'};
+    }
+    seenBoundaryShas.add(w.finalMainSha);
     for (let j = 0; j < w.prNumbers.length; j++) {
       const pr = w.prNumbers[j];
       if (wavePrNumbers.has(pr)) return {ok: false, reason: 'ENGINEERING_WAVE_UNKNOWN'};
@@ -2183,6 +2189,7 @@ export function evaluateStreamlinedM02CohortReadout(input) {
   }
 
   const mergedTrainCandidateByPr = new Map();
+  const seenReplayShas = new Set();
   const orderedMergedTrainCands = [];
   let firstTrainInitialSha = null;
   let prevTrainFinalSha = null;
@@ -2206,6 +2213,7 @@ export function evaluateStreamlinedM02CohortReadout(input) {
     }
     if (i === 0) {
       firstTrainInitialSha = targetRepo.train.initialMainSha;
+      seenReplayShas.add(firstTrainInitialSha);
     } else if (targetRepo.train.initialMainSha !== prevTrainFinalSha) {
       return streamlinedCohortDenied('WAVE_CHAIN_DISCONTINUITY');
     }
@@ -2214,7 +2222,7 @@ export function evaluateStreamlinedM02CohortReadout(input) {
     const cands = enrolledRepo.train.candidates;
     for (let j = 0; j < cands.length; j++) {
       const cand = cands[j];
-      if (mergedTrainCandidateByPr.has(cand.pr)) {
+      if (mergedTrainCandidateByPr.has(cand.pr) || seenReplayShas.has(cand.simulatedSquashSha)) {
         return streamlinedCohortDenied('DUPLICATE_TRAIN_CANDIDATE');
       }
       if (!meetsCoverageFloor(
@@ -2226,6 +2234,7 @@ export function evaluateStreamlinedM02CohortReadout(input) {
       }
       const parentMainSha = j === 0 ? enrolledRepo.train.mainSha : cands[j - 1].simulatedSquashSha;
       const trainOrderIndex = orderedMergedTrainCands.length;
+      seenReplayShas.add(cand.simulatedSquashSha);
       mergedTrainCandidateByPr.set(cand.pr, {candidate: cand, parentMainSha, trainOrderIndex});
       orderedMergedTrainCands.push(cand);
     }
@@ -2292,9 +2301,6 @@ export function evaluateStreamlinedM02CohortReadout(input) {
     if (orderedMergedTrainCands[candCursor - 1].simulatedSquashSha !== wave.finalMainSha) {
       return streamlinedCohortDenied('WAVE_TRAIN_PARITY_MISMATCH');
     }
-  }
-  if (candCursor !== orderedMergedTrainCands.length) {
-    return streamlinedCohortDenied('WAVE_TRAIN_PARITY_MISMATCH');
   }
 
   const outcomesParsed = parseStreamlinedOutcomes(

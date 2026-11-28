@@ -2996,7 +2996,7 @@ test('evaluates streamlined M02 cohort readout, consumer policies, partial outco
     );
   }
 
-  // Trailing train candidates cycling back to WORKLOAD_SHA beyond engineeringWaves PR list are rejected
+  // Cross-train duplicate squash SHAs (including cycling back to WORKLOAD_SHA or firstTrainInitialSha) are rejected
   const extraCycleTrainA = {
     stop: false,
     budget: baseBudget({active: 0, maxActive: 4}),
@@ -3061,7 +3061,97 @@ test('evaluates streamlined M02 cohort readout, consumer policies, partial outco
       ...baseStreamlined,
       portfolioTrainInputs: [baseStreamlined.portfolioTrainInputs[0], extraCycleTrainA, extraCycleTrainB]
     }).reason,
-    'WAVE_TRAIN_PARITY_MISMATCH'
+    'DUPLICATE_TRAIN_CANDIDATE'
+  );
+  // Repeating firstTrainInitialSha (WAVE_END_SHA) in a later train is also rejected
+  const cycleToInitialTrain1 = {
+    stop: false,
+    budget: baseBudget({active: 0, maxActive: 4}),
+    repositories: [factoryRepo({
+      overrides: {
+        train: {
+          defaultBranch: 'main',
+          mainSha: WAVE_END_SHA,
+          mainHealthy: true,
+          mergeQueue: {
+            mode: 'native-merge-queue',
+            supported: true,
+            ownerApproved: true,
+            costVerified: true,
+            incrementalSpendMicros: 0
+          },
+          candidates: [
+            makeTrainCandidate(701, {
+              expectedBase: WAVE_END_SHA,
+              simulatedSquashSha: SQUASH_1,
+              eligibleToMergeMs: 180000,
+              reviewState: 'APPROVED'
+            })
+          ]
+        }
+      }
+    })],
+    workItems: []
+  };
+  const cycleToInitialTrain2 = {
+    stop: false,
+    budget: baseBudget({active: 0, maxActive: 4}),
+    repositories: [factoryRepo({
+      overrides: {
+        train: {
+          defaultBranch: 'main',
+          mainSha: SQUASH_1,
+          mainHealthy: true,
+          mergeQueue: {
+            mode: 'native-merge-queue',
+            supported: true,
+            ownerApproved: true,
+            costVerified: true,
+            incrementalSpendMicros: 0
+          },
+          candidates: [
+            makeTrainCandidate(702, {
+              expectedBase: SQUASH_1,
+              simulatedSquashSha: WAVE_END_SHA,
+              eligibleToMergeMs: 180000,
+              ownedPaths: ['src/cycle-702'],
+              reviewState: 'APPROVED'
+            })
+          ]
+        }
+      }
+    })],
+    workItems: []
+  };
+  assert.equal(
+    evaluateStreamlinedM02CohortReadout({
+      ...baseStreamlined,
+      portfolioTrainInputs: [cycleToInitialTrain1, cycleToInitialTrain2, baseStreamlined.portfolioTrainInputs[0]]
+    }).reason,
+    'DUPLICATE_TRAIN_CANDIDATE'
+  );
+  // Cycling wave boundary SHAs in engineeringWaves is rejected
+  assert.equal(
+    evaluateStreamlinedM02CohortReadout({
+      ...baseStreamlined,
+      engineeringWaves: [
+        {
+          waveId: 'wave-3-cycle',
+          provenanceKind: 'session-orchestrated-merge-queue-wave',
+          initialMainSha: WAVE_END_SHA,
+          finalMainSha: MAIN_SHA,
+          windowStartMs: 1795790000000,
+          windowEndMs: 1795795000000,
+          prNumbers: [160],
+          mergeQueueDurationsMs: [180000],
+          postMergeMainFailures: 0,
+          recoveredBeforeNextWave: false,
+          incrementalSpendMicros: 0
+        },
+        ...baseStreamlined.engineeringWaves
+      ]
+    }).reason,
+    'WAVE_CHAIN_DISCONTINUITY'
   );
 
   // Outcome-level schema, cross-repo, provenance, co-author, ancestry, wave health, spend, and safety gates
