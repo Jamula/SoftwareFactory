@@ -40,11 +40,13 @@
     "futureGhAwCronWavesStatus": "DEFERRED_PENDING_GHAW_CRON_ENABLEMENT",
     "futureGhAwCronOutcomesCompleted": 0,
     "incrementalSpendUsd": 0,
-    "honestyStatement": "Waves 1-5 (59 contiguous Squash Merge Queue PRs #119-#179 advancing main from c84edc30dbbe760af6ceadfd1434f0ddb363623d to 1371a40aa7958fdd9dfe1dbe549952f62adeeae8, closing 14 real accepted issues #4, #5, #6, #7, #8, #9, #13, #15, #17, #18, #66, #105, #118, #136 across parallel Squash Merge Queue trains with 0 main breakages across all closing trains, 0 unresolved post-merge main failures, and $0 billed spend) together with .NET 10.0.404 Microsoft.Agents.AI.Workflows 1.28.0 GA --smoke/--benchmark and hosted Linux/Windows CI receipts satisfy #16 under the owner-approved Nov 28, 2026 UTC streamlined M02 exit contract (artificial 2x-25x multi-cohort ladder cut; >=5 real accepted outcomes verified). Coordinator-dispatched worktree and Cloud-Agent waves (all 14/14 issue-accepting squash commits co-authored by copilot-swe-agent[bot]) are strictly separated from future unattended gh-aw cron/event waves (completedCronOutcomes=0, deferred until FACTORY_GHAW_ENABLED=true scheduling is enabled under #10).",
+    "honestyStatement": "Waves 1-5 (59 contiguous Squash Merge Queue PRs #119-#179 advancing main from c84edc30dbbe760af6ceadfd1434f0ddb363623d to 1371a40aa7958fdd9dfe1dbe549952f62adeeae8, closing 14 real accepted issues #4, #5, #6, #7, #8, #9, #13, #15, #17, #18, #66, #105, #118, #136 across parallel Squash Merge Queue trains with 0 main breakages across all closing trains, 0 unresolved post-merge main failures, 0 routine human interventions, and $0 billed spend) together with .NET 10.0.404 Microsoft.Agents.AI.Workflows 1.28.0 GA --smoke/--benchmark and hosted Linux/Windows CI receipts satisfy #16 under the owner-approved Nov 28, 2026 UTC revised #16 exit contract (artificial 2x-25x multi-cohort ladder cut; >=5 real accepted outcomes verified). Three provenance classes remain strictly separated: (1) coordinator-dispatched worktree and Cloud-Agent waves (all 14/14 issue-accepting squash commits co-authored by copilot-swe-agent[bot]), (2) #10's 3 direct copilot-swe-agent[bot] (@copilot) issue outcomes (required independently of gh-aw cron enablement), and (3) future unattended gh-aw cron/event waves (completedCronOutcomes=0, deferred until FACTORY_GHAW_ENABLED=true scheduling is enabled).",
     "postMergeVerifyMsNote": "eligibleToMergeMs equals exact GitHub MergedEvent minus AddedToMergeQueueEvent per PR; postMergeVerifyMs equals actual push-on-main Factory validation duration where GitHub emitted a dedicated push run and the batch-tip push-on-main duration for batched Merge Queue predecessors.",
     "waveTrainCandidateInputsNote": "In waveTrainSimulations, pr, head, expectedBase, simulatedSquashSha, ownedPaths, and eligibleToMergeMs are exact GitHub API measurements per PR (split into non-overlapping Squash Merge Queue sub-trains wave1a-wave1d and wave5a-wave5b where follow-up PRs stacked on earlier wave commits), whereas per-candidate gate check booleans, reviewState, batched postMergeVerifyMs fallbacks, and 980/1000 line + 950/1000 branch counts are synthetic policy-floor gate fixtures used solely to replay Squash Merge Queue base/path/order mechanics without claiming historical per-head coverage totals. Exact head-bound coverage is recorded for 1371a40aa7958fdd9dfe1dbe549952f62adeeae8 under hostedCiReceiptsOnMainHead.",
     "consolidationProfileMetricsNote": "In consolidationBenchmark.input, hosted CI restore/compile/coverage durations and exact-head coverage counts come from GitHub Actions runs 46124140550 and 46124140580 on 1371a40aa7958fdd9dfe1dbe549952f62adeeae8, and logical-lane wallClockMs/observedPeakConcurrency/duplicatePathLeases/crossRepoLeaks come from dotnetMafCliReceipts.benchmarkOutput and nodeLogicalLaneReceipt; schema-required cpuTimeMs, peakMemoryMb, p95LatencyMs, contentionWaitMs, and cancellationMs fields are illustrative inputs rather than CLI-emitted measurements.",
-    "wave2MainFailureAndRecoveryNote": "Wave 2 PR #120 (824031eb8d9d79c5dec03043a96ee575293978c0) removed repository Python files, causing residual default-setup CodeQL Analyze (python) push failures on 824031eb and final Wave 2 SHA cec2745b7b8a21e77ad9f2839d4255d42305d419 (run 45975773999 / job 140426999433; postMergeMainFailures=2). Repository CodeQL configuration removed residual python before Wave 3 drained (recoveredBeforeNextWave=true, mainRecoveryVerified=true on wave3), and all 25 subsequent Wave 3 + Wave 4 commits passed statusCheckRollup=SUCCESS (unresolvedPostMergeMainFailures=0). All 10 subsequent Wave 5 commits (#170-#179) also passed statusCheckRollup=SUCCESS (35 consecutive green Squash Merge Queue commits across Waves 3-5)."
+    "wave2MainFailureAndRecoveryNote": "Wave 2 PR #120 (824031eb8d9d79c5dec03043a96ee575293978c0) removed repository Python files, causing residual default-setup CodeQL Analyze (python) push failures on 824031eb and final Wave 2 SHA cec2745b7b8a21e77ad9f2839d4255d42305d419 (run 45975773999 / job 140426999433; postMergeMainFailures=2). Repository CodeQL configuration removed residual python before Wave 3 drained (recoveredBeforeNextWave=true, mainRecoveryVerified=true on wave3), and all 25 subsequent Wave 3 + Wave 4 commits passed statusCheckRollup=SUCCESS (unresolvedPostMergeMainFailures=0). All 10 subsequent Wave 5 commits (#170-#179) also passed statusCheckRollup=SUCCESS (35 consecutive green Squash Merge Queue commits across Waves 3-5).",
+    "m01Issue10DirectCopilotOutcomesRequired": 3,
+    "m01Issue10DirectCopilotIndependentOfGhAwCron": true
   },
   "dotnetMafCliReceipts": {
     "dotnetSdkVersion": "10.0.404",
@@ -4212,6 +4214,12 @@
       },
       "billingHardStopVerified": true,
       "incrementalSpendMicros": 0,
+      "revisedExitContract": {
+        "contractId": "m02-04-issue-16-streamlined-exit-2026-11-28",
+        "ownerApproved": true,
+        "allowsCoordinatorDispatchedWaves": true,
+        "preservesM01Issue10DirectCopilotGate": true
+      },
       "futureGhAwCronDisclosure": {
         "provenanceKind": "future-gh-aw-cron-unattended-wave",
         "status": "DEFERRED_PENDING_GHAW_CRON_ENABLEMENT",
@@ -4439,6 +4447,7 @@
             147
           ],
           "provenanceKind": "coordinator-dispatched-worktree-and-cloud-agent-wave",
+          "agentDispatchVerified": true,
           "copilotCoAuthored": true,
           "issueClosedOnGitHub": true,
           "allAcceptanceCriteriaDelivered": true,
@@ -4468,6 +4477,7 @@
           "rollbackReady": true,
           "reworkCommits": 0,
           "branchSyncMergeCommits": 0,
+          "routineHumanInterventions": 0,
           "duplicateDispatches": 0,
           "unauthorizedWrites": 0,
           "incrementalSpendMicros": 0
@@ -4485,6 +4495,7 @@
             164
           ],
           "provenanceKind": "coordinator-dispatched-worktree-and-cloud-agent-wave",
+          "agentDispatchVerified": true,
           "copilotCoAuthored": true,
           "issueClosedOnGitHub": true,
           "allAcceptanceCriteriaDelivered": true,
@@ -4514,6 +4525,7 @@
           "rollbackReady": true,
           "reworkCommits": 6,
           "branchSyncMergeCommits": 0,
+          "routineHumanInterventions": 0,
           "duplicateDispatches": 0,
           "unauthorizedWrites": 0,
           "incrementalSpendMicros": 0
@@ -4531,6 +4543,7 @@
             160
           ],
           "provenanceKind": "coordinator-dispatched-worktree-and-cloud-agent-wave",
+          "agentDispatchVerified": true,
           "copilotCoAuthored": true,
           "issueClosedOnGitHub": true,
           "allAcceptanceCriteriaDelivered": true,
@@ -4556,6 +4569,7 @@
           "rollbackReady": true,
           "reworkCommits": 1,
           "branchSyncMergeCommits": 0,
+          "routineHumanInterventions": 0,
           "duplicateDispatches": 0,
           "unauthorizedWrites": 0,
           "incrementalSpendMicros": 0
@@ -4573,6 +4587,7 @@
             163
           ],
           "provenanceKind": "coordinator-dispatched-worktree-and-cloud-agent-wave",
+          "agentDispatchVerified": true,
           "copilotCoAuthored": true,
           "issueClosedOnGitHub": true,
           "allAcceptanceCriteriaDelivered": true,
@@ -4599,6 +4614,7 @@
           "rollbackReady": true,
           "reworkCommits": 2,
           "branchSyncMergeCommits": 1,
+          "routineHumanInterventions": 0,
           "duplicateDispatches": 0,
           "unauthorizedWrites": 0,
           "incrementalSpendMicros": 0
@@ -4615,6 +4631,7 @@
             148
           ],
           "provenanceKind": "coordinator-dispatched-worktree-and-cloud-agent-wave",
+          "agentDispatchVerified": true,
           "copilotCoAuthored": true,
           "issueClosedOnGitHub": true,
           "allAcceptanceCriteriaDelivered": true,
@@ -4641,6 +4658,7 @@
           "rollbackReady": true,
           "reworkCommits": 2,
           "branchSyncMergeCommits": 0,
+          "routineHumanInterventions": 0,
           "duplicateDispatches": 0,
           "unauthorizedWrites": 0,
           "incrementalSpendMicros": 0
@@ -4658,6 +4676,7 @@
             156
           ],
           "provenanceKind": "coordinator-dispatched-worktree-and-cloud-agent-wave",
+          "agentDispatchVerified": true,
           "copilotCoAuthored": true,
           "issueClosedOnGitHub": true,
           "allAcceptanceCriteriaDelivered": true,
@@ -4686,6 +4705,7 @@
           "rollbackReady": true,
           "reworkCommits": 4,
           "branchSyncMergeCommits": 0,
+          "routineHumanInterventions": 0,
           "duplicateDispatches": 0,
           "unauthorizedWrites": 0,
           "incrementalSpendMicros": 0
@@ -4703,6 +4723,7 @@
             173
           ],
           "provenanceKind": "coordinator-dispatched-worktree-and-cloud-agent-wave",
+          "agentDispatchVerified": true,
           "copilotCoAuthored": true,
           "issueClosedOnGitHub": true,
           "allAcceptanceCriteriaDelivered": true,
@@ -4732,6 +4753,7 @@
           "rollbackReady": true,
           "reworkCommits": 1,
           "branchSyncMergeCommits": 1,
+          "routineHumanInterventions": 0,
           "duplicateDispatches": 0,
           "unauthorizedWrites": 0,
           "incrementalSpendMicros": 0
@@ -4749,6 +4771,7 @@
             154
           ],
           "provenanceKind": "coordinator-dispatched-worktree-and-cloud-agent-wave",
+          "agentDispatchVerified": true,
           "copilotCoAuthored": true,
           "issueClosedOnGitHub": true,
           "allAcceptanceCriteriaDelivered": true,
@@ -4782,6 +4805,7 @@
           "rollbackReady": true,
           "reworkCommits": 2,
           "branchSyncMergeCommits": 0,
+          "routineHumanInterventions": 0,
           "duplicateDispatches": 0,
           "unauthorizedWrites": 0,
           "incrementalSpendMicros": 0
@@ -4798,6 +4822,7 @@
             169
           ],
           "provenanceKind": "coordinator-dispatched-worktree-and-cloud-agent-wave",
+          "agentDispatchVerified": true,
           "copilotCoAuthored": true,
           "issueClosedOnGitHub": true,
           "allAcceptanceCriteriaDelivered": true,
@@ -4824,6 +4849,7 @@
           "rollbackReady": true,
           "reworkCommits": 4,
           "branchSyncMergeCommits": 0,
+          "routineHumanInterventions": 0,
           "duplicateDispatches": 0,
           "unauthorizedWrites": 0,
           "incrementalSpendMicros": 0
@@ -4840,6 +4866,7 @@
             135
           ],
           "provenanceKind": "coordinator-dispatched-worktree-and-cloud-agent-wave",
+          "agentDispatchVerified": true,
           "copilotCoAuthored": true,
           "issueClosedOnGitHub": true,
           "allAcceptanceCriteriaDelivered": true,
@@ -4866,6 +4893,7 @@
           "rollbackReady": true,
           "reworkCommits": 5,
           "branchSyncMergeCommits": 0,
+          "routineHumanInterventions": 0,
           "duplicateDispatches": 0,
           "unauthorizedWrites": 0,
           "incrementalSpendMicros": 0
@@ -4881,6 +4909,7 @@
             139
           ],
           "provenanceKind": "coordinator-dispatched-worktree-and-cloud-agent-wave",
+          "agentDispatchVerified": true,
           "copilotCoAuthored": true,
           "issueClosedOnGitHub": true,
           "allAcceptanceCriteriaDelivered": true,
@@ -4907,6 +4936,7 @@
           "rollbackReady": true,
           "reworkCommits": 7,
           "branchSyncMergeCommits": 0,
+          "routineHumanInterventions": 0,
           "duplicateDispatches": 0,
           "unauthorizedWrites": 0,
           "incrementalSpendMicros": 0
@@ -4922,6 +4952,7 @@
             134
           ],
           "provenanceKind": "coordinator-dispatched-worktree-and-cloud-agent-wave",
+          "agentDispatchVerified": true,
           "copilotCoAuthored": true,
           "issueClosedOnGitHub": true,
           "allAcceptanceCriteriaDelivered": true,
@@ -4948,6 +4979,7 @@
           "rollbackReady": true,
           "reworkCommits": 4,
           "branchSyncMergeCommits": 0,
+          "routineHumanInterventions": 0,
           "duplicateDispatches": 0,
           "unauthorizedWrites": 0,
           "incrementalSpendMicros": 0
@@ -4964,6 +4996,7 @@
             169
           ],
           "provenanceKind": "coordinator-dispatched-worktree-and-cloud-agent-wave",
+          "agentDispatchVerified": true,
           "copilotCoAuthored": true,
           "issueClosedOnGitHub": true,
           "allAcceptanceCriteriaDelivered": true,
@@ -4990,6 +5023,7 @@
           "rollbackReady": true,
           "reworkCommits": 2,
           "branchSyncMergeCommits": 0,
+          "routineHumanInterventions": 0,
           "duplicateDispatches": 0,
           "unauthorizedWrites": 0,
           "incrementalSpendMicros": 0
@@ -5005,6 +5039,7 @@
             140
           ],
           "provenanceKind": "coordinator-dispatched-worktree-and-cloud-agent-wave",
+          "agentDispatchVerified": true,
           "copilotCoAuthored": true,
           "issueClosedOnGitHub": true,
           "allAcceptanceCriteriaDelivered": true,
@@ -5031,6 +5066,7 @@
           "rollbackReady": true,
           "reworkCommits": 1,
           "branchSyncMergeCommits": 0,
+          "routineHumanInterventions": 0,
           "duplicateDispatches": 0,
           "unauthorizedWrites": 0,
           "incrementalSpendMicros": 0
@@ -5048,10 +5084,17 @@
       "multiCohortLadderRetired": true,
       "streamlinedM02MinAcceptedIssues": 5,
       "streamlinedM02CohortVerified": true,
+      "advisoryOnly": false,
       "issue16ExitReady": true,
       "keepIssue16Open": false,
       "provenanceSeparated": true,
       "coordinatorWaveProvenance": "coordinator-dispatched-worktree-and-cloud-agent-wave",
+      "revisedExitContract": {
+        "contractId": "m02-04-issue-16-streamlined-exit-2026-11-28",
+        "ownerApproved": true,
+        "allowsCoordinatorDispatchedWaves": true,
+        "preservesM01Issue10DirectCopilotGate": true
+      },
       "futureGhAwCronDisclosure": {
         "provenanceKind": "future-gh-aw-cron-unattended-wave",
         "status": "DEFERRED_PENDING_GHAW_CRON_ENABLEMENT",
@@ -5185,6 +5228,7 @@
         "reworkRateBps": 29286,
         "totalBranchSyncMergeCommits": 2,
         "totalReviewThreadsResolved": 128,
+        "routineHumanInterventions": 0,
         "unresolvedFindings": 0,
         "acceptedTrainMainBreakages": 0,
         "incrementalSpendMicros": 0

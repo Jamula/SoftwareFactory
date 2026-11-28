@@ -1821,9 +1821,13 @@ export function evaluateSharedFiveOutcomeM02Cohort(input) {
 const STREAMLINED_READOUT_INPUT_KEYS = [
   'stop', 'repositoryId', 'repository', 'headSha', 'policy',
   'billingHardStopVerified', 'incrementalSpendMicros',
-  'futureGhAwCronDisclosure', 'exactHeadCoverage',
+  'revisedExitContract', 'futureGhAwCronDisclosure', 'exactHeadCoverage',
   'portfolioTrainInputs', 'benchmarkInput',
   'engineeringWaves', 'acceptedIssueOutcomes'
+];
+const REVISED_EXIT_CONTRACT_KEYS = [
+  'contractId', 'ownerApproved',
+  'allowsCoordinatorDispatchedWaves', 'preservesM01Issue10DirectCopilotGate'
 ];
 const FUTURE_GHAW_DISCLOSURE_KEYS = [
   'provenanceKind', 'status', 'completedCronOutcomes', 'conflatedWithCoordinatorWaves'
@@ -1834,7 +1838,7 @@ const EXACT_HEAD_COVERAGE_KEYS = [
 const STREAMLINED_ISSUE_OUTCOME_KEYS = [
   'repositoryId', 'repository', 'issue', 'milestone',
   'waveId', 'acceptingPr', 'supportingWavePrs',
-  'provenanceKind', 'copilotCoAuthored',
+  'provenanceKind', 'agentDispatchVerified', 'copilotCoAuthored',
   'issueClosedOnGitHub', 'allAcceptanceCriteriaDelivered',
   'expectedBaseSha', 'parentMainSha', 'headSha', 'squashMergeSha',
   'prCreatedAtMs', 'addedToMergeQueueAtMs', 'mergedAtMs', 'issueClosedAtMs',
@@ -1843,7 +1847,7 @@ const STREAMLINED_ISSUE_OUTCOME_KEYS = [
   'reviewThreadsTotal', 'unresolvedFindings',
   'mainHealthyAfterMerge', 'rollbackReady',
   'reworkCommits', 'branchSyncMergeCommits',
-  'duplicateDispatches', 'unauthorizedWrites',
+  'routineHumanInterventions', 'duplicateDispatches', 'unauthorizedWrites',
   'incrementalSpendMicros'
 ];
 
@@ -1856,12 +1860,26 @@ function streamlinedCohortDenied(reason) {
     multiCohortLadderRetired: true,
     streamlinedM02MinAcceptedIssues: STREAMLINED_M02_MIN_ACCEPTED_ISSUES,
     streamlinedM02CohortVerified: false,
+    advisoryOnly: true,
     provenanceSeparated: false,
     issue16ExitReady: false,
     keepIssue16Open: true,
     status: 'BLOCKED',
     reason
   });
+}
+
+function hasDisjointConcurrentExecutionPair(windows) {
+  for (let i = 0; i < windows.length; i++) {
+    for (let j = i + 1; j < windows.length; j++) {
+      if (windows[i].assignedAtMs < windows[j].mergedAtMs &&
+          windows[j].assignedAtMs < windows[i].mergedAtMs &&
+          !hasAnyPathOverlap(windows[i].ownedPaths, windows[j].ownedPaths)) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 function validStreamlinedOutcomeShape(o) {
@@ -1872,7 +1890,9 @@ function validStreamlinedOutcomeShape(o) {
       !denseDataArray(o.supportingWavePrs, 16) ||
       !o.supportingWavePrs.every(pr => positiveInt(pr, 1000000) && pr !== o.acceptingPr) ||
       new Set(o.supportingWavePrs).size !== o.supportingWavePrs.length ||
-      typeof o.provenanceKind !== 'string' || typeof o.copilotCoAuthored !== 'boolean' ||
+      typeof o.provenanceKind !== 'string' ||
+      typeof o.agentDispatchVerified !== 'boolean' ||
+      typeof o.copilotCoAuthored !== 'boolean' ||
       typeof o.issueClosedOnGitHub !== 'boolean' ||
       typeof o.allAcceptanceCriteriaDelivered !== 'boolean' ||
       !hex40(o.expectedBaseSha) || !hex40(o.parentMainSha) ||
@@ -1888,6 +1908,7 @@ function validStreamlinedOutcomeShape(o) {
         o.mainHealthyAfterMerge, o.rollbackReady].every(b => typeof b === 'boolean') ||
       !nonnegInt(o.reviewThreadsTotal, 10000) || !nonnegInt(o.unresolvedFindings, 10000) ||
       !nonnegInt(o.reworkCommits, 100) || !nonnegInt(o.branchSyncMergeCommits, 100) ||
+      !nonnegInt(o.routineHumanInterventions, 1000) ||
       !nonnegInt(o.duplicateDispatches, 1000) || !nonnegInt(o.unauthorizedWrites, 1000) ||
       (o.incrementalSpendMicros !== null && !nonnegInt(o.incrementalSpendMicros, 1000000000))) {
     return false;
@@ -1908,6 +1929,7 @@ function parseStreamlinedOutcomes(
   const seenIssues = new Set();
   const seenAcceptingPrs = new Set();
   const seenSquashShas = new Set();
+  const ancestryMergeOrder = [];
   const acceptedIssueNumbers = [];
   const acceptedWindows = [];
   const leadDurations = [];
@@ -1935,8 +1957,14 @@ function parseStreamlinedOutcomes(
     if (o.provenanceKind !== COORDINATOR_DISPATCHED_WAVE_PROVENANCE) {
       return {ok: false, reason: 'PROVENANCE_CONFLATION_REJECTED'};
     }
+    if (!o.agentDispatchVerified) {
+      return {ok: false, reason: 'UNVERIFIED_AGENT_DISPATCH'};
+    }
     if (!o.copilotCoAuthored) {
       return {ok: false, reason: 'COPILOT_CO_AUTHOR_REQUIRED'};
+    }
+    if (o.routineHumanInterventions !== 0) {
+      return {ok: false, reason: 'ROUTINE_HUMAN_INTERVENTION_DETECTED'};
     }
     const wave = waveByPr.get(o.acceptingPr);
     const mergedEntry = mergedTrainCandidateByPr.get(o.acceptingPr);
@@ -1951,6 +1979,9 @@ function parseStreamlinedOutcomes(
         !samePathSet(o.ownedPaths, mergedEntry.candidate.ownedPaths)) {
       return {ok: false, reason: 'UNVERIFIED_MAIN_ANCESTRY'};
     }
+    if (o.addedToMergeQueueAtMs < wave.windowStartMs || o.mergedAtMs > wave.windowEndMs) {
+      return {ok: false, reason: 'OUTCOME_TIMESTAMP_INCONSISTENT'};
+    }
     if (o.incrementalSpendMicros !== 0) {
       return {ok: false, reason: 'SPEND_UNKNOWN_OR_EXCEEDED'};
     }
@@ -1963,6 +1994,10 @@ function parseStreamlinedOutcomes(
     seenIssues.add(o.issue);
     seenAcceptingPrs.add(o.acceptingPr);
     seenSquashShas.add(o.squashMergeSha);
+    ancestryMergeOrder.push({
+      trainOrderIndex: mergedEntry.trainOrderIndex,
+      mergedAtMs: o.mergedAtMs
+    });
     if (!o.issueClosedOnGitHub || !o.allAcceptanceCriteriaDelivered) {
       partialOutcomeCount += 1;
       continue;
@@ -1970,7 +2005,11 @@ function parseStreamlinedOutcomes(
 
     acceptedIssueCount += 1;
     acceptedIssueNumbers.push(o.issue);
-    acceptedWindows.push({assignedAtMs: o.prCreatedAtMs, mergedAtMs: o.mergedAtMs});
+    acceptedWindows.push({
+      assignedAtMs: o.prCreatedAtMs,
+      mergedAtMs: o.mergedAtMs,
+      ownedPaths: o.ownedPaths
+    });
     leadDurations.push(o.mergedAtMs - o.prCreatedAtMs);
     mqDurations.push(o.mergeQueueDurationMs);
     reworkCounts.push(o.reworkCommits);
@@ -1984,11 +2023,18 @@ function parseStreamlinedOutcomes(
     latestMergedMs = Math.max(latestMergedMs, o.mergedAtMs);
   }
 
+  ancestryMergeOrder.sort((a, b) => a.trainOrderIndex - b.trainOrderIndex);
+  for (let i = 1; i < ancestryMergeOrder.length; i++) {
+    if (ancestryMergeOrder[i].mergedAtMs < ancestryMergeOrder[i - 1].mergedAtMs) {
+      return {ok: false, reason: 'OUTCOME_TIMESTAMP_INCONSISTENT'};
+    }
+  }
+
   const windowMs = acceptedIssueCount > 0 ? latestMergedMs - earliestCreatedMs : null;
   const sortedLead = [...leadDurations].sort((a, b) => a - b);
   const sortedMq = [...mqDurations].sort((a, b) => a - b);
   const sortedRework = [...reworkCounts].sort((a, b) => a - b);
-  const parallelTrainVerified = hasConcurrentExecutionWindowPair(acceptedWindows);
+  const parallelTrainVerified = hasDisjointConcurrentExecutionPair(acceptedWindows);
   const reviewRepairVerified = reviewRepairOutcomeCount >= 1;
   const reworkRateBps = acceptedIssueCount > 0
     ? Math.round((totalReworkCommits * 10000) / acceptedIssueCount)
@@ -2020,6 +2066,7 @@ function parseStreamlinedOutcomes(
       reworkRateBps,
       totalBranchSyncMergeCommits,
       totalReviewThreadsResolved,
+      routineHumanInterventions: 0,
       unresolvedFindings: 0,
       acceptedTrainMainBreakages: 0,
       incrementalSpendMicros: 0
@@ -2037,6 +2084,11 @@ export function evaluateStreamlinedM02CohortReadout(input) {
       !nonnegInt(input.policy.minBranchPercent, 100) ||
       typeof input.billingHardStopVerified !== 'boolean' ||
       (input.incrementalSpendMicros !== null && !nonnegInt(input.incrementalSpendMicros, 1000000000)) ||
+      !exactRecord(input.revisedExitContract, REVISED_EXIT_CONTRACT_KEYS) ||
+      !token(input.revisedExitContract.contractId) ||
+      ![input.revisedExitContract.ownerApproved,
+        input.revisedExitContract.allowsCoordinatorDispatchedWaves,
+        input.revisedExitContract.preservesM01Issue10DirectCopilotGate].every(b => typeof b === 'boolean') ||
       !exactRecord(input.futureGhAwCronDisclosure, FUTURE_GHAW_DISCLOSURE_KEYS) ||
       typeof input.futureGhAwCronDisclosure.provenanceKind !== 'string' ||
       typeof input.futureGhAwCronDisclosure.status !== 'string' ||
@@ -2067,6 +2119,10 @@ export function evaluateStreamlinedM02CohortReadout(input) {
   }
   if (!input.billingHardStopVerified || input.incrementalSpendMicros !== 0) {
     return streamlinedCohortDenied('SPEND_UNKNOWN_OR_EXCEEDED');
+  }
+  const rc = input.revisedExitContract;
+  if (!rc.preservesM01Issue10DirectCopilotGate) {
+    return streamlinedCohortDenied('M01_DIRECT_COPILOT_GATE_WEAKENING_REJECTED');
   }
 
   const ghAw = input.futureGhAwCronDisclosure;
@@ -2125,8 +2181,16 @@ export function evaluateStreamlinedM02CohortReadout(input) {
       if (mergedTrainCandidateByPr.has(cand.pr)) {
         return streamlinedCohortDenied('DUPLICATE_TRAIN_CANDIDATE');
       }
+      if (!meetsCoverageFloor(
+        cand.coveredLines, cand.totalLines,
+        cand.coveredBranches, cand.totalBranches,
+        input.policy.minLinePercent, input.policy.minBranchPercent
+      )) {
+        return streamlinedCohortDenied('COVERAGE_BELOW_POLICY');
+      }
       const parentMainSha = j === 0 ? enrolledRepo.train.mainSha : cands[j - 1].simulatedSquashSha;
-      mergedTrainCandidateByPr.set(cand.pr, {candidate: cand, parentMainSha});
+      const trainOrderIndex = orderedMergedTrainCands.length;
+      mergedTrainCandidateByPr.set(cand.pr, {candidate: cand, parentMainSha, trainOrderIndex});
       orderedMergedTrainCands.push(cand);
     }
   }
@@ -2207,13 +2271,22 @@ export function evaluateStreamlinedM02CohortReadout(input) {
   if (!outcomesParsed.ok) return streamlinedCohortDenied(outcomesParsed.reason);
 
   let streamlinedM02CohortVerified = false;
+  let advisoryOnly = true;
+  let issue16ExitReady = false;
   let status = 'PENDING_STREAMLINED_M02_COHORT';
   let reason = 'INSUFFICIENT_ACCEPTED_OUTCOMES';
   if (outcomesParsed.acceptedIssueCount >= STREAMLINED_M02_MIN_ACCEPTED_ISSUES) {
     if (outcomesParsed.parallelTrainVerified && outcomesParsed.reviewRepairVerified) {
       streamlinedM02CohortVerified = true;
-      status = 'STREAMLINED_M02_COHORT_VERIFIED';
-      reason = 'STREAMLINED_M02_EXIT_ELIGIBLE';
+      if (rc.ownerApproved && rc.allowsCoordinatorDispatchedWaves) {
+        advisoryOnly = false;
+        issue16ExitReady = true;
+        status = 'STREAMLINED_M02_COHORT_VERIFIED';
+        reason = 'STREAMLINED_M02_EXIT_ELIGIBLE';
+      } else {
+        status = 'ADVISORY_COORDINATOR_COHORT_READOUT';
+        reason = 'REVISED_EXIT_CONTRACT_REQUIRED';
+      }
     } else {
       status = 'INCOMPLETE_COHORT_COMPOSITION';
       reason = 'COHORT_COMPOSITION_REQUIREMENTS_UNMET';
@@ -2231,10 +2304,17 @@ export function evaluateStreamlinedM02CohortReadout(input) {
     multiCohortLadderRetired: true,
     streamlinedM02MinAcceptedIssues: STREAMLINED_M02_MIN_ACCEPTED_ISSUES,
     streamlinedM02CohortVerified,
-    issue16ExitReady: streamlinedM02CohortVerified,
-    keepIssue16Open: !streamlinedM02CohortVerified,
+    advisoryOnly,
+    issue16ExitReady,
+    keepIssue16Open: !issue16ExitReady,
     provenanceSeparated: true,
     coordinatorWaveProvenance: COORDINATOR_DISPATCHED_WAVE_PROVENANCE,
+    revisedExitContract: Object.freeze({
+      contractId: rc.contractId,
+      ownerApproved: rc.ownerApproved,
+      allowsCoordinatorDispatchedWaves: rc.allowsCoordinatorDispatchedWaves,
+      preservesM01Issue10DirectCopilotGate: true
+    }),
     futureGhAwCronDisclosure: Object.freeze({
       provenanceKind: FUTURE_GH_AW_CRON_PROVENANCE,
       status: ghAw.status,

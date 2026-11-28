@@ -1505,6 +1505,7 @@ test('verifies committed m02-04-maf-throughput-cohort.json receipt across Waves 
     policy: params.policy,
     billingHardStopVerified: params.billingHardStopVerified,
     incrementalSpendMicros: params.incrementalSpendMicros,
+    revisedExitContract: params.revisedExitContract,
     futureGhAwCronDisclosure: params.futureGhAwCronDisclosure,
     exactHeadCoverage: params.exactHeadCoverage,
     portfolioTrainInputs: params.portfolioTrainInputKeys.map(k => receipt.waveTrainSimulations[k].input),
@@ -1515,6 +1516,7 @@ test('verifies committed m02-04-maf-throughput-cohort.json receipt across Waves 
   assert.deepEqual(replayedStreamlined, receipt.streamlinedM02CohortReadout.evaluation);
   assert.equal(replayedStreamlined.valid, true);
   assert.equal(replayedStreamlined.streamlinedM02CohortVerified, true);
+  assert.equal(replayedStreamlined.advisoryOnly, false);
   assert.equal(replayedStreamlined.issue16ExitReady, true);
   assert.equal(replayedStreamlined.keepIssue16Open, false);
   assert.equal(replayedStreamlined.provenanceSeparated, true);
@@ -2381,6 +2383,7 @@ const makeStreamlinedOutcome = (idx, total = 5, overrides = {}) => {
     acceptingPr: 500 + idx,
     supportingWavePrs: idx === 1 ? [166] : [],
     provenanceKind: COORDINATOR_DISPATCHED_WAVE_PROVENANCE,
+    agentDispatchVerified: true,
     copilotCoAuthored: true,
     issueClosedOnGitHub,
     allAcceptanceCriteriaDelivered: true,
@@ -2403,6 +2406,7 @@ const makeStreamlinedOutcome = (idx, total = 5, overrides = {}) => {
     rollbackReady: true,
     reworkCommits: idx === 3 ? 2 : 0,
     branchSyncMergeCommits: idx === 2 ? 1 : 0,
+    routineHumanInterventions: 0,
     duplicateDispatches: 0,
     unauthorizedWrites: 0,
     incrementalSpendMicros: 0,
@@ -2485,6 +2489,12 @@ const makeStreamlinedInput = (overrides = {}) => {
     policy: {minLinePercent: 98, minBranchPercent: 95},
     billingHardStopVerified: true,
     incrementalSpendMicros: 0,
+    revisedExitContract: {
+      contractId: 'm02-04-streamlined-exit-v1',
+      ownerApproved: true,
+      allowsCoordinatorDispatchedWaves: true,
+      preservesM01Issue10DirectCopilotGate: true
+    },
     futureGhAwCronDisclosure: {
       provenanceKind: FUTURE_GH_AW_CRON_PROVENANCE,
       status: 'DEFERRED_PENDING_GHAW_CRON_ENABLEMENT',
@@ -2527,7 +2537,7 @@ const makeStreamlinedInput = (overrides = {}) => {
         initialMainSha: WAVE_END_SHA,
         finalMainSha: headSha,
         windowStartMs: 1795900000000,
-        windowEndMs: 1795905000000,
+        windowEndMs: Math.max(1795905000000, ...acceptedIssueOutcomes.map(o => o.mergedAtMs)),
         prNumbers: acceptedIssueOutcomes.length === 0
           ? [501]
           : acceptedIssueOutcomes.map(o => o.acceptingPr),
@@ -3160,5 +3170,222 @@ test('evaluates streamlined M02 cohort readout, consumer policies, partial outco
       acceptedIssueOutcomes: [{...baseStreamlined.acceptedIssueOutcomes[0], unresolvedFindings: 1}]
     }).reason,
     'QUALITY_OR_SAFETY_GATE_FAILED'
+  );
+
+  // Review regression #1: readout policy stricter than enrolled train candidates fails closed
+  assert.equal(
+    evaluateStreamlinedM02CohortReadout({
+      ...baseStreamlined,
+      policy: {minLinePercent: 100, minBranchPercent: 100},
+      exactHeadCoverage: {
+        headSha: WORKLOAD_SHA,
+        coveredLines: 1000,
+        totalLines: 1000,
+        coveredBranches: 1000,
+        totalBranches: 1000
+      },
+      benchmarkInput: benchmarkInput({
+        nodeBaseline: {
+          ...nodeBaselineProfile(),
+          coveredLines: 1000,
+          totalLines: 1000,
+          coveredBranches: 1000,
+          totalBranches: 1000
+        },
+        dotnetMafCandidate: {
+          ...dotnetMafCandidateProfile(),
+          coveredLines: 1000,
+          totalLines: 1000,
+          coveredBranches: 1000,
+          totalBranches: 1000
+        },
+        cohorts: null
+      })
+    }).reason,
+    'COVERAGE_BELOW_POLICY'
+  );
+
+  // Review regression #2: revisedExitContract advisory mode, #10 gate preservation, agent dispatch, and routine human interventions
+  assert.equal(
+    evaluateStreamlinedM02CohortReadout({
+      ...baseStreamlined,
+      revisedExitContract: {
+        ...baseStreamlined.revisedExitContract,
+        preservesM01Issue10DirectCopilotGate: false
+      }
+    }).reason,
+    'M01_DIRECT_COPILOT_GATE_WEAKENING_REJECTED'
+  );
+  for (const contractPatch of [
+    {ownerApproved: false},
+    {allowsCoordinatorDispatchedWaves: false}
+  ]) {
+    const advisory = evaluateStreamlinedM02CohortReadout({
+      ...baseStreamlined,
+      revisedExitContract: {...baseStreamlined.revisedExitContract, ...contractPatch}
+    });
+    assert.equal(advisory.valid, true);
+    assert.equal(advisory.streamlinedM02CohortVerified, true);
+    assert.equal(advisory.advisoryOnly, true);
+    assert.equal(advisory.issue16ExitReady, false);
+    assert.equal(advisory.keepIssue16Open, true);
+    assert.equal(advisory.status, 'ADVISORY_COORDINATOR_COHORT_READOUT');
+    assert.equal(advisory.reason, 'REVISED_EXIT_CONTRACT_REQUIRED');
+  }
+  assert.equal(
+    evaluateStreamlinedM02CohortReadout({
+      ...baseStreamlined,
+      acceptedIssueOutcomes: [
+        {...baseStreamlined.acceptedIssueOutcomes[0], agentDispatchVerified: false}
+      ]
+    }).reason,
+    'UNVERIFIED_AGENT_DISPATCH'
+  );
+  assert.equal(
+    evaluateStreamlinedM02CohortReadout({
+      ...baseStreamlined,
+      acceptedIssueOutcomes: [
+        {...baseStreamlined.acceptedIssueOutcomes[0], routineHumanInterventions: 1}
+      ]
+    }).reason,
+    'ROUTINE_HUMAN_INTERVENTION_DETECTED'
+  );
+
+  // Review regression #3: concurrent PR windows across separate trains with overlapping ownedPaths do not satisfy parallelTrainVerified
+  const crossTrainOutcomes = [1, 2, 3, 4, 5].map(idx => {
+    // Only outcomes 1 and 2 overlap in time; outcomes 3, 4, 5 are strictly serialized after outcome 2 merges
+    const prCreatedAtMs = idx <= 2
+      ? 1795900100000 + idx * 10000
+      : 1795905000000 + idx * 3600000;
+    const addedToMergeQueueAtMs = prCreatedAtMs + 300000 + idx * 10000;
+    const mergedAtMs = addedToMergeQueueAtMs + 180000;
+    const ownedPaths = idx === 1
+      ? ['tools/shared-dir']
+      : (idx === 2 ? ['tools/shared-dir/file.mjs'] : [`tools/disjoint-${idx}.mjs`]);
+    return makeStreamlinedOutcome(idx, 5, {
+      prCreatedAtMs,
+      addedToMergeQueueAtMs,
+      mergedAtMs,
+      issueClosedAtMs: mergedAtMs + 10000,
+      ownedPaths
+    });
+  });
+  const splitTrain1 = {
+    stop: false,
+    budget: baseBudget({active: 0, maxActive: 4}),
+    repositories: [factoryRepo({
+      overrides: {
+        train: {
+          defaultBranch: 'main',
+          mainSha: WAVE_END_SHA,
+          mainHealthy: true,
+          mergeQueue: {
+            mode: 'native-merge-queue',
+            supported: true,
+            ownerApproved: true,
+            costVerified: true,
+            incrementalSpendMicros: 0
+          },
+          candidates: [makeTrainCandidate(501, {
+            head: crossTrainOutcomes[0].headSha,
+            observedHead: crossTrainOutcomes[0].headSha,
+            expectedBase: WAVE_END_SHA,
+            simulatedSquashSha: crossTrainOutcomes[0].squashMergeSha,
+            eligibleToMergeMs: 180000,
+            ownedPaths: ['tools/shared-dir'],
+            reviewState: 'APPROVED'
+          })]
+        }
+      }
+    })],
+    workItems: []
+  };
+  const splitTrain2 = {
+    stop: false,
+    budget: baseBudget({active: 0, maxActive: 4}),
+    repositories: [factoryRepo({
+      overrides: {
+        train: {
+          defaultBranch: 'main',
+          mainSha: crossTrainOutcomes[0].squashMergeSha,
+          mainHealthy: true,
+          mergeQueue: {
+            mode: 'native-merge-queue',
+            supported: true,
+            ownerApproved: true,
+            costVerified: true,
+            incrementalSpendMicros: 0
+          },
+          candidates: crossTrainOutcomes.slice(1).map((o, idx) => makeTrainCandidate(o.acceptingPr, {
+            head: o.headSha,
+            observedHead: o.headSha,
+            expectedBase: o.expectedBaseSha,
+            simulatedSquashSha: idx === 3 ? WORKLOAD_SHA : o.squashMergeSha,
+            eligibleToMergeMs: 180000,
+            ownedPaths: [...o.ownedPaths],
+            reviewState: 'APPROVED'
+          }))
+        }
+      }
+    })],
+    workItems: []
+  };
+  const crossTrainOverlapRes = evaluateStreamlinedM02CohortReadout({
+    ...makeStreamlinedInput({acceptedIssueOutcomes: crossTrainOutcomes}),
+    portfolioTrainInputs: [splitTrain1, splitTrain2]
+  });
+  assert.equal(crossTrainOverlapRes.valid, true);
+  assert.equal(crossTrainOverlapRes.acceptedCohortSummary.parallelTrainVerified, false);
+  assert.equal(crossTrainOverlapRes.status, 'INCOMPLETE_COHORT_COMPOSITION');
+  assert.equal(crossTrainOverlapRes.reason, 'COHORT_COMPOSITION_REQUIREMENTS_UNMET');
+
+  // Review regression #4: wave timestamp bounds and ancestry merge-order monotonicity
+  const beforeWaveStart = {
+    ...baseStreamlined.acceptedIssueOutcomes[0],
+    prCreatedAtMs: 1795890000000,
+    addedToMergeQueueAtMs: 1795899000000,
+    mergedAtMs: 1795899180000,
+    issueClosedAtMs: 1795900000000
+  };
+  assert.equal(
+    evaluateStreamlinedM02CohortReadout({
+      ...baseStreamlined,
+      acceptedIssueOutcomes: [beforeWaveStart, ...baseStreamlined.acceptedIssueOutcomes.slice(1)]
+    }).reason,
+    'OUTCOME_TIMESTAMP_INCONSISTENT'
+  );
+  const afterWaveEnd = {
+    ...baseStreamlined.acceptedIssueOutcomes[4],
+    prCreatedAtMs: 1795905000000,
+    addedToMergeQueueAtMs: 1795906000000,
+    mergedAtMs: 1795906180000,
+    issueClosedAtMs: 1795906200000
+  };
+  assert.equal(
+    evaluateStreamlinedM02CohortReadout({
+      ...baseStreamlined,
+      acceptedIssueOutcomes: [...baseStreamlined.acceptedIssueOutcomes.slice(0, 4), afterWaveEnd]
+    }).reason,
+    'OUTCOME_TIMESTAMP_INCONSISTENT'
+  );
+  // Swap outcome 1's mergedAtMs ahead of outcome 2's mergedAtMs while staying inside wave-5 bounds
+  const outOfAncestryOrder = baseStreamlined.acceptedIssueOutcomes.map((o, idx) => {
+    if (idx === 0) {
+      return {
+        ...o,
+        prCreatedAtMs: 1795901000000,
+        addedToMergeQueueAtMs: 1795902000000,
+        mergedAtMs: 1795902180000,
+        issueClosedAtMs: 1795902500000
+      };
+    }
+    return o;
+  });
+  assert.equal(
+    evaluateStreamlinedM02CohortReadout({
+      ...baseStreamlined,
+      acceptedIssueOutcomes: outOfAncestryOrder
+    }).reason,
+    'OUTCOME_TIMESTAMP_INCONSISTENT'
   );
 });
