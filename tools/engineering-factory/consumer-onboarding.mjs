@@ -16,6 +16,55 @@ export const MANDATORY_ONBOARDING_SETTINGS = Object.freeze([
   'stackProfile'
 ]);
 export const OPTIONAL_ONBOARDING_SETTINGS = Object.freeze(['stricterCoverageThresholds']);
+export const ONBOARDING_SUCCESS_STAGES = Object.freeze({
+  NOT_ONBOARDED: 'NOT_ONBOARDED',
+  STAGE_1_SHADOW_ONBOARDED: 'STAGE_1_SHADOW_ONBOARDED',
+  STAGE_2_AUTONOMOUS_ACCEPTED: 'STAGE_2_AUTONOMOUS_ACCEPTED'
+});
+export const ONBOARDING_SUCCESS_THRESHOLDS = Object.freeze({
+  maxMandatorySettings: MAX_MANDATORY_USER_SETTINGS,
+  maxDiscoveryAndPlanDurationMs: 300_000,
+  maxBasicIntegrationDurationMs: 900_000,
+  maxOverwrittenExistingFiles: 0,
+  maxCompetingBacklogsCreated: 0,
+  maxMandatoryExternalServices: 0,
+  maxIncrementalBilledUsdCents: 0,
+  minBaselineLineCoverage: CONSUMER_BASELINE_COVERAGE.line,
+  minBaselineBranchCoverage: CONSUMER_BASELINE_COVERAGE.branch,
+  requiredGeneratedFileCount: 2,
+  requiredShadowDenialCount: 6,
+  maxRollbackCommits: 1,
+  minUnattendedCopilotIssues: 1,
+  maxHumanInterventions: 0,
+  maxUnauthorizedWrites: 0,
+  maxProductionDeployments: 0
+});
+export const CONSUMER_ROLLOUT_ORDER = Object.freeze([
+  Object.freeze({
+    order: 1,
+    milestone: 'M03',
+    consumer: 'Jamula/Spellbook',
+    trackingIssue: 11,
+    syntheticRepository: 'example/spellbook',
+    stackProfile: 'ios-webkit-97-90'
+  }),
+  Object.freeze({
+    order: 2,
+    milestone: 'M04',
+    consumer: 'Jamula/FamilyTree',
+    trackingIssue: 36,
+    syntheticRepository: 'example/family-tree',
+    stackProfile: 'web-genealogy-95-90'
+  }),
+  Object.freeze({
+    order: 3,
+    milestone: 'M05',
+    consumer: 'FamilyHub',
+    trackingIssue: 12,
+    syntheticRepository: 'example/family-hub',
+    stackProfile: 'strict-up-to-date-migration-gated'
+  })
+]);
 export const TRUSTED_WORKFLOW_CHECKOUT_PINS = Object.freeze(
   Object.assign(Object.create(null), {
     afc3d223f287b029db32672908097efc67a259c9: '1208481843e73d1d2506085c654e84255303541d'
@@ -136,6 +185,9 @@ const repoPath = value =>
   !value.includes('\\') &&
   !value.split('/').some(part => !part || part === '.' || part === '..');
 const posInt = value => Number.isSafeInteger(value) && value > 0;
+const nonNegInt = value => Number.isSafeInteger(value) && value >= 0 && !Object.is(value, -0);
+const nonNegMs = value =>
+  typeof value === 'number' && Number.isFinite(value) && value >= 0 && !Object.is(value, -0);
 const pct = value => Number.isFinite(value) && value >= 0 && value <= 100;
 const sha40 = value => typeof value === 'string' && /^[0-9a-f]{40}$/.test(value);
 const identity = value => value.toLowerCase();
@@ -1165,5 +1217,362 @@ export function buildReadOnlyOnboardingPlan(discoveryInput) {
       'scoped-repo-read-only-shadow-credential'
     ]),
     blockers: Object.freeze([])
+  });
+}
+
+const SUCCESS_REQUIRED_KEYS = Object.freeze([
+  'synthetic',
+  'onboardingPrMerged',
+  'usability',
+  'governance',
+  'existingGates',
+  'onboardingPackage',
+  'rollbackProof'
+]);
+const SUCCESS_INPUT_KEYS = new Set([
+  ...SUCCESS_REQUIRED_KEYS,
+  'peerRegistry',
+  'requireAutonomousAcceptance',
+  'autonomousProof'
+]);
+const ALLOWED_AUTONOMOUS_AGENTS = new Set(['@copilot', 'copilot-swe-agent[bot]']);
+
+const validUsabilityShape = u =>
+  exact(u, [
+    'mandatorySettingsCount',
+    'generatedFileCount',
+    'discoveryAndPlanDurationMs',
+    'basicIntegrationDurationMs',
+    'overwrittenExistingFiles',
+    'competingBacklogsCreated',
+    'mandatoryExternalServices',
+    'incrementalBilledUsdCents'
+  ]) &&
+  posInt(u.mandatorySettingsCount) &&
+  nonNegInt(u.generatedFileCount) &&
+  nonNegMs(u.discoveryAndPlanDurationMs) &&
+  nonNegMs(u.basicIntegrationDurationMs) &&
+  nonNegInt(u.overwrittenExistingFiles) &&
+  nonNegInt(u.competingBacklogsCreated) &&
+  nonNegInt(u.mandatoryExternalServices) &&
+  nonNegInt(u.incrementalBilledUsdCents);
+
+const validGovernanceShape = g =>
+  exact(g, [
+    'authoritativeBacklog',
+    'allowCommentedBotApproval',
+    'independentApprovedReviewRequired',
+    'perRepoAiCreditHardStop',
+    'paidOverageAllowed'
+  ]) &&
+  text(g.authoritativeBacklog, 80) &&
+  typeof g.allowCommentedBotApproval === 'boolean' &&
+  typeof g.independentApprovedReviewRequired === 'boolean' &&
+  typeof g.perRepoAiCreditHardStop === 'boolean' &&
+  typeof g.paidOverageAllowed === 'boolean';
+
+const validExistingGatesShape = eg =>
+  exact(eg, ['lineCoverage', 'branchCoverage', 'requiredChecks', 'maxConcurrency']) &&
+  pct(eg.lineCoverage) &&
+  pct(eg.branchCoverage) &&
+  dense(eg.requiredChecks) &&
+  eg.requiredChecks.every(c => exact(c, ['name', 'appId']) && text(c.name) && posInt(c.appId)) &&
+  posInt(eg.maxConcurrency);
+
+const validRollbackProofShape = rp =>
+  exact(rp, [
+    'commitsToRevert',
+    'factoryRepositoryUntouched',
+    'rollbackReceipt',
+    'cohortPackages'
+  ]) &&
+  nonNegInt(rp.commitsToRevert) &&
+  typeof rp.factoryRepositoryUntouched === 'boolean';
+
+const validAutonomousProofShape = ap =>
+  exact(ap, [
+    'repository',
+    'repositoryId',
+    'synthetic',
+    'agent',
+    'unattendedCopilotIssuesLanded',
+    'landedBranch',
+    'protectedDefaultBranchHealthy',
+    'boundedScopeVerified',
+    'exactHeadApprovedReview',
+    'humanInterventions',
+    'unauthorizedWrites',
+    'productionDeployments',
+    'incrementalBilledUsdCents'
+  ]) &&
+  repoSlug(ap.repository) &&
+  posInt(ap.repositoryId) &&
+  typeof ap.synthetic === 'boolean' &&
+  text(ap.agent, 80) &&
+  nonNegInt(ap.unattendedCopilotIssuesLanded) &&
+  branchName(ap.landedBranch) &&
+  typeof ap.protectedDefaultBranchHealthy === 'boolean' &&
+  typeof ap.boundedScopeVerified === 'boolean' &&
+  typeof ap.exactHeadApprovedReview === 'boolean' &&
+  nonNegInt(ap.humanInterventions) &&
+  nonNegInt(ap.unauthorizedWrites) &&
+  nonNegInt(ap.productionDeployments) &&
+  nonNegInt(ap.incrementalBilledUsdCents);
+
+const denyBeforeStage1 = reason =>
+  Object.freeze({
+    valid: false,
+    accepted: false,
+    stage: ONBOARDING_SUCCESS_STAGES.NOT_ONBOARDED,
+    reason,
+    shadowOnboarded: false,
+    autonomousAccepted: false,
+    liveActivation: false
+  });
+
+const denyStage2 = (reason, summary) =>
+  Object.freeze({
+    valid: false,
+    accepted: false,
+    stage: ONBOARDING_SUCCESS_STAGES.STAGE_1_SHADOW_ONBOARDED,
+    reason,
+    shadowOnboarded: true,
+    autonomousAccepted: false,
+    liveActivation: false,
+    ...summary
+  });
+
+export function evaluateConsumerOnboardingSuccess(input) {
+  if (!plainAllowed(input, SUCCESS_INPUT_KEYS) ||
+      !SUCCESS_REQUIRED_KEYS.every(key => Object.hasOwn(input, key)) ||
+      typeof input.synthetic !== 'boolean' ||
+      typeof input.onboardingPrMerged !== 'boolean' ||
+      (Object.hasOwn(input, 'requireAutonomousAcceptance') &&
+        typeof input.requireAutonomousAcceptance !== 'boolean') ||
+      !validUsabilityShape(input.usability) ||
+      !validGovernanceShape(input.governance) ||
+      !validExistingGatesShape(input.existingGates) ||
+      !validRollbackProofShape(input.rollbackProof)) {
+    return denyBeforeStage1('SUCCESS_INPUT_INVALID');
+  }
+
+  const hasAutonomousProof = Object.hasOwn(input, 'autonomousProof');
+  const autonomousProof = hasAutonomousProof ? input.autonomousProof : null;
+  if (autonomousProof !== null && !validAutonomousProofShape(autonomousProof)) {
+    return denyBeforeStage1('SUCCESS_INPUT_INVALID');
+  }
+
+  const u = input.usability;
+  const g = input.governance;
+  const eg = input.existingGates;
+  const rp = input.rollbackProof;
+
+  if (u.mandatorySettingsCount > ONBOARDING_SUCCESS_THRESHOLDS.maxMandatorySettings) {
+    return denyBeforeStage1('MANDATORY_SETTINGS_LIMIT_EXCEEDED');
+  }
+  if (u.generatedFileCount !== ONBOARDING_SUCCESS_THRESHOLDS.requiredGeneratedFileCount) {
+    return denyBeforeStage1('GENERATED_FILES_COUNT_INVALID');
+  }
+  if (u.discoveryAndPlanDurationMs > ONBOARDING_SUCCESS_THRESHOLDS.maxDiscoveryAndPlanDurationMs) {
+    return denyBeforeStage1('DISCOVERY_DURATION_EXCEEDED');
+  }
+  if (u.basicIntegrationDurationMs > ONBOARDING_SUCCESS_THRESHOLDS.maxBasicIntegrationDurationMs) {
+    return denyBeforeStage1('INTEGRATION_DURATION_EXCEEDED');
+  }
+  if (u.overwrittenExistingFiles !== ONBOARDING_SUCCESS_THRESHOLDS.maxOverwrittenExistingFiles) {
+    return denyBeforeStage1('EXISTING_FILES_OVERWRITTEN');
+  }
+  if (u.competingBacklogsCreated !== ONBOARDING_SUCCESS_THRESHOLDS.maxCompetingBacklogsCreated ||
+      g.authoritativeBacklog !== 'github-issues') {
+    return denyBeforeStage1('COMPETING_BACKLOG_PROHIBITED');
+  }
+  if (u.mandatoryExternalServices !== ONBOARDING_SUCCESS_THRESHOLDS.maxMandatoryExternalServices) {
+    return denyBeforeStage1('EXTERNAL_SERVICE_REQUIRED');
+  }
+  if (u.incrementalBilledUsdCents !== ONBOARDING_SUCCESS_THRESHOLDS.maxIncrementalBilledUsdCents) {
+    return denyBeforeStage1('NON_ZERO_INCREMENTAL_SPEND');
+  }
+  if (g.allowCommentedBotApproval !== false || !g.independentApprovedReviewRequired) {
+    return denyBeforeStage1('FORMAL_APPROVAL_REQUIRED');
+  }
+  if (!g.perRepoAiCreditHardStop || g.paidOverageAllowed !== false) {
+    return denyBeforeStage1('AI_CREDIT_HARD_STOP_REQUIRED');
+  }
+
+  const peerRegistry = Object.hasOwn(input, 'peerRegistry') ? input.peerRegistry : [];
+  const pkgCheck = verifyConsumerOnboardingPackage(input.onboardingPackage, peerRegistry);
+  if (!pkgCheck.valid) {
+    return denyBeforeStage1(pkgCheck.reason);
+  }
+  const catalogedCheckoutSha = TRUSTED_WORKFLOW_CHECKOUT_PINS[pkgCheck.pinnedWorkflowSha];
+  if (catalogedCheckoutSha !== undefined && pkgCheck.pinnedCheckoutSha !== catalogedCheckoutSha) {
+    return denyBeforeStage1('PIN_SHA_MISMATCH');
+  }
+
+  const pkg = input.onboardingPackage;
+  if (!Object.hasOwn(ONBOARDING_STACK_PROFILES, pkg.stackProfile)) {
+    return denyBeforeStage1('UNSUPPORTED_STACK_PROFILE');
+  }
+  const profile = ONBOARDING_STACK_PROFILES[pkg.stackProfile];
+  const requiredLine = Math.max(
+    CONSUMER_BASELINE_COVERAGE.line,
+    profile.coverage.line,
+    eg.lineCoverage
+  );
+  const requiredBranch = Math.max(
+    CONSUMER_BASELINE_COVERAGE.branch,
+    profile.coverage.branch,
+    eg.branchCoverage
+  );
+  const maxAllowedActive = Math.min(profile.maxActive, eg.maxConcurrency);
+
+  if (pkg.policy.coverage.line < requiredLine ||
+      pkg.localGates.minLineCoverage < requiredLine ||
+      pkg.policy.coverage.branch < requiredBranch ||
+      pkg.localGates.minBranchCoverage < requiredBranch ||
+      pkg.policy.maxActive > maxAllowedActive ||
+      pkg.localGates.maxConcurrency > eg.maxConcurrency ||
+      pkg.policy.checks.length < profile.minRequiredChecks ||
+      (profile.lockBranchAndMerge &&
+        (pkg.policy.defaultBranch !== profile.defaultBranch ||
+          pkg.policy.mergeMethod !== profile.mergeMethod)) ||
+      eg.requiredChecks.some(req =>
+        !pkg.localGates.requiredChecks.some(c => c.name === req.name && c.appId === req.appId))) {
+    return denyBeforeStage1('LOCAL_GATE_WEAKENED');
+  }
+
+  if (rp.commitsToRevert !== ONBOARDING_SUCCESS_THRESHOLDS.maxRollbackCommits) {
+    return denyBeforeStage1('SINGLE_COMMIT_ROLLBACK_REQUIRED');
+  }
+  if (!rp.factoryRepositoryUntouched) {
+    return denyBeforeStage1('FACTORY_ISOLATION_REQUIRED');
+  }
+
+  const rbCheck = verifyIndependentRollback(
+    pkg.policy.repository,
+    rp.rollbackReceipt,
+    rp.cohortPackages
+  );
+  if (!rbCheck.valid) {
+    return denyBeforeStage1(rbCheck.reason);
+  }
+
+  const cohortTarget = rp.cohortPackages.find(
+    candidate => identity(candidate.policy.repository) === identity(pkg.policy.repository)
+  );
+  if (!sameData(cohortTarget, pkg)) {
+    return denyBeforeStage1('ROLLBACK_PACKAGE_MISMATCH');
+  }
+
+  if (!input.onboardingPrMerged) {
+    return denyBeforeStage1('ONBOARDING_PR_NOT_MERGED');
+  }
+
+  const summary = {
+    contractVersion: CONSUMER_CONTRACT_VERSION,
+    synthetic: input.synthetic,
+    repository: pkg.policy.repository,
+    repositoryId: pkg.repositoryId,
+    stackProfile: pkg.stackProfile,
+    pinnedWorkflowSha: pkgCheck.pinnedWorkflowSha,
+    pinnedCheckoutSha: pkgCheck.pinnedCheckoutSha,
+    effectiveCoverage: Object.freeze({
+      line: pkg.policy.coverage.line,
+      branch: pkg.policy.coverage.branch
+    }),
+    preservedFloorCoverage: Object.freeze({
+      line: requiredLine,
+      branch: requiredBranch
+    }),
+    metrics: Object.freeze({
+      mandatorySettingsCount: u.mandatorySettingsCount,
+      generatedFileCount: u.generatedFileCount,
+      discoveryAndPlanDurationMs: u.discoveryAndPlanDurationMs,
+      basicIntegrationDurationMs: u.basicIntegrationDurationMs,
+      overwrittenExistingFiles: 0,
+      competingBacklogsCreated: 0,
+      mandatoryExternalServices: 0,
+      incrementalBilledUsdCents: 0,
+      shadowDenialsVerified: ONBOARDING_SUCCESS_THRESHOLDS.requiredShadowDenialCount,
+      rollbackCommitsRequired: 1,
+      unaffectedPeers: rbCheck.unaffectedPeers
+    })
+  };
+
+  const requireStage2 = Object.hasOwn(input, 'requireAutonomousAcceptance')
+    ? input.requireAutonomousAcceptance
+    : false;
+  if (autonomousProof === null) {
+    if (requireStage2) {
+      return denyStage2('AUTONOMOUS_PROOF_REQUIRED', summary);
+    }
+    return Object.freeze({
+      valid: true,
+      accepted: false,
+      stage: ONBOARDING_SUCCESS_STAGES.STAGE_1_SHADOW_ONBOARDED,
+      reason: ONBOARDING_SUCCESS_STAGES.STAGE_1_SHADOW_ONBOARDED,
+      shadowOnboarded: true,
+      autonomousAccepted: false,
+      liveActivation: false,
+      ...summary
+    });
+  }
+
+  if (input.synthetic || autonomousProof.synthetic) {
+    return denyStage2('SYNTHETIC_RUN_CANNOT_ACCEPT_STAGE_2', summary);
+  }
+  if (identity(autonomousProof.repository) !== identity(pkg.policy.repository) ||
+      autonomousProof.repositoryId !== pkg.repositoryId) {
+    return denyStage2('AUTONOMOUS_PROOF_REPO_MISMATCH', summary);
+  }
+  if (!ALLOWED_AUTONOMOUS_AGENTS.has(identity(autonomousProof.agent))) {
+    return denyStage2('AUTONOMOUS_AGENT_INVALID', summary);
+  }
+  if (autonomousProof.unattendedCopilotIssuesLanded < ONBOARDING_SUCCESS_THRESHOLDS.minUnattendedCopilotIssues) {
+    return denyStage2('UNATTENDED_ISSUE_NOT_LANDED', summary);
+  }
+  if (autonomousProof.landedBranch !== pkg.policy.defaultBranch ||
+      !autonomousProof.protectedDefaultBranchHealthy) {
+    return denyStage2('DEFAULT_BRANCH_UNHEALTHY', summary);
+  }
+  if (!autonomousProof.boundedScopeVerified || !autonomousProof.exactHeadApprovedReview) {
+    return denyStage2('AUTONOMOUS_GOVERNANCE_INCOMPLETE', summary);
+  }
+  if (autonomousProof.humanInterventions !== ONBOARDING_SUCCESS_THRESHOLDS.maxHumanInterventions) {
+    return denyStage2('HUMAN_INTERVENTION_REQUIRED', summary);
+  }
+  if (autonomousProof.unauthorizedWrites !== ONBOARDING_SUCCESS_THRESHOLDS.maxUnauthorizedWrites) {
+    return denyStage2('UNAUTHORIZED_WRITE_DETECTED', summary);
+  }
+  if (autonomousProof.productionDeployments !== ONBOARDING_SUCCESS_THRESHOLDS.maxProductionDeployments) {
+    return denyStage2('PRODUCTION_DEPLOYMENT_PROHIBITED', summary);
+  }
+  if (autonomousProof.incrementalBilledUsdCents !== ONBOARDING_SUCCESS_THRESHOLDS.maxIncrementalBilledUsdCents) {
+    return denyStage2('NON_ZERO_INCREMENTAL_SPEND', summary);
+  }
+
+  return Object.freeze({
+    valid: true,
+    accepted: true,
+    stage: ONBOARDING_SUCCESS_STAGES.STAGE_2_AUTONOMOUS_ACCEPTED,
+    reason: ONBOARDING_SUCCESS_STAGES.STAGE_2_AUTONOMOUS_ACCEPTED,
+    shadowOnboarded: true,
+    autonomousAccepted: true,
+    liveActivation: false,
+    ...summary,
+    autonomousReceipt: Object.freeze({
+      repository: pkg.policy.repository,
+      repositoryId: pkg.repositoryId,
+      agent: autonomousProof.agent,
+      unattendedCopilotIssuesLanded: autonomousProof.unattendedCopilotIssuesLanded,
+      landedBranch: autonomousProof.landedBranch,
+      protectedDefaultBranchHealthy: true,
+      boundedScopeVerified: true,
+      exactHeadApprovedReview: true,
+      humanInterventions: 0,
+      unauthorizedWrites: 0,
+      productionDeployments: 0,
+      incrementalBilledUsdCents: 0
+    })
   });
 }

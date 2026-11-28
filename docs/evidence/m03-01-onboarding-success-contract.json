@@ -1,0 +1,369 @@
+{
+  "schemaVersion": 1,
+  "milestone": "M03.01",
+  "issue": 13,
+  "title": "Definition of Success for New Repository Onboarding",
+  "evidenceKind": "offline-synthetic-contract-verification",
+  "liveConsumerActivation": false,
+  "incrementalBilledUsdCents": 0,
+  "verifierModule": "tools/engineering-factory/consumer-onboarding.mjs",
+  "verifierExport": "evaluateConsumerOnboardingSuccess",
+  "measuredCoverage": {
+    "component": "engineering-factory.consumer-onboarding",
+    "linesCovered": 1578,
+    "linesTotal": 1578,
+    "lineCoveragePct": 100,
+    "branchesCovered": 706,
+    "branchesTotal": 706,
+    "branchCoveragePct": 100
+  },
+  "rolloutOrder": [
+    {
+      "order": 1,
+      "milestone": "M03",
+      "consumer": "Jamula/Spellbook",
+      "trackingIssue": 11,
+      "syntheticRepository": "example/spellbook",
+      "stackProfile": "ios-webkit-97-90"
+    },
+    {
+      "order": 2,
+      "milestone": "M04",
+      "consumer": "Jamula/FamilyTree",
+      "trackingIssue": 36,
+      "syntheticRepository": "example/family-tree",
+      "stackProfile": "web-genealogy-95-90"
+    },
+    {
+      "order": 3,
+      "milestone": "M05",
+      "consumer": "FamilyHub",
+      "trackingIssue": 12,
+      "syntheticRepository": "example/family-hub",
+      "stackProfile": "strict-up-to-date-migration-gated"
+    }
+  ],
+  "thresholds": {
+    "maxMandatorySettings": 5,
+    "maxDiscoveryAndPlanDurationMs": 300000,
+    "maxBasicIntegrationDurationMs": 900000,
+    "maxOverwrittenExistingFiles": 0,
+    "maxCompetingBacklogsCreated": 0,
+    "maxMandatoryExternalServices": 0,
+    "maxIncrementalBilledUsdCents": 0,
+    "minBaselineLineCoverage": 95,
+    "minBaselineBranchCoverage": 90,
+    "requiredGeneratedFileCount": 2,
+    "requiredShadowDenialCount": 6,
+    "maxRollbackCommits": 1,
+    "minUnattendedCopilotIssues": 1,
+    "maxHumanInterventions": 0,
+    "maxUnauthorizedWrites": 0,
+    "maxProductionDeployments": 0
+  },
+  "stages": {
+    "STAGE_0_DISCOVERY_PLAN": {
+      "verifier": "buildReadOnlyOnboardingPlan",
+      "expectedReason": "READ_ONLY_ONBOARDING_PLAN_READY",
+      "liveMutations": 0,
+      "summary": "Read-only repository discovery and conflict-safe 2-file dry-run plan in <= 5 min from <= 5 mandatory settings."
+    },
+    "STAGE_1_SHADOW_ONBOARDED": {
+      "verifier": "evaluateConsumerOnboardingSuccess",
+      "expectedReason": "STAGE_1_SHADOW_ONBOARDED",
+      "accepted": false,
+      "liveActivation": false,
+      "summary": "Disabled-at-rest 2-file onboarding PR merged in <= 15 min with dual 40-hex SHA pins, stronger local gates preserved, formal APPROVED review, isolated credentials, $0 AI-credit hard-stop, all 6 single-mutation shadow denials proven, and 1-commit independent rollback verified."
+    },
+    "STAGE_2_AUTONOMOUS_ACCEPTED": {
+      "verifier": "evaluateConsumerOnboardingSuccess",
+      "expectedReason": "STAGE_2_AUTONOMOUS_ACCEPTED",
+      "accepted": true,
+      "liveActivation": false,
+      "syntheticEligible": false,
+      "summary": "All Stage 1 gates passed plus >= 1 real (non-synthetic) repository-bound unattended @copilot issue merged onto the healthy protected default branch with exact-head APPROVED review, 0 human interventions, 0 unauthorized writes, 0 production deployments, and $0 incremental spend."
+    }
+  },
+  "customerJourney": [
+    "1 natural-language onboarding request with zero live GitHub mutations during discovery",
+    "<= 5 mandatory settings supplied (excluding explicit owner authorization and billing confirmation)",
+    "2 generated repository-local files (.github/workflows/softwarefactory-shadow-replay.yml and .github/softwarefactory-policy.json) with 0 overwrites and GitHub Issues as sole backlog",
+    "6 single-mutation shadow denials proven and disabled-at-rest PR merged in <= 15 min (STAGE_1_SHADOW_ONBOARDED)",
+    "1 real bounded unattended @copilot issue landed on healthy protected default branch with 0 human interventions and $0 spend (STAGE_2_AUTONOMOUS_ACCEPTED)",
+    "1-commit independent rollback leaving Jamula/SoftwareFactory and peer consumers untouched"
+  ],
+  "executionMatrix": [
+    {
+      "visibility": "public",
+      "ghAwAndCopilotCloudAgentSupported": true,
+      "copilotCloudAutomationsSupported": false,
+      "copilotSdkPinnedVersion": "2.0.3",
+      "perRepoAiCreditHardStopRequired": true,
+      "paidOverageAllowed": false
+    },
+    {
+      "visibility": "private",
+      "ghAwAndCopilotCloudAgentSupported": true,
+      "copilotCloudAutomationsSupported": true,
+      "copilotSdkPinnedVersion": "2.0.3",
+      "perRepoAiCreditHardStopRequired": true,
+      "paidOverageAllowed": false
+    },
+    {
+      "visibility": "internal",
+      "ghAwAndCopilotCloudAgentSupported": true,
+      "copilotCloudAutomationsSupported": true,
+      "copilotSdkPinnedVersion": "2.0.3",
+      "perRepoAiCreditHardStopRequired": true,
+      "paidOverageAllowed": false
+    }
+  ],
+  "verifiedProfiles": [
+    {
+      "profileId": "greenfield-baseline-95-90",
+      "mode": "greenfield",
+      "syntheticRepository": "example/greenfield-app",
+      "repositoryId": 900501,
+      "stackProfile": "baseline-95-90",
+      "mandatorySettingsCount": 4,
+      "generatedFileCount": 2,
+      "effectiveCoverage": {
+        "line": 95,
+        "branch": 90
+      },
+      "preservedChecks": [
+        "build-test"
+      ],
+      "maxActive": 1,
+      "stage1Outcome": {
+        "valid": true,
+        "accepted": false,
+        "stage": "STAGE_1_SHADOW_ONBOARDED",
+        "reason": "STAGE_1_SHADOW_ONBOARDED"
+      },
+      "syntheticStage2AttemptOutcome": {
+        "valid": false,
+        "accepted": false,
+        "stage": "STAGE_1_SHADOW_ONBOARDED",
+        "reason": "SYNTHETIC_RUN_CANNOT_ACCEPT_STAGE_2"
+      }
+    },
+    {
+      "profileId": "spellbook-existing-m03-first",
+      "mode": "existing-repository",
+      "syntheticRepository": "example/spellbook",
+      "repositoryId": 900202,
+      "stackProfile": "ios-webkit-97-90",
+      "mandatorySettingsCount": 4,
+      "generatedFileCount": 2,
+      "effectiveCoverage": {
+        "line": 97,
+        "branch": 90
+      },
+      "preservedChecks": [
+        "fictional-webkit-gate",
+        "fictional-ios-gate",
+        "fictional-release-gate"
+      ],
+      "maxActive": 2,
+      "stage1Outcome": {
+        "valid": true,
+        "accepted": false,
+        "stage": "STAGE_1_SHADOW_ONBOARDED",
+        "reason": "STAGE_1_SHADOW_ONBOARDED"
+      },
+      "stage2EvaluatorContractFixtureOutcome": {
+        "note": "Offline unit-test verification of Stage 2 evaluator contract only; no live consumer repository is activated.",
+        "valid": true,
+        "accepted": true,
+        "stage": "STAGE_2_AUTONOMOUS_ACCEPTED",
+        "reason": "STAGE_2_AUTONOMOUS_ACCEPTED"
+      }
+    },
+    {
+      "profileId": "family-tree-existing-m04-second",
+      "mode": "existing-repository",
+      "syntheticRepository": "example/family-tree",
+      "repositoryId": 900101,
+      "stackProfile": "web-genealogy-95-90",
+      "mandatorySettingsCount": 4,
+      "generatedFileCount": 2,
+      "effectiveCoverage": {
+        "line": 95,
+        "branch": 90
+      },
+      "preservedChecks": [
+        "build-test"
+      ],
+      "maxActive": 1,
+      "stage1Outcome": {
+        "valid": true,
+        "accepted": false,
+        "stage": "STAGE_1_SHADOW_ONBOARDED",
+        "reason": "STAGE_1_SHADOW_ONBOARDED"
+      }
+    }
+  ],
+  "negativeCasesVerified": [
+    {
+      "id": "malformed-input-or-prototype-trick",
+      "expectedStage": "NOT_ONBOARDED",
+      "expectedReason": "SUCCESS_INPUT_INVALID"
+    },
+    {
+      "id": "mandatory-settings-above-5",
+      "expectedStage": "NOT_ONBOARDED",
+      "expectedReason": "MANDATORY_SETTINGS_LIMIT_EXCEEDED"
+    },
+    {
+      "id": "generated-files-count-mismatch",
+      "expectedStage": "NOT_ONBOARDED",
+      "expectedReason": "GENERATED_FILES_COUNT_INVALID"
+    },
+    {
+      "id": "discovery-duration-above-5-minutes",
+      "expectedStage": "NOT_ONBOARDED",
+      "expectedReason": "DISCOVERY_DURATION_EXCEEDED"
+    },
+    {
+      "id": "integration-duration-above-15-minutes",
+      "expectedStage": "NOT_ONBOARDED",
+      "expectedReason": "INTEGRATION_DURATION_EXCEEDED"
+    },
+    {
+      "id": "overwritten-existing-files",
+      "expectedStage": "NOT_ONBOARDED",
+      "expectedReason": "EXISTING_FILES_OVERWRITTEN"
+    },
+    {
+      "id": "competing-backlog-created",
+      "expectedStage": "NOT_ONBOARDED",
+      "expectedReason": "COMPETING_BACKLOG_PROHIBITED"
+    },
+    {
+      "id": "mandatory-external-service-required",
+      "expectedStage": "NOT_ONBOARDED",
+      "expectedReason": "EXTERNAL_SERVICE_REQUIRED"
+    },
+    {
+      "id": "non-zero-day0-spend",
+      "expectedStage": "NOT_ONBOARDED",
+      "expectedReason": "NON_ZERO_INCREMENTAL_SPEND"
+    },
+    {
+      "id": "commented-bot-approval-allowed",
+      "expectedStage": "NOT_ONBOARDED",
+      "expectedReason": "FORMAL_APPROVAL_REQUIRED"
+    },
+    {
+      "id": "missing-ai-credit-hard-stop",
+      "expectedStage": "NOT_ONBOARDED",
+      "expectedReason": "AI_CREDIT_HARD_STOP_REQUIRED"
+    },
+    {
+      "id": "mutable-workflow-pin",
+      "expectedStage": "NOT_ONBOARDED",
+      "expectedReason": "PIN_REF_NOT_IMMUTABLE_SHA"
+    },
+    {
+      "id": "enabled-at-rest-shadow-posture-violation",
+      "expectedStage": "NOT_ONBOARDED",
+      "expectedReason": "SHADOW_POSTURE_REQUIRED"
+    },
+    {
+      "id": "weakened-existing-local-gate",
+      "expectedStage": "NOT_ONBOARDED",
+      "expectedReason": "LOCAL_GATE_WEAKENED"
+    },
+    {
+      "id": "shared-admin-credential-reuse",
+      "expectedStage": "NOT_ONBOARDED",
+      "expectedReason": "CREDENTIAL_ISOLATION_VIOLATION"
+    },
+    {
+      "id": "incomplete-6-mutation-shadow-replay",
+      "expectedStage": "NOT_ONBOARDED",
+      "expectedReason": "SHADOW_REPLAY_INCOMPLETE"
+    },
+    {
+      "id": "multi-commit-rollback",
+      "expectedStage": "NOT_ONBOARDED",
+      "expectedReason": "SINGLE_COMMIT_ROLLBACK_REQUIRED"
+    },
+    {
+      "id": "factory-repository-touched-on-rollback",
+      "expectedStage": "NOT_ONBOARDED",
+      "expectedReason": "FACTORY_ISOLATION_REQUIRED"
+    },
+    {
+      "id": "rollback-package-mismatch",
+      "expectedStage": "NOT_ONBOARDED",
+      "expectedReason": "ROLLBACK_PACKAGE_MISMATCH"
+    },
+    {
+      "id": "onboarding-pr-not-merged",
+      "expectedStage": "NOT_ONBOARDED",
+      "expectedReason": "ONBOARDING_PR_NOT_MERGED"
+    },
+    {
+      "id": "stage2-required-without-proof",
+      "expectedStage": "STAGE_1_SHADOW_ONBOARDED",
+      "expectedReason": "AUTONOMOUS_PROOF_REQUIRED"
+    },
+    {
+      "id": "synthetic-run-rejected-for-stage2",
+      "expectedStage": "STAGE_1_SHADOW_ONBOARDED",
+      "expectedReason": "SYNTHETIC_RUN_CANNOT_ACCEPT_STAGE_2"
+    },
+    {
+      "id": "autonomous-proof-repo-mismatch",
+      "expectedStage": "STAGE_1_SHADOW_ONBOARDED",
+      "expectedReason": "AUTONOMOUS_PROOF_REPO_MISMATCH"
+    },
+    {
+      "id": "cataloged-checkout-pin-mismatch",
+      "expectedStage": "NOT_ONBOARDED",
+      "expectedReason": "PIN_SHA_MISMATCH"
+    },
+    {
+      "id": "invalid-autonomous-agent",
+      "expectedStage": "STAGE_1_SHADOW_ONBOARDED",
+      "expectedReason": "AUTONOMOUS_AGENT_INVALID"
+    },
+    {
+      "id": "zero-unattended-issues-landed",
+      "expectedStage": "STAGE_1_SHADOW_ONBOARDED",
+      "expectedReason": "UNATTENDED_ISSUE_NOT_LANDED"
+    },
+    {
+      "id": "unhealthy-default-branch",
+      "expectedStage": "STAGE_1_SHADOW_ONBOARDED",
+      "expectedReason": "DEFAULT_BRANCH_UNHEALTHY"
+    },
+    {
+      "id": "incomplete-autonomous-governance",
+      "expectedStage": "STAGE_1_SHADOW_ONBOARDED",
+      "expectedReason": "AUTONOMOUS_GOVERNANCE_INCOMPLETE"
+    },
+    {
+      "id": "human-intervention-required",
+      "expectedStage": "STAGE_1_SHADOW_ONBOARDED",
+      "expectedReason": "HUMAN_INTERVENTION_REQUIRED"
+    },
+    {
+      "id": "unauthorized-write-detected",
+      "expectedStage": "STAGE_1_SHADOW_ONBOARDED",
+      "expectedReason": "UNAUTHORIZED_WRITE_DETECTED"
+    },
+    {
+      "id": "production-deployment-prohibited",
+      "expectedStage": "STAGE_1_SHADOW_ONBOARDED",
+      "expectedReason": "PRODUCTION_DEPLOYMENT_PROHIBITED"
+    },
+    {
+      "id": "non-zero-autonomous-spend",
+      "expectedStage": "STAGE_1_SHADOW_ONBOARDED",
+      "expectedReason": "NON_ZERO_INCREMENTAL_SPEND"
+    }
+  ]
+}
