@@ -1,5 +1,82 @@
 // Shadow scheduling and public metadata inventory. No mutation, agent dispatch or merge.
+import {createHash} from 'node:crypto';
+import {types} from 'node:util';
+import {
+  exportJournalSnapshot,
+  importJournalSnapshot,
+  openEventJournal,
+  reconcileJournalOnce
+} from '../engineering-coordinator/event-journal.mjs';
+import {
+  createScopedJournalReader,
+  ownOptional,
+  readMainIdentity,
+  readOwn,
+  readPullIdentity,
+  reconcileEventTrigger,
+  resolveTrustedScope,
+  verifyWorkflowProvenance
+} from './event-envelope.mjs';
+
 const deny = reason => ({shadow:true, ready:[], reason});
+const blockedInventory = reason => ({
+  shadow:true, evidenceComplete:false, liveDispatch:false, liveMerge:false, reason
+});
+const blockedOrchestratorEval = reason => ({
+  shadow:true, evidenceComplete:false, reconciled:false, liveDispatch:false, liveMerge:false, reason, snapshot:null
+});
+const DEFAULT_SCOPE = resolveTrustedScope({});
+const SCOPE_KEYS = new Set(['repository','repositoryId','branch','workflowPath']);
+const INVENTORY_OPTION_KEYS = new Set(['scope',...SCOPE_KEYS]);
+const ORCHESTRATOR_EVAL_OPTION_KEYS = new Set([
+  'scope',...SCOPE_KEYS,'request','clock','snapshot','maxRecoveryItems','pullCursor'
+]);
+const HANDOFF_INPUT_KEYS = new Set(['expectedWorkQueueOid','snapshot','pullCursor','repositoryId','now']);
+const HANDOFF_RECORD_KEYS = new Set(['schemaVersion','repositoryId','expectedWorkQueueOid','pullCursor','snapshot']);
+const BROKER_PERSIST_KEYS = new Set([
+  'brokerUrl','rawHandoff','expectedHandoffSha256','expectedWorkQueueOid',
+  'expectedTreeOid','repository','inActions','request','now'
+]);
+const BROKER_RESPONSE_KEYS = new Set(['ok','ref','previousOid','treeOid','oid']);
+const WORK_QUEUE_REF = 'refs/heads/work-queue';
+const HEX40_RE = /^[a-f0-9]{40}$/;
+const HEX64_RE = /^[a-f0-9]{64}$/;
+const ORCHESTRATOR_EVENTS = new Set([
+  'schedule','workflow_dispatch','issues','pull_request_target','workflow_run','push'
+]);
+const DEFAULT_RECOVERY_RETRY_MS = 3600000;
+
+function isStrictPlainMap(value, allowedKeys) {
+  if(value===null || typeof value!=='object' || types.isProxy(value) || Array.isArray(value) ||
+     value===process.env ||
+     (Object.getPrototypeOf(value)!==Object.prototype && Object.getPrototypeOf(value)!==null)) {
+    return false;
+  }
+  for(const key of Reflect.ownKeys(value)) {
+    if(typeof key!=='string' || !allowedKeys.has(key)) return false;
+    const desc=Object.getOwnPropertyDescriptor(value,key);
+    if(!desc || !desc.enumerable || !Object.hasOwn(desc,'value')) return false;
+  }
+  return true;
+}
+
+function resolveInventoryScope(options) {
+  if(!isStrictPlainMap(options,INVENTORY_OPTION_KEYS)) return null;
+  if(options.scope!==undefined) {
+    if(!isStrictPlainMap(options.scope,SCOPE_KEYS)) return null;
+    for(const key of SCOPE_KEYS) {
+      if(options[key]!==undefined && options[key]!==options.scope[key]) return null;
+    }
+  }
+  const resolved=resolveTrustedScope(options);
+  if(!resolved) return null;
+  const isDefaultName=resolved.repository.toLowerCase()===DEFAULT_SCOPE.repository.toLowerCase();
+  const isDefaultId=resolved.repositoryId===DEFAULT_SCOPE.repositoryId;
+  if(isDefaultName!==isDefaultId || (isDefaultId && resolved.repository!==DEFAULT_SCOPE.repository)) {
+    return null;
+  }
+  return resolved;
+}
 const dense = a => Array.isArray(a) && Object.keys(a).length===a.length &&
   Array.from({length:a.length},(_,i)=>Object.hasOwn(a,i)).every(Boolean);
 const positive = n => Number.isSafeInteger(n) && n > 0;
@@ -59,7 +136,6 @@ export function plan(input) {
   return {shadow:true,ready,reason:ready.length?'SHADOW_PLAN':'NO_READY_WORK'};
 }
 
-const api='https://api.github.com/repos/Jamula/SoftwareFactory';
 async function boundedJson(response) {
   if(!response.ok || !response.body) throw new Error('GITHUB_READ_FAILED');
   const reader=response.body.getReader();
@@ -79,11 +155,14 @@ async function boundedJson(response) {
     await reader.cancel().catch(()=>{});
   }
 }
-export async function readInventory(request=fetch) {
+export async function readInventory(request=fetch,options={}) {
+  if(typeof request!=='function') return blockedInventory('TRUST_UNKNOWN');
+  const resolved=resolveInventoryScope(options);
+  if(!resolved) return blockedInventory('TRUST_UNKNOWN');
   async function read(kind) {
     const ids=[];
     for(let page=1;page<=5;page++) {
-      const response=await request(api+'/'+kind+'?state=open&per_page=100&page='+page,{
+      const response=await request(resolved.apiRoot+'/'+kind+'?state=open&per_page=100&page='+page,{
         method:'GET',redirect:'error',signal:AbortSignal.timeout(5000),
         headers:{accept:'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28'}
       });
@@ -91,7 +170,15 @@ export async function readInventory(request=fetch) {
       if(!dense(rows)||rows.length>100||rows.some(r=>!r||!positive(r.number)))
         throw new Error('GITHUB_INVALID_METADATA');
       for(const row of rows) {
-        if(kind==='issues' && Object.hasOwn(row,'pull_request')) continue;
+        if(kind==='issues') {
+          if(Object.hasOwn(row,'pull_request')) continue;
+          if(Object.hasOwn(row,'repository_url') && row.repository_url!==resolved.apiRoot)
+            throw new Error('GITHUB_INVALID_METADATA');
+        } else if(Object.hasOwn(row,'base') &&
+                  (row.base?.repo?.full_name!==resolved.repository ||
+                   row.base?.repo?.id!==resolved.repositoryId)) {
+          throw new Error('GITHUB_INVALID_METADATA');
+        }
         if(ids.includes(row.number)) throw new Error('GITHUB_DUPLICATE_METADATA');
         ids.push(row.number);
       }
@@ -100,7 +187,7 @@ export async function readInventory(request=fetch) {
     throw new Error('GITHUB_INVENTORY_LIMIT');
   }
   const [issues,pulls]=await Promise.all([read('issues'),read('pulls')]);
-  return {shadow:true,repository:'Jamula/SoftwareFactory',issues,pulls,
+  return {shadow:true,repository:resolved.repository,repositoryId:resolved.repositoryId,issues,pulls,
     evidenceComplete:false,liveDispatch:false,liveMerge:false};
 }
 export function smoke() {
@@ -109,4 +196,355 @@ export function smoke() {
     {id:2,priority:1,state:'approved',dependencies:[],paths:['src/web']},
     {id:3,priority:0,state:'approved',dependencies:[1],paths:['src/integration']}
   ]});
+}
+
+export async function reconcileShadowOrchestratorRun(env,options={}) {
+  if(!ownOptional(env,['GITHUB_EVENT_NAME','GITHUB_REPOSITORY','FACTORY_EXPECTED_WORKFLOW_PATH','FACTORY_ISSUE_NUMBER']) ||
+     !isStrictPlainMap(options,ORCHESTRATOR_EVAL_OPTION_KEYS)) {
+    return blockedOrchestratorEval('TRUST_UNKNOWN');
+  }
+  const request=options.request??fetch;
+  const clock=options.clock??Date.now;
+  const maxRecoveryItems=options.maxRecoveryItems??10;
+  const pullCursor=options.pullCursor??0;
+  if(typeof request!=='function' || typeof clock!=='function' ||
+     !positive(maxRecoveryItems) || maxRecoveryItems>50 ||
+     !Number.isSafeInteger(pullCursor) || pullCursor<0) {
+    return blockedOrchestratorEval('TRUST_UNKNOWN');
+  }
+  const scopeInput={};
+  for(const key of INVENTORY_OPTION_KEYS) {
+    if(options[key]!==undefined) scopeInput[key]=options[key];
+  }
+  const envWorkflowPath=readOwn(env,'FACTORY_EXPECTED_WORKFLOW_PATH');
+  if(envWorkflowPath!==undefined && scopeInput.workflowPath===undefined && scopeInput.scope===undefined) {
+    scopeInput.workflowPath=envWorkflowPath;
+  }
+  const resolved=resolveInventoryScope(scopeInput);
+  if(!resolved || readOwn(env,'GITHUB_REPOSITORY')!==resolved.repository) {
+    return blockedOrchestratorEval('TRUST_UNKNOWN');
+  }
+  const eventName=readOwn(env,'GITHUB_EVENT_NAME');
+  if(!ORCHESTRATOR_EVENTS.has(eventName)) return blockedOrchestratorEval('TRUST_UNKNOWN');
+  const workflowSha=verifyWorkflowProvenance(env,resolved,eventName,eventName!=='pull_request_target');
+  if(!workflowSha) return blockedOrchestratorEval('TRUST_UNKNOWN');
+
+  const explicitScope={
+    repository:resolved.repository,
+    repositoryId:resolved.repositoryId,
+    branch:resolved.branch,
+    workflowPath:resolved.workflowPath
+  };
+  const issueNumber=readOwn(env,'FACTORY_ISSUE_NUMBER','');
+  const isHeartbeat=eventName==='schedule' || (eventName==='workflow_dispatch' && issueNumber==='');
+  if(!isHeartbeat) {
+    const raw=await reconcileEventTrigger(env,{
+      scope:explicitScope,
+      request,
+      clock,
+      ...(options.snapshot!==undefined?{snapshot:options.snapshot}:{})
+    });
+    const {snapshot:exportedSnapshot=null,...publicResult}=raw;
+    return {...publicResult,pullCursor,snapshot:exportedSnapshot};
+  }
+
+  let now;
+  try { now=clock(); } catch { return blockedOrchestratorEval('CLOCK_UNKNOWN'); }
+  if(!Number.isSafeInteger(now) || now<0) return blockedOrchestratorEval('CLOCK_UNKNOWN');
+
+  const store=openEventJournal(':memory:');
+  try {
+    if(options.snapshot!==undefined) {
+      const imported=importJournalSnapshot(store,options.snapshot,{now});
+      if(!imported.imported) return blockedOrchestratorEval(imported.reason);
+    }
+    let inv;
+    try {
+      inv=await readInventory(request,explicitScope);
+    } catch {
+      return blockedOrchestratorEval('READ_FAILED');
+    }
+    const priorEntries=exportJournalSnapshot(store,{repositoryId:resolved.repositoryId}).entries;
+    if(inv.issues.length>0) {
+      const mainId=await readMainIdentity(request,explicitScope);
+      if(mainId.reason!=='IDENTITY_ONLY') {
+        const exported=exportJournalSnapshot(store,{repositoryId:resolved.repositoryId});
+        return {
+          shadow:true,
+          evidenceComplete:false,
+          reconciled:false,
+          liveDispatch:false,
+          liveMerge:false,
+          reason:mainId.reason,
+          repository:resolved.repository,
+          repositoryId:resolved.repositoryId,
+          issues:inv.issues,
+          pulls:inv.pulls,
+          recoveredCount:0,
+          deferredCount:0,
+          pullCursor,
+          workflowSha,
+          snapshot:exported
+        };
+      }
+      const unseenIssues=inv.issues.filter(issueNum=>
+        !priorEntries.some(e=>e.kind==='issue' && e.subject===issueNum &&
+          (e.completed || e.head===mainId.head))
+      );
+      for(const issueNum of unseenIssues.slice(0,maxRecoveryItems)) {
+        store.enqueue({
+          repositoryId:resolved.repositoryId,
+          deliveryId:`recovery-issue-${issueNum}-${mainId.head.slice(0,12)}`,
+          kind:'issue',
+          subject:issueNum,
+          head:mainId.head
+        });
+      }
+    }
+    let nextPullCursor=0;
+    let pullBatch=[];
+    if(inv.pulls.length>0) {
+      if(inv.pulls.length<=maxRecoveryItems) {
+        pullBatch=inv.pulls;
+      } else {
+        const nextIdx=inv.pulls.findIndex(num=>num>pullCursor);
+        const startIdx=nextIdx===-1?0:nextIdx;
+        for(let i=0;i<maxRecoveryItems;i++) {
+          pullBatch.push(inv.pulls[(startIdx+i)%inv.pulls.length]);
+        }
+        nextPullCursor=pullBatch[pullBatch.length-1];
+      }
+    }
+    let discoveryBlockedReason=null;
+    for(const pullNum of pullBatch) {
+      const pullId=await readPullIdentity(pullNum,request,explicitScope);
+      if(pullId.reason!=='IDENTITY_ONLY') {
+        discoveryBlockedReason??=pullId.reason;
+        continue;
+      }
+      const seen=priorEntries.some(e=>e.kind==='pull' && e.subject===pullNum && e.head===pullId.head);
+      if(!seen) {
+        store.enqueue({
+          repositoryId:resolved.repositoryId,
+          deliveryId:`recovery-pull-${pullNum}-${pullId.head.slice(0,12)}`,
+          kind:'pull',
+          subject:pullNum,
+          head:pullId.head
+        });
+      }
+    }
+    const reader=createScopedJournalReader(explicitScope,{request});
+    const maxDrain=maxRecoveryItems*2+4;
+    let recoveredCount=0;
+    let deferredCount=0;
+    let terminalDrainError=null;
+    for(let pass=0;pass<maxDrain;pass++) {
+      const outcome=await reconcileJournalOnce({
+        journal:store,
+        repositoryId:resolved.repositoryId,
+        owner:'github-actions-recovery',
+        leaseMs:30000,
+        clock,
+        read:reader,
+        stop:false,
+        deferUnknown:(ticket,finished)=>store.defer(ticket,finished,DEFAULT_RECOVERY_RETRY_MS)
+      });
+      if(outcome.reason==='NO_CLAIM') break;
+      if(outcome.reason==='SHADOW_RECONCILED' || outcome.reason==='SHADOW_HEAD_SUPERSEDED') {
+        recoveredCount++;
+      } else if(outcome.reason==='EVIDENCE_UNKNOWN') {
+        deferredCount++;
+      } else {
+        terminalDrainError=outcome.reason;
+        break;
+      }
+    }
+    const exported=exportJournalSnapshot(store,{repositoryId:resolved.repositoryId});
+    const failureReason=terminalDrainError ?? discoveryBlockedReason ??
+      (deferredCount>0 && recoveredCount===0?'EVIDENCE_UNKNOWN':null);
+    if(failureReason!==null) {
+      return {
+        shadow:true,
+        evidenceComplete:false,
+        reconciled:false,
+        liveDispatch:false,
+        liveMerge:false,
+        reason:failureReason,
+        repository:resolved.repository,
+        repositoryId:resolved.repositoryId,
+        issues:inv.issues,
+        pulls:inv.pulls,
+        recoveredCount,
+        deferredCount,
+        pullCursor:discoveryBlockedReason!==null || terminalDrainError!==null?pullCursor:nextPullCursor,
+        workflowSha,
+        snapshot:exported
+      };
+    }
+    return {
+      shadow:true,
+      evidenceComplete:false,
+      reconciled:true,
+      liveDispatch:false,
+      liveMerge:false,
+      reason:recoveredCount>0?'SHADOW_RECONCILED':'NO_CLAIM',
+      repository:resolved.repository,
+      repositoryId:resolved.repositoryId,
+      issues:inv.issues,
+      pulls:inv.pulls,
+      recoveredCount,
+      deferredCount,
+      pullCursor:nextPullCursor,
+      workflowSha,
+      snapshot:exported
+    };
+  } finally {
+    store.close();
+  }
+}
+
+export function buildShadowJournalHandoff(input) {
+  if(!isStrictPlainMap(input,HANDOFF_INPUT_KEYS)) return {ok:false,reason:'INVALID_HANDOFF'};
+  const expectedWorkQueueOid=input.expectedWorkQueueOid;
+  const repositoryId=input.repositoryId??DEFAULT_SCOPE.repositoryId;
+  const pullCursor=input.pullCursor??0;
+  const now=input.now??Date.now();
+  if(typeof expectedWorkQueueOid!=='string' || !HEX40_RE.test(expectedWorkQueueOid) ||
+     !positive(repositoryId) || !Number.isSafeInteger(pullCursor) || pullCursor<0 ||
+     !Number.isSafeInteger(now) || now<0 || input.snapshot===undefined) {
+    return {ok:false,reason:'INVALID_HANDOFF'};
+  }
+  const verifyStore=openEventJournal(':memory:');
+  try {
+    const imported=importJournalSnapshot(verifyStore,input.snapshot,{now});
+    if(!imported.imported) return {ok:false,reason:imported.reason};
+    const canonicalSnapshot=exportJournalSnapshot(verifyStore,{repositoryId});
+    const handoff={
+      schemaVersion:1,
+      repositoryId,
+      expectedWorkQueueOid,
+      pullCursor,
+      snapshot:canonicalSnapshot
+    };
+    const serialized=JSON.stringify(handoff);
+    if(Buffer.byteLength(serialized,'utf8')>2097152) return {ok:false,reason:'RESPONSE_LIMIT'};
+    const sha256=createHash('sha256').update(serialized,'utf8').digest('hex');
+    return {ok:true,handoff,serialized,sha256};
+  } finally {
+    verifyStore.close();
+  }
+}
+
+export function verifyShadowJournalHandoff(rawText,expectedSha256,expectedWorkQueueOid,now=Date.now()) {
+  if(typeof rawText!=='string' || Buffer.byteLength(rawText,'utf8')>2097152 ||
+     typeof expectedSha256!=='string' || !HEX64_RE.test(expectedSha256) ||
+     typeof expectedWorkQueueOid!=='string' || !HEX40_RE.test(expectedWorkQueueOid) ||
+     !Number.isSafeInteger(now) || now<0) {
+    return {ok:false,reason:'INVALID_HANDOFF'};
+  }
+  const actualSha256=createHash('sha256').update(rawText,'utf8').digest('hex');
+  if(actualSha256!==expectedSha256) return {ok:false,reason:'HANDOFF_DIGEST_MISMATCH'};
+  let parsed;
+  try { parsed=JSON.parse(rawText); } catch { return {ok:false,reason:'INVALID_HANDOFF'}; }
+  if(!isStrictPlainMap(parsed,HANDOFF_RECORD_KEYS) ||
+     parsed.schemaVersion!==1 || !positive(parsed.repositoryId) ||
+     parsed.expectedWorkQueueOid!==expectedWorkQueueOid ||
+     !Number.isSafeInteger(parsed.pullCursor) || parsed.pullCursor<0) {
+    return {ok:false,reason:'INVALID_HANDOFF'};
+  }
+  const verifyStore=openEventJournal(':memory:');
+  try {
+    const imported=importJournalSnapshot(verifyStore,parsed.snapshot,{now});
+    if(!imported.imported) return {ok:false,reason:imported.reason};
+    return {
+      ok:true,
+      repositoryId:parsed.repositoryId,
+      expectedWorkQueueOid:parsed.expectedWorkQueueOid,
+      pullCursor:parsed.pullCursor,
+      snapshot:exportJournalSnapshot(verifyStore,{repositoryId:parsed.repositoryId})
+    };
+  } finally {
+    verifyStore.close();
+  }
+}
+
+export function normalizeWorkQueueBrokerUrl(rawUrl,inActions=false) {
+  if(typeof rawUrl!=='string' || rawUrl.length===0 || rawUrl.length>512) return null;
+  let parsed;
+  try { parsed=new URL(rawUrl); } catch { return null; }
+  if(parsed.username || parsed.password || parsed.search || parsed.hash) return null;
+  if(parsed.protocol==='https:') return parsed.toString();
+  if(!inActions && parsed.protocol==='http:' &&
+     (parsed.hostname==='127.0.0.1' || parsed.hostname==='[::1]') && parsed.port!=='') {
+    return parsed.toString();
+  }
+  return null;
+}
+
+export async function persistShadowJournalViaBroker(input) {
+  if(!isStrictPlainMap(input,BROKER_PERSIST_KEYS)) return {ok:false,reason:'INVALID_BROKER_INPUT'};
+  const request=input.request??fetch;
+  const inActions=input.inActions===true;
+  const repository=input.repository??DEFAULT_SCOPE.repository;
+  const now=input.now??Date.now();
+  const brokerUrl=normalizeWorkQueueBrokerUrl(input.brokerUrl,inActions);
+  if(typeof request!=='function' || typeof input.inActions!=='boolean' && input.inActions!==undefined ||
+     typeof repository!=='string' || repository.length===0 ||
+     typeof input.expectedTreeOid!=='string' || !HEX40_RE.test(input.expectedTreeOid) ||
+     brokerUrl===null) {
+    return {ok:false,reason:'BROKER_UNCONFIGURED'};
+  }
+  const verified=verifyShadowJournalHandoff(
+    input.rawHandoff,
+    input.expectedHandoffSha256,
+    input.expectedWorkQueueOid,
+    now
+  );
+  if(!verified.ok) return verified;
+
+  const payload={
+    schemaVersion:1,
+    protocol:'v3',
+    repository,
+    repositoryId:verified.repositoryId,
+    ref:WORK_QUEUE_REF,
+    expectedOid:verified.expectedWorkQueueOid,
+    expectedTreeOid:input.expectedTreeOid,
+    handoffSha256:input.expectedHandoffSha256,
+    files:{
+      'state/event-journal-snapshot.json':JSON.stringify(verified.snapshot),
+      'state/recovery-cursor.json':JSON.stringify({schemaVersion:1,pullCursor:verified.pullCursor})
+    }
+  };
+  let response;
+  try {
+    response=await request(brokerUrl,{
+      method:'POST',
+      redirect:'error',
+      signal:AbortSignal.timeout(5000),
+      headers:{accept:'application/json','content-type':'application/json'},
+      body:JSON.stringify(payload)
+    });
+  } catch {
+    return {ok:false,reason:'BROKER_UNAVAILABLE'};
+  }
+  if(response.status===409) return {ok:false,reason:'CAS_CONFLICT'};
+  if(response.status===401 || response.status===403) return {ok:false,reason:'BROKER_UNAUTHORIZED'};
+  let body;
+  try { body=await boundedJson(response); } catch { return {ok:false,reason:'BROKER_UNAVAILABLE'}; }
+  if(!isStrictPlainMap(body,BROKER_RESPONSE_KEYS) ||
+     body.ok!==true || body.ref!==WORK_QUEUE_REF ||
+     body.previousOid!==verified.expectedWorkQueueOid ||
+     body.treeOid!==input.expectedTreeOid ||
+     typeof body.oid!=='string' || !HEX40_RE.test(body.oid)) {
+    return {ok:false,reason:'BROKER_INVALID_RESPONSE'};
+  }
+  return {
+    ok:true,
+    reason:'CAS_APPLIED',
+    ref:WORK_QUEUE_REF,
+    previousOid:body.previousOid,
+    treeOid:body.treeOid,
+    oid:body.oid
+  };
 }

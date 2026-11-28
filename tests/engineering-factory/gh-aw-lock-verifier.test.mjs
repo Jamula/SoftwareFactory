@@ -1,8 +1,14 @@
 import assert from 'node:assert/strict';
-import {readFileSync} from 'node:fs';
-import {dirname, resolve} from 'node:path';
+import {execFile, spawnSync} from 'node:child_process';
+import {copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync} from 'node:fs';
+import {createServer} from 'node:http';
+import {tmpdir} from 'node:os';
+import {dirname, join, resolve} from 'node:path';
 import test from 'node:test';
-import {fileURLToPath} from 'node:url';
+import {fileURLToPath, pathToFileURL} from 'node:url';
+import {promisify} from 'node:util';
+
+const execFileAsync = promisify(execFile);
 import {
   PINNED_FACTORY_POLICY_SCAN_RUN_SHA256,
   PINNED_GHAW_DETECTION_CONCLUSION_SCRIPT_SHA256,
@@ -24,11 +30,12 @@ const canonicalPolicyScanSteps = [
   '          set -euo pipefail',
   "          node --input-type=module -e '",
   '            import {readFileSync} from "node:fs";',
-  '            import {verifyGhAwWorkflowLock} from "./tools/engineering-factory/gh-aw-lock-verifier.mjs";',
+  '            import {verifyEventTriggerMatrix, verifyGhAwWorkflowLock} from "./tools/engineering-factory/gh-aw-lock-verifier.mjs";',
   '            const markdownSource = readFileSync(".github/workflows/factory-orchestrator.md", "utf8");',
   '            const lockYamlSource = readFileSync(".github/workflows/factory-orchestrator.lock.yml", "utf8");',
   '            const verdict = verifyGhAwWorkflowLock({markdownSource, lockYamlSource});',
-  '            if (!verdict.valid || verdict.liveDispatch !== false || verdict.liveMerge !== false) {',
+  '            const matrixVerdict = verifyEventTriggerMatrix(lockYamlSource);',
+  '            if (!verdict.valid || !matrixVerdict.valid || verdict.liveDispatch !== false || verdict.liveMerge !== false) {',
   '              process.exit(1);',
   '            }',
   "          '",
@@ -1660,6 +1667,34 @@ test('enforces exact SHA-256 normalized script digest on run: scan-output produc
     }).reason, 'MISSING_THREAT_SCAN_GATE');
   }
 
+  // Omitted ref or github.workflow_sha in scan-job checkout succeeds when evaluate establishes protected default-branch provenance, and fails otherwise
+  const evalRefProvFixture = buildFixture({
+    evaluateIf: "${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.ref == 'refs/heads/main' && github.ref_protected == true && !endsWith(github.actor, '[bot]') }}",
+    runBody: '          set -euo pipefail\n          test "$GITHUB_REF" = refs/heads/main\n          test "$GITHUB_REF_PROTECTED" = true',
+    threatSteps: `      - uses: actions/checkout@${checkoutSha}\n        with:\n          persist-credentials: false\n${canonicalPolicyScanSteps}`
+  });
+  assert.equal(verifyGhAwWorkflowLock({
+    markdownSource: evalRefProvFixture.markdownSource,
+    lockYamlSource: evalRefProvFixture.lockYamlSource
+  }).valid, true);
+
+  for (const invalidScanWorkflowShaFixture of [
+    buildFixture({
+      threatSteps: `      - uses: actions/checkout@${checkoutSha}\n        with:\n          repository: Jamula/SoftwareFactory\n          ref: \${{ github.workflow_sha }}\n          persist-credentials: false\n${canonicalPolicyScanSteps}`
+    }),
+    buildFixture({
+      threatSteps: `      - uses: actions/checkout@${checkoutSha}\n        with:\n          repository: 12345\n          ref: \${{ github.workflow_sha }}\n          persist-credentials: false\n${canonicalPolicyScanSteps}`
+    }),
+    buildFixture({
+      threatSteps: `      - uses: actions/checkout@${checkoutSha}\n        with:\n          repository: attacker/evil-fork\n          ref: \${{ github.workflow_sha }}\n          persist-credentials: false\n${canonicalPolicyScanSteps}`
+    })
+  ]) {
+    assert.equal(verifyGhAwWorkflowLock({
+      markdownSource: invalidScanWorkflowShaFixture.markdownSource,
+      lockYamlSource: invalidScanWorkflowShaFixture.lockYamlSource
+    }).reason, 'MISSING_THREAT_SCAN_GATE');
+  }
+
   // Explicit caller-provided 64-hex SHA-256 allowlist for custom reviewed policy_scan run script
   const customPolicyRun = 'set -euo pipefail\nnode ./tools/custom-reviewed-policy-scan.mjs\necho "scan_verified=true" >> "$GITHUB_OUTPUT"';
   const customPolicyDigest = computeNormalizedScriptSha256(customPolicyRun);
@@ -1711,10 +1746,49 @@ test('verifies Issue #5 event trigger matrix, 10-minute default-off recovery sch
   assert.equal(Object.isFrozen(shadowVerdict), true);
   assert.equal(Object.isFrozen(shadowVerdict.recoverySchedule), true);
 
-  // Tracked factory-orchestrator.lock.yml remains workflow_dispatch-only default-off until #5 schedule/events are enabled
+  // Tracked factory-orchestrator.lock.yml wires the full #5 event matrix + default-off 10-minute recovery schedule
   const orchestratorLock = readFileSync(resolve(repoRoot, '.github/workflows/factory-orchestrator.lock.yml'), 'utf8');
-  assert.equal(verifyEventTriggerMatrix(orchestratorLock).reason, 'MISSING_RECOVERY_SCHEDULE');
-  const partialOrchestrator = verifyEventTriggerMatrix(orchestratorLock, {
+  const orchestratorVerdict = verifyEventTriggerMatrix(orchestratorLock);
+  assert.equal(orchestratorVerdict.valid, true);
+  assert.equal(orchestratorVerdict.reason, 'EVENT_TRIGGER_MATRIX_VERIFIED');
+  assert.deepEqual(orchestratorVerdict.triggers, [
+    'issues',
+    'pull_request_target',
+    'push',
+    'schedule',
+    'workflow_dispatch',
+    'workflow_run'
+  ]);
+  assert.deepEqual(orchestratorVerdict.recoverySchedule, {
+    cron: '3,13,23,33,43,53 * * * *',
+    intervalMinutes: 10,
+    offMinute: true,
+    minuteOffsets: [3, 13, 23, 33, 43, 53]
+  });
+  assert.deepEqual(orchestratorVerdict.defaultOffVars, ['FACTORY_GHAW_ENABLED']);
+  assert.equal(orchestratorVerdict.targetBranch, 'main');
+
+  // Partial workflow_dispatch-only fixture fails strict schedule requirement unless partial options are explicitly passed
+  const dispatchOnlyLock = [
+    'name: Dispatch only orchestrator',
+    'on:',
+    '  workflow_dispatch:',
+    'permissions:',
+    '  contents: read',
+    'concurrency:',
+    '  group: factory-dispatch-only-${{ github.ref }}',
+    '  cancel-in-progress: false',
+    'jobs:',
+    '  evaluate:',
+    "    if: ${{ vars.FACTORY_GHAW_ENABLED == 'true' && !endsWith(github.actor, '[bot]') }}",
+    '    runs-on: ubuntu-latest',
+    '    permissions:',
+    '      contents: read',
+    '    steps:',
+    '      - run: echo "dispatch only"'
+  ].join('\n');
+  assert.equal(verifyEventTriggerMatrix(dispatchOnlyLock).reason, 'MISSING_RECOVERY_SCHEDULE');
+  const partialOrchestrator = verifyEventTriggerMatrix(dispatchOnlyLock, {
     requireRecoverySchedule: false,
     allowPartialTriggers: true
   });
@@ -1722,13 +1796,15 @@ test('verifies Issue #5 event trigger matrix, 10-minute default-off recovery sch
   assert.equal(partialOrchestrator.recoverySchedule, null);
   assert.deepEqual(partialOrchestrator.defaultOffVars, ['FACTORY_GHAW_ENABLED']);
 
+  const wrGuardClause = " && (github.event_name != 'workflow_run' || github.event.workflow_run.head_repository.id == 1471342715)";
+  const guardedMainEvalIf = `\${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.ref == 'refs/heads/main' && github.ref_protected == true && !endsWith(github.actor, '[bot]')${wrGuardClause} }}`;
   const buildMatrixYaml = ({
     cron = "'3,13,23,33,43,53 * * * *'",
     includeReview = true,
     extraTrigger = '',
     topPerms = '  contents: read',
     topConcurrency = 'concurrency:\n  group: factory-event-matrix-${{ github.ref }}\n  cancel-in-progress: false',
-    evalIf = "${{ vars.FACTORY_GHAW_ENABLED == 'true' && !endsWith(github.actor, '[bot]') }}",
+    evalIf = `\${{ vars.FACTORY_GHAW_ENABLED == 'true' && !endsWith(github.actor, '[bot]')${wrGuardClause} }}`,
     evalPerms = '      contents: read',
     evalConcurrency = '',
     checkoutUses = `actions/checkout@${checkoutSha}`,
@@ -1994,10 +2070,10 @@ test('verifies Issue #5 event trigger matrix, 10-minute default-off recovery sch
   })).reason, 'UNTRUSTED_PR_CHECKOUT');
   assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({
     includeReview: false,
-    evalIf: "${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.ref == 'refs/heads/main' && !endsWith(github.actor, '[bot]') }}",
+    evalIf: `\${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.ref == 'refs/heads/main' && !endsWith(github.actor, '[bot]')${wrGuardClause} }}`,
     extraJobs: [
       '  noref_peer:',
-      "    if: vars.FACTORY_GHAW_ENABLED == 'true'",
+      `    if: vars.FACTORY_GHAW_ENABLED == 'true'${wrGuardClause}`,
       '    runs-on: ubuntu-latest',
       '    steps:',
       '      - run: echo "peer"',
@@ -2009,7 +2085,7 @@ test('verifies Issue #5 event trigger matrix, 10-minute default-off recovery sch
       '        with:',
       '          persist-credentials: false'
     ].join('\n')
-  })).reason, 'UNTRUSTED_PR_CHECKOUT');
+  }).replace(/  pull_request_target:\n    branches: \[main\]\n    types: \[[^\]]+\]\n/, ''), {allowPartialTriggers: true}).reason, 'UNTRUSTED_PR_CHECKOUT');
   // Case-folded checkout keys (Repository / Ref) and INPUT_* env overrides in verifyEventTriggerMatrix MUST fail closed!
   assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({
     checkoutWith: '          persist-credentials: false\n          Repository: attacker/evil-fork\n          ref: refs/heads/main'
@@ -2043,14 +2119,14 @@ test('verifies Issue #5 event trigger matrix, 10-minute default-off recovery sch
   })).reason, 'UNTRUSTED_PR_CHECKOUT');
   assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({
     includeReview: false,
-    evalIf: "${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.ref == 'refs/heads/main' && github.ref_protected == true && !endsWith(github.actor, '[bot]') }}",
+    evalIf: guardedMainEvalIf,
     checkoutWith: '          persist-credentials: false\n          ref: ${{ github.workflow_sha }}',
     stepRun: '          set -euo pipefail\n          test "$GITHUB_REF" = refs/heads/main\n          test "$GITHUB_REF_PROTECTED" = true\n          echo "ok"'
   })).valid, true);
   // Also accept checkout occurring AFTER an earlier fail-closed preamble step (when checkout preserves success() semantics)!
   assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({
     includeReview: false,
-    evalIf: "${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.ref == 'refs/heads/main' && github.ref_protected == true && !endsWith(github.actor, '[bot]') }}",
+    evalIf: guardedMainEvalIf,
     checkoutWith: '          persist-credentials: false\n          ref: ${{ github.workflow_sha }}'
   }).replace(
     `      - uses: actions/checkout@${checkoutSha}\n`,
@@ -2059,7 +2135,7 @@ test('verifies Issue #5 event trigger matrix, 10-minute default-off recovery sch
   for (const bypassStepIf of ['always()', '${{ !success() }}', '${{ success() == false }}', '${{ success() || true }}']) {
     assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({
       includeReview: false,
-      evalIf: "${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.ref == 'refs/heads/main' && github.ref_protected == true && !endsWith(github.actor, '[bot]') }}",
+      evalIf: guardedMainEvalIf,
       checkoutWith: '          persist-credentials: false\n          ref: ${{ github.workflow_sha }}'
     }).replace(
       `      - uses: actions/checkout@${checkoutSha}\n`,
@@ -2068,7 +2144,7 @@ test('verifies Issue #5 event trigger matrix, 10-minute default-off recovery sch
   }
   assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({
     includeReview: false,
-    evalIf: "${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.ref == 'refs/heads/main' && github.ref_protected == true && !endsWith(github.actor, '[bot]') }}",
+    evalIf: guardedMainEvalIf,
     checkoutWith: '          persist-credentials: false\n          ref: ${{ github.workflow_sha }}',
     stepRun: '          set -euo pipefail\n          test "$GITHUB_REF" = refs/heads/main\n          test "$GITHUB_REF_PROTECTED" = true'
   }).replace(
@@ -2078,13 +2154,13 @@ test('verifies Issue #5 event trigger matrix, 10-minute default-off recovery sch
   // Error-tolerant preamble (continue-on-error: true) OR repository code running BEFORE preamble MUST fail closed!
   assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({
     includeReview: false,
-    evalIf: "${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.ref == 'refs/heads/main' && github.ref_protected == true && !endsWith(github.actor, '[bot]') }}",
+    evalIf: guardedMainEvalIf,
     checkoutWith: '          persist-credentials: false\n          ref: ${{ github.workflow_sha }}',
     stepRun: '          set -euo pipefail\n          test "$GITHUB_REF" = refs/heads/main\n          test "$GITHUB_REF_PROTECTED" = true'
   }).replace('      - name: Metadata reconcile\n', '      - name: Metadata reconcile\n        continue-on-error: true\n')).reason, 'UNTRUSTED_PR_CHECKOUT');
   assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({
     includeReview: false,
-    evalIf: "${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.ref == 'refs/heads/main' && github.ref_protected == true && !endsWith(github.actor, '[bot]') }}",
+    evalIf: guardedMainEvalIf,
     checkoutWith: '          persist-credentials: false\n          ref: ${{ github.workflow_sha }}',
     stepRun: '          set -euo pipefail\n          test "$GITHUB_REF" = refs/heads/main\n          test "$GITHUB_REF_PROTECTED" = true'
   }).replace(
@@ -2094,7 +2170,7 @@ test('verifies Issue #5 event trigger matrix, 10-minute default-off recovery sch
   // Weakened || true preamble, mutated shadow-reconcile optin emitting unconditional enabled=true, or != 'skipped' provenance inheritance MUST fail closed!
   assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({
     includeReview: false,
-    evalIf: "${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.ref == 'refs/heads/main' && github.ref_protected == true && !endsWith(github.actor, '[bot]') }}",
+    evalIf: guardedMainEvalIf,
     checkoutWith: '          persist-credentials: false\n          ref: ${{ github.workflow_sha }}',
     stepRun: '          set -euo pipefail\n          test "$GITHUB_REF" = refs/heads/main || true\n          test "$GITHUB_REF_PROTECTED" = true'
   })).reason, 'UNTRUSTED_PR_CHECKOUT');
@@ -2107,7 +2183,7 @@ test('verifies Issue #5 event trigger matrix, 10-minute default-off recovery sch
   // Preceding run: step poisoning $GITHUB_ENV (e.g. BASH_ENV) before preamble or optin MUST fail closed!
   assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({
     includeReview: false,
-    evalIf: "${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.ref == 'refs/heads/main' && github.ref_protected == true && !endsWith(github.actor, '[bot]') }}",
+    evalIf: guardedMainEvalIf,
     checkoutWith: '          persist-credentials: false\n          ref: ${{ github.workflow_sha }}'
   }).replace(
     `      - uses: actions/checkout@${checkoutSha}\n`,
@@ -2121,7 +2197,7 @@ test('verifies Issue #5 event trigger matrix, 10-minute default-off recovery sch
   ).reason, 'UNTRUSTED_PR_CHECKOUT');
   assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({
     includeReview: false,
-    evalIf: "${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.ref == 'refs/heads/main' && github.ref_protected == true && !endsWith(github.actor, '[bot]') }}",
+    evalIf: guardedMainEvalIf,
     stepRun: '          set -euo pipefail\n          test "$GITHUB_REF" = refs/heads/main\n          test "$GITHUB_REF_PROTECTED" = true',
     extraJobs: [
       '  detection:',
@@ -2192,7 +2268,7 @@ test('verifies Issue #5 event trigger matrix, 10-minute default-off recovery sch
   // Case-insensitive github.ref == 'refs/heads/main' ALONE does NOT make omitted checkout ref trusted (requires github.ref_protected + case-sensitive shell guard)
   const caseInsensitiveOnlyDispatch = buildMatrixYaml({
     includeReview: false,
-    evalIf: "${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.ref == 'refs/heads/main' && !endsWith(github.actor, '[bot]') }}"
+    evalIf: `\${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.ref == 'refs/heads/main' && !endsWith(github.actor, '[bot]')${wrGuardClause} }}`
   }).replace(/  pull_request_target:\n    branches: \[main\]\n    types: \[[^\]]+\]\n/, '');
   assert.equal(verifyEventTriggerMatrix(
     caseInsensitiveOnlyDispatch.replace('          ref: refs/heads/main', '').replace(/\n\n+/g, '\n'),
@@ -2202,7 +2278,7 @@ test('verifies Issue #5 event trigger matrix, 10-minute default-off recovery sch
   // Default-off & case-sensitive protected-ref provenance downstream inheritance (including implicit needs success & reverse topological order)
   const implicitAndReverseDownstream = buildMatrixYaml({
     includeReview: false,
-    evalIf: "${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.ref == 'refs/heads/main' && github.ref_protected == true && !endsWith(github.actor, '[bot]') }}",
+    evalIf: guardedMainEvalIf,
     stepRun: '          set -euo pipefail\n          test "$GITHUB_REF" = refs/heads/main\n          test "$GITHUB_REF_PROTECTED" = true\n          echo "eval"',
     extraJobs: [
       '  downstream_implicit:',
@@ -2236,5 +2312,648 @@ test('verifies Issue #5 event trigger matrix, 10-minute default-off recovery sch
     })
   ]) {
     assert.equal(verifyEventTriggerMatrix(unguardedMatrix).reason, 'MISSING_DEFAULT_OFF_GUARD');
+  }
+
+  // workflow_run (BOTH with branches: [main] and branchless) requires same-repository head_repository.id guard bound to trusted repo
+  const stripWrBranch = yamlText => yamlText.replace('    types: [completed]\n    branches: [main]', '    types: [completed]');
+  const unguardedEvalIf = "${{ vars.FACTORY_GHAW_ENABLED == 'true' && !endsWith(github.actor, '[bot]') }}";
+  assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({evalIf: unguardedEvalIf})).reason, 'MISSING_WORKFLOW_RUN_REPO_GUARD');
+  assert.equal(verifyEventTriggerMatrix(stripWrBranch(buildMatrixYaml({evalIf: unguardedEvalIf}))).reason, 'MISSING_WORKFLOW_RUN_REPO_GUARD');
+
+  // Positive foreign repository IDs or mismatched repository/repository_id bindings MUST fail closed!
+  for (const foreignWrEvalIf of [
+    "${{ vars.FACTORY_GHAW_ENABLED == 'true' && !endsWith(github.actor, '[bot]') && (github.event_name != 'workflow_run' || github.event.workflow_run.head_repository.id == 999999) }}",
+    "${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.repository_id == '1471342715' && !endsWith(github.actor, '[bot]') && (github.event_name != 'workflow_run' || github.event.workflow_run.head_repository.id == 999999) }}",
+    "${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.repository == 'Jamula/SoftwareFactory' && github.repository_id == '999999' && !endsWith(github.actor, '[bot]') && (github.event_name != 'workflow_run' || github.event.workflow_run.head_repository.id == 999999) }}",
+    "${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.repository == 'jamula/softwarefactory' && github.repository_id == '1471342715' && !endsWith(github.actor, '[bot]') && (github.event_name != 'workflow_run' || github.event.workflow_run.head_repository.id == 1471342715) }}",
+    "${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.repository == 'Synthetic/Consumer' && !endsWith(github.actor, '[bot]') && (github.event_name != 'workflow_run' || github.event.workflow_run.head_repository.id == 1471342715) }}",
+    "${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.repository == 'Synthetic/Consumer' && github.repository_id == '1471342715' && !endsWith(github.actor, '[bot]') && (github.event_name != 'workflow_run' || github.event.workflow_run.head_repository.id == 1471342715) }}",
+    "${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.repository == '' && !endsWith(github.actor, '[bot]') && (github.event_name != 'workflow_run' || github.event.workflow_run.head_repository.id == 1471342715) }}",
+    "${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.repository_id == 0 && !endsWith(github.actor, '[bot]') && (github.event_name != 'workflow_run' || github.event.workflow_run.head_repository.id == 1471342715) }}",
+    "${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.repository_id == '9999999999999999' && !endsWith(github.actor, '[bot]') && (github.event_name != 'workflow_run' || github.event.workflow_run.head_repository.id == '9999999999999999') }}",
+    "${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.repository_id == '1471342715' && github.repository_id == '200036' && !endsWith(github.actor, '[bot]') && (github.event_name != 'workflow_run' || github.event.workflow_run.head_repository.id == 1471342715) }}"
+  ]) {
+    assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({evalIf: foreignWrEvalIf})).reason, 'MISSING_WORKFLOW_RUN_REPO_GUARD');
+  }
+
+  for (const validWrEvalIf of [
+    "${{ vars.FACTORY_GHAW_ENABLED == 'true' && !endsWith(github.actor, '[bot]') && (github.event_name != 'workflow_run' || github.event.workflow_run.head_repository.id == 1471342715) }}",
+    "${{ vars.FACTORY_GHAW_ENABLED == 'true' && !endsWith(github.actor, '[bot]') && ('1471342715' == github.event.workflow_run.head_repository.id || github.event_name != 'workflow_run') }}",
+    "${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.repository == 'Synthetic/Consumer' && '200036' == github.repository_id && !endsWith(github.actor, '[bot]') && (github.event_name != 'workflow_run' || github.event.workflow_run.head_repository.id == 200036) }}",
+    "${{ vars.FACTORY_GHAW_ENABLED == 'true' && !endsWith(github.actor, '[bot]') && (github.event_name != 'workflow_run' || github.event.workflow_run.head_repository.id == github.repository_id) }}",
+    "${{ vars.FACTORY_GHAW_ENABLED == 'true' && !endsWith(github.actor, '[bot]') && (github.event_name != 'workflow_run' || github.event.workflow_run.repository.id == github.event.workflow_run.head_repository.id) }}",
+    "${{ vars.FACTORY_GHAW_ENABLED == 'true' && !endsWith(github.actor, '[bot]') && github.event_name != 'workflow_run' }}",
+    "${{ vars.FACTORY_GHAW_ENABLED == 'true' && !endsWith(github.actor, '[bot]') && github.event.workflow_run.head_repository.id == 1471342715 }}"
+  ]) {
+    const guardedWrYaml = stripWrBranch(buildMatrixYaml({
+      evalIf: validWrEvalIf,
+      extraJobs: [
+        '  implicit_child:',
+        '    needs: [evaluate]',
+        '    runs-on: ubuntu-latest',
+        '    steps:',
+        '      - run: echo "implicit"',
+        '  explicit_child:',
+        '    needs: [implicit_child]',
+        "    if: needs.implicit_child.result == 'success'",
+        '    runs-on: ubuntu-latest',
+        '    steps:',
+        '      - run: echo "explicit"'
+      ].join('\n')
+    }));
+    assert.equal(verifyEventTriggerMatrix(guardedWrYaml).valid, true);
+  }
+
+  // Downstream job depending ONLY on an unguarded/unknown job when branchless workflow_run is active fails closed
+  const mixedWrPeerYaml = stripWrBranch(buildMatrixYaml({
+    evalIf: "${{ vars.FACTORY_GHAW_ENABLED == 'true' && !endsWith(github.actor, '[bot]') && (github.event_name != 'workflow_run' || github.event.workflow_run.head_repository.id == 1471342715) }}",
+    extraJobs: [
+      '  dangling_wr_child:',
+      '    needs: [missing_upstream]',
+      "    if: vars.FACTORY_GHAW_ENABLED == 'true'",
+      '    runs-on: ubuntu-latest',
+      '    steps:',
+      '      - run: echo "dangling"'
+    ].join('\n')
+  }));
+  assert.equal(verifyEventTriggerMatrix(mixedWrPeerYaml).reason, 'MISSING_WORKFLOW_RUN_REPO_GUARD');
+
+  const partialWrChildYaml = stripWrBranch(buildMatrixYaml({
+    evalIf: "${{ vars.FACTORY_GHAW_ENABLED == 'true' && !endsWith(github.actor, '[bot]') && (github.event_name != 'workflow_run' || github.event.workflow_run.head_repository.id == 1471342715) }}",
+    extraJobs: [
+      '  unguarded_wr_child:',
+      '    needs: [evaluate]',
+      "    if: vars.FACTORY_GHAW_ENABLED == 'true'",
+      '    runs-on: ubuntu-latest',
+      '    steps:',
+      '      - run: echo "missing needs.evaluate.result == success"'
+    ].join('\n')
+  }));
+  assert.equal(verifyEventTriggerMatrix(partialWrChildYaml).reason, 'MISSING_WORKFLOW_RUN_REPO_GUARD');
+});
+
+test('enforces verifyGhAwWorkflowLock trigger parity, workflow_run repo guard, evaluate PR-checkout protection, and runtime shell behavior', async () => {
+  const mdPath = resolve(repoRoot, '.github/workflows/factory-orchestrator.md');
+  const lockPath = resolve(repoRoot, '.github/workflows/factory-orchestrator.lock.yml');
+  const trackedMd = readFileSync(mdPath, 'utf8');
+  const trackedLock = readFileSync(lockPath, 'utf8');
+
+  const rehashPair = (nextMd, nextLock) => {
+    const fmHash = computeFrontmatterSha256(nextMd);
+    const bHash = computeBodySha256(nextMd);
+    const updatedLock = nextLock
+      .replace(/"frontmatter_hash":"[a-f0-9]{64}"/, `"frontmatter_hash":"${fmHash}"`)
+      .replace(/"body_hash":"[a-f0-9]{64}"/, `"body_hash":"${bHash}"`);
+    return verifyGhAwWorkflowLock({markdownSource: nextMd, lockYamlSource: updatedLock});
+  };
+
+  // Malformed or empty frontmatter.on fails closed
+  for (const badFmOn of ['on: workflow_dispatch', 'on: {}']) {
+    const mutatedMd = trackedMd.replace(/on:\n[\s\S]*?\npermissions:/, `${badFmOn}\npermissions:`);
+    assert.equal(rehashPair(mutatedMd, trackedLock).reason, 'INVALID_FRONTMATTER');
+  }
+
+  // Unsupported trigger (including PR-controlled pull_request_review) in frontmatter or lock fails closed
+  for (const unsupportedOrchestratorTrigger of [
+    '  pull_request:\n    branches: [main]',
+    '  pull_request_review:\n    types: [submitted, edited, dismissed]',
+    '  issue_comment:\n    types: [created]'
+  ]) {
+    assert.equal(
+      rehashPair(trackedMd.replace('  push:\n    branches: [main]', unsupportedOrchestratorTrigger), trackedLock).reason,
+      'UNSUPPORTED_EVENT_TRIGGER'
+    );
+    assert.equal(
+      rehashPair(trackedMd, trackedLock.replace('  push:\n    branches: [main]', unsupportedOrchestratorTrigger)).reason,
+      'UNSUPPORTED_EVENT_TRIGGER'
+    );
+  }
+
+  // Invalid schedule or event trigger config in frontmatter or lock fails closed
+  assert.equal(
+    rehashPair(trackedMd.replace("cron: '3,13,23,33,43,53 * * * *'", "cron: '*/5 * * * *'"), trackedLock).reason,
+    'INVALID_RECOVERY_SCHEDULE'
+  );
+  assert.equal(
+    rehashPair(trackedMd, trackedLock.replace("cron: '3,13,23,33,43,53 * * * *'", "cron: '*/5 * * * *'")).reason,
+    'INVALID_RECOVERY_SCHEDULE'
+  );
+  assert.equal(
+    rehashPair(trackedMd.replace('  pull_request_target:\n    branches: [main]\n    types: [opened, reopened, synchronize, ready_for_review, closed]', '  pull_request_target: {}'), trackedLock).reason,
+    'INVALID_EVENT_TRIGGER_CONFIG'
+  );
+  assert.equal(
+    rehashPair(trackedMd, trackedLock.replace('  push:\n    branches: [main]', '  push:\n    branches: [develop]')).reason,
+    'INVALID_EVENT_TRIGGER_CONFIG'
+  );
+
+  // Trigger parity mismatch between .md and .lock.yml fails closed (both missing keys AND same-key config drift!)
+  assert.equal(
+    rehashPair(trackedMd.replace('  push:\n    branches: [main]\n', ''), trackedLock).reason,
+    'TRIGGER_PARITY_MISMATCH'
+  );
+  for (const mutatedLockConfig of [
+    trackedLock.replace('types: [opened, edited, labeled, unlabeled, closed, reopened]', 'types: [closed]'),
+    trackedLock.replace('types: [opened, reopened, synchronize, ready_for_review, closed]', 'types: [opened]'),
+    trackedLock.replace('workflows: ["Factory validation", "Windows Aspire runtime", ".NET MAF specialist agents"]', 'workflows: ["Factory validation"]'),
+    trackedLock.replace("cron: '3,13,23,33,43,53 * * * *'", "cron: '7,17,27,37,47,57 * * * *'")
+  ]) {
+    assert.equal(rehashPair(trackedMd, mutatedLockConfig).reason, 'TRIGGER_PARITY_MISMATCH');
+  }
+
+  // Missing or foreign workflow_run head_repository.id guard in frontmatter.if or evaluate.if fails closed
+  const stripWrGuard = text => text.replace(
+    " && (github.event_name != 'workflow_run' || github.event.workflow_run.head_repository.id == 1471342715)",
+    ''
+  );
+  assert.equal(rehashPair(stripWrGuard(trackedMd), trackedLock).reason, 'MISSING_WORKFLOW_RUN_REPO_GUARD');
+  assert.equal(rehashPair(trackedMd, stripWrGuard(trackedLock)).reason, 'MISSING_WORKFLOW_RUN_REPO_GUARD');
+  for (const badHeadRepoId of ['0', '999999']) {
+    assert.equal(
+      rehashPair(
+        trackedMd,
+        trackedLock.replace(
+          'github.event.workflow_run.head_repository.id == 1471342715',
+          `github.event.workflow_run.head_repository.id == ${badHeadRepoId}`
+        )
+      ).reason,
+      'MISSING_WORKFLOW_RUN_REPO_GUARD'
+    );
+  }
+
+  // Compiler-shaped activation -> agent helper inheritance for workflow_run repo guard
+  const helperWrMd = [
+    '---',
+    'name: Compiler Workflow Run',
+    'engine: copilot',
+    "if: \"vars.FACTORY_GHAW_ENABLED == 'true' && !endsWith(github.actor, '[bot]') && (github.event_name != 'workflow_run' || github.event.workflow_run.head_repository.id == 1471342715)\"",
+    'on:',
+    '  workflow_run:',
+    '    workflows: ["Factory validation"]',
+    '    types: [completed]',
+    'permissions: {}',
+    '---',
+    '# Body'
+  ].join('\n');
+  const buildHelperWrLock = ({
+    activationWrGuard = " && (github.event_name != 'workflow_run' || github.event.workflow_run.head_repository.id == 1471342715)",
+    agentExtraIf = ''
+  } = {}) => [
+    makeMetadataLine({
+      frontmatterHash: computeFrontmatterSha256(helperWrMd),
+      bodyHash: computeBodySha256(helperWrMd)
+    }),
+    `# gh-aw-commit: ${PINNED_GHAW_RELEASE.commit}`,
+    'name: Compiler Workflow Run',
+    'on:',
+    '  workflow_run:',
+    '    workflows: ["Factory validation"]',
+    '    types: [completed]',
+    'permissions: {}',
+    'jobs:',
+    '  activation:',
+    `    if: vars.FACTORY_GHAW_ENABLED == 'true' && !endsWith(github.actor, '[bot]')${activationWrGuard}`,
+    '    runs-on: ubuntu-slim',
+    '    permissions:',
+    '      contents: read',
+    '    steps:',
+    '      - run: echo "activate"',
+    '  agent:',
+    '    needs: [activation]',
+    agentExtraIf ? `    if: ${agentExtraIf}` : "    if: needs.activation.result == 'success'",
+    '    runs-on: ubuntu-latest',
+    '    permissions:',
+    '      contents: read',
+    '    steps:',
+    '      - run: echo "agent"',
+    '  threat-scan:',
+    '    needs: [agent]',
+    "    if: needs.agent.result == 'success'",
+    '    runs-on: ubuntu-latest',
+    '    permissions:',
+    '      contents: read',
+    '    steps:',
+    '      - run: echo "scan"'
+  ].join('\n');
+  assert.equal(verifyGhAwWorkflowLock({
+    markdownSource: helperWrMd,
+    lockYamlSource: buildHelperWrLock()
+  }).valid, true);
+  assert.equal(verifyGhAwWorkflowLock({
+    markdownSource: helperWrMd,
+    lockYamlSource: buildHelperWrLock({activationWrGuard: ''})
+  }).reason, 'MISSING_WORKFLOW_RUN_REPO_GUARD');
+
+  // Evaluate job checkout omitting ref/repository, unallowlisted repo, or github.workflow_sha without protected ref provenance fails closed
+  for (const untrustedEvalCheckout of [
+    '      - name: Checkout immutable protected-branch workflow revision\n        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1\n        with:\n          persist-credentials: false',
+    '      - name: Checkout immutable protected-branch workflow revision\n        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1\n        with:\n          repository: attacker/evil-fork\n          ref: ${{ github.workflow_sha }}\n          persist-credentials: false',
+    '      - name: Checkout immutable protected-branch workflow revision\n        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1\n        with:\n          repository: 12345\n          ref: ${{ github.workflow_sha }}\n          persist-credentials: false'
+  ]) {
+    assert.equal(
+      rehashPair(
+        trackedMd,
+        trackedLock.replace(
+          '      - name: Checkout immutable protected-branch workflow revision\n        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1\n        with:\n          repository: Jamula/SoftwareFactory\n          ref: ${{ github.workflow_sha }}\n          persist-credentials: false',
+          untrustedEvalCheckout
+        )
+      ).reason,
+      'UNTRUSTED_PR_CHECKOUT'
+    );
+  }
+  assert.equal(
+    rehashPair(
+      trackedMd,
+      trackedLock.replace('          test "$GITHUB_REF_PROTECTED" = true\n', '')
+    ).reason,
+    'UNTRUSTED_PR_CHECKOUT'
+  );
+
+  // Untrusted PR text interpolation in verifyGhAwWorkflowLock fails closed
+  assert.equal(
+    rehashPair(
+      trackedMd,
+      trackedLock.replace(
+        '          FACTORY_MAIN_HEAD: ${{ github.sha }}',
+        '          FACTORY_MAIN_HEAD: ${{ github.sha }}\n          FACTORY_PR_TITLE: ${{ github.event.pull_request.title }}'
+      )
+    ).reason,
+    'UNTRUSTED_PR_TEXT_INTERPOLATION'
+  );
+
+  // Execute the tracked evaluate, policy_scan, and safe-outputs-persist-journal scripts end-to-end across fresh runners
+  const evalScriptMatch = /name: Verify gh-aw workflow lock and execute shadow evaluation[\s\S]*?run: \|\n((?: {10}.*\n)+)/.exec(trackedLock);
+  const scanScriptMatch = /id: policy_scan\n {8}run: \|\n((?: {10}.*\n)+)/.exec(trackedLock);
+  const persistScriptMatch = /name: Persist journal snapshot to refs\/heads\/work-queue via non-force CAS[\s\S]*?run: \|\n((?: {10}.*\n)+)/.exec(trackedLock);
+  assert.ok(evalScriptMatch !== null);
+  assert.ok(scanScriptMatch !== null);
+  assert.ok(persistScriptMatch !== null);
+  const evalScript = evalScriptMatch[1].split('\n').map(line => line.slice(10)).join('\n');
+  const scanScript = scanScriptMatch[1].split('\n').map(line => line.slice(10)).join('\n');
+  const persistScript = persistScriptMatch[1].split('\n').map(line => line.slice(10)).join('\n');
+  assert.equal(computeNormalizedScriptSha256(scanScript), PINNED_FACTORY_POLICY_SCAN_RUN_SHA256);
+
+  const prHeadSha = 'b'.repeat(40);
+  const tmpDir = mkdtempSync(join(tmpdir(), 'sf-policy-scan-'));
+  let brokerServer = null;
+  try {
+    // Initialize a real bare origin repository + isolated checkout so evaluate -> safe-outputs CAS handoff uses real Git
+    const bareOriginDir = join(tmpDir, 'origin.git');
+    const workRepoDir = join(tmpDir, 'work-repo');
+    mkdirSync(bareOriginDir);
+    mkdirSync(workRepoDir);
+    assert.equal(spawnSync('git', ['init', '--bare', '-q'], {cwd: bareOriginDir}).status, 0);
+    assert.equal(spawnSync('git', ['init', '-q'], {cwd: workRepoDir}).status, 0);
+    assert.equal(spawnSync('git', ['config', 'user.name', 'test'], {cwd: workRepoDir}).status, 0);
+    assert.equal(spawnSync('git', ['config', 'user.email', 'test@users.noreply.github.com'], {cwd: workRepoDir}).status, 0);
+    assert.equal(spawnSync('git', ['remote', 'add', 'origin', bareOriginDir], {cwd: workRepoDir}).status, 0);
+    writeFileSync(join(workRepoDir, 'seed.txt'), 'trusted main seed\n', 'utf8');
+    assert.equal(spawnSync('git', ['add', 'seed.txt'], {cwd: workRepoDir}).status, 0);
+    assert.equal(spawnSync('git', ['-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'seed'], {cwd: workRepoDir}).status, 0);
+    const validSha = spawnSync('git', ['rev-parse', 'HEAD'], {cwd: workRepoDir, encoding: 'utf8'}).stdout.trim();
+    assert.match(validSha, /^[a-f0-9]{40}$/);
+    const gitEnv = {
+      GIT_DIR: join(workRepoDir, '.git'),
+      GIT_WORK_TREE: workRepoDir
+    };
+
+    // Seed refs/heads/work-queue in bareOriginDir via workRepoDir with unrelated queue & ledger files that MUST survive persistence!
+    const seededLeasesJson = '{"schemaVersion":1,"activeLeases":["lane-alpha"]}\n';
+    const seededLedgerJson = '{"schemaVersion":1,"receipts":["rcpt-001"]}\n';
+    const leaseBlob = spawnSync('git', ['hash-object', '-w', '--stdin'], {cwd: workRepoDir, input: seededLeasesJson, encoding: 'utf8'}).stdout.trim();
+    const ledgerBlob = spawnSync('git', ['hash-object', '-w', '--stdin'], {cwd: workRepoDir, input: seededLedgerJson, encoding: 'utf8'}).stdout.trim();
+    const seedIndex = join(tmpDir, 'seed-wq.index');
+    assert.equal(spawnSync('git', ['update-index', '--add', '--cacheinfo', `100644,${leaseBlob},state/work-queue-leases.json`], {cwd: workRepoDir, env: {...process.env, GIT_INDEX_FILE: seedIndex}}).status, 0);
+    assert.equal(spawnSync('git', ['update-index', '--add', '--cacheinfo', `100644,${ledgerBlob},ledger/dispatch-receipts.json`], {cwd: workRepoDir, env: {...process.env, GIT_INDEX_FILE: seedIndex}}).status, 0);
+    const seedTree = spawnSync('git', ['write-tree'], {cwd: workRepoDir, env: {...process.env, GIT_INDEX_FILE: seedIndex}, encoding: 'utf8'}).stdout.trim();
+    const seedCommit = spawnSync('git', [
+      '-c', 'commit.gpgsign=false', 'commit-tree', seedTree, '-m', 'seed unrelated queue & ledger files'
+    ], {cwd: workRepoDir, encoding: 'utf8'}).stdout.trim();
+    assert.equal(spawnSync('git', ['push', '-q', 'origin', `${seedCommit}:refs/heads/work-queue`], {cwd: workRepoDir}).status, 0);
+
+    // Start loopback ref-scoped work-queue CAS broker backed by a dedicated non-bare broker repo pushing to bareOriginDir
+    const brokerRepoDir = join(tmpDir, 'broker-repo');
+    mkdirSync(brokerRepoDir);
+    assert.equal(spawnSync('git', ['init', '-q'], {cwd: brokerRepoDir}).status, 0);
+    assert.equal(spawnSync('git', ['config', 'user.name', 'broker'], {cwd: brokerRepoDir}).status, 0);
+    assert.equal(spawnSync('git', ['config', 'user.email', 'broker@users.noreply.github.com'], {cwd: brokerRepoDir}).status, 0);
+    assert.equal(spawnSync('git', ['remote', 'add', 'origin', bareOriginDir], {cwd: brokerRepoDir}).status, 0);
+
+    brokerServer = createServer((req, res) => {
+      let body = '';
+      req.setEncoding('utf8');
+      req.on('data', chunk => { body += chunk; });
+      req.on('end', () => {
+        const payload = JSON.parse(body);
+        const fetched = spawnSync('git', ['fetch', '-q', '--no-tags', 'origin', 'refs/heads/work-queue'], {cwd: brokerRepoDir});
+        const currentOid = fetched.status === 0
+          ? spawnSync('git', ['rev-parse', 'FETCH_HEAD'], {cwd: brokerRepoDir, encoding: 'utf8'}).stdout.trim()
+          : '0'.repeat(40);
+        if (payload.ref !== 'refs/heads/work-queue' || currentOid !== payload.expectedOid) {
+          res.writeHead(409, {'content-type': 'application/json'});
+          res.end(JSON.stringify({ok: false, reason: 'CAS_CONFLICT', currentOid}));
+          return;
+        }
+        const brokerIdx = join(tmpDir, `broker-${Date.now()}-${Math.random()}.index`);
+        if (currentOid !== '0'.repeat(40)) {
+          spawnSync('git', ['read-tree', currentOid], {cwd: brokerRepoDir, env: {...process.env, GIT_INDEX_FILE: brokerIdx}});
+        }
+        for (const [relPath, fileContent] of Object.entries(payload.files)) {
+          const blob = spawnSync('git', ['hash-object', '-w', '--stdin'], {cwd: brokerRepoDir, input: fileContent, encoding: 'utf8'}).stdout.trim();
+          spawnSync('git', ['update-index', '--add', '--cacheinfo', `100644,${blob},${relPath}`], {cwd: brokerRepoDir, env: {...process.env, GIT_INDEX_FILE: brokerIdx}});
+        }
+        const treeOid = spawnSync('git', ['write-tree'], {cwd: brokerRepoDir, env: {...process.env, GIT_INDEX_FILE: brokerIdx}, encoding: 'utf8'}).stdout.trim();
+        rmSync(brokerIdx, {force: true});
+        const commitArgs = [
+          '-c', 'commit.gpgsign=false',
+          'commit-tree', treeOid,
+          ...(currentOid === '0'.repeat(40) ? [] : ['-p', currentOid]),
+          '-m', 'chore(work-queue): broker CAS update'
+        ];
+        const nextOid = spawnSync('git', commitArgs, {cwd: brokerRepoDir, encoding: 'utf8'}).stdout.trim();
+        const pushRes = spawnSync('git', ['push', '-q', 'origin', `${nextOid}:refs/heads/work-queue`], {cwd: brokerRepoDir});
+        if (pushRes.status !== 0) {
+          res.writeHead(409, {'content-type': 'application/json'});
+          res.end(JSON.stringify({ok: false, reason: 'CAS_CONFLICT'}));
+          return;
+        }
+        res.writeHead(200, {'content-type': 'application/json'});
+        res.end(JSON.stringify({ok: true, ref: 'refs/heads/work-queue', previousOid: currentOid, treeOid, oid: nextOid}));
+      });
+    });
+    await new Promise(resolveListen => brokerServer.listen(0, '127.0.0.1', resolveListen));
+    const brokerPort = brokerServer.address().port;
+    const brokerUrl = `http://127.0.0.1:${brokerPort}/work-queue-cas`;
+
+    const mockFetchFile = join(tmpDir, 'mock-fetch.mjs');
+    writeFileSync(mockFetchFile, [
+      `const mainSha = ${JSON.stringify(validSha)};`,
+      `const prSha = ${JSON.stringify(prHeadSha)};`,
+      'const apiBase = "https://api.github.com/repos/Jamula/SoftwareFactory";',
+      'const json = body => new Response(JSON.stringify(body), {status: 200, headers: {"content-type": "application/json"}});',
+      'globalThis.fetch = async rawUrl => {',
+      '  const url = String(rawUrl);',
+      '  if (url === apiBase) return json({id: 1471342715, full_name: "Jamula/SoftwareFactory", fork: false});',
+      '  if (url === apiBase + "/branches/main") return json({name: "main", protected: true, commit: {sha: mainSha}});',
+      '  if (url.startsWith(apiBase + "/issues?")) return json([{number: 5, repository_url: apiBase}]);',
+      '  if (url.startsWith(apiBase + "/pulls?")) return json([{number: 42, base: {repo: {id: 1471342715, full_name: "Jamula/SoftwareFactory"}}}]);',
+      '  if (url === apiBase + "/issues/5") return json({number: 5, state: "open", repository_url: apiBase});',
+      '  if (url === apiBase + "/pulls/42") {',
+      '    return json({',
+      '      number: 42, state: "open", draft: false,',
+      '      head: {sha: prSha, repo: {id: 1471342715, full_name: "Jamula/SoftwareFactory"}},',
+      '      base: {ref: "main", sha: mainSha, repo: {id: 1471342715, full_name: "Jamula/SoftwareFactory"}}',
+      '    });',
+      '  }',
+      '  if (url === apiBase + "/actions/runs/998877") {',
+      '    return json({',
+      '      id: 998877, status: "completed", conclusion: "success", event: "pull_request", head_sha: prSha,',
+      '      repository: {id: 1471342715, full_name: "Jamula/SoftwareFactory"},',
+      '      head_repository: {id: 1471342715, full_name: "Jamula/SoftwareFactory"}',
+      '    });',
+      '  }',
+      '  return new Response("unexpected url: " + url, {status: 404});',
+      '};'
+    ].join('\n'), 'utf8');
+
+    const parseGitHubOutputs = text => Object.fromEntries(
+      text.trim().split('\n').filter(Boolean).map(line => {
+        const eq = line.indexOf('=');
+        return [line.slice(0, eq), line.slice(eq + 1)];
+      })
+    );
+
+    const runPersistHandoff = async (evalRunnerDir, evalOutFile, persistEnabled = 'true', customBrokerUrl = brokerUrl) => {
+      const outputs = parseGitHubOutputs(readFileSync(evalOutFile, 'utf8'));
+      const persistRunnerDir = mkdtempSync(join(tmpDir, 'runner-persist-'));
+      mkdirSync(join(persistRunnerDir, 'factory-handoff'), {recursive: true});
+      copyFileSync(
+        join(evalRunnerDir, 'factory-work-queue-handoff.json'),
+        join(persistRunnerDir, 'factory-handoff', 'factory-work-queue-handoff.json')
+      );
+      try {
+        const {stdout, stderr} = await execFileAsync('bash', ['-c', persistScript], {
+          cwd: repoRoot,
+          env: {
+            ...process.env,
+            ...gitEnv,
+            GITHUB_ACTIONS: 'false',
+            RUNNER_TEMP: persistRunnerDir,
+            FACTORY_GHAW_PERSIST_ENABLED: persistEnabled,
+            FACTORY_WORK_QUEUE_BROKER_URL: customBrokerUrl,
+            EXPECTED_HANDOFF_SHA256: outputs.handoff_sha256,
+            EXPECTED_WORK_QUEUE_OID: outputs.expected_work_queue_oid
+          }
+        });
+        return {persistRun: {status: 0, stdout, stderr}, persistRunnerDir, outputs};
+      } catch (err) {
+        return {persistRun: {status: err.code ?? 1, stdout: err.stdout ?? '', stderr: err.stderr ?? ''}, persistRunnerDir, outputs};
+      }
+    };
+
+    const runnerTempA = join(tmpDir, 'runner-a');
+    const runnerTempB = join(tmpDir, 'runner-b');
+    mkdirSync(runnerTempA);
+    mkdirSync(runnerTempB);
+    const evalOutA = join(runnerTempA, 'gh_out.txt');
+    writeFileSync(evalOutA, '', 'utf8');
+
+    const baseEvalEnv = {
+      ...process.env,
+      ...gitEnv,
+      NODE_OPTIONS: `--import=${pathToFileURL(mockFetchFile).href}`,
+      RUNNER_TEMP: runnerTempA,
+      GITHUB_OUTPUT: evalOutA,
+      FACTORY_GHAW_ENABLED: 'true',
+      FACTORY_EXPECTED_WORKFLOW_PATH: '.github/workflows/factory-orchestrator.lock.yml',
+      GITHUB_REPOSITORY: 'Jamula/SoftwareFactory',
+      GITHUB_REPOSITORY_ID: '1471342715',
+      GITHUB_REF: 'refs/heads/main',
+      GITHUB_REF_PROTECTED: 'true',
+      GITHUB_WORKFLOW_REF: 'Jamula/SoftwareFactory/.github/workflows/factory-orchestrator.lock.yml@refs/heads/main',
+      GITHUB_WORKFLOW_SHA: validSha,
+      GITHUB_SHA: validSha,
+      GITHUB_RUN_ID: '46100001',
+      GITHUB_EVENT_NAME: 'schedule',
+      FACTORY_GHAW_MODE: '',
+      FACTORY_ISSUE_NUMBER: '',
+      FACTORY_PULL_NUMBER: '',
+      FACTORY_PULL_HEAD: '',
+      FACTORY_WORKFLOW_RUN_ID: '',
+      FACTORY_CHECK_HEAD: '',
+      FACTORY_WORKFLOW_HEAD_REPO_ID: '',
+      FACTORY_MAIN_HEAD: validSha
+    };
+
+    // Runner 1 (schedule): discovers & reconciles missed issue #5 + PR #42 -> stages handoff -> safe-outputs CAS persists to origin!
+    const scheduleRun = spawnSync('bash', ['-c', evalScript], {cwd: repoRoot, env: baseEvalEnv, encoding: 'utf8'});
+    assert.equal(scheduleRun.status, 0, scheduleRun.stderr);
+    assert.match(scheduleRun.stdout, /"SHADOW_PLAN"/);
+    assert.match(scheduleRun.stdout, /"recoveredCount":2/);
+    assert.match(scheduleRun.stdout, /"reason":"SHADOW_RECONCILED"/);
+
+    const ghOutScan = join(tmpDir, 'github_output_scan.txt');
+    writeFileSync(ghOutScan, '', 'utf8');
+    const scanRun = spawnSync('bash', ['-c', scanScript], {
+      cwd: repoRoot,
+      env: {...process.env, GITHUB_OUTPUT: ghOutScan},
+      encoding: 'utf8'
+    });
+    assert.equal(scanRun.status, 0, scanRun.stderr);
+    assert.equal(readFileSync(ghOutScan, 'utf8').trim(), 'scan_verified=true');
+
+    // Default staged mode (FACTORY_GHAW_PERSIST_ENABLED unset) stages merged-tree CAS candidate with zero remote writes!
+    const {persistRun: stagedOnlyRun, persistRunnerDir: stagedDir} = await runPersistHandoff(runnerTempA, evalOutA, '', '');
+    assert.equal(stagedOnlyRun.status, 0, stagedOnlyRun.stderr);
+    assert.match(stagedOnlyRun.stdout, /"CAS_CANDIDATE_STAGED"/);
+    const stagedCandidate = JSON.parse(readFileSync(join(stagedDir, 'factory-work-queue-staged', 'work-queue-cas-staged.json'), 'utf8'));
+    assert.equal(stagedCandidate.staged, true);
+    assert.equal(stagedCandidate.expectedOid, seedCommit);
+
+    // Enabling FACTORY_GHAW_PERSIST_ENABLED='true' WITHOUT a broker URL fails closed!
+    const {persistRun: missingBrokerRun} = await runPersistHandoff(runnerTempA, evalOutA, 'true', '');
+    assert.notEqual(missingBrokerRun.status, 0);
+
+    // Authorized broker mode commits CAS update and preserves unrelated seeded queue & ledger files!
+    const {persistRun: firstPersist} = await runPersistHandoff(runnerTempA, evalOutA);
+    assert.equal(firstPersist.status, 0, firstPersist.stderr);
+
+    // Verify unrelated seeded queue & ledger files on refs/heads/work-queue survived byte-for-byte intact!
+    assert.equal(
+      spawnSync('git', ['--git-dir', bareOriginDir, 'show', 'refs/heads/work-queue:state/work-queue-leases.json'], {encoding: 'utf8'}).stdout,
+      seededLeasesJson
+    );
+    assert.equal(
+      spawnSync('git', ['--git-dir', bareOriginDir, 'show', 'refs/heads/work-queue:ledger/dispatch-receipts.json'], {encoding: 'utf8'}).stdout,
+      seededLedgerJson
+    );
+
+    // Replaying the same CAS handoff with stale expected_work_queue_oid MUST fail closed on CAS conflict!
+    const {persistRun: staleCasPersist} = await runPersistHandoff(runnerTempA, evalOutA);
+    assert.notEqual(staleCasPersist.status, 0);
+
+    // Fresh Runner 2 (completely empty RUNNER_TEMP): fetches refs/heads/work-queue from origin & deduplicates!
+    const evalOutB = join(runnerTempB, 'gh_out.txt');
+    writeFileSync(evalOutB, '', 'utf8');
+    const secondScheduleOnFreshRunner = spawnSync('bash', ['-c', evalScript], {
+      cwd: repoRoot,
+      env: {
+        ...baseEvalEnv,
+        RUNNER_TEMP: runnerTempB,
+        GITHUB_OUTPUT: evalOutB,
+        GITHUB_EVENT_NAME: 'workflow_dispatch',
+        FACTORY_GHAW_MODE: 'shadow'
+      },
+      encoding: 'utf8'
+    });
+    assert.equal(secondScheduleOnFreshRunner.status, 0, secondScheduleOnFreshRunner.stderr);
+    assert.match(secondScheduleOnFreshRunner.stdout, /"recoveredCount":0/);
+    assert.match(secondScheduleOnFreshRunner.stdout, /"reason":"NO_CLAIM"/);
+
+    // smoke mode runs only the synthetic smoke check without live GitHub reads
+    const smokeOnlyRun = spawnSync('bash', ['-c', evalScript], {
+      cwd: repoRoot,
+      env: {...baseEvalEnv, GITHUB_EVENT_NAME: 'workflow_dispatch', FACTORY_GHAW_MODE: 'smoke'},
+      encoding: 'utf8'
+    });
+    assert.equal(smokeOnlyRun.status, 0, smokeOnlyRun.stderr);
+    assert.match(smokeOnlyRun.stdout, /"SHADOW_PLAN"/);
+    assert.doesNotMatch(smokeOnlyRun.stdout, /"recoveredCount"/);
+
+    // verify-lock mode skips both smoke and live GitHub reads
+    const verifyOnlyRun = spawnSync('bash', ['-c', evalScript], {
+      cwd: repoRoot,
+      env: {...baseEvalEnv, GITHUB_EVENT_NAME: 'workflow_dispatch', FACTORY_GHAW_MODE: 'verify-lock', FACTORY_ISSUE_NUMBER: '5'},
+      encoding: 'utf8'
+    });
+    assert.equal(verifyOnlyRun.status, 0, verifyOnlyRun.stderr);
+    assert.doesNotMatch(verifyOnlyRun.stdout, /"SHADOW_PLAN"/);
+
+    // Scoped journal reconciliation + CAS handoff across fresh runners for workflow_dispatch(issue), issues, pull_request_target, workflow_run, and push
+    let runCounter = 100;
+    for (const [eventEnv, expectedKind] of [
+      [{...baseEvalEnv, GITHUB_EVENT_NAME: 'workflow_dispatch', FACTORY_GHAW_MODE: 'shadow', FACTORY_ISSUE_NUMBER: '5'}, 'manual'],
+      [{...baseEvalEnv, GITHUB_EVENT_NAME: 'issues', FACTORY_ISSUE_NUMBER: '5'}, 'issue'],
+      [{...baseEvalEnv, GITHUB_EVENT_NAME: 'pull_request_target', FACTORY_PULL_NUMBER: '42', FACTORY_PULL_HEAD: prHeadSha}, 'pull'],
+      [
+        {
+          ...baseEvalEnv,
+          GITHUB_EVENT_NAME: 'workflow_run',
+          FACTORY_WORKFLOW_RUN_ID: '998877',
+          FACTORY_CHECK_HEAD: prHeadSha,
+          FACTORY_WORKFLOW_HEAD_REPO_ID: '1471342715'
+        },
+        'check'
+      ],
+      [{...baseEvalEnv, GITHUB_EVENT_NAME: 'push'}, 'main']
+    ]) {
+      const runner1Dir = join(tmpDir, `runner-ev-${++runCounter}-a`);
+      const runner2Dir = join(tmpDir, `runner-ev-${runCounter}-b`);
+      mkdirSync(runner1Dir);
+      mkdirSync(runner2Dir);
+      const out1 = join(runner1Dir, 'gh_out.txt');
+      const out2 = join(runner2Dir, 'gh_out.txt');
+      writeFileSync(out1, '', 'utf8');
+      writeFileSync(out2, '', 'utf8');
+      const deliveryId = `4610${runCounter}`;
+
+      const reconciledRun = spawnSync('bash', ['-c', evalScript], {
+        cwd: repoRoot,
+        env: {...eventEnv, RUNNER_TEMP: runner1Dir, GITHUB_OUTPUT: out1, GITHUB_RUN_ID: deliveryId},
+        encoding: 'utf8'
+      });
+      assert.equal(reconciledRun.status, 0, reconciledRun.stderr);
+      assert.match(reconciledRun.stdout, /"reconciled":true/);
+      assert.match(reconciledRun.stdout, /"reason":"SHADOW_RECONCILED"/);
+      assert.match(reconciledRun.stdout, new RegExp(`"kind":"${expectedKind}"`));
+
+      // Persist via safe-outputs CAS to origin, then replay same deliveryId on a brand-new runner2Dir!
+      const {persistRun} = await runPersistHandoff(runner1Dir, out1);
+      assert.equal(persistRun.status, 0, persistRun.stderr);
+
+      const replayOnFreshRunner = spawnSync('bash', ['-c', evalScript], {
+        cwd: repoRoot,
+        env: {...eventEnv, RUNNER_TEMP: runner2Dir, GITHUB_OUTPUT: out2, GITHUB_RUN_ID: deliveryId},
+        encoding: 'utf8'
+      });
+      assert.equal(replayOnFreshRunner.status, 0, replayOnFreshRunner.stderr);
+      assert.match(replayOnFreshRunner.stdout, /"reconciled":false/);
+      assert.match(replayOnFreshRunner.stdout, /"reason":"DUPLICATE_DELIVERY"/);
+    }
+
+    // Fork workflow_run, checkout SHA mismatch, PR merge-ref revisions, unknown events, and malformed inputs fail closed
+    for (const rejectedEnv of [
+      {...baseEvalEnv, GITHUB_EVENT_NAME: 'workflow_run', FACTORY_WORKFLOW_HEAD_REPO_ID: '999999'},
+      {...baseEvalEnv, GITHUB_WORKFLOW_SHA: prHeadSha},
+      {...baseEvalEnv, GITHUB_WORKFLOW_SHA: ''},
+      {...baseEvalEnv, GITHUB_EVENT_NAME: 'repository_dispatch'},
+      {
+        ...baseEvalEnv,
+        GITHUB_EVENT_NAME: 'pull_request_review',
+        GITHUB_REF: 'refs/pull/42/merge',
+        GITHUB_REF_PROTECTED: 'false',
+        GITHUB_WORKFLOW_REF: 'Jamula/SoftwareFactory/.github/workflows/factory-orchestrator.lock.yml@refs/pull/42/merge',
+        FACTORY_PULL_NUMBER: '42',
+        FACTORY_PULL_HEAD: prHeadSha
+      },
+      {
+        ...baseEvalEnv,
+        GITHUB_WORKFLOW_REF: 'Jamula/SoftwareFactory/.github/workflows/factory-orchestrator.lock.yml@refs/pull/42/merge'
+      },
+      {...baseEvalEnv, GITHUB_REF: 'refs/heads/feature'},
+      {...baseEvalEnv, GITHUB_REF_PROTECTED: 'false'},
+      {...baseEvalEnv, FACTORY_GHAW_MODE: 'live-dispatch'},
+      {...baseEvalEnv, FACTORY_ISSUE_NUMBER: '0'},
+      {...baseEvalEnv, FACTORY_PULL_NUMBER: 'abc'},
+      {...baseEvalEnv, FACTORY_PULL_HEAD: 'not-a-sha'}
+    ]) {
+      const failedRun = spawnSync('bash', ['-c', evalScript], {cwd: repoRoot, env: rejectedEnv, encoding: 'utf8'});
+      assert.notEqual(failedRun.status, 0);
+    }
+  } finally {
+    if (brokerServer !== null) {
+      await new Promise(resolveClose => brokerServer.close(resolveClose));
+    }
+    rmSync(tmpDir, {recursive: true, force: true});
   }
 });

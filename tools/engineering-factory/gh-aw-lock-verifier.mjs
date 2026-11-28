@@ -13,7 +13,7 @@ export const PINNED_GHAW_RELEASE = Object.freeze({
 export const PINNED_GHAW_DETECTION_CONCLUSION_SCRIPT_SHA256 =
   '63f302c76492b6bde7052889282d030724cde0379ba2b3e38f16882d956c1972';
 export const PINNED_FACTORY_POLICY_SCAN_RUN_SHA256 =
-  'f80ecd1a1eb7d1afe69e912592699647f0a4fcf4da5148db05fcaaa5a383c970';
+  '14409625c91fc1059b4e3c8a4964ed9f6db84071545b169d6dbc56e47fcd5d22';
 
 const MAX_SOURCE_CHARS = 262144;
 const FORBIDDEN_CONTROL_RE = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/;
@@ -763,6 +763,136 @@ function isNotEndsWithBot(node) {
     args[1].kind === 'Literal' && args[1].value === '[bot]';
 }
 
+const DEFAULT_SOFTWARE_FACTORY_REPO = 'Jamula/SoftwareFactory';
+const DEFAULT_SOFTWARE_FACTORY_REPO_ID = 1471342715;
+
+function parsePositiveIdScalar(val) {
+  if (typeof val === 'number') {
+    return Number.isSafeInteger(val) && val > 0 ? val : null;
+  }
+  if (typeof val === 'string' && /^[1-9]\d{0,15}$/.test(val)) {
+    const num = Number(val);
+    return Number.isSafeInteger(num) ? num : null;
+  }
+  return null;
+}
+
+function extractIdentEqLiteral(node, identPath) {
+  if (node.kind !== 'Compare' || node.op !== '==') return undefined;
+  if (node.left.kind === 'Ident' && node.left.path === identPath && node.right.kind === 'Literal') {
+    return node.right.value;
+  }
+  if (node.right.kind === 'Ident' && node.right.path === identPath && node.left.kind === 'Literal') {
+    return node.left.value;
+  }
+  return undefined;
+}
+
+function resolveTrustedRepoIdBinding(conjuncts) {
+  const repoNames = new Set();
+  const repoIds = new Set();
+  for (const c of conjuncts) {
+    const repoVal = extractIdentEqLiteral(c, 'github.repository');
+    if (repoVal !== undefined) {
+      if (typeof repoVal !== 'string' || repoVal.length === 0) return {ok: false, repoId: null};
+      repoNames.add(repoVal);
+    }
+    const idVal = extractIdentEqLiteral(c, 'github.repository_id');
+    if (idVal !== undefined) {
+      const parsed = parsePositiveIdScalar(idVal);
+      if (parsed === null) return {ok: false, repoId: null};
+      repoIds.add(parsed);
+    }
+  }
+  if (repoNames.size > 1 || repoIds.size > 1) return {ok: false, repoId: null};
+  const boundName = repoNames.size === 1 ? [...repoNames][0] : null;
+  const boundId = repoIds.size === 1 ? [...repoIds][0] : null;
+  if (boundName !== null) {
+    const isSfName = boundName.toLowerCase() === DEFAULT_SOFTWARE_FACTORY_REPO.toLowerCase();
+    if (isSfName && (boundName !== DEFAULT_SOFTWARE_FACTORY_REPO ||
+        (boundId !== null && boundId !== DEFAULT_SOFTWARE_FACTORY_REPO_ID))) {
+      return {ok: false, repoId: null};
+    }
+    if (!isSfName && (boundId === null || boundId === DEFAULT_SOFTWARE_FACTORY_REPO_ID)) {
+      return {ok: false, repoId: null};
+    }
+  }
+  return {ok: true, repoId: boundId ?? DEFAULT_SOFTWARE_FACTORY_REPO_ID};
+}
+
+function isRepoIdContextOrBoundLiteral(node, expectedRepoId) {
+  if (node.kind === 'Literal') {
+    return parsePositiveIdScalar(node.value) === expectedRepoId;
+  }
+  return node.kind === 'Ident' && (
+    node.path === 'github.repository_id' ||
+    node.path === 'github.event.workflow_run.repository.id'
+  );
+}
+
+function isIdentEqBoundRepoId(node, identPath, expectedRepoId) {
+  if (node.kind !== 'Compare' || node.op !== '==') return false;
+  if (node.left.kind === 'Ident' && node.left.path === identPath) {
+    return isRepoIdContextOrBoundLiteral(node.right, expectedRepoId);
+  }
+  return node.right.kind === 'Ident' &&
+    node.right.path === identPath &&
+    isRepoIdContextOrBoundLiteral(node.left, expectedRepoId);
+}
+
+function onMapNeedsWorkflowRunRepoGuard(onMap) {
+  return Object.hasOwn(onMap, 'workflow_run');
+}
+
+function isWorkflowRunRepoGuardConjunct(node, expectedRepoId) {
+  if (isIdentCompareLiteral(node, '!=', 'github.event_name', 'workflow_run') ||
+      isIdentEqBoundRepoId(node, 'github.event.workflow_run.head_repository.id', expectedRepoId)) {
+    return true;
+  }
+  if (node.kind !== 'Or') return false;
+  if (isIdentCompareLiteral(node.left, '!=', 'github.event_name', 'workflow_run')) {
+    return collectMandatoryConjuncts(node.right).some(c =>
+      isIdentEqBoundRepoId(c, 'github.event.workflow_run.head_repository.id', expectedRepoId)
+    );
+  }
+  return isIdentCompareLiteral(node.right, '!=', 'github.event_name', 'workflow_run') &&
+    collectMandatoryConjuncts(node.left).some(c =>
+      isIdentEqBoundRepoId(c, 'github.event.workflow_run.head_repository.id', expectedRepoId)
+    );
+}
+
+function hasWorkflowRunSameRepoGuard(ast) {
+  if (ast === null || astHasBypassCall(ast)) return false;
+  const conjuncts = collectMandatoryConjuncts(ast);
+  const binding = resolveTrustedRepoIdBinding(conjuncts);
+  return binding.ok && conjuncts.some(c => isWorkflowRunRepoGuardConjunct(c, binding.repoId));
+}
+
+function validateLockTriggerMap(onMap) {
+  const keys = Object.keys(onMap);
+  const singleTrigger = keys.length === 1;
+  for (const triggerName of keys) {
+    if (triggerName === 'pull_request_review' || !SUPPORTED_EVENT_MATRIX_TRIGGERS.has(triggerName)) {
+      return {ok: false, reason: 'UNSUPPORTED_EVENT_TRIGGER'};
+    }
+    if (triggerName === 'schedule') {
+      if (parseTenMinuteRecoverySchedule(onMap.schedule) === null) {
+        return {ok: false, reason: 'INVALID_RECOVERY_SCHEDULE'};
+      }
+      continue;
+    }
+    const cfg = onMap[triggerName];
+    if (singleTrigger && triggerName === 'pull_request_target' &&
+        isMapObject(cfg) && Object.keys(cfg).length === 0) {
+      continue;
+    }
+    if (!isValidEventTriggerConfig(triggerName, cfg, 'main')) {
+      return {ok: false, reason: 'INVALID_EVENT_TRIGGER_CONFIG'};
+    }
+  }
+  return {ok: true};
+}
+
 function verifyEvaluationGuards(rawIf) {
   const ast = parseIfExpression(rawIf);
   if (ast === null || astHasBypassCall(ast)) {
@@ -1228,6 +1358,17 @@ function inspectFrontmatterPolicy(frontmatter, isNewerVerified, headers, options
 
   const frontmatterGuards = verifyEvaluationGuards(frontmatter.if);
   if (!frontmatterGuards.ok) return frontmatterGuards;
+  if (frontmatter.on !== undefined) {
+    if (!isMapObject(frontmatter.on) || Object.keys(frontmatter.on).length === 0) {
+      return {ok: false, reason: 'INVALID_FRONTMATTER'};
+    }
+    const fmTriggers = validateLockTriggerMap(frontmatter.on);
+    if (!fmTriggers.ok) return fmTriggers;
+    const fmAst = parseIfExpression(frontmatter.if);
+    if (onMapNeedsWorkflowRunRepoGuard(frontmatter.on) && !hasWorkflowRunSameRepoGuard(fmAst)) {
+      return {ok: false, reason: 'MISSING_WORKFLOW_RUN_REPO_GUARD'};
+    }
+  }
 
   const headerProtocol = headers['gh-aw-work-queue-protocol'];
   const requestedProtocol = options.workQueueProtocol;
@@ -1294,6 +1435,33 @@ function isTrustedControlPlaneCheckout(withMap, releaseCommit, trustedShas) {
   return trimmedRef === 'refs/heads/main' || trustedShas.has(trimmedRef);
 }
 
+function classifyNonScanCheckoutTrust(
+  checkoutWith,
+  releaseCommit,
+  trustedShas,
+  job,
+  stepIdx,
+  workflowEnvSafe
+) {
+  if (isTrustedControlPlaneCheckout(checkoutWith, releaseCommit, trustedShas)) return 'trusted';
+  if (checkoutWith.repository !== undefined) {
+    if (typeof checkoutWith.repository !== 'string') return 'untrusted';
+    const trimmedRepo = checkoutWith.repository.trim();
+    if (trimmedRepo !== 'Jamula/SoftwareFactory' && trimmedRepo !== '${{ github.repository }}') {
+      return 'untrusted';
+    }
+  }
+  if (classifyEventMatrixCheckoutRef(checkoutWith.ref, 'main', trustedShas) !== 'workflow_sha') {
+    return 'untrusted';
+  }
+  const jobAst = job.if === undefined ? null : parseIfExpression(job.if);
+  return resolveJobProtectedBranchProvenance(job, jobAst, 'refs/heads/main', workflowEnvSafe)
+    .trustedCheckoutStepIndices
+    .has(stepIdx)
+    ? 'trusted'
+    : 'needs_upstream';
+}
+
 function isTrustedScanJobCheckout(checkoutWith, releaseCommit, trustedShas, lockOn) {
   if (checkoutWith.path !== undefined) return {ok: false, needsUpstreamRefProvenance: false};
   if (checkoutWith.ref === undefined && checkoutWith.repository === undefined) {
@@ -1302,10 +1470,24 @@ function isTrustedScanJobCheckout(checkoutWith, releaseCommit, trustedShas, lock
       !Object.hasOwn(lockOn, 'pull_request_review');
     return {ok: safeTriggerSet, needsUpstreamRefProvenance: true};
   }
-  return {
-    ok: isTrustedControlPlaneCheckout(checkoutWith, releaseCommit, trustedShas),
-    needsUpstreamRefProvenance: false
-  };
+  if (isTrustedControlPlaneCheckout(checkoutWith, releaseCommit, trustedShas)) {
+    return {ok: true, needsUpstreamRefProvenance: false};
+  }
+  if (checkoutWith.repository !== undefined) {
+    if (typeof checkoutWith.repository !== 'string') {
+      return {ok: false, needsUpstreamRefProvenance: false};
+    }
+    const trimmedRepo = checkoutWith.repository.trim();
+    if (trimmedRepo !== 'Jamula/SoftwareFactory' && trimmedRepo !== '${{ github.repository }}') {
+      return {ok: false, needsUpstreamRefProvenance: false};
+    }
+  }
+  if (!Object.hasOwn(lockOn, 'pull_request') &&
+      !Object.hasOwn(lockOn, 'pull_request_review') &&
+      classifyEventMatrixCheckoutRef(checkoutWith.ref, 'main', trustedShas) === 'workflow_sha') {
+    return {ok: true, needsUpstreamRefProvenance: true};
+  }
+  return {ok: false, needsUpstreamRefProvenance: false};
 }
 function normalizeNeeds(needsField) {
   if (typeof needsField === 'string') return [needsField];
@@ -1418,10 +1600,20 @@ export function verifyGhAwWorkflowLock(input) {
     return deny(topPerms.hasWrite ? 'TOP_LEVEL_WRITE_PERMISSION' : 'INVALID_TOP_LEVEL_PERMISSIONS');
   }
 
+  const lockTriggersCheck = validateLockTriggerMap(lockDoc.on);
+  if (!lockTriggersCheck.ok) return deny(lockTriggersCheck.reason);
+  if (frontmatter.on !== undefined &&
+      marshalCanonicalJson(frontmatter.on) !== marshalCanonicalJson(lockDoc.on)) {
+    return deny('TRIGGER_PARITY_MISMATCH');
+  }
+  const hasPrRefExposureTrigger = Object.hasOwn(lockDoc.on, 'pull_request_target');
+  const needsWorkflowRunGuard = onMapNeedsWorkflowRunRepoGuard(lockDoc.on);
+
   const helperJobs = [];
   const evaluationJobIds = [];
   const threatScanJobs = [];
   const safeOutputJobs = [];
+  const nonScanUpstreamProvenanceJobs = [];
   const workflowEnvSafeForScan = lockDoc.defaults === undefined && isSafeScanEnv(lockDoc.env);
 
   for (const [jobId, job] of Object.entries(lockDoc.jobs)) {
@@ -1495,7 +1687,8 @@ export function verifyGhAwWorkflowLock(input) {
       if (!Array.isArray(job.steps) || job.steps.length === 0) return deny('INVALID_LOCK_YAML');
       let hasUnconditionalThreatScanRunStep = false;
       let canRegisterPolicyScanProducer = true;
-      for (const step of job.steps) {
+      for (let stepIdx = 0; stepIdx < job.steps.length; stepIdx++) {
+        const step = job.steps[stepIdx];
         if (!isMapObject(step)) return deny('INVALID_LOCK_YAML');
         if (!isSafeOutput && toleratesError(step)) return deny('MISSING_THREAT_SCAN_GATE');
         if (isThreatScan && !isSafeScanEnv(step.env)) return deny('MISSING_THREAT_SCAN_GATE');
@@ -1537,6 +1730,20 @@ export function verifyGhAwWorkflowLock(input) {
               );
               if (!scanCheckout.ok) return deny('MISSING_THREAT_SCAN_GATE');
               if (scanCheckout.needsUpstreamRefProvenance) scanNeedsRefProvenance = true;
+            } else if (!jobHasWriteScope && hasPrRefExposureTrigger) {
+              if (!isSafeScanEnv(lockDoc.env) || !isSafeScanEnv(job.env) || !isSafeScanEnv(step.env)) {
+                return deny('UNTRUSTED_PR_CHECKOUT');
+              }
+              const trustKind = classifyNonScanCheckoutTrust(
+                checkoutWith,
+                releaseCheck.release.commit,
+                trustedShas,
+                job,
+                stepIdx,
+                workflowEnvSafeForScan
+              );
+              if (trustKind === 'untrusted') return deny('UNTRUSTED_PR_CHECKOUT');
+              if (trustKind === 'needs_upstream') nonScanUpstreamProvenanceJobs.push(job);
             }
           }
           if (isThreatScan) {
@@ -1624,21 +1831,43 @@ export function verifyGhAwWorkflowLock(input) {
   const guardedHelperIds = new Set(
     helperJobs.filter(({job}) => verifyEvaluationGuards(job.if).ok).map(({jobId}) => jobId)
   );
+  const workflowRunGuardedHelperIds = new Set(
+    helperJobs
+      .filter(({job}) => verifyEvaluationGuards(job.if).ok && hasWorkflowRunSameRepoGuard(parseIfExpression(job.if)))
+      .map(({jobId}) => jobId)
+  );
 
   if (evaluationJobIds.length === 0) return deny('MISSING_EVALUATION_JOB');
   for (const {job} of evaluationJobIds) {
+    const evalAst = job.if === undefined ? null : parseIfExpression(job.if);
     const guardVerdict = verifyEvaluationGuards(job.if);
-    if (guardVerdict.ok) continue;
-    const evalNeeds = normalizeNeeds(job.needs);
-    const matchingGuardedHelpers = evalNeeds === null ? [] : evalNeeds.filter(dep => guardedHelperIds.has(dep));
-    if (matchingGuardedHelpers.length === 0) return deny(guardVerdict.reason);
-    if (job.if !== undefined) {
-      const evalAst = parseIfExpression(job.if);
-      if (evalAst === null || astHasBypassCall(evalAst)) return deny(guardVerdict.reason);
-      const evalConjuncts = collectMandatoryConjuncts(evalAst);
-      const inheritsHelperSuccess = matchingGuardedHelpers.some(helperId =>
-        evalConjuncts.some(c => isIdentCompareLiteral(c, '==', `needs.${helperId}.result`, 'success')));
-      if (!inheritsHelperSuccess) return deny(guardVerdict.reason);
+    if (!guardVerdict.ok) {
+      const evalNeeds = normalizeNeeds(job.needs);
+      const matchingGuardedHelpers = evalNeeds === null ? [] : evalNeeds.filter(dep => guardedHelperIds.has(dep));
+      if (matchingGuardedHelpers.length === 0) return deny(guardVerdict.reason);
+      if (job.if !== undefined) {
+        if (evalAst === null || astHasBypassCall(evalAst)) return deny(guardVerdict.reason);
+        const evalConjuncts = collectMandatoryConjuncts(evalAst);
+        const inheritsHelperSuccess = matchingGuardedHelpers.some(helperId =>
+          evalConjuncts.some(c => isIdentCompareLiteral(c, '==', `needs.${helperId}.result`, 'success')));
+        if (!inheritsHelperSuccess) return deny(guardVerdict.reason);
+      }
+    }
+    if (needsWorkflowRunGuard && !hasWorkflowRunSameRepoGuard(evalAst)) {
+      const evalNeeds = normalizeNeeds(job.needs);
+      const matchingWrHelpers = evalNeeds === null ? [] : evalNeeds.filter(dep => workflowRunGuardedHelperIds.has(dep));
+      const inheritsWrGuard = matchingWrHelpers.length > 0 && (
+        job.if === undefined || (
+          evalAst !== null &&
+          !astHasBypassCall(evalAst) &&
+          matchingWrHelpers.some(helperId =>
+            collectMandatoryConjuncts(evalAst).some(c =>
+              isIdentCompareLiteral(c, '==', `needs.${helperId}.result`, 'success')
+            )
+          )
+        )
+      );
+      if (!inheritsWrGuard) return deny('MISSING_WORKFLOW_RUN_REPO_GUARD');
     }
   }
 
@@ -1651,6 +1880,24 @@ export function verifyGhAwWorkflowLock(input) {
       )
       .map(({jobId}) => jobId)
   );
+  for (const upstreamDepJob of nonScanUpstreamProvenanceJobs) {
+    const depNeeds = normalizeNeeds(upstreamDepJob.needs);
+    if (depNeeds === null) return deny('UNTRUSTED_PR_CHECKOUT');
+    if (upstreamDepJob.if === undefined) {
+      if (!depNeeds.some(dep => evalRefProvenanceIds.has(dep))) return deny('UNTRUSTED_PR_CHECKOUT');
+      continue;
+    }
+    const depAst = parseIfExpression(upstreamDepJob.if);
+    if (depAst === null) return deny('UNTRUSTED_PR_CHECKOUT');
+    if (depAst.kind === 'Literal' && depAst.value === false) continue;
+    if (astHasUnsafeStatusOverride(depAst)) return deny('UNTRUSTED_PR_CHECKOUT');
+    const depConjuncts = collectMandatoryConjuncts(depAst);
+    const inheritsEvalRef = depNeeds.some(dep =>
+      evalRefProvenanceIds.has(dep) &&
+      depConjuncts.some(c => isIdentCompareLiteral(c, '==', `needs.${dep}.result`, 'success'))
+    );
+    if (!inheritsEvalRef) return deny('UNTRUSTED_PR_CHECKOUT');
+  }
   const threatScanById = new Map(threatScanJobs.map(entry => [entry.jobId, entry]));
   for (const scanEntry of threatScanJobs) {
     const {job, validScanOutputStepIds, actionConclusionGuardDeps, getNeedsRefProvenance} = scanEntry;
@@ -1749,6 +1996,10 @@ export function verifyGhAwWorkflowLock(input) {
     if (!allEvalSucceeded || !scanSucceeded) {
       return deny('MISSING_THREAT_SCAN_GATE');
     }
+  }
+
+  if (nodeHasUntrustedInterpolation(lockDoc, 'root')) {
+    return deny('UNTRUSTED_PR_TEXT_INTERPOLATION');
   }
 
   return Object.freeze({
@@ -2243,8 +2494,10 @@ export function verifyEventTriggerMatrix(lockYamlSource, options) {
   }
 
   const workflowEnvSafeForProvenance = lockDoc.defaults === undefined && isSafeScanEnv(lockDoc.env);
+  const needsWorkflowRunGuard = onMapNeedsWorkflowRunRepoGuard(lockDoc.on);
   const disabledJobIds = new Set();
   const guardedJobIds = new Set();
+  const workflowRunGuardedJobIds = new Set();
   const downstreamRefProvenanceJobIds = new Set();
   const inheritedRefProvenanceJobIds = new Set();
   const trustedCheckoutStepsByJob = new Map();
@@ -2272,6 +2525,9 @@ export function verifyEventTriggerMatrix(lockYamlSource, options) {
           matchedEnableVars.add(enableVar.slice('vars.'.length));
         }
       }
+      if (hasWorkflowRunSameRepoGuard(jobAst)) {
+        workflowRunGuardedJobIds.add(jobId);
+      }
       const refProv = resolveJobProtectedBranchProvenance(
         job,
         jobAst,
@@ -2286,6 +2542,9 @@ export function verifyEventTriggerMatrix(lockYamlSource, options) {
     if (job.needs === undefined && !guardedJobIds.has(jobId)) {
       return deny('MISSING_DEFAULT_OFF_GUARD');
     }
+    if (needsWorkflowRunGuard && job.needs === undefined && !workflowRunGuardedJobIds.has(jobId)) {
+      return deny('MISSING_WORKFLOW_RUN_REPO_GUARD');
+    }
   }
 
   const knownJobIds = new Set(Object.keys(lockDoc.jobs));
@@ -2297,6 +2556,9 @@ export function verifyEventTriggerMatrix(lockYamlSource, options) {
       const needs = normalizeNeeds(job.needs);
       if (needs === null || !needs.every(dep => knownJobIds.has(dep))) {
         if (!guardedJobIds.has(jobId)) return deny('MISSING_DEFAULT_OFF_GUARD');
+        if (needsWorkflowRunGuard && !workflowRunGuardedJobIds.has(jobId)) {
+          return deny('MISSING_WORKFLOW_RUN_REPO_GUARD');
+        }
         continue;
       }
       if (job.if === undefined) {
@@ -2304,6 +2566,12 @@ export function verifyEventTriggerMatrix(lockYamlSource, options) {
             needs.some(dep => guardedJobIds.has(dep)) &&
             needs.every(dep => guardedJobIds.has(dep) || disabledJobIds.has(dep))) {
           guardedJobIds.add(jobId);
+          progress = true;
+        }
+        if (needsWorkflowRunGuard && !workflowRunGuardedJobIds.has(jobId) &&
+            needs.some(dep => workflowRunGuardedJobIds.has(dep)) &&
+            needs.every(dep => workflowRunGuardedJobIds.has(dep) || disabledJobIds.has(dep))) {
+          workflowRunGuardedJobIds.add(jobId);
           progress = true;
         }
         if (!inheritedRefProvenanceJobIds.has(jobId) &&
@@ -2333,6 +2601,10 @@ export function verifyEventTriggerMatrix(lockYamlSource, options) {
         guardedJobIds.add(jobId);
         progress = true;
       }
+      if (needsWorkflowRunGuard && !workflowRunGuardedJobIds.has(jobId) && inheritsFrom(workflowRunGuardedJobIds, true)) {
+        workflowRunGuardedJobIds.add(jobId);
+        progress = true;
+      }
       if (!inheritedRefProvenanceJobIds.has(jobId) && inheritsFrom(downstreamRefProvenanceJobIds, false)) {
         inheritedRefProvenanceJobIds.add(jobId);
         if (!toleratesError(job)) downstreamRefProvenanceJobIds.add(jobId);
@@ -2344,6 +2616,10 @@ export function verifyEventTriggerMatrix(lockYamlSource, options) {
   if (guardedJobIds.size === 0 ||
       jobEntries.some(([jobId]) => !disabledJobIds.has(jobId) && !guardedJobIds.has(jobId))) {
     return deny('MISSING_DEFAULT_OFF_GUARD');
+  }
+  if (needsWorkflowRunGuard &&
+      jobEntries.some(([jobId]) => !disabledJobIds.has(jobId) && !workflowRunGuardedJobIds.has(jobId))) {
+    return deny('MISSING_WORKFLOW_RUN_REPO_GUARD');
   }
 
   for (const {jobId, stepIdx} of checkoutProvenanceReqs) {
