@@ -4,7 +4,7 @@
 
 SoftwareFactory ships two deterministic, fail-closed, 98%/95%-gated runtime surfaces plus a read-only Canvas board extension, orchestrated natively on GitHub with zero tracked Python files (`tools/engineering-factory/no-python-guard.mjs`):
 
-1. **Node.js `26.13.1` ESM control plane (`70` `.mjs` modules across `tools/engineering-factory/` and `tools/engineering-coordinator/`)**: Enforces `>=98%` source line and `>=95%` branch coverage per `.mjs` component and overall via `tests/engineering-factory/coverage-reporter.mjs`.
+1. **Node.js `26.13.1` ESM control plane (`71` `.mjs` modules across `tools/engineering-factory/` and `tools/engineering-coordinator/`)**: Enforces `>=98%` source line and `>=95%` branch coverage per `.mjs` component and overall via `tests/engineering-factory/coverage-reporter.mjs`.
 2. **`.NET 10.0.404` + Microsoft Agent Framework `1.28.0` GA inner specialist engine (`src/SoftwareFactory.Agents/`)**: Supersedes the earlier optional Rust execution-engine experiment and retired July 2026 GitHub Models (`Microsoft.Agents.AI`, `Microsoft.Agents.AI.Workflows`, `Microsoft.Agents.AI.GitHub.Copilot`), enforcing `>=98%` line and `>=95%` branch coverage via Coverlet across `18` xUnit tests (`tests/SoftwareFactory.Agents.Tests/`).
 3. **Read-only live Canvas extension (`.github/extensions/factory-board/`, `#135`)**: Renders live milestones, open/closed issue activity, open/merged PR checks and review decisions, and merge-queue position/status without write credentials (it does not display lane ownership, CAS leases, or OTLP telemetry).
 
@@ -22,9 +22,9 @@ flowchart TB
     WQ["refs/heads/work-queue (work-queue-cas.mjs Non-Force Git-Ref CAS, Protocol v3)"]
   end
 
-  subgraph L2["Layer 2: Node.js 26.13.1 Deterministic Control Plane (70 .mjs Modules)"]
+  subgraph L2["Layer 2: Node.js 26.13.1 Deterministic Control Plane (71 .mjs Modules)"]
     COORD["tools/engineering-coordinator/ (10 modules: planner, coordinator, project-config, work-queue-cas, review-provider)"]
-    FACT["tools/engineering-factory/ (60 modules: core, coverage-evidence, protected-squash, billing-hardstop-smoke, anti-rogue-audit)"]
+    FACT["tools/engineering-factory/ (61 modules: core, coverage-evidence, protected-squash, automode-enqueuer, anti-rogue-audit)"]
     CLI["run.mjs Unified CLI (9 stage flags + --receipt, <=262KB plain-JSON guard)"]
   end
 
@@ -105,13 +105,13 @@ flowchart LR
   CB -->|"Missing link, protected path touch,<br/>burn spike, or main failure"| KILL["Immediate Repository Kill Switch<br/>(killSwitch: true)"]
 ```
 
-### `tools/engineering-factory/` (`60` modules) — policy evaluators, admission/audit gates, metadata adapters, and telemetry
+### `tools/engineering-factory/` (`61` modules) — policy evaluators, admission/audit gates, metadata adapters, and telemetry
 
-- **Pure policy, coverage, review, and Squash Merge Queue evaluators** (zero I/O, rejecting sparse arrays and stale heads; receipt/boundary verifiers such as `coverage-evidence.mjs`, `platform-merge-gates.mjs`, `protected-squash.mjs`, `queue-reread.mjs`, `anti-rogue-audit.mjs`, `curated-lessons.mjs`, `consumer-onboarding.mjs`, and `run.mjs` inspect own enumerable data descriptors to reject `Proxy` traps, getters, and custom prototypes, whereas `core.mjs`, `review-history.mjs`, `review-batch.mjs`, and remaining snapshot evaluators check own-key presence and read properties directly—requiring callers/adapters or `protected-squash.mjs` to strip getters/proxies and supply trusted, normalized plain JSON data upstream):
+- **Pure policy, coverage, review, and Squash Merge Queue evaluators** (zero I/O, rejecting sparse arrays and stale heads; receipt/boundary verifiers such as `coverage-evidence.mjs`, `platform-merge-gates.mjs`, `protected-squash.mjs`, `automode-enqueuer.mjs`, `queue-reread.mjs`, `anti-rogue-audit.mjs`, `curated-lessons.mjs`, `consumer-onboarding.mjs`, and `run.mjs` inspect own enumerable data descriptors to reject `Proxy` traps, getters, and custom prototypes, whereas `core.mjs`, `review-history.mjs`, `review-batch.mjs`, and remaining snapshot evaluators check own-key presence and read properties directly—requiring callers/adapters or `protected-squash.mjs` to strip getters/proxies and supply trusted, normalized plain JSON data upstream):
   - `core.mjs`: validates closed version-1 repository policies (`validPolicy`) and normalized plain-JSON snapshots (`evaluate`), returning frozen `{ state, reason, shadow: true }` decisions. `policySource: "trusted-default-branch"` and snapshot fields are caller assertions rather than proof of live authority—adapters must enforce independent upstream default-branch provenance validation before invoking `evaluate`.
   - `coverage-evidence.mjs`: validates exact-head component and aggregate line/branch counts (`coverageEvidence`, `coverageFromNodeSummary`) against SoftwareFactory's `98%/95%` floor or consumer `>=95%/90%` (preserving stricter floors such as Spellbook `97%/90%`), requires reviewed justifications for branchless (`0/0`) components, and reconciles effective `main` ruleset, fork-PR, `merge_group`, `CodeQL`, summary-finding, and `minimum_coverage >= 98` gates (`verifyCandidateGateReceipt`).
   - `review-history.mjs` and `review-batch.mjs`: normalize chronological review sequences (permitting exact-head allowlisted `copilot-pull-request-reviewer[bot]` `COMMENTED` reviews with `summaryDisposition: "clear"` only on `Jamula/SoftwareFactory`, while requiring formal `APPROVED` for all consumers) and batch inline plus summary-only findings.
-  - `platform-merge-gates.mjs`, `protected-squash.mjs`, `merge-queue-slo.mjs`, `integration-train.mjs`, `portfolio-train-benchmark.mjs`, `queue-inspection.mjs`, `queue-reread.mjs`, and `main-health-audit.mjs`: compose candidate platform checks, serialized shadow squash state machines with post-merge `main` health verification, inert GraphQL `enqueuePullRequest` (`expectedHeadOid`, `jump: false`) request builders, queue SLOs, and multi-wave integration-train simulations (`#16`).
+  - `platform-merge-gates.mjs`, `protected-squash.mjs`, `automode-enqueuer.mjs`, `merge-queue-slo.mjs`, `integration-train.mjs`, `portfolio-train-benchmark.mjs`, `queue-inspection.mjs`, `queue-reread.mjs`, and `main-health-audit.mjs`: compose candidate platform checks, serialized shadow squash state machines with post-merge `main` health verification, zero-trust Automode Merge Queue enqueue/dequeue planning (`#8`, `#10`), inert GraphQL `enqueuePullRequest` (`expectedHeadOid`, `jump: false`) request builders, queue SLOs, and multi-wave integration-train simulations (`#16`).
 - **Outer `gh-aw` verification, `$0` billing admission, 9-link anti-rogue audit, Kaizen, and multi-agent boundaries**:
   - `gh-aw-lock-verifier.mjs` (`#5`): verifies pinned `github/gh-aw` (`v1.2.2`) `.github/workflows/factory-orchestrator.md` ↔ `.lock.yml` SHA-256 frontmatter/body integrity, trigger parity, `safe-outputs` read/write separation, and `persist-credentials: false`.
   - `billing-hardstop-smoke.mjs` (`#105`), `cloud-agent-admission.mjs` (`#7`), `budget.mjs`, `capacity-scale.mjs`, and `worker-ladder-handoff.mjs`: enforce provider-level `$0` overage hard-stops (`1 AI credit = $0.01`) across AI Credits, Copilot Premium Requests, and Cloud Sandboxes/Actions, reject missing or estimated AI-credit accounting before dispatch (treating `gh-aw` `max-ai-credits` / `max-daily-ai-credits` as soft caps only), and gate `1→2→4→8→10→12` worker scaling.
@@ -140,16 +140,17 @@ flowchart LR
 
 ## Workflows and effective `main` protection boundary
 
-SoftwareFactory maintains eight workflows (`9` files under `.github/workflows/`, documented in [Workflow guide](WORKFLOWS.md)):
+SoftwareFactory maintains nine workflows (`10` files under `.github/workflows/`, documented in [Workflow guide](WORKFLOWS.md)):
 
 1. `factory-orchestrator.md` + `factory-orchestrator.lock.yml` (**Factory gh-aw outer orchestrator**): default-off (`vars.FACTORY_GHAW_ENABLED == 'true'`), SHA-256 hash-locked `github/gh-aw` (`v1.2.2`) outer orchestrator with `tools.work-queue`, `safe-outputs` (`staged: true`), and `contents: read` privilege separation across `workflow_dispatch`, 10-minute `schedule`, `issues`, `pull_request_target`, `workflow_run`, and `push` (`main`).
-2. `validate.yml` (**Factory validation**): exact-head Linux Node `26.13.1` test/`98%-95%` coverage gate, poison-safe exact-lockfile `~/.npm` + NuGet + `Aspire.Cli 17.0.0` caching (`#15`/`#174`), isolated Linux Aspire OTLP/SQLite runtime validation, `build-test`, and `upload-coverage-javascript`.
-3. `dotnet-agents.yml` (**.NET MAF specialist agents**): exact-head Linux and Windows `.NET 10.0.404` MAF `1.28.0` GA build, poison-safe NuGet cache, `18` xUnit tests with Coverlet `98%/95%` gate, and `--smoke` / `--benchmark` CLI verification.
-4. `windows-aspire.yml` (**Windows Aspire runtime**): exact-head `windows-aspire-runtime` check on `windows-latest` with poison-safe `~/.npm` + NuGet + `Aspire.Cli 17.0.0` caching, scoped ephemeral PEM TLS trust, loopback HTTPS OTLP API readback, and SQLite metric receipt verification.
-5. `shadow-reconcile.yml` (**Factory shadow reconciliation**): default-off (`FACTORY_SHADOW_ENABLED=true`) manual `workflow_dispatch` fallback listener running `run.mjs` (`--inventory`, `--reconcile-issue`, etc.) on protected `refs/heads/main`.
-6. `reusable-replay-smoke.yml` (**Reusable replay smoke**): exercises the pinned consumer reusable workflow (`afc3d223f287b029db32672908097efc67a259c9`) on contract changes, `merge_group`, and `main`.
-7. `shadow-tests.yml` (**Engineering factory shadow replay**): `workflow_call` synthetic replay of pinned SoftwareFactory tests (`1208481843e73d1d2506085c654e84255303541d`); [docs/consumer-shadow-tests.yml](consumer-shadow-tests.yml) remains an inert example pinned to `fbecbf99b4c8e1696194bd6fa5220b2328cd1379`.
-8. `otel-sdk-lock-evidence.yml` (**OpenTelemetry SDK dependency evidence**): isolated `@opentelemetry/*` lockfile integrity and registry provenance check on same-repo PRs.
+2. `factory-automode-enqueue.yml` (**Factory automode Merge Queue gatekeeper**): privilege-separated (`evaluate` read-only → `apply-queue-actions` queue mutation, gated on `vars.FACTORY_KILL_SWITCH != 'true' && vars.FACTORY_AUTOMODE_ENABLED != 'false'`) zero-trust Squash Merge Queue gatekeeper powered by `automode-enqueuer.mjs` (`#8`, `#10`).
+3. `validate.yml` (**Factory validation**): exact-head Linux Node `26.13.1` test/`98%-95%` coverage gate, poison-safe exact-lockfile `~/.npm` + NuGet + `Aspire.Cli 17.0.0` caching (`#15`/`#174`), isolated Linux Aspire OTLP/SQLite runtime validation, `build-test`, and `upload-coverage-javascript`.
+4. `dotnet-agents.yml` (**.NET MAF specialist agents**): exact-head Linux and Windows `.NET 10.0.404` MAF `1.28.0` GA build, poison-safe NuGet cache, `18` xUnit tests with Coverlet `98%/95%` gate, and `--smoke` / `--benchmark` CLI verification.
+5. `windows-aspire.yml` (**Windows Aspire runtime**): exact-head `windows-aspire-runtime` check on `windows-latest` with poison-safe `~/.npm` + NuGet + `Aspire.Cli 17.0.0` caching, scoped ephemeral PEM TLS trust, loopback HTTPS OTLP API readback, and SQLite metric receipt verification.
+6. `shadow-reconcile.yml` (**Factory shadow reconciliation**): default-off (`FACTORY_SHADOW_ENABLED=true`) manual `workflow_dispatch` fallback listener running `run.mjs` (`--inventory`, `--reconcile-issue`, etc.) on protected `refs/heads/main`.
+7. `reusable-replay-smoke.yml` (**Reusable replay smoke**): exercises the pinned consumer reusable workflow (`afc3d223f287b029db32672908097efc67a259c9`) on contract changes, `merge_group`, and `main`.
+8. `shadow-tests.yml` (**Engineering factory shadow replay**): `workflow_call` synthetic replay of pinned SoftwareFactory tests (`1208481843e73d1d2506085c654e84255303541d`); [docs/consumer-shadow-tests.yml](consumer-shadow-tests.yml) remains an inert example pinned to `fbecbf99b4c8e1696194bd6fa5220b2328cd1379`.
+9. `otel-sdk-lock-evidence.yml` (**OpenTelemetry SDK dependency evidence**): isolated `@opentelemetry/*` lockfile integrity and registry provenance check on same-repo PRs.
 
 ### Ruleset vs. independent review reconciliation
 

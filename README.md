@@ -21,7 +21,7 @@ flowchart TB
     CAS["Ruleset-Protected refs/heads/work-queue (Non-Force Git-Ref CAS)"]
   end
 
-  subgraph MOAT["Deterministic Node.js 26.13.1 Control Plane (70 .mjs Modules, >=98%/95%)"]
+  subgraph MOAT["Deterministic Node.js 26.13.1 Control Plane (70+ .mjs Modules, >=98%/95%)"]
     PLAN["planner.mjs + coordinator.mjs (Disjoint Path Lanes & Bounded TTL)"]
     ADMIT["billing-hardstop-smoke.mjs + cloud-agent-admission.mjs ($0 Overage Hard-Stop)"]
     EVAL["core.mjs + coverage-evidence.mjs + review-history.mjs + protected-squash.mjs"]
@@ -174,7 +174,7 @@ See [roadmap v2](docs/ROADMAP.md) for complete entry/exit gates and historical m
 Use the CI-pinned **Node.js `26.13.1`** and **`.NET SDK 10.0.404`** toolchains:
 
 ```sh
-# 1. Install locked Node dependencies (OpenTelemetry + Cobertura) and enforce >=98% line / >=95% branch coverage across all 70 .mjs components
+# 1. Install locked Node dependencies (OpenTelemetry + Cobertura) and enforce >=98% line / >=95% branch coverage across all 70+ .mjs components
 npm ci --ignore-scripts && npm run test:coverage
 
 # 2. Run the .NET 10.0.404 Microsoft Agent Framework 1.28.0 GA specialist test suite (18 xUnit tests; add -p:CollectCoverage=true for Coverlet 98%/95% gate)

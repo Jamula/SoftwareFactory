@@ -23,7 +23,7 @@ flowchart TD
 ## Local commands
 
 ```sh
-# 1. Headless Node 26.13.1 suite + >=98% line / >=95% branch gate across all 70 .mjs modules
+# 1. Headless Node 26.13.1 suite + >=98% line / >=95% branch gate across all 70+ .mjs modules
 npm ci --ignore-scripts && npm run test:coverage
 
 # 2. Headless .NET 10.0.404 + MAF 1.28.0 GA specialist tests (18 xUnit tests + Coverlet 98%/95% gate)
@@ -41,7 +41,7 @@ rm -rf .local coverage-evidence.json cobertura-coverage.xml
 
 ## Zero-Python and dashboard verification boundary
 
-Dashboard API, ZIP archive export, and read-only `Run`-mode SQLite persistence verifiers run exclusively on pinned Node.js `26.13.1` (`tools/engineering-factory/verify-dashboard-export.mjs`, `verify-dashboard-api.mjs`, `verify-dashboard-metric-receipt.mjs`, `inspect-dashboard-metric-schema.mjs`, and `aspire-hosted-receipt.mjs`) using built-in Node modules only; tracked Python files, manifests, and workflow Python invocations are rejected fail-closed by `tools/engineering-factory/no-python-guard.mjs` (`#118`). Use the step-by-step checklist in [Aspire synthetic smoke](ASPIRE-SYNTHETIC-SMOKE.md) and [telemetry acceptance](ASPIRE-TELEMETRY-ACCEPTANCE.md). Bind dashboard and collector strictly to numeric loopback (`127.0.0.1` / `[::1]`) with authentication enabled (`ASPIRE_ALLOW_UNSECURED_TRANSPORT=false` and `ASPIRE_DASHBOARD_UNSECURED_ALLOW_ANONYMOUS=false` on hosted CI), and never set `NODE_TLS_REJECT_UNAUTHORIZED=0` (use scoped `NODE_EXTRA_CA_CERTS` for ephemeral PEM trust).
+Dashboard API, ZIP archive export, and read-only `Run`-mode SQLite persistence verifiers run exclusively on pinned Node.js `26.13.1` (`tools/engineering-factory/verify-dashboard-export.mjs <archive.zip>`, `verify-dashboard-api.mjs`, `verify-dashboard-metric-receipt.mjs <aspire-data-root>`, `inspect-dashboard-metric-schema.mjs <aspire-data-root>`, and `aspire-hosted-receipt.mjs`, where `<aspire-data-root>` is the directory containing `runs/<run>/dashboard.db`) using built-in Node modules only; tracked Python files, manifests, and workflow Python invocations are rejected fail-closed by `tools/engineering-factory/no-python-guard.mjs` (`#118`). Use the step-by-step checklist in [Aspire synthetic smoke](ASPIRE-SYNTHETIC-SMOKE.md) and [telemetry acceptance](ASPIRE-TELEMETRY-ACCEPTANCE.md). Bind dashboard and collector strictly to numeric loopback (`127.0.0.1` / `[::1]`) with authentication enabled (`ASPIRE_ALLOW_UNSECURED_TRANSPORT=false` and `ASPIRE_DASHBOARD_UNSECURED_ALLOW_ANONYMOUS=false` on hosted CI), and never set `NODE_TLS_REJECT_UNAUTHORIZED=0` (use scoped `NODE_EXTRA_CA_CERTS` for ephemeral PEM trust).
 
 | Signal | Exported surface |
 | --- | --- |
@@ -76,7 +76,7 @@ sequenceDiagram
     CI->>Ver: verify-dashboard-api.mjs (Authenticated loopback HTTPS API readback)
   end
   CI->>Host: Bounded clean AppHost shutdown
-  CI->>Ver: verify-dashboard-metric-receipt.mjs (Read-only Run-mode SQLite cumulative points)
+  CI->>Ver: verify-dashboard-metric-receipt.mjs <aspire-data-root> (Read-only Run-mode SQLite cumulative points)
   CI->>CI: Delete runner-temp exports & DB (zero raw telemetry uploaded)
 ```
 

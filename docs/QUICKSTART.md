@@ -5,7 +5,7 @@
 ```mermaid
 flowchart LR
   CLONE["1. Clone Reviewed Commit<br/>(Node 26.13.1 + .NET 10.0.404)"] --> SMOKE["2. Zero-Install Smoke:<br/>node tools/engineering-factory/run.mjs --smoke"]
-  SMOKE --> NODE_COV["3. Node 98%/95% Gate:<br/>npm ci --ignore-scripts &&<br/>npm run test:coverage (70 .mjs)"]
+  SMOKE --> NODE_COV["3. Node 98%/95% Gate:<br/>npm ci --ignore-scripts &&<br/>npm run test:coverage (70+ .mjs)"]
   NODE_COV --> NET_COV["4. .NET MAF 1.28.0 Gate:<br/>dotnet test -p:CollectCoverage=true<br/>(18 xUnit Tests, 98%/95%)"]
   NET_COV --> ASPIRE_OPT["5. Optional Local OTLP:<br/>aspire run --apphost apphost.cs<br/>(Loopback Dashboard)"]
 ```
@@ -25,7 +25,7 @@ node --version
 node tools/engineering-factory/run.mjs --smoke
 
 # Install locked OpenTelemetry + Cobertura packages and enforce >=98% line / >=95% branch coverage
-# across all 70 .mjs components in tools/engineering-factory/ and tools/engineering-coordinator/
+# across all 70+ .mjs components in tools/engineering-factory/ and tools/engineering-coordinator/
 npm ci --ignore-scripts && npm run test:coverage
 ```
 

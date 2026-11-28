@@ -44,6 +44,8 @@ Unified CLI flags:
 Shipped workflows (.github/workflows/):
 - factory-orchestrator.md + factory-orchestrator.lock.yml: default-off
   (vars.FACTORY_GHAW_ENABLED == 'true') gh-aw outer orchestrator.
+- factory-automode-enqueue.yml: zero-trust Automode Merge Queue gatekeeper
+  (automode-enqueuer.mjs, gated by FACTORY_KILL_SWITCH / FACTORY_AUTOMODE_ENABLED).
 - validate.yml: Linux Node 26.13.1 >=98%/95% coverage (70+ .mjs components),
   Linux Aspire 17.0.0 OTLP/SQLite runtime, build-test, upload-coverage-javascript.
 - dotnet-agents.yml: Linux & Windows .NET 10.0.404 MAF 1.28.0 GA build, 18 xUnit

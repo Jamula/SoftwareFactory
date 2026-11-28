@@ -112,7 +112,7 @@ flowchart LR
 
 ## Emergency stop and independent `1`-commit consumer rollback
 
-1. **SoftwareFactory pause**: Unset or set `FACTORY_GHAW_ENABLED=false` and `FACTORY_SHADOW_ENABLED=false` in GitHub repository variables; in-flight read-only runs cannot merge to `main` because `gh-aw` has no merge tool and `Default-Branch-Ruleset` (`28054442`) gates Squash Merge Queue independently.
+1. **SoftwareFactory pause**: Set `FACTORY_KILL_SWITCH=true` and `FACTORY_AUTOMODE_ENABLED=false`, and unset or set `FACTORY_GHAW_ENABLED=false` and `FACTORY_SHADOW_ENABLED=false` in GitHub repository variables (plus policy `killSwitch: true`) to block future orchestration and Automode enqueue ticks, **inspect and cancel any in-flight Actions runs or Cloud Agent sessions**, and **explicitly dequeue (`dequeuePullRequest`) any pending PRs already admitted to GitHub's Native Squash Merge Queue** (because the native merge queue operates independently of `gh-aw` and will still merge already-queued entries once `merge_group` checks pass unless withdrawn).
 2. **Single-consumer rollback (`verifyIndependentRollback`)**: Set `mode: "disabled"` and `killSwitch: true`, revoke only that consumer's `credentialId`, revert its 2-file onboarding commit (`commitsToRevert === 1`) via reviewed PR, and verify `queuedLiveMutations === 0`. `Jamula/SoftwareFactory` and peer consumers remain unaffected. Preserve all audit receipts and git history.
 
 ## Telemetry, causal audit, and Kaizen measurement

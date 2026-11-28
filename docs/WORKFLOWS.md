@@ -2,12 +2,13 @@
 
 ## Repository workflow inventory
 
-SoftwareFactory ships eight workflows (`9` files under `.github/workflows/`). Every workflow pins third-party Actions to immutable 40-character commit SHAs, disables Git credential persistence (`persist-credentials: false`) when checking out code, pins Node.js `26.13.1` and `.NET SDK 10.0.404` where used, enforces poison-safe exact-lockfile caching (restoring read-only on PRs/merge groups and saving only from protected `refs/heads/main` on `Jamula/SoftwareFactory` `1471342715`), and never checks out or executes untrusted pull-request code in a privileged context.
+SoftwareFactory ships nine workflows (`10` files under `.github/workflows/`). Every workflow pins third-party Actions to immutable 40-character commit SHAs, disables Git credential persistence (`persist-credentials: false`) when checking out code, pins Node.js `26.13.1` and `.NET SDK 10.0.404` where used, enforces poison-safe exact-lockfile caching (restoring read-only on PRs/merge groups and saving only from protected `refs/heads/main` on `Jamula/SoftwareFactory` `1471342715`), and never checks out or executes untrusted pull-request code in a privileged context.
 
 | Workflow file | Name | Triggers | Permissions | Purpose and trust boundary |
 | --- | --- | --- | --- | --- |
 | `.github/workflows/factory-orchestrator.md` + `.lock.yml` | Factory gh-aw outer orchestrator | `workflow_dispatch`, 10-minute `schedule` (`3,13,23,33,43,53 * * * *`), `issues`, `pull_request_target` (`main`), `workflow_run` (`Factory validation`, `Windows Aspire runtime`, `.NET MAF specialist agents`), `push` (`main`) | `contents: read` (`safe-outputs` `staged: true`) | Default-off (`vars.FACTORY_GHAW_ENABLED == 'true'`), SHA-256 frontmatter/body hash-locked `github/gh-aw` (`v1.2.2`) outer orchestrator (`gh-aw-lock-verifier.mjs`). Suppresses `*[bot]` self-loops, checks out no untrusted PR code, coordinates claims via non-force git-ref CAS on `refs/heads/work-queue` (`work-queue-cas.mjs`), and never invokes `gh pr merge` (Squash Merge Queue is sole merge path). |
-| `.github/workflows/validate.yml` | Factory validation | `pull_request`, `merge_group` (`checks_requested`), `push` (`main`) | `contents: read` (`upload-coverage-javascript` adds `code-quality: write`) | Exact-head candidate validation on Linux: poison-safe exact-lockfile `~/.npm` + NuGet + `Aspire.Cli 17.0.0` caches (`#15`/`#174`), `run.mjs --smoke`, full `npm run test:coverage` (`FACTORY_EXPECTED_HEAD`, `>=98%` line and `>=95%` branch across all `70` `.mjs` components via `coverage-reporter.mjs`), isolated Aspire AppHost loopback HTTPS login/OTLP/SQLite runtime validation (`linux-aspire-runtime`, same-repo/merge-group/`main` only), required `build-test` aggregate check, and `upload-coverage-javascript`. |
+| `.github/workflows/factory-automode-enqueue.yml` | Factory automode Merge Queue gatekeeper | `pull_request_target` (`main`), `workflow_run` (`Factory validation`, `Windows Aspire runtime`, `.NET MAF specialist agents`), 10-minute `schedule` (`*/10 * * * *`), `workflow_dispatch` | `evaluate`: `contents: read`, `pull-requests: read`, `checks: read`; `apply-queue-actions`: `contents: write`, `pull-requests: write`, `checks: read` | Zero-trust Merge Queue gatekeeper on protected `refs/heads/main` (`vars.FACTORY_KILL_SWITCH != 'true' && vars.FACTORY_AUTOMODE_ENABLED != 'false'`, same-repo `1471342715` only). Evaluates exact-head checks, summary-clear independent review, and ruleset parity via `automode-enqueuer.mjs` without checking out untrusted PR code before enqueuing/dequeuing in GitHub's Native Squash Merge Queue (`#8`, `#10`). |
+| `.github/workflows/validate.yml` | Factory validation | `pull_request`, `merge_group` (`checks_requested`), `push` (`main`) | `contents: read` (`upload-coverage-javascript` adds `code-quality: write`) | Exact-head candidate validation on Linux: poison-safe exact-lockfile `~/.npm` + NuGet + `Aspire.Cli 17.0.0` caches (`#15`/`#174`), `run.mjs --smoke`, full `npm run test:coverage` (`FACTORY_EXPECTED_HEAD`, `>=98%` line and `>=95%` branch across all `71` `.mjs` components via `coverage-reporter.mjs`), isolated Aspire AppHost loopback HTTPS login/OTLP/SQLite runtime validation (`linux-aspire-runtime`, same-repo/merge-group/`main` only), required `build-test` aggregate check, and `upload-coverage-javascript`. |
 | `.github/workflows/dotnet-agents.yml` | .NET MAF specialist agents | Path-filtered `pull_request` (`src/**`, `tests/SoftwareFactory.Agents.Tests/**`, `apphost.cs`, `global.json`, `.props`, workflow), `merge_group` (`checks_requested`), `push` (`main`) | `contents: read` | Exact-head Linux and Windows `.NET SDK 10.0.404` + Microsoft Agent Framework `1.28.0` GA validation: poison-safe exact-lockfile NuGet cache, Release build of `SoftwareFactory.Agents` and `apphost.cs`, `18` xUnit tests with Coverlet `98%/95%` threshold gate, and `--smoke` / `--benchmark` CLI verification (`#14`, `#16`). |
 | `.github/workflows/windows-aspire.yml` | Windows Aspire runtime | `pull_request`, `merge_group` (`checks_requested`), `push` (`main`) | `contents: read` | Exact-head `windows-aspire-runtime` check on `windows-latest` (same-repo/merge-group/`main` only): pins Node.js `26.13.1`, `.NET SDK 10.0.404`, and `Aspire.Cli` `17.0.0` with poison-safe exact-lockfile caches, verifies scoped ephemeral PEM certificate trust without modifying the Windows root store, loopback HTTPS authentication, OTLP trace/correlated log API readback, SQLite metric persistence, and clean AppHost shutdown. |
 | `.github/workflows/shadow-reconcile.yml` | Factory shadow reconciliation | Manual `workflow_dispatch` | `contents: read` | Default-off read-only manual reconciliation fallback on protected `refs/heads/main` (narrowed to `workflow_dispatch` so automated event/schedule triggers do not duplicate `factory-orchestrator.lock.yml`). Case-sensitive Bash guard requires `FACTORY_SHADOW_ENABLED=true`, `GITHUB_REPOSITORY=Jamula/SoftwareFactory`, `GITHUB_REPOSITORY_ID=1471342715`, and `GITHUB_REF_PROTECTED=true` before checking out `main`/`github.workflow_sha` and running `run.mjs`. |
@@ -23,8 +24,9 @@ Hosted coding-agent execution standardizes on native GitHub Cloud Agents (`copil
 
 ```mermaid
 flowchart TB
-  subgraph ORCH["Default-Off Read-Only Orchestrators (Protected main Only)"]
+  subgraph ORCH["Protected main Orchestrators & Zero-Trust Gatekeepers"]
     W1["factory-orchestrator.md + .lock.yml<br/>(gh-aw v1.2.2, safe-outputs staged: true, contents: read)"]
+    W9["factory-automode-enqueue.yml<br/>(evaluate read-only -> apply-queue-actions enqueue/dequeue)"]
     W2["shadow-reconcile.yml<br/>(Manual workflow_dispatch fallback, contents: read)"]
   end
 
@@ -42,8 +44,8 @@ flowchart TB
   end
 
   W6 -->|"Immutable 40-Hex SHA"| W7
-  W3 & W4 & W5 -->|"workflow_run completed"| W1
-  W3 & W5 & CQL -->|"Required by Ruleset 28054442 / 16162572"| MQ["GitHub Native Squash Merge Queue (ALLGREEN)"]
+  W3 & W4 & W5 -->|"workflow_run completed"| W1 & W9
+  W3 & W5 & CQL & W9 -->|"Required by Ruleset 28054442 / 16162572"| MQ["GitHub Native Squash Merge Queue (ALLGREEN)"]
 ```
 
 ### 2. Candidate PR, `merge_group`, and protected-`main` sequence diagram

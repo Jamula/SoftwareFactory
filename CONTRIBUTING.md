@@ -46,7 +46,7 @@ sequenceDiagram
 ```mermaid
 flowchart LR
   SRC["Edited Files (Disjoint Lane)"] --> GUARD["no-python-guard.mjs + Secret-Pattern Scan"]
-  SRC --> NODE["Node 26.13.1 Test Runner (70 .mjs Modules)"]
+  SRC --> NODE["Node 26.13.1 Test Runner (70+ .mjs Modules)"]
   SRC --> DOTNET[".NET 10.0.404 xUnit + Coverlet (18 Tests)"]
   NODE --> REP["coverage-reporter.mjs (>=98% Line / >=95% Branch Per File & Total)"]
   DOTNET --> COV["Coverlet MSBuild Gate (>=98% Line / >=95% Branch)"]

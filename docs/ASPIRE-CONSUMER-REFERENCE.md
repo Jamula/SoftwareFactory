@@ -12,7 +12,7 @@ This is a reference pattern only—never automatic consumer enrollment or activa
 4. Verify traces, correlated structured logs, and persisted metrics using SoftwareFactory's Node-only verifiers (`#118`):
    - **Linux ZIP archive export**: `node tools/engineering-factory/verify-dashboard-export.mjs <archive.zip>` confirms service `softwarefactory-shadow`, span `factory.evaluate`, and correlated `factory.stage.completed` log with matching non-zero hex W3C `traceId`/`spanId`.
    - **Windows loopback HTTPS API readback**: `node tools/engineering-factory/verify-dashboard-api.mjs` verifies the same authenticated trace/log correlation with scoped PEM certificate trust without modifying the Windows root store.
-   - **Unattended `Run`-mode SQLite metric persistence** (Linux & Windows after bounded AppHost stop): `node tools/engineering-factory/verify-dashboard-metric-receipt.mjs` (paired with schema probe `node tools/engineering-factory/inspect-dashboard-metric-schema.mjs`) verifies persisted cumulative counter (`factory.stage.count`) and histogram (`factory.stage.duration`) points on fixed `evaluate/blocked/POLICY` dimensions.
+   - **Unattended `Run`-mode SQLite metric persistence** (Linux & Windows after bounded AppHost stop): `node tools/engineering-factory/verify-dashboard-metric-receipt.mjs <aspire-data-root>` (paired with schema probe `node tools/engineering-factory/inspect-dashboard-metric-schema.mjs <aspire-data-root>`, where `<aspire-data-root>` is the isolated Aspire data root directory containing `runs/<run>/dashboard.db`, not the `.db` file path itself) verifies persisted cumulative counter (`factory.stage.count`) and histogram (`factory.stage.duration`) points on fixed `evaluate/blocked/POLICY` dimensions.
    - **Manual dashboard UI OTLP JSON metric export** (optional interactive check): export only the isolated run's metric JSON to temporary storage and run `node tests/engineering-factory/verify-dashboard-metrics.mjs <metric-json-file> [additional-metric-json-files]` (ignoring OTLP `no-recorded-value` points), then delete temporary files.
 5. Verify cross-OS receipt completeness offline via `tools/engineering-factory/aspire-hosted-receipt.mjs` (`tests/engineering-factory/aspire-hosted-receipt.test.mjs`) and record exact commit SHA, runner OS, trusted checks, source coverage counts, independent review, and healthy `main` separately.
 
@@ -35,7 +35,7 @@ sequenceDiagram
   Shadow-->>Owner: Emit STOPPED + LOCAL_SDK_SHUTDOWN_COMPLETE
   Owner->>Ver: Verify trace/log correlation (verify-dashboard-export.mjs or verify-dashboard-api.mjs)
   Owner->>Host: Bounded clean stop
-  Owner->>Ver: Verify cumulative SQLite metrics (verify-dashboard-metric-receipt.mjs)
+  Owner->>Ver: Verify cumulative SQLite metrics (verify-dashboard-metric-receipt.mjs <aspire-data-root>)
   Owner->>Owner: Delete temporary files (never upload raw DB or exports)
 ```
 

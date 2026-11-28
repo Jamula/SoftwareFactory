@@ -19,7 +19,7 @@ Complete index of all shipped guides under `docs/`, organized by domain. See als
 
 | Document | Audience | Purpose |
 | --- | --- | --- |
-| [Workflow guide](WORKFLOWS.md) | CI maintainers | Inventory of all 8 GitHub Actions / `gh-aw` workflows, `Default-Branch-Ruleset` `28054442`, and poison-safe CI caching |
+| [Workflow guide](WORKFLOWS.md) | CI maintainers | Inventory of all 9 GitHub Actions / `gh-aw` workflows, `Default-Branch-Ruleset` `28054442`, and poison-safe CI caching |
 | [GitHub Agentic Workflows (`gh-aw`) orchestration](GH-AW-ORCHESTRATION.md) | Orchestration engineers | `github/gh-aw` (`v1.2.2+`) `.md` → `.lock.yml` SHA-256 verification, `safe-outputs`, and `refs/heads/work-queue` non-force git-ref CAS |
 | [GitHub-hosted Copilot pilot](GITHUB-HOSTED-COPILOT-PILOT.md) | Operators / billing owners | `#105` provider-level `$0` overage hard-stops (`1 AI credit = $0.01`), native `copilot-swe-agent[bot]` / Cloud Automations smoke receipts |
 | [Cloud Agent admission gate and unified CLI](CLOUD-AGENT-ADMISSION.md) | Orchestration engineers | `#7` fail-closed non-estimated AI-credit admission gate, worker ladder (`1→12`), and unified `run.mjs` CLI |
