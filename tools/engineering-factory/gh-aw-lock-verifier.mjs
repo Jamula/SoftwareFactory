@@ -763,48 +763,143 @@ function isNotEndsWithBot(node) {
     args[1].kind === 'Literal' && args[1].value === '[bot]';
 }
 
-function onMapNeedsWorkflowRunRepoGuard(onMap) {
-  if (!Object.hasOwn(onMap, 'workflow_run')) return false;
-  const cfg = onMap.workflow_run;
-  return !(isMapObject(cfg) && Array.isArray(cfg.branches) && cfg.branches.length > 0);
-}
+const DEFAULT_SOFTWARE_FACTORY_REPO = 'Jamula/SoftwareFactory';
+const DEFAULT_SOFTWARE_FACTORY_REPO_ID = 1471342715;
 
-function isPositiveRepoIdValueNode(node) {
-  if (node.kind === 'Literal') {
-    if (typeof node.value === 'number') return Number.isSafeInteger(node.value) && node.value > 0;
-    return typeof node.value === 'string' && /^[1-9]\d{0,15}$/.test(node.value) &&
-      Number.isSafeInteger(Number(node.value));
+function parsePositiveIdScalar(val) {
+  if (typeof val === 'number') {
+    return Number.isSafeInteger(val) && val > 0 ? val : null;
   }
-  return node.kind === 'Ident' &&
-    (node.path === 'github.repository_id' || node.path === 'github.event.workflow_run.repository.id');
+  if (typeof val === 'string' && /^[1-9]\d{0,15}$/.test(val)) {
+    const num = Number(val);
+    return Number.isSafeInteger(num) ? num : null;
+  }
+  return null;
 }
 
-function isWorkflowRunHeadRepoEq(node) {
+function extractIdentEqLiteral(node, identPath) {
+  if (node.kind !== 'Compare' || node.op !== '==') return undefined;
+  if (node.left.kind === 'Ident' && node.left.path === identPath && node.right.kind === 'Literal') {
+    return node.right.value;
+  }
+  if (node.right.kind === 'Ident' && node.right.path === identPath && node.left.kind === 'Literal') {
+    return node.left.value;
+  }
+  return undefined;
+}
+
+function resolveTrustedRepoIdBinding(conjuncts) {
+  const repoNames = new Set();
+  const repoIds = new Set();
+  for (const c of conjuncts) {
+    const repoVal = extractIdentEqLiteral(c, 'github.repository');
+    if (repoVal !== undefined) {
+      if (typeof repoVal !== 'string' || repoVal.length === 0) return {ok: false, repoId: null};
+      repoNames.add(repoVal);
+    }
+    const idVal = extractIdentEqLiteral(c, 'github.repository_id');
+    if (idVal !== undefined) {
+      const parsed = parsePositiveIdScalar(idVal);
+      if (parsed === null) return {ok: false, repoId: null};
+      repoIds.add(parsed);
+    }
+  }
+  if (repoNames.size > 1 || repoIds.size > 1) return {ok: false, repoId: null};
+  const boundName = repoNames.size === 1 ? [...repoNames][0] : null;
+  const boundId = repoIds.size === 1 ? [...repoIds][0] : null;
+  if (boundName !== null) {
+    const isSfName = boundName.toLowerCase() === DEFAULT_SOFTWARE_FACTORY_REPO.toLowerCase();
+    if (isSfName && (boundName !== DEFAULT_SOFTWARE_FACTORY_REPO ||
+        (boundId !== null && boundId !== DEFAULT_SOFTWARE_FACTORY_REPO_ID))) {
+      return {ok: false, repoId: null};
+    }
+    if (!isSfName && (boundId === null || boundId === DEFAULT_SOFTWARE_FACTORY_REPO_ID)) {
+      return {ok: false, repoId: null};
+    }
+  }
+  return {ok: true, repoId: boundId ?? DEFAULT_SOFTWARE_FACTORY_REPO_ID};
+}
+
+function isRepoIdContextOrBoundLiteral(node, expectedRepoId, allowWorkflowRunRepoIdent) {
+  if (node.kind === 'Literal') {
+    return parsePositiveIdScalar(node.value) === expectedRepoId;
+  }
+  return node.kind === 'Ident' && (
+    node.path === 'github.repository_id' ||
+    (allowWorkflowRunRepoIdent && node.path === 'github.event.workflow_run.repository.id')
+  );
+}
+
+function isIdentEqBoundRepoId(node, identPath, expectedRepoId, allowWorkflowRunRepoIdent) {
   if (node.kind !== 'Compare' || node.op !== '==') return false;
-  if (node.left.kind === 'Ident' && node.left.path === 'github.event.workflow_run.head_repository.id') {
-    return isPositiveRepoIdValueNode(node.right);
+  if (node.left.kind === 'Ident' && node.left.path === identPath) {
+    return isRepoIdContextOrBoundLiteral(node.right, expectedRepoId, allowWorkflowRunRepoIdent);
   }
   return node.right.kind === 'Ident' &&
-    node.right.path === 'github.event.workflow_run.head_repository.id' &&
-    isPositiveRepoIdValueNode(node.left);
+    node.right.path === identPath &&
+    isRepoIdContextOrBoundLiteral(node.left, expectedRepoId, allowWorkflowRunRepoIdent);
 }
 
-function isWorkflowRunRepoGuardConjunct(node) {
+function onMapNeedsWorkflowRunRepoGuard(onMap) {
+  return Object.hasOwn(onMap, 'workflow_run');
+}
+
+function isWorkflowRunRepoGuardConjunct(node, expectedRepoId) {
   if (isIdentCompareLiteral(node, '!=', 'github.event_name', 'workflow_run') ||
-      isWorkflowRunHeadRepoEq(node)) {
+      isIdentEqBoundRepoId(node, 'github.event.workflow_run.head_repository.id', expectedRepoId, true)) {
     return true;
   }
   if (node.kind !== 'Or') return false;
   if (isIdentCompareLiteral(node.left, '!=', 'github.event_name', 'workflow_run')) {
-    return collectMandatoryConjuncts(node.right).some(isWorkflowRunHeadRepoEq);
+    return collectMandatoryConjuncts(node.right).some(c =>
+      isIdentEqBoundRepoId(c, 'github.event.workflow_run.head_repository.id', expectedRepoId, true)
+    );
   }
   return isIdentCompareLiteral(node.right, '!=', 'github.event_name', 'workflow_run') &&
-    collectMandatoryConjuncts(node.left).some(isWorkflowRunHeadRepoEq);
+    collectMandatoryConjuncts(node.left).some(c =>
+      isIdentEqBoundRepoId(c, 'github.event.workflow_run.head_repository.id', expectedRepoId, true)
+    );
 }
 
 function hasWorkflowRunSameRepoGuard(ast) {
-  return ast !== null && !astHasBypassCall(ast) &&
-    collectMandatoryConjuncts(ast).some(isWorkflowRunRepoGuardConjunct);
+  if (ast === null || astHasBypassCall(ast)) return false;
+  const conjuncts = collectMandatoryConjuncts(ast);
+  const binding = resolveTrustedRepoIdBinding(conjuncts);
+  return binding.ok && conjuncts.some(c => isWorkflowRunRepoGuardConjunct(c, binding.repoId));
+}
+
+function isTrustedReviewAltBranch(branchNode, targetBranch, expectedRepoId) {
+  const parts = collectMandatoryConjuncts(branchNode);
+  return parts.some(p => isIdentCompareLiteral(p, '==', 'github.event_name', 'pull_request_review')) &&
+    parts.some(p => isIdentCompareLiteral(p, '==', 'github.event.pull_request.base.ref', targetBranch)) &&
+    parts.some(p => isIdentEqBoundRepoId(p, 'github.event.pull_request.base.repo.id', expectedRepoId, false)) &&
+    parts.some(p => isIdentEqBoundRepoId(p, 'github.event.pull_request.head.repo.id', expectedRepoId, false));
+}
+
+function isCompatibleWithPullRequestReview(ast, targetBranch) {
+  if (ast === null || astHasBypassCall(ast)) return false;
+  const expectedBranchRef = `refs/heads/${targetBranch}`;
+  const conjuncts = collectMandatoryConjuncts(ast);
+  const binding = resolveTrustedRepoIdBinding(conjuncts);
+  if (!binding.ok) return false;
+  const excludesReview = conjuncts.some(c =>
+    isIdentCompareLiteral(c, '!=', 'github.event_name', 'pull_request_review')
+  );
+  if (!excludesReview && conjuncts.some(c => isIdentCompareLiteral(c, '==', 'github.ref', expectedBranchRef))) {
+    return false;
+  }
+  for (const c of conjuncts) {
+    if (c.kind !== 'Or') continue;
+    const leftHasRef = collectMandatoryConjuncts(c.left).some(p =>
+      isIdentCompareLiteral(p, '==', 'github.ref', expectedBranchRef)
+    );
+    const rightHasRef = collectMandatoryConjuncts(c.right).some(p =>
+      isIdentCompareLiteral(p, '==', 'github.ref', expectedBranchRef)
+    );
+    if (leftHasRef && !isTrustedReviewAltBranch(c.right, targetBranch, binding.repoId)) return false;
+    if (rightHasRef && !isTrustedReviewAltBranch(c.left, targetBranch, binding.repoId)) return false;
+  }
+  return true;
 }
 
 function validateLockTriggerMap(onMap) {
@@ -1303,9 +1398,13 @@ function inspectFrontmatterPolicy(frontmatter, isNewerVerified, headers, options
     }
     const fmTriggers = validateLockTriggerMap(frontmatter.on);
     if (!fmTriggers.ok) return fmTriggers;
-    if (onMapNeedsWorkflowRunRepoGuard(frontmatter.on) &&
-        !hasWorkflowRunSameRepoGuard(parseIfExpression(frontmatter.if))) {
+    const fmAst = parseIfExpression(frontmatter.if);
+    if (onMapNeedsWorkflowRunRepoGuard(frontmatter.on) && !hasWorkflowRunSameRepoGuard(fmAst)) {
       return {ok: false, reason: 'MISSING_WORKFLOW_RUN_REPO_GUARD'};
+    }
+    if (Object.hasOwn(frontmatter.on, 'pull_request_review') &&
+        !isCompatibleWithPullRequestReview(fmAst, 'main')) {
+      return {ok: false, reason: 'INVALID_REVIEW_REF_GUARD'};
     }
   }
 
@@ -1500,16 +1599,13 @@ export function verifyGhAwWorkflowLock(input) {
 
   const lockTriggersCheck = validateLockTriggerMap(lockDoc.on);
   if (!lockTriggersCheck.ok) return deny(lockTriggersCheck.reason);
-  if (frontmatter.on !== undefined) {
-    const fmTriggerKeys = Object.keys(frontmatter.on);
-    const lockTriggerKeys = Object.keys(lockDoc.on);
-    if (fmTriggerKeys.length !== lockTriggerKeys.length ||
-        !fmTriggerKeys.every(key => Object.hasOwn(lockDoc.on, key))) {
-      return deny('TRIGGER_PARITY_MISMATCH');
-    }
+  if (frontmatter.on !== undefined &&
+      marshalCanonicalJson(frontmatter.on) !== marshalCanonicalJson(lockDoc.on)) {
+    return deny('TRIGGER_PARITY_MISMATCH');
   }
+  const hasPullRequestReviewTrigger = Object.hasOwn(lockDoc.on, 'pull_request_review');
   const hasPrRefExposureTrigger = Object.hasOwn(lockDoc.on, 'pull_request_target') ||
-    Object.hasOwn(lockDoc.on, 'pull_request_review');
+    hasPullRequestReviewTrigger;
   const needsWorkflowRunGuard = onMapNeedsWorkflowRunRepoGuard(lockDoc.on);
 
   const helperJobs = [];
@@ -1722,6 +1818,14 @@ export function verifyGhAwWorkflowLock(input) {
   const guardedHelperIds = new Set(
     helperJobs.filter(({job}) => verifyEvaluationGuards(job.if).ok).map(({jobId}) => jobId)
   );
+  const reviewCompatibleHelperIds = new Set(
+    helperJobs
+      .filter(({job}) =>
+        verifyEvaluationGuards(job.if).ok &&
+        isCompatibleWithPullRequestReview(parseIfExpression(job.if), 'main')
+      )
+      .map(({jobId}) => jobId)
+  );
   const workflowRunGuardedHelperIds = new Set(
     helperJobs
       .filter(({job}) => verifyEvaluationGuards(job.if).ok && hasWorkflowRunSameRepoGuard(parseIfExpression(job.if)))
@@ -1732,9 +1836,10 @@ export function verifyGhAwWorkflowLock(input) {
   for (const {job} of evaluationJobIds) {
     const evalAst = job.if === undefined ? null : parseIfExpression(job.if);
     const guardVerdict = verifyEvaluationGuards(job.if);
+    let matchingGuardedHelpers = [];
     if (!guardVerdict.ok) {
       const evalNeeds = normalizeNeeds(job.needs);
-      const matchingGuardedHelpers = evalNeeds === null ? [] : evalNeeds.filter(dep => guardedHelperIds.has(dep));
+      matchingGuardedHelpers = evalNeeds === null ? [] : evalNeeds.filter(dep => guardedHelperIds.has(dep));
       if (matchingGuardedHelpers.length === 0) return deny(guardVerdict.reason);
       if (job.if !== undefined) {
         if (evalAst === null || astHasBypassCall(evalAst)) return deny(guardVerdict.reason);
@@ -1759,6 +1864,14 @@ export function verifyGhAwWorkflowLock(input) {
         )
       );
       if (!inheritsWrGuard) return deny('MISSING_WORKFLOW_RUN_REPO_GUARD');
+    }
+    if (hasPullRequestReviewTrigger) {
+      if (evalAst !== null && !isCompatibleWithPullRequestReview(evalAst, 'main')) {
+        return deny('INVALID_REVIEW_REF_GUARD');
+      }
+      if (!guardVerdict.ok && !matchingGuardedHelpers.some(helperId => reviewCompatibleHelperIds.has(helperId))) {
+        return deny('INVALID_REVIEW_REF_GUARD');
+      }
     }
   }
 
@@ -2493,6 +2606,16 @@ export function verifyEventTriggerMatrix(lockYamlSource, options) {
   if (needsWorkflowRunGuard &&
       jobEntries.some(([jobId]) => !disabledJobIds.has(jobId) && !workflowRunGuardedJobIds.has(jobId))) {
     return deny('MISSING_WORKFLOW_RUN_REPO_GUARD');
+  }
+  if (hasPullRequestReviewTrigger) {
+    for (const [jobId] of jobEntries) {
+      if (disabledJobIds.has(jobId)) continue;
+      const jobAst = parsedJobIfs.get(jobId);
+      if (jobAst !== null && !astHasBypassCall(jobAst) &&
+          !isCompatibleWithPullRequestReview(jobAst, targetBranch)) {
+        return deny('INVALID_REVIEW_REF_GUARD');
+      }
+    }
   }
 
   for (const {jobId, stepIdx} of checkoutProvenanceReqs) {

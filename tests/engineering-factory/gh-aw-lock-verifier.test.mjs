@@ -1776,13 +1776,15 @@ test('verifies Issue #5 event trigger matrix, 10-minute default-off recovery sch
   assert.equal(partialOrchestrator.recoverySchedule, null);
   assert.deepEqual(partialOrchestrator.defaultOffVars, ['FACTORY_GHAW_ENABLED']);
 
+  const wrGuardClause = " && (github.event_name != 'workflow_run' || github.event.workflow_run.head_repository.id == 1471342715)";
+  const guardedMainEvalIf = `\${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.ref == 'refs/heads/main' && github.ref_protected == true && !endsWith(github.actor, '[bot]')${wrGuardClause} }}`;
   const buildMatrixYaml = ({
     cron = "'3,13,23,33,43,53 * * * *'",
     includeReview = true,
     extraTrigger = '',
     topPerms = '  contents: read',
     topConcurrency = 'concurrency:\n  group: factory-event-matrix-${{ github.ref }}\n  cancel-in-progress: false',
-    evalIf = "${{ vars.FACTORY_GHAW_ENABLED == 'true' && !endsWith(github.actor, '[bot]') }}",
+    evalIf = `\${{ vars.FACTORY_GHAW_ENABLED == 'true' && !endsWith(github.actor, '[bot]')${wrGuardClause} }}`,
     evalPerms = '      contents: read',
     evalConcurrency = '',
     checkoutUses = `actions/checkout@${checkoutSha}`,
@@ -2048,10 +2050,10 @@ test('verifies Issue #5 event trigger matrix, 10-minute default-off recovery sch
   })).reason, 'UNTRUSTED_PR_CHECKOUT');
   assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({
     includeReview: false,
-    evalIf: "${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.ref == 'refs/heads/main' && !endsWith(github.actor, '[bot]') }}",
+    evalIf: `\${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.ref == 'refs/heads/main' && !endsWith(github.actor, '[bot]')${wrGuardClause} }}`,
     extraJobs: [
       '  noref_peer:',
-      "    if: vars.FACTORY_GHAW_ENABLED == 'true'",
+      `    if: vars.FACTORY_GHAW_ENABLED == 'true'${wrGuardClause}`,
       '    runs-on: ubuntu-latest',
       '    steps:',
       '      - run: echo "peer"',
@@ -2063,7 +2065,7 @@ test('verifies Issue #5 event trigger matrix, 10-minute default-off recovery sch
       '        with:',
       '          persist-credentials: false'
     ].join('\n')
-  })).reason, 'UNTRUSTED_PR_CHECKOUT');
+  }).replace(/  pull_request_target:\n    branches: \[main\]\n    types: \[[^\]]+\]\n/, ''), {allowPartialTriggers: true}).reason, 'UNTRUSTED_PR_CHECKOUT');
   // Case-folded checkout keys (Repository / Ref) and INPUT_* env overrides in verifyEventTriggerMatrix MUST fail closed!
   assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({
     checkoutWith: '          persist-credentials: false\n          Repository: attacker/evil-fork\n          ref: refs/heads/main'
@@ -2097,14 +2099,14 @@ test('verifies Issue #5 event trigger matrix, 10-minute default-off recovery sch
   })).reason, 'UNTRUSTED_PR_CHECKOUT');
   assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({
     includeReview: false,
-    evalIf: "${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.ref == 'refs/heads/main' && github.ref_protected == true && !endsWith(github.actor, '[bot]') }}",
+    evalIf: guardedMainEvalIf,
     checkoutWith: '          persist-credentials: false\n          ref: ${{ github.workflow_sha }}',
     stepRun: '          set -euo pipefail\n          test "$GITHUB_REF" = refs/heads/main\n          test "$GITHUB_REF_PROTECTED" = true\n          echo "ok"'
   })).valid, true);
   // Also accept checkout occurring AFTER an earlier fail-closed preamble step (when checkout preserves success() semantics)!
   assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({
     includeReview: false,
-    evalIf: "${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.ref == 'refs/heads/main' && github.ref_protected == true && !endsWith(github.actor, '[bot]') }}",
+    evalIf: guardedMainEvalIf,
     checkoutWith: '          persist-credentials: false\n          ref: ${{ github.workflow_sha }}'
   }).replace(
     `      - uses: actions/checkout@${checkoutSha}\n`,
@@ -2113,7 +2115,7 @@ test('verifies Issue #5 event trigger matrix, 10-minute default-off recovery sch
   for (const bypassStepIf of ['always()', '${{ !success() }}', '${{ success() == false }}', '${{ success() || true }}']) {
     assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({
       includeReview: false,
-      evalIf: "${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.ref == 'refs/heads/main' && github.ref_protected == true && !endsWith(github.actor, '[bot]') }}",
+      evalIf: guardedMainEvalIf,
       checkoutWith: '          persist-credentials: false\n          ref: ${{ github.workflow_sha }}'
     }).replace(
       `      - uses: actions/checkout@${checkoutSha}\n`,
@@ -2122,7 +2124,7 @@ test('verifies Issue #5 event trigger matrix, 10-minute default-off recovery sch
   }
   assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({
     includeReview: false,
-    evalIf: "${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.ref == 'refs/heads/main' && github.ref_protected == true && !endsWith(github.actor, '[bot]') }}",
+    evalIf: guardedMainEvalIf,
     checkoutWith: '          persist-credentials: false\n          ref: ${{ github.workflow_sha }}',
     stepRun: '          set -euo pipefail\n          test "$GITHUB_REF" = refs/heads/main\n          test "$GITHUB_REF_PROTECTED" = true'
   }).replace(
@@ -2132,13 +2134,13 @@ test('verifies Issue #5 event trigger matrix, 10-minute default-off recovery sch
   // Error-tolerant preamble (continue-on-error: true) OR repository code running BEFORE preamble MUST fail closed!
   assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({
     includeReview: false,
-    evalIf: "${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.ref == 'refs/heads/main' && github.ref_protected == true && !endsWith(github.actor, '[bot]') }}",
+    evalIf: guardedMainEvalIf,
     checkoutWith: '          persist-credentials: false\n          ref: ${{ github.workflow_sha }}',
     stepRun: '          set -euo pipefail\n          test "$GITHUB_REF" = refs/heads/main\n          test "$GITHUB_REF_PROTECTED" = true'
   }).replace('      - name: Metadata reconcile\n', '      - name: Metadata reconcile\n        continue-on-error: true\n')).reason, 'UNTRUSTED_PR_CHECKOUT');
   assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({
     includeReview: false,
-    evalIf: "${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.ref == 'refs/heads/main' && github.ref_protected == true && !endsWith(github.actor, '[bot]') }}",
+    evalIf: guardedMainEvalIf,
     checkoutWith: '          persist-credentials: false\n          ref: ${{ github.workflow_sha }}',
     stepRun: '          set -euo pipefail\n          test "$GITHUB_REF" = refs/heads/main\n          test "$GITHUB_REF_PROTECTED" = true'
   }).replace(
@@ -2148,7 +2150,7 @@ test('verifies Issue #5 event trigger matrix, 10-minute default-off recovery sch
   // Weakened || true preamble, mutated shadow-reconcile optin emitting unconditional enabled=true, or != 'skipped' provenance inheritance MUST fail closed!
   assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({
     includeReview: false,
-    evalIf: "${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.ref == 'refs/heads/main' && github.ref_protected == true && !endsWith(github.actor, '[bot]') }}",
+    evalIf: guardedMainEvalIf,
     checkoutWith: '          persist-credentials: false\n          ref: ${{ github.workflow_sha }}',
     stepRun: '          set -euo pipefail\n          test "$GITHUB_REF" = refs/heads/main || true\n          test "$GITHUB_REF_PROTECTED" = true'
   })).reason, 'UNTRUSTED_PR_CHECKOUT');
@@ -2161,7 +2163,7 @@ test('verifies Issue #5 event trigger matrix, 10-minute default-off recovery sch
   // Preceding run: step poisoning $GITHUB_ENV (e.g. BASH_ENV) before preamble or optin MUST fail closed!
   assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({
     includeReview: false,
-    evalIf: "${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.ref == 'refs/heads/main' && github.ref_protected == true && !endsWith(github.actor, '[bot]') }}",
+    evalIf: guardedMainEvalIf,
     checkoutWith: '          persist-credentials: false\n          ref: ${{ github.workflow_sha }}'
   }).replace(
     `      - uses: actions/checkout@${checkoutSha}\n`,
@@ -2175,7 +2177,7 @@ test('verifies Issue #5 event trigger matrix, 10-minute default-off recovery sch
   ).reason, 'UNTRUSTED_PR_CHECKOUT');
   assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({
     includeReview: false,
-    evalIf: "${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.ref == 'refs/heads/main' && github.ref_protected == true && !endsWith(github.actor, '[bot]') }}",
+    evalIf: guardedMainEvalIf,
     stepRun: '          set -euo pipefail\n          test "$GITHUB_REF" = refs/heads/main\n          test "$GITHUB_REF_PROTECTED" = true',
     extraJobs: [
       '  detection:',
@@ -2246,7 +2248,7 @@ test('verifies Issue #5 event trigger matrix, 10-minute default-off recovery sch
   // Case-insensitive github.ref == 'refs/heads/main' ALONE does NOT make omitted checkout ref trusted (requires github.ref_protected + case-sensitive shell guard)
   const caseInsensitiveOnlyDispatch = buildMatrixYaml({
     includeReview: false,
-    evalIf: "${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.ref == 'refs/heads/main' && !endsWith(github.actor, '[bot]') }}"
+    evalIf: `\${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.ref == 'refs/heads/main' && !endsWith(github.actor, '[bot]')${wrGuardClause} }}`
   }).replace(/  pull_request_target:\n    branches: \[main\]\n    types: \[[^\]]+\]\n/, '');
   assert.equal(verifyEventTriggerMatrix(
     caseInsensitiveOnlyDispatch.replace('          ref: refs/heads/main', '').replace(/\n\n+/g, '\n'),
@@ -2256,7 +2258,7 @@ test('verifies Issue #5 event trigger matrix, 10-minute default-off recovery sch
   // Default-off & case-sensitive protected-ref provenance downstream inheritance (including implicit needs success & reverse topological order)
   const implicitAndReverseDownstream = buildMatrixYaml({
     includeReview: false,
-    evalIf: "${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.ref == 'refs/heads/main' && github.ref_protected == true && !endsWith(github.actor, '[bot]') }}",
+    evalIf: guardedMainEvalIf,
     stepRun: '          set -euo pipefail\n          test "$GITHUB_REF" = refs/heads/main\n          test "$GITHUB_REF_PROTECTED" = true\n          echo "eval"',
     extraJobs: [
       '  downstream_implicit:',
@@ -2292,15 +2294,43 @@ test('verifies Issue #5 event trigger matrix, 10-minute default-off recovery sch
     assert.equal(verifyEventTriggerMatrix(unguardedMatrix).reason, 'MISSING_DEFAULT_OFF_GUARD');
   }
 
-  // Branchless workflow_run in verifyEventTriggerMatrix requires same-repository head_repository.id guard and propagates through needs
+  // workflow_run (BOTH with branches: [main] and branchless) requires same-repository head_repository.id guard bound to trusted repo
   const stripWrBranch = yamlText => yamlText.replace('    types: [completed]\n    branches: [main]', '    types: [completed]');
-  const branchlessWrBase = stripWrBranch(buildMatrixYaml());
-  assert.equal(verifyEventTriggerMatrix(branchlessWrBase).reason, 'MISSING_WORKFLOW_RUN_REPO_GUARD');
+  const unguardedEvalIf = "${{ vars.FACTORY_GHAW_ENABLED == 'true' && !endsWith(github.actor, '[bot]') }}";
+  assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({evalIf: unguardedEvalIf})).reason, 'MISSING_WORKFLOW_RUN_REPO_GUARD');
+  assert.equal(verifyEventTriggerMatrix(stripWrBranch(buildMatrixYaml({evalIf: unguardedEvalIf}))).reason, 'MISSING_WORKFLOW_RUN_REPO_GUARD');
+
+  // Positive foreign repository IDs or mismatched repository/repository_id bindings MUST fail closed!
+  for (const foreignWrEvalIf of [
+    "${{ vars.FACTORY_GHAW_ENABLED == 'true' && !endsWith(github.actor, '[bot]') && (github.event_name != 'workflow_run' || github.event.workflow_run.head_repository.id == 999999) }}",
+    "${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.repository_id == '1471342715' && !endsWith(github.actor, '[bot]') && (github.event_name != 'workflow_run' || github.event.workflow_run.head_repository.id == 999999) }}",
+    "${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.repository == 'Jamula/SoftwareFactory' && github.repository_id == '999999' && !endsWith(github.actor, '[bot]') && (github.event_name != 'workflow_run' || github.event.workflow_run.head_repository.id == 999999) }}",
+    "${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.repository == 'jamula/softwarefactory' && github.repository_id == '1471342715' && !endsWith(github.actor, '[bot]') && (github.event_name != 'workflow_run' || github.event.workflow_run.head_repository.id == 1471342715) }}",
+    "${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.repository == 'Synthetic/Consumer' && !endsWith(github.actor, '[bot]') && (github.event_name != 'workflow_run' || github.event.workflow_run.head_repository.id == 1471342715) }}",
+    "${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.repository == 'Synthetic/Consumer' && github.repository_id == '1471342715' && !endsWith(github.actor, '[bot]') && (github.event_name != 'workflow_run' || github.event.workflow_run.head_repository.id == 1471342715) }}",
+    "${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.repository == '' && !endsWith(github.actor, '[bot]') && (github.event_name != 'workflow_run' || github.event.workflow_run.head_repository.id == 1471342715) }}",
+    "${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.repository_id == 0 && !endsWith(github.actor, '[bot]') && (github.event_name != 'workflow_run' || github.event.workflow_run.head_repository.id == 1471342715) }}",
+    "${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.repository_id == '9999999999999999' && !endsWith(github.actor, '[bot]') && (github.event_name != 'workflow_run' || github.event.workflow_run.head_repository.id == '9999999999999999') }}",
+    "${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.repository_id == '1471342715' && github.repository_id == '200036' && !endsWith(github.actor, '[bot]') && (github.event_name != 'workflow_run' || github.event.workflow_run.head_repository.id == 1471342715) }}"
+  ]) {
+    assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({evalIf: foreignWrEvalIf})).reason, 'MISSING_WORKFLOW_RUN_REPO_GUARD');
+  }
+
+  // Unconditional github.ref == 'refs/heads/main' or incomplete review disjunction when pull_request_review is enabled fails closed!
+  for (const incompatibleReviewIf of [
+    `\${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.ref == 'refs/heads/main' && !endsWith(github.actor, '[bot]')${wrGuardClause} }}`,
+    `\${{ vars.FACTORY_GHAW_ENABLED == 'true' && ((github.ref == 'refs/heads/main' && github.ref_protected == true) || github.event_name == 'pull_request_review') && !endsWith(github.actor, '[bot]')${wrGuardClause} }}`,
+    `\${{ vars.FACTORY_GHAW_ENABLED == 'true' && (github.event_name == 'pull_request_review' || (github.ref == 'refs/heads/main' && github.ref_protected == true)) && !endsWith(github.actor, '[bot]')${wrGuardClause} }}`,
+    `\${{ vars.FACTORY_GHAW_ENABLED == 'true' && ((github.ref == 'refs/heads/main' && github.ref_protected == true) || (github.event_name == 'pull_request_review' && github.event.pull_request.base.ref == 'main' && github.event.pull_request.base.repo.id == 1471342715 && github.event.pull_request.head.repo.id == 999999)) && !endsWith(github.actor, '[bot]')${wrGuardClause} }}`
+  ]) {
+    assert.equal(verifyEventTriggerMatrix(buildMatrixYaml({evalIf: incompatibleReviewIf})).reason, 'INVALID_REVIEW_REF_GUARD');
+  }
 
   for (const validWrEvalIf of [
     "${{ vars.FACTORY_GHAW_ENABLED == 'true' && !endsWith(github.actor, '[bot]') && (github.event_name != 'workflow_run' || github.event.workflow_run.head_repository.id == 1471342715) }}",
     "${{ vars.FACTORY_GHAW_ENABLED == 'true' && !endsWith(github.actor, '[bot]') && ('1471342715' == github.event.workflow_run.head_repository.id || github.event_name != 'workflow_run') }}",
-    "${{ vars.FACTORY_GHAW_ENABLED == 'true' && !endsWith(github.actor, '[bot]') && (github.event_name != 'workflow_run' || github.event.workflow_run.head_repository.id == github.repository_id) }}",
+    "${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.repository == 'Synthetic/Consumer' && '200036' == github.repository_id && !endsWith(github.actor, '[bot]') && (github.event_name != 'workflow_run' || github.event.workflow_run.head_repository.id == 200036) }}",
+    "${{ vars.FACTORY_GHAW_ENABLED == 'true' && ((github.event_name == 'pull_request_review' && github.event.pull_request.base.ref == 'main' && github.event.pull_request.base.repo.id == github.repository_id && github.repository_id == github.event.pull_request.head.repo.id) || (github.ref == 'refs/heads/main' && github.ref_protected == true)) && !endsWith(github.actor, '[bot]') && (github.event_name != 'workflow_run' || github.event.workflow_run.head_repository.id == github.repository_id) }}",
     "${{ vars.FACTORY_GHAW_ENABLED == 'true' && !endsWith(github.actor, '[bot]') && (github.event_name != 'workflow_run' || github.event.workflow_run.repository.id == github.event.workflow_run.head_repository.id) }}",
     "${{ vars.FACTORY_GHAW_ENABLED == 'true' && !endsWith(github.actor, '[bot]') && github.event_name != 'workflow_run' }}",
     "${{ vars.FACTORY_GHAW_ENABLED == 'true' && !endsWith(github.actor, '[bot]') && github.event.workflow_run.head_repository.id == 1471342715 }}"
@@ -2401,25 +2431,49 @@ test('enforces verifyGhAwWorkflowLock trigger parity, workflow_run repo guard, e
     'INVALID_EVENT_TRIGGER_CONFIG'
   );
 
-  // Trigger parity mismatch between .md and .lock.yml fails closed
+  // Trigger parity mismatch between .md and .lock.yml fails closed (both missing keys AND same-key config drift!)
   assert.equal(
     rehashPair(trackedMd.replace('  pull_request_review:\n    types: [submitted, edited, dismissed]\n', ''), trackedLock).reason,
     'TRIGGER_PARITY_MISMATCH'
   );
+  for (const mutatedLockConfig of [
+    trackedLock.replace('types: [opened, edited, labeled, unlabeled, closed, reopened]', 'types: [closed]'),
+    trackedLock.replace('types: [submitted, edited, dismissed]', 'types: [submitted]'),
+    trackedLock.replace('workflows: ["Factory validation", "Windows Aspire runtime", ".NET MAF specialist agents"]', 'workflows: ["Factory validation"]'),
+    trackedLock.replace("cron: '3,13,23,33,43,53 * * * *'", "cron: '7,17,27,37,47,57 * * * *'")
+  ]) {
+    assert.equal(rehashPair(trackedMd, mutatedLockConfig).reason, 'TRIGGER_PARITY_MISMATCH');
+  }
 
-  // Missing workflow_run head_repository.id guard in frontmatter.if or evaluate.if fails closed
+  // Missing or foreign workflow_run head_repository.id guard in frontmatter.if or evaluate.if fails closed
   const stripWrGuard = text => text.replace(
     " && (github.event_name != 'workflow_run' || github.event.workflow_run.head_repository.id == 1471342715)",
     ''
   );
   assert.equal(rehashPair(stripWrGuard(trackedMd), trackedLock).reason, 'MISSING_WORKFLOW_RUN_REPO_GUARD');
   assert.equal(rehashPair(trackedMd, stripWrGuard(trackedLock)).reason, 'MISSING_WORKFLOW_RUN_REPO_GUARD');
+  for (const badHeadRepoId of ['0', '999999']) {
+    assert.equal(
+      rehashPair(
+        trackedMd,
+        trackedLock.replace(
+          'github.event.workflow_run.head_repository.id == 1471342715',
+          `github.event.workflow_run.head_repository.id == ${badHeadRepoId}`
+        )
+      ).reason,
+      'MISSING_WORKFLOW_RUN_REPO_GUARD'
+    );
+  }
+
+  // Unconditional github.ref == 'refs/heads/main' in .md or .lock.yml when pull_request_review is present fails closed
+  const reviewRefDisjunction = "((github.ref == 'refs/heads/main' && github.ref_protected == true) || (github.event_name == 'pull_request_review' && github.event.pull_request.base.ref == 'main' && github.event.pull_request.base.repo.id == 1471342715 && github.event.pull_request.head.repo.id == 1471342715))";
   assert.equal(
-    rehashPair(
-      trackedMd,
-      trackedLock.replace('github.event.workflow_run.head_repository.id == 1471342715', 'github.event.workflow_run.head_repository.id == 0')
-    ).reason,
-    'MISSING_WORKFLOW_RUN_REPO_GUARD'
+    rehashPair(trackedMd.replace(reviewRefDisjunction, "github.ref == 'refs/heads/main' && github.ref_protected == true"), trackedLock).reason,
+    'INVALID_REVIEW_REF_GUARD'
+  );
+  assert.equal(
+    rehashPair(trackedMd, trackedLock.replace(reviewRefDisjunction, "github.ref == 'refs/heads/main' && github.ref_protected == true")).reason,
+    'INVALID_REVIEW_REF_GUARD'
   );
 
   // Compiler-shaped activation -> agent helper inheritance for workflow_run repo guard
@@ -2485,6 +2539,60 @@ test('enforces verifyGhAwWorkflowLock trigger parity, workflow_run repo guard, e
     lockYamlSource: buildHelperWrLock({activationWrGuard: ''})
   }).reason, 'MISSING_WORKFLOW_RUN_REPO_GUARD');
 
+  // Helper activation job blocking pull_request_review with unconditional github.ref == 'refs/heads/main' fails closed
+  const helperRevMd = [
+    '---',
+    'name: Compiler Review Helper',
+    'engine: copilot',
+    "if: \"vars.FACTORY_GHAW_ENABLED == 'true' && !endsWith(github.actor, '[bot]')\"",
+    'on:',
+    '  pull_request_review:',
+    '    types: [submitted]',
+    'permissions: {}',
+    '---',
+    '# Body'
+  ].join('\n');
+  const helperRevLock = [
+    makeMetadataLine({
+      frontmatterHash: computeFrontmatterSha256(helperRevMd),
+      bodyHash: computeBodySha256(helperRevMd)
+    }),
+    `# gh-aw-commit: ${PINNED_GHAW_RELEASE.commit}`,
+    'name: Compiler Review Helper',
+    'on:',
+    '  pull_request_review:',
+    '    types: [submitted]',
+    'permissions: {}',
+    'jobs:',
+    '  activation:',
+    "    if: vars.FACTORY_GHAW_ENABLED == 'true' && github.ref == 'refs/heads/main' && !endsWith(github.actor, '[bot]')",
+    '    runs-on: ubuntu-slim',
+    '    permissions:',
+    '      contents: read',
+    '    steps:',
+    '      - run: echo "activate"',
+    '  agent:',
+    '    needs: [activation]',
+    "    if: needs.activation.result == 'success'",
+    '    runs-on: ubuntu-latest',
+    '    permissions:',
+    '      contents: read',
+    '    steps:',
+    '      - run: echo "agent"',
+    '  threat-scan:',
+    '    needs: [agent]',
+    "    if: needs.agent.result == 'success'",
+    '    runs-on: ubuntu-latest',
+    '    permissions:',
+    '      contents: read',
+    '    steps:',
+    '      - run: echo "scan"'
+  ].join('\n');
+  assert.equal(verifyGhAwWorkflowLock({
+    markdownSource: helperRevMd,
+    lockYamlSource: helperRevLock
+  }).reason, 'INVALID_REVIEW_REF_GUARD');
+
   // Evaluate job checkout omitting ref/repository or poisoned env under pull_request_target/review fails closed
   assert.equal(
     rehashPair(
@@ -2526,11 +2634,15 @@ test('enforces verifyGhAwWorkflowLock trigger parity, workflow_run repo guard, e
     GITHUB_REPOSITORY_ID: '1471342715',
     GITHUB_REF: 'refs/heads/main',
     GITHUB_REF_PROTECTED: 'true',
+    GITHUB_WORKFLOW_REF: 'Jamula/SoftwareFactory/.github/workflows/factory-orchestrator.lock.yml@refs/heads/main',
     GITHUB_EVENT_NAME: 'schedule',
     FACTORY_GHAW_MODE: '',
     FACTORY_ISSUE_NUMBER: '',
     FACTORY_PULL_NUMBER: '',
     FACTORY_PULL_HEAD: '',
+    FACTORY_PULL_BASE_REF: '',
+    FACTORY_PULL_BASE_REPO_ID: '',
+    FACTORY_PULL_HEAD_REPO_ID: '',
     FACTORY_REVIEW_ID: '',
     FACTORY_WORKFLOW_RUN_ID: '',
     FACTORY_CHECK_HEAD: '',
@@ -2542,6 +2654,32 @@ test('enforces verifyGhAwWorkflowLock trigger parity, workflow_run repo guard, e
   const scheduleRun = spawnSync('bash', ['-c', evalScript], {cwd: repoRoot, env: baseEvalEnv, encoding: 'utf8'});
   assert.equal(scheduleRun.status, 0, scheduleRun.stderr);
   assert.match(scheduleRun.stdout, /"SHADOW_PLAN"/);
+
+  // pull_request_review with GITHUB_REF=refs/pull/<n>/merge and GITHUB_REF_PROTECTED=false succeeds for same-repo main PRs!
+  for (const wfRef of [
+    'Jamula/SoftwareFactory/.github/workflows/factory-orchestrator.lock.yml@refs/pull/42/merge',
+    'Jamula/SoftwareFactory/.github/workflows/factory-orchestrator.lock.yml@refs/heads/main'
+  ]) {
+    const reviewRun = spawnSync('bash', ['-c', evalScript], {
+      cwd: repoRoot,
+      env: {
+        ...baseEvalEnv,
+        GITHUB_EVENT_NAME: 'pull_request_review',
+        GITHUB_REF: 'refs/pull/42/merge',
+        GITHUB_REF_PROTECTED: 'false',
+        GITHUB_WORKFLOW_REF: wfRef,
+        FACTORY_GHAW_MODE: 'verify-lock',
+        FACTORY_PULL_NUMBER: '42',
+        FACTORY_PULL_HEAD: validSha,
+        FACTORY_PULL_BASE_REF: 'main',
+        FACTORY_PULL_BASE_REPO_ID: '1471342715',
+        FACTORY_PULL_HEAD_REPO_ID: '1471342715',
+        FACTORY_REVIEW_ID: '777'
+      },
+      encoding: 'utf8'
+    });
+    assert.equal(reviewRun.status, 0, reviewRun.stderr);
+  }
 
   // verify-lock mode skips smoke and succeeds
   const verifyOnlyRun = spawnSync('bash', ['-c', evalScript], {
@@ -2568,6 +2706,44 @@ test('enforces verifyGhAwWorkflowLock trigger parity, workflow_run repo guard, e
 
   for (const rejectedEnv of [
     {...baseEvalEnv, GITHUB_EVENT_NAME: 'workflow_run', FACTORY_WORKFLOW_HEAD_REPO_ID: '999999'},
+    {...baseEvalEnv, GITHUB_EVENT_NAME: 'issues', GITHUB_REF: 'refs/pull/42/merge', GITHUB_REF_PROTECTED: 'false'},
+    {
+      ...baseEvalEnv,
+      GITHUB_EVENT_NAME: 'pull_request_review',
+      GITHUB_REF: 'refs/pull/42/merge',
+      GITHUB_REF_PROTECTED: 'false',
+      FACTORY_PULL_NUMBER: '42',
+      FACTORY_PULL_HEAD: validSha,
+      FACTORY_PULL_BASE_REF: 'main',
+      FACTORY_PULL_BASE_REPO_ID: '1471342715',
+      FACTORY_PULL_HEAD_REPO_ID: '999999',
+      FACTORY_REVIEW_ID: '777'
+    },
+    {
+      ...baseEvalEnv,
+      GITHUB_EVENT_NAME: 'pull_request_review',
+      GITHUB_REF: 'refs/pull/42/merge',
+      GITHUB_REF_PROTECTED: 'false',
+      FACTORY_PULL_NUMBER: '42',
+      FACTORY_PULL_HEAD: validSha,
+      FACTORY_PULL_BASE_REF: 'develop',
+      FACTORY_PULL_BASE_REPO_ID: '1471342715',
+      FACTORY_PULL_HEAD_REPO_ID: '1471342715',
+      FACTORY_REVIEW_ID: '777'
+    },
+    {
+      ...baseEvalEnv,
+      GITHUB_EVENT_NAME: 'pull_request_review',
+      GITHUB_REF: 'refs/pull/42/merge',
+      GITHUB_REF_PROTECTED: 'false',
+      GITHUB_WORKFLOW_REF: 'Jamula/SoftwareFactory/.github/workflows/other.yml@refs/heads/main',
+      FACTORY_PULL_NUMBER: '42',
+      FACTORY_PULL_HEAD: validSha,
+      FACTORY_PULL_BASE_REF: 'main',
+      FACTORY_PULL_BASE_REPO_ID: '1471342715',
+      FACTORY_PULL_HEAD_REPO_ID: '1471342715',
+      FACTORY_REVIEW_ID: '777'
+    },
     {...baseEvalEnv, FACTORY_GHAW_MODE: 'live-dispatch'},
     {...baseEvalEnv, FACTORY_ISSUE_NUMBER: '0'},
     {...baseEvalEnv, FACTORY_PULL_NUMBER: 'abc'},
