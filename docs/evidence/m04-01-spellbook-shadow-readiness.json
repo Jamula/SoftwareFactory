@@ -1,21 +1,16 @@
 {
   "schemaVersion": 1,
-  "milestone": "M04.01",
+  "milestone": "M03.02",
   "issue": 11,
   "repository": "Jamula/SoftwareFactory",
   "syntheticConsumerProfile": "example/spellbook",
   "syntheticOnly": true,
   "mutatesConsumerRepository": false,
   "liveActivation": false,
-  "recordedAt": "2026-11-27T10:05:08Z",
+  "recordedAt": "2026-11-28T05:50:08Z",
   "upstreamGateStatus": {
     "m01AutonomousIssue10": {
       "issue": 10,
-      "state": "OPEN",
-      "accepted": false
-    },
-    "familyTreePilotIssue36": {
-      "issue": 36,
       "state": "OPEN",
       "accepted": false
     },
@@ -59,6 +54,7 @@
     "independentReviewStateRequired": "APPROVED",
     "commentedBotReviewAllowed": false,
     "singlePrIndependentRollbackVerified": true,
+    "dependsOnFamilyTree": false,
     "dependsOnFamilyHub": false,
     "dependsOnM02Speed": false
   },
@@ -132,6 +128,10 @@
       "expectedReason": "STOPPED"
     },
     {
+      "scenario": "couple-spellbook-to-familytree",
+      "expectedReason": "FORBIDDEN_CROSS_MILESTONE_DEPENDENCY"
+    },
+    {
       "scenario": "couple-spellbook-to-familyhub-or-m02-speed",
       "expectedReason": "FORBIDDEN_CROSS_MILESTONE_DEPENDENCY"
     },
@@ -142,9 +142,9 @@
   ],
   "fixture": {
     "m01AutonomousAccepted": false,
-    "familyTreePilotAccepted": false,
     "onboardingContractAccepted": false,
     "spellbookRepoReadinessAccepted": false,
+    "dependsOnFamilyTree": false,
     "dependsOnFamilyHub": false,
     "dependsOnM02Speed": false,
     "stopSwitchActive": false,
@@ -1552,7 +1552,6 @@
     "reason": "UPSTREAM_M01_NOT_ACCEPTED",
     "blockingGates": [
       "M01_AUTONOMOUS_ISSUE_10",
-      "FAMILYTREE_PILOT_ISSUE_36",
       "ONBOARDING_CONTRACT_ISSUE_13",
       "SPELLBOOK_READINESS_ISSUE_103",
       "SPELLBOOK_SCOPED_OWNER_AUTHORIZATION",

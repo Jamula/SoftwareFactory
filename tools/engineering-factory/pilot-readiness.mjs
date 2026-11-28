@@ -526,3 +526,234 @@ export function evaluateCustomerOnePilotReadinessDossier(input){
   cycleMetrics:Object.freeze(cycleMetrics)
  });
 }
+
+export const M01_CONSOLIDATED_EXIT_CONTRACT=Object.freeze({
+ minAcceptedIssues:3,
+ minParallelNonOverlappingCandidates:2,
+ minReviewRepairCycles:1,
+ maxHumanInterventions:0,
+ maxIncrementalBilledUsdCents:0,
+ lineMin:98,
+ branchMin:95,
+ requiredAgentLogin:'copilot-swe-agent[bot]'
+});
+
+const consolidatedExitInputKeys=[
+ 'repositoryId',
+ 'pin',
+ 'enrolled',
+ 'stop',
+ 'lineMin',
+ 'branchMin',
+ 'prerequisites',
+ 'expectedComponents',
+ 'cycles'
+];
+
+const consolidatedExitCycleKeys=[
+ 'source',
+ 'agentLogin',
+ 'repositoryId',
+ 'issue',
+ 'pr',
+ 'head',
+ 'reviewedHead',
+ 'changedFiles',
+ 'reviewIndependent',
+ 'checksPassed',
+ 'securityClear',
+ 'threadsResolved',
+ 'squashQueueMerged',
+ 'mainVerified',
+ 'costVerified',
+ 'acceptanceVerified',
+ 'coverageReports',
+ 'humanInterventions',
+ 'incrementalBilledUsdCents',
+ 'unauthorizedWrites',
+ 'duplicateDispatches',
+ 'gateBypasses',
+ 'startedAt',
+ 'mergedAt',
+ 'reviewFix',
+ 'parallelCandidate'
+];
+
+const repoFilePath=x=>
+ typeof x==='string'&&
+ x.length>0&&
+ x.length<=240&&
+ !/^\/|\/$|\\|\/\/|[\x00-\x1f\x7f]/.test(x)&&
+ x.split('/').every(s=>s!=='.'&&s!=='..'&&s.trim()===s);
+
+const consolidatedExitDeny=(reason,verifiedPrerequisites,blockingPrerequisites)=>Object.freeze({
+ shadow:true,
+ liveActivation:false,
+ accepted:false,
+ pilotEntryReady:false,
+ exitGateReady:false,
+ m01ExitEvidenceReady:false,
+ reason,
+ verifiedPrerequisites:Object.freeze(verifiedPrerequisites),
+ blockingPrerequisites:Object.freeze(blockingPrerequisites),
+ cycleSource:null,
+ sampleCount:0,
+ deliveredCycleCount:0,
+ syntheticCycleCount:0,
+ deliveredCyclesShortfallFrom3:M01_CONSOLIDATED_EXIT_CONTRACT.minAcceptedIssues,
+ parallelNonOverlappingCount:0,
+ reviewRepairCount:0,
+ humanInterventions:null,
+ incrementalBilledUsdCents:null
+});
+
+// Streamlined M01.08 (#10) consolidated exit-gate evaluator.
+// Read-only, deterministic, fail-closed; never grants live activation or self-acceptance,
+// and never counts synthetic cycles as delivered work.
+export function evaluateConsolidatedM01ExitGate(input){
+ const allPrereqs=[...M01_CUSTOMER_ONE_PREREQUISITES];
+ if(!exactPlain(input,consolidatedExitInputKeys))return consolidatedExitDeny('EVIDENCE_UNKNOWN',[],allPrereqs);
+ if(!id(input.repositoryId)||!sha(input.pin)||typeof input.enrolled!=='boolean'||typeof input.stop!=='boolean'||
+    !Number.isFinite(input.lineMin)||input.lineMin<M01_CONSOLIDATED_EXIT_CONTRACT.lineMin||input.lineMin>100||
+    !Number.isFinite(input.branchMin)||input.branchMin<M01_CONSOLIDATED_EXIT_CONTRACT.branchMin||input.branchMin>100)
+  return consolidatedExitDeny('POLICY_UNKNOWN',[],allPrereqs);
+ if(input.repositoryId!==SOFTWARE_FACTORY_REPO_ID)return consolidatedExitDeny('IDENTITY_OR_PIN',[],allPrereqs);
+ if(!exactPlain(input.prerequisites,M01_CUSTOMER_ONE_PREREQUISITES)||
+    M01_CUSTOMER_ONE_PREREQUISITES.some(k=>typeof input.prerequisites[k]!=='boolean'))
+  return consolidatedExitDeny('PREREQUISITES_UNKNOWN',[],allPrereqs);
+
+ const verifiedPrerequisites=M01_CUSTOMER_ONE_PREREQUISITES.filter(k=>input.prerequisites[k]);
+ const blockingPrerequisites=M01_CUSTOMER_ONE_PREREQUISITES.filter(k=>!input.prerequisites[k]);
+
+ if(!denseDataArray(input.expectedComponents,250)||input.expectedComponents.length===0||
+    !input.expectedComponents.every(componentName)||
+    new Set(input.expectedComponents).size!==input.expectedComponents.length)
+  return consolidatedExitDeny('INVENTORY_UNKNOWN',verifiedPrerequisites,blockingPrerequisites);
+ if(!denseDataArray(input.cycles,50))
+  return consolidatedExitDeny('CYCLE_INVENTORY_UNKNOWN',verifiedPrerequisites,blockingPrerequisites);
+
+ const coveragePolicy={repository:'Jamula/SoftwareFactory',lineMin:input.lineMin,branchMin:input.branchMin};
+ const issues=new Set(),prs=new Set(),heads=new Set(),parsedCycles=[];
+ let cycleSource=null,deliveredCycleCount=0,syntheticCycleCount=0;
+ let totalHumanInterventions=0,totalIncrementalBilledUsdCents=0,reviewRepairCount=0;
+
+ for(let i=0;i<input.cycles.length;i++){
+  const c=input.cycles[i];
+  if(!exactPlain(c,consolidatedExitCycleKeys))
+   return consolidatedExitDeny('CYCLE_INVENTORY_UNKNOWN',verifiedPrerequisites,blockingPrerequisites);
+  if(c.source!=='synthetic'&&c.source!=='github-hosted')
+   return consolidatedExitDeny('SOURCE_UNKNOWN',verifiedPrerequisites,blockingPrerequisites);
+  if(cycleSource===null)cycleSource=c.source;
+  else if(c.source!==cycleSource)
+   return consolidatedExitDeny('PROVENANCE_ISOLATION_VIOLATION',verifiedPrerequisites,blockingPrerequisites);
+  if(c.agentLogin!==M01_CONSOLIDATED_EXIT_CONTRACT.requiredAgentLogin)
+   return consolidatedExitDeny('AGENT_IDENTITY_UNKNOWN',verifiedPrerequisites,blockingPrerequisites);
+  if(c.repositoryId!==SOFTWARE_FACTORY_REPO_ID||!id(c.issue)||!id(c.pr)||!sha(c.head)||c.reviewedHead!==c.head)
+   return consolidatedExitDeny('IDENTITY_OR_REVIEW_UNKNOWN',verifiedPrerequisites,blockingPrerequisites);
+  if(issues.has(c.issue)||prs.has(c.pr)||heads.has(c.head))
+   return consolidatedExitDeny('DUPLICATE_CYCLE',verifiedPrerequisites,blockingPrerequisites);
+  issues.add(c.issue);prs.add(c.pr);heads.add(c.head);
+  if(!denseDataArray(c.changedFiles,200)||c.changedFiles.length===0||!c.changedFiles.every(repoFilePath))
+   return consolidatedExitDeny('CHANGED_FILES_UNKNOWN',verifiedPrerequisites,blockingPrerequisites);
+  const fileSet=new Set(c.changedFiles.map(f=>f.toLowerCase()));
+  if(fileSet.size!==c.changedFiles.length)
+   return consolidatedExitDeny('CHANGED_FILES_UNKNOWN',verifiedPrerequisites,blockingPrerequisites);
+  if([c.reviewIndependent,c.checksPassed,c.securityClear,c.threadsResolved,c.squashQueueMerged,c.mainVerified,c.costVerified,c.acceptanceVerified].some(v=>v!==true)||
+     c.unauthorizedWrites!==0||c.duplicateDispatches!==0||c.gateBypasses!==0||
+     !ms(c.humanInterventions)||!ms(c.incrementalBilledUsdCents))
+   return consolidatedExitDeny('SAFETY_OR_COST_UNKNOWN',verifiedPrerequisites,blockingPrerequisites);
+  if(!coverageEvidence(c.head,input.expectedComponents,c.coverageReports,coveragePolicy).valid)
+   return consolidatedExitDeny('COVERAGE',verifiedPrerequisites,blockingPrerequisites);
+  if(!ms(c.startedAt)||!ms(c.mergedAt)||c.startedAt>=c.mergedAt||
+     typeof c.reviewFix!=='boolean'||typeof c.parallelCandidate!=='boolean')
+   return consolidatedExitDeny('TIMING_OR_SCENARIO_UNKNOWN',verifiedPrerequisites,blockingPrerequisites);
+
+  totalHumanInterventions+=c.humanInterventions;
+  totalIncrementalBilledUsdCents+=c.incrementalBilledUsdCents;
+  const countedAsDeliveredWork=
+   c.source==='github-hosted'&&
+   c.humanInterventions===0&&
+   c.incrementalBilledUsdCents===0;
+  if(c.source==='synthetic'){
+   syntheticCycleCount++;
+  }else if(countedAsDeliveredWork){
+   deliveredCycleCount++;
+   if(c.reviewFix)reviewRepairCount++;
+  }
+  parsedCycles.push({
+   startedAt:c.startedAt,
+   mergedAt:c.mergedAt,
+   fileSet,
+   parallelCandidate:c.parallelCandidate,
+   countedAsDeliveredWork
+  });
+ }
+
+ const concurrentParallelIndices=new Set();
+ for(let i=0;i<parsedCycles.length;i++){
+  const a=parsedCycles[i];
+  for(let j=i+1;j<parsedCycles.length;j++){
+   const b=parsedCycles[j];
+   if(a.startedAt<b.mergedAt&&b.startedAt<a.mergedAt){
+    for(const file of a.fileSet){
+     if(b.fileSet.has(file))
+      return consolidatedExitDeny('PARALLEL_FILE_OVERLAP',verifiedPrerequisites,blockingPrerequisites);
+    }
+    if(a.countedAsDeliveredWork&&b.countedAsDeliveredWork&&a.parallelCandidate&&b.parallelCandidate){
+     concurrentParallelIndices.add(i);
+     concurrentParallelIndices.add(j);
+    }
+   }
+  }
+ }
+ const parallelNonOverlappingCount=concurrentParallelIndices.size;
+ const stoppedOrUnenrolled=input.stop!==false||input.enrolled!==true;
+ const pilotEntryReady=!stoppedOrUnenrolled&&blockingPrerequisites.length===0;
+ const humanInterventions=input.cycles.length===0?null:totalHumanInterventions;
+ const incrementalBilledUsdCents=input.cycles.length===0?null:totalIncrementalBilledUsdCents;
+
+ let reason;
+ let exitGateReady=false;
+ if(stoppedOrUnenrolled){
+  reason='STOPPED';
+ }else if(!pilotEntryReady){
+  reason='PILOT_ENTRY_BLOCKED';
+ }else if(cycleSource==='synthetic'){
+  reason='SYNTHETIC_CYCLES_NOT_DELIVERED_WORK';
+ }else if(totalIncrementalBilledUsdCents!==M01_CONSOLIDATED_EXIT_CONTRACT.maxIncrementalBilledUsdCents){
+  reason='INCREMENTAL_BILLED_SPEND_NONZERO';
+ }else if(totalHumanInterventions!==M01_CONSOLIDATED_EXIT_CONTRACT.maxHumanInterventions){
+  reason='HUMAN_INTERVENTION_NONZERO';
+ }else if(deliveredCycleCount<M01_CONSOLIDATED_EXIT_CONTRACT.minAcceptedIssues){
+  reason='LIVE_CYCLES_PENDING';
+ }else if(
+  parallelNonOverlappingCount<M01_CONSOLIDATED_EXIT_CONTRACT.minParallelNonOverlappingCandidates||
+  reviewRepairCount<M01_CONSOLIDATED_EXIT_CONTRACT.minReviewRepairCycles
+ ){
+  reason='SCENARIO_MISSING';
+ }else{
+  reason='CONSOLIDATED_M01_EXIT_EVIDENCE_READY_ONLY';
+  exitGateReady=true;
+ }
+
+ return Object.freeze({
+  shadow:true,
+  liveActivation:false,
+  accepted:false,
+  pilotEntryReady,
+  exitGateReady,
+  m01ExitEvidenceReady:exitGateReady,
+  reason,
+  verifiedPrerequisites:Object.freeze(verifiedPrerequisites),
+  blockingPrerequisites:Object.freeze(blockingPrerequisites),
+  cycleSource,
+  sampleCount:input.cycles.length,
+  deliveredCycleCount,
+  syntheticCycleCount,
+  deliveredCyclesShortfallFrom3:Math.max(0,M01_CONSOLIDATED_EXIT_CONTRACT.minAcceptedIssues-deliveredCycleCount),
+  parallelNonOverlappingCount,
+  reviewRepairCount,
+  humanInterventions,
+  incrementalBilledUsdCents
+ });
+}

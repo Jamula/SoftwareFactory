@@ -1,4 +1,4 @@
-// Deterministic, metadata-only pre-activation gate and shadow-denial verifier for M03 (FamilyTree).
+// Deterministic, metadata-only pre-activation gate and shadow-denial verifier for M04 (M04.01, #36 FamilyTree).
 // Evaluates synthetic fixtures only; never touches consumer repositories or grants live activation.
 import { types } from 'node:util';
 import { evaluate, validPolicy } from './core.mjs';
@@ -10,6 +10,11 @@ import {
 } from './consumer-onboarding.mjs';
 import { pilotReadiness } from './pilot-readiness.mjs';
 
+export const FAMILYTREE_MILESTONE_ID = 'M04.01';
+export const FAMILYTREE_ISSUE_NUMBER = 36;
+export const UPSTREAM_M01_ISSUE_NUMBER = 10;
+export const UPSTREAM_ONBOARDING_ISSUE_NUMBER = 13;
+export const UPSTREAM_SPELLBOOK_ISSUE_NUMBER = 11;
 export const FAMILYTREE_PILOT_VERSION = '0.1.0';
 export const FAMILYTREE_BASELINE_COVERAGE = CONSUMER_BASELINE_COVERAGE;
 export const FAMILYTREE_REQUIRED_SHADOW_DENIALS = Object.freeze([
@@ -145,6 +150,7 @@ const READINESS_INPUT_KEYS = Object.freeze([
   'version',
   'productReleaseEnabled',
   'm01AutonomousAccepted',
+  'upstreamSpellbookPilotAccepted',
   'familyTreeScopedAuthVerified',
   'sharedAdminTokenUsed',
   'productionDeploymentEnabled',
@@ -678,6 +684,7 @@ const denyReadinessEarly = reason =>
     ready: false,
     liveActivation: false,
     upstreamM01Accepted: false,
+    upstreamSpellbookPilotAccepted: false,
     familyTreeScopedAuthVerified: false,
     onboardingContractVerified: false,
     shadowDenialsVerified: false,
@@ -685,12 +692,18 @@ const denyReadinessEarly = reason =>
     reason
   });
 
-const denyReadinessGated = (reason, upstreamM01Accepted, familyTreeScopedAuthVerified) =>
+const denyReadinessGated = (
+  reason,
+  upstreamM01Accepted,
+  upstreamSpellbookPilotAccepted,
+  familyTreeScopedAuthVerified
+) =>
   Object.freeze({
     shadow: true,
     ready: false,
     liveActivation: false,
     upstreamM01Accepted,
+    upstreamSpellbookPilotAccepted,
     familyTreeScopedAuthVerified,
     onboardingContractVerified: true,
     shadowDenialsVerified: true,
@@ -704,6 +717,7 @@ export function evaluateFamilyTreeShadowReadiness(input) {
       typeof input.version !== 'string' ||
       typeof input.productReleaseEnabled !== 'boolean' ||
       typeof input.m01AutonomousAccepted !== 'boolean' ||
+      typeof input.upstreamSpellbookPilotAccepted !== 'boolean' ||
       typeof input.familyTreeScopedAuthVerified !== 'boolean' ||
       typeof input.sharedAdminTokenUsed !== 'boolean' ||
       typeof input.productionDeploymentEnabled !== 'boolean' ||
@@ -772,8 +786,8 @@ export function evaluateFamilyTreeShadowReadiness(input) {
       pin: onboarding.pinnedWorkflowSha,
       enrolled: true,
       stop: false,
-      upstreamAccepted: input.m01AutonomousAccepted,
-       review: true,
+      upstreamAccepted: input.m01AutonomousAccepted && input.upstreamSpellbookPilotAccepted,
+      review: true,
       coverageLine: eligibleSnap.coverage.line,
       coverageBranch: eligibleSnap.coverage.branch,
       requiredChecks: true,
@@ -784,11 +798,23 @@ export function evaluateFamilyTreeShadowReadiness(input) {
   );
 
   if (!preflight.ready) {
-    return denyReadinessGated('UPSTREAM_M01_NOT_ACCEPTED', false, input.familyTreeScopedAuthVerified);
+    return !input.m01AutonomousAccepted
+      ? denyReadinessGated(
+          'UPSTREAM_M01_NOT_ACCEPTED',
+          false,
+          input.upstreamSpellbookPilotAccepted,
+          input.familyTreeScopedAuthVerified
+        )
+      : denyReadinessGated(
+          'UPSTREAM_SPELLBOOK_PILOT_NOT_ACCEPTED',
+          true,
+          false,
+          input.familyTreeScopedAuthVerified
+        );
   }
 
   if (!input.familyTreeScopedAuthVerified) {
-    return denyReadinessGated('FAMILYTREE_SCOPED_AUTH_REQUIRED', true, false);
+    return denyReadinessGated('FAMILYTREE_SCOPED_AUTH_REQUIRED', true, true, false);
   }
 
   return Object.freeze({
@@ -796,6 +822,7 @@ export function evaluateFamilyTreeShadowReadiness(input) {
     ready: true,
     liveActivation: false,
     upstreamM01Accepted: true,
+    upstreamSpellbookPilotAccepted: true,
     familyTreeScopedAuthVerified: true,
     onboardingContractVerified: true,
     shadowDenialsVerified: true,

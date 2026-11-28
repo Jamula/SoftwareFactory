@@ -9,8 +9,13 @@ import {
 } from '../../tools/engineering-factory/consumer-onboarding.mjs';
 import {
   FAMILYTREE_BASELINE_COVERAGE,
+  FAMILYTREE_ISSUE_NUMBER,
+  FAMILYTREE_MILESTONE_ID,
   FAMILYTREE_PILOT_VERSION,
   FAMILYTREE_REQUIRED_SHADOW_DENIALS,
+  UPSTREAM_M01_ISSUE_NUMBER,
+  UPSTREAM_ONBOARDING_ISSUE_NUMBER,
+  UPSTREAM_SPELLBOOK_ISSUE_NUMBER,
   equalData,
   evaluateFamilyTreeShadowCandidate,
   evaluateFamilyTreeShadowReadiness,
@@ -341,6 +346,7 @@ function makeReadinessInput(overrides = {}) {
     version: FAMILYTREE_PILOT_VERSION,
     productReleaseEnabled: false,
     m01AutonomousAccepted: true,
+    upstreamSpellbookPilotAccepted: true,
     familyTreeScopedAuthVerified: true,
     sharedAdminTokenUsed: false,
     productionDeploymentEnabled: false,
@@ -352,6 +358,11 @@ function makeReadinessInput(overrides = {}) {
 }
 
 test('constants are frozen and equalData safely rejects proxies, incompatible containers, cycles, and DAGs', () => {
+  assert.equal(FAMILYTREE_MILESTONE_ID, 'M04.01');
+  assert.equal(FAMILYTREE_ISSUE_NUMBER, 36);
+  assert.equal(UPSTREAM_M01_ISSUE_NUMBER, 10);
+  assert.equal(UPSTREAM_ONBOARDING_ISSUE_NUMBER, 13);
+  assert.equal(UPSTREAM_SPELLBOOK_ISSUE_NUMBER, 11);
   assert.equal(FAMILYTREE_PILOT_VERSION, '0.1.0');
   assert.equal(Object.isFrozen(FAMILYTREE_BASELINE_COVERAGE), true);
   assert.deepEqual(FAMILYTREE_BASELINE_COVERAGE, { line: 95, branch: 90 });
@@ -1263,13 +1274,14 @@ test('proveFamilyTreeShadowDenials rejects invalid suite shapes, broken scenario
   assert.equal(getterInvocations, 0);
 });
 
-test('evaluateFamilyTreeShadowReadiness enforces M01 acceptance, scoped auth, privacy, token, deploy, onboarding, and shadow denials', () => {
+test('evaluateFamilyTreeShadowReadiness enforces M01 acceptance, Spellbook #11 pilot acceptance, scoped auth, privacy, token, deploy, onboarding, and shadow denials', () => {
   const readyRes = evaluateFamilyTreeShadowReadiness(makeReadinessInput());
   assert.deepEqual(readyRes, {
     shadow: true,
     ready: true,
     liveActivation: false,
     upstreamM01Accepted: true,
+    upstreamSpellbookPilotAccepted: true,
     familyTreeScopedAuthVerified: true,
     onboardingContractVerified: true,
     shadowDenialsVerified: true,
@@ -1311,6 +1323,7 @@ test('evaluateFamilyTreeShadowReadiness enforces M01 acceptance, scoped auth, pr
     { ...validInput, version: 1 },
     { ...validInput, productReleaseEnabled: 'false' },
     { ...validInput, m01AutonomousAccepted: 'true' },
+    { ...validInput, upstreamSpellbookPilotAccepted: 'true' },
     { ...validInput, familyTreeScopedAuthVerified: null },
     { ...validInput, sharedAdminTokenUsed: 0 },
     { ...validInput, productionDeploymentEnabled: null },
@@ -1319,6 +1332,7 @@ test('evaluateFamilyTreeShadowReadiness enforces M01 acceptance, scoped auth, pr
     const denied = evaluateFamilyTreeShadowReadiness(badInput);
     assert.equal(denied.ready, false);
     assert.equal(denied.liveActivation, false);
+    assert.equal(denied.upstreamSpellbookPilotAccepted, false);
     assert.equal(denied.reason, 'INPUT_SCHEMA_INVALID');
   }
   assert.equal(traps, 0);
@@ -1450,13 +1464,18 @@ test('evaluateFamilyTreeShadowReadiness enforces M01 acceptance, scoped auth, pr
   );
 
   const m01Blocked = evaluateFamilyTreeShadowReadiness(
-    makeReadinessInput({ m01AutonomousAccepted: false, familyTreeScopedAuthVerified: false })
+    makeReadinessInput({
+      m01AutonomousAccepted: false,
+      upstreamSpellbookPilotAccepted: false,
+      familyTreeScopedAuthVerified: false
+    })
   );
   assert.deepEqual(m01Blocked, {
     shadow: true,
     ready: false,
     liveActivation: false,
     upstreamM01Accepted: false,
+    upstreamSpellbookPilotAccepted: false,
     familyTreeScopedAuthVerified: false,
     onboardingContractVerified: true,
     shadowDenialsVerified: true,
@@ -1464,14 +1483,39 @@ test('evaluateFamilyTreeShadowReadiness enforces M01 acceptance, scoped auth, pr
     reason: 'UPSTREAM_M01_NOT_ACCEPTED'
   });
 
+  const spellbookBlocked = evaluateFamilyTreeShadowReadiness(
+    makeReadinessInput({
+      m01AutonomousAccepted: true,
+      upstreamSpellbookPilotAccepted: false,
+      familyTreeScopedAuthVerified: false
+    })
+  );
+  assert.deepEqual(spellbookBlocked, {
+    shadow: true,
+    ready: false,
+    liveActivation: false,
+    upstreamM01Accepted: true,
+    upstreamSpellbookPilotAccepted: false,
+    familyTreeScopedAuthVerified: false,
+    onboardingContractVerified: true,
+    shadowDenialsVerified: true,
+    zeroLiveMutations: true,
+    reason: 'UPSTREAM_SPELLBOOK_PILOT_NOT_ACCEPTED'
+  });
+
   const authBlocked = evaluateFamilyTreeShadowReadiness(
-    makeReadinessInput({ m01AutonomousAccepted: true, familyTreeScopedAuthVerified: false })
+    makeReadinessInput({
+      m01AutonomousAccepted: true,
+      upstreamSpellbookPilotAccepted: true,
+      familyTreeScopedAuthVerified: false
+    })
   );
   assert.deepEqual(authBlocked, {
     shadow: true,
     ready: false,
     liveActivation: false,
     upstreamM01Accepted: true,
+    upstreamSpellbookPilotAccepted: true,
     familyTreeScopedAuthVerified: false,
     onboardingContractVerified: true,
     shadowDenialsVerified: true,
@@ -1480,8 +1524,8 @@ test('evaluateFamilyTreeShadowReadiness enforces M01 acceptance, scoped auth, pr
   });
 });
 
-test('recorded M03.02 evidence artifact matches deterministic shadow-denial proof and upstream M01 blocker state', () => {
-  assert.equal(recordedEvidence.milestone, 'M03.02');
+test('recorded M04.01 evidence artifact matches deterministic shadow-denial proof and upstream blocker state', () => {
+  assert.equal(recordedEvidence.milestone, 'M04.01');
   assert.equal(recordedEvidence.issue, 36);
   assert.equal(recordedEvidence.syntheticOnly, true);
   assert.equal(recordedEvidence.containsPrivateGenealogyData, false);
@@ -1489,6 +1533,7 @@ test('recorded M03.02 evidence artifact matches deterministic shadow-denial proo
   assert.equal(recordedEvidence.sharedAdminTokenUsed, false);
   assert.equal(recordedEvidence.liveActivation, false);
   assert.equal(recordedEvidence.upstreamM01Accepted, false);
+  assert.equal(recordedEvidence.upstreamSpellbookPilotAccepted, false);
   assert.equal(recordedEvidence.familyTreeScopedAuthVerified, false);
   assert.equal(/jamula\/familytree/i.test(recordedEvidenceText), false);
 
@@ -1496,7 +1541,11 @@ test('recorded M03.02 evidence artifact matches deterministic shadow-denial proo
   assert.deepEqual(recordedEvidence.shadowDenialProof, liveProof);
 
   const liveBlockedReadiness = evaluateFamilyTreeShadowReadiness(
-    makeReadinessInput({ m01AutonomousAccepted: false, familyTreeScopedAuthVerified: false })
+    makeReadinessInput({
+      m01AutonomousAccepted: false,
+      upstreamSpellbookPilotAccepted: false,
+      familyTreeScopedAuthVerified: false
+    })
   );
   assert.deepEqual(recordedEvidence.readinessEvaluation, liveBlockedReadiness);
 });
