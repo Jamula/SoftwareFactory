@@ -200,7 +200,7 @@ const POLICY_WEAKENING_PATTERNS = [
 ];
 
 const SENTENCE_CARVEOUT_PATTERN =
-  /\b(?:unless|except|but|however|instead|otherwise|though|although)\b/i;
+  /\b(?:unless|except|but|however|instead|otherwise|though|although|if|when)\b/i;
 
 const POLARITY_REVERSER_PATTERN =
   /(?:n't|\b(?:cannot|not|never|no|without|neither|refuse|forbid|prohibit|hesitate|fail|stop|avoid|prevent))\b/gi;
@@ -389,22 +389,44 @@ function validateProposedGateThresholds(item, policy, invalidSchemaReason) {
   return {ok: true};
 }
 
+const TRAILING_CARVEOUT_CLAUSE_PATTERN =
+  /^\s*(?:unless|except|but|however|instead|otherwise|though|although|if|when)\b/i;
+
+function isSentenceDelimiterAt(text, index) {
+  const ch = text[index];
+  if (ch === ';' || ch === '!' || ch === '?') return true;
+  if (ch === ':') {
+    return index + 1 === text.length || /\s/.test(text[index + 1]);
+  }
+  if (ch === '.') {
+    if (index + 1 === text.length) return true;
+    if (!/\s/.test(text[index + 1])) return false;
+    return !/^\s+[a-z0-9]/.test(text.slice(index + 1));
+  }
+  return false;
+}
+
 function sentenceBoundsAt(text, matchIndex, matchLength) {
   let start = 0;
   for (let i = matchIndex - 1; i >= 0; i--) {
-    if (/[.;:!?\r\n]/.test(text[i])) {
+    if (isSentenceDelimiterAt(text, i)) {
       start = i + 1;
       break;
     }
   }
   let end = text.length;
   for (let i = matchIndex + matchLength; i < text.length; i++) {
-    if (/[.;:!?\r\n]/.test(text[i])) {
+    if (isSentenceDelimiterAt(text, i)) {
       end = i;
       break;
     }
   }
   return {start, end};
+}
+
+function hasCarveoutInOrAfterSentence(text, start, end) {
+  return SENTENCE_CARVEOUT_PATTERN.test(text.slice(start, end)) ||
+    (end < text.length && TRAILING_CARVEOUT_CLAUSE_PATTERN.test(text.slice(end + 1)));
 }
 
 const ALLOWED_PROHIBITION_SUBJECT_PATTERN =
@@ -420,7 +442,7 @@ function countPolarityReversers(segment) {
 function isUnconditionalRejectionClause(text, matchIndex, matchLength) {
   const {start, end} = sentenceBoundsAt(text, matchIndex, matchLength);
   const sentence = text.slice(start, end);
-  if (SENTENCE_CARVEOUT_PATTERN.test(sentence) || /['"`]/.test(sentence)) return false;
+  if (hasCarveoutInOrAfterSentence(text, start, end) || /['"`]/.test(sentence)) return false;
   const prefix = text.slice(start, matchIndex);
   const immediateMatch = IMMEDIATE_REJECTION_PREFIX_PATTERN.exec(prefix);
   if (immediateMatch === null) return false;
@@ -523,8 +545,7 @@ function isValidProhibitedVerbChain(between, suffix) {
 
 function isNegatedSafetyProhibition(text, matchIndex, matchLength) {
   const {start: sentenceStart, end: sentenceEnd} = sentenceBoundsAt(text, matchIndex, matchLength);
-  const sentence = text.slice(sentenceStart, sentenceEnd);
-  if (SENTENCE_CARVEOUT_PATTERN.test(sentence)) return false;
+  if (hasCarveoutInOrAfterSentence(text, sentenceStart, sentenceEnd)) return false;
 
   const prefix = text.slice(sentenceStart, matchIndex);
   const suffix = text.slice(matchIndex + matchLength, sentenceEnd);
