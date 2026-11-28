@@ -24,6 +24,7 @@ import {
   handleMcpConnectorRequest,
   isValidTraceparent,
   processMcpFramedMessages,
+  runMcpStdioCli,
   startMcpStdioServer,
   validateMcpConnectorEnrollment,
   validateMultiAgentConnectorConfig
@@ -583,6 +584,44 @@ test('stdio honors output backpressure and rejects closed output', async () => {
   const brokenInServer = startMcpStdioServer({ input: brokenIn, output: brokenInOut });
   setImmediate(() => brokenIn.destroy(new Error('INPUT_BROKEN')));
   await assert.rejects(brokenInServer, /INPUT_BROKEN/);
+
+  const alreadyClosedIn = new PassThrough();
+  const closedPromise = new Promise(resolve => alreadyClosedIn.once('close', resolve));
+  alreadyClosedIn.destroy();
+  await closedPromise;
+  assert.equal(alreadyClosedIn.readableEnded, false);
+  const alreadyClosedOut = new PassThrough();
+  let alreadyClosedText = '';
+  alreadyClosedOut.on('data', chunk => { alreadyClosedText += chunk; });
+  await startMcpStdioServer({ input: alreadyClosedIn, output: alreadyClosedOut });
+  assert.equal(alreadyClosedText, '');
+
+  const alreadyErroredIn = new PassThrough();
+  alreadyErroredIn.on('error', () => {});
+  const erroredClosePromise = new Promise(resolve => alreadyErroredIn.once('close', resolve));
+  alreadyErroredIn.destroy(new Error('PRE_DESTROYED_INPUT'));
+  await erroredClosePromise;
+  await assert.rejects(
+    startMcpStdioServer({ input: alreadyErroredIn, output: new PassThrough() }),
+    /PRE_DESTROYED_INPUT/
+  );
+
+  let cliErr = '';
+  const captureErr = () => {
+    cliErr = '';
+    return new Writable({ write(chunk, _enc, cb) { cliErr += chunk.toString(); cb(); } });
+  };
+  assert.equal(await runMcpStdioCli({ input: new PassThrough(), output: new PassThrough(), stderr: captureErr(), env: null }), 1);
+  assert.equal(cliErr, 'Invalid MCP repository enrollment.\n');
+  assert.equal(await runMcpStdioCli({
+    input: new PassThrough(), output: new PassThrough(), stderr: captureErr(),
+    env: { SOFTWAREFACTORY_MCP_AUTHORIZED_REPOSITORIES: 123 }
+  }), 1);
+  assert.equal(cliErr, 'Invalid MCP repository enrollment.\n');
+  assert.equal(await runMcpStdioCli({
+    input: new PassThrough(), output: closed, stderr: captureErr(), env: {}
+  }), 1);
+  assert.equal(cliErr, 'MCP server stopped.\n');
 });
 
 test('bin/softwarefactory-mcp.mjs subprocess serves newline-delimited JSON-RPC 2.0 cleanly across lifecycle and tools', async () => {

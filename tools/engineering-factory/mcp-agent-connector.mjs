@@ -1735,7 +1735,8 @@ export async function startMcpStdioServer({ input = process.stdin, output = proc
   }
   const validTransport = isPlainObject(transport) &&
     hasAllowedKeys(transport, ['request']) && typeof transport.request === 'function';
-  let streamFailure = output.errored ?? (output.destroyed || !output.writable ? new Error('OUTPUT_CLOSED') : null);
+  let streamFailure = input.errored ?? output.errored ??
+    (output.destroyed || !output.writable ? new Error('OUTPUT_CLOSED') : null);
   let rejectLifetime;
   const lifetimeFailure = new Promise((_, reject) => { rejectLifetime = reject; });
   lifetimeFailure.catch(() => {});
@@ -1826,7 +1827,7 @@ export async function startMcpStdioServer({ input = process.stdin, output = proc
     await writeFrame(response);
   };
   const chunks = [];
-  let inputEnded = input.readableEnded === true;
+  let inputEnded = input.readableEnded === true || input.destroyed === true;
   let notifyPump;
   const wakePump = () => {
     const fn = notifyPump;
@@ -1899,6 +1900,48 @@ export async function startMcpStdioServer({ input = process.stdin, output = proc
     }
     output.off('error', onError);
     output.off('close', onClose);
+  }
+}
+
+export async function runMcpStdioCli({
+  input = process.stdin,
+  output = process.stdout,
+  stderr = process.stderr,
+  env = process.env
+} = {}) {
+  if (env === null || typeof env !== 'object') {
+    stderr.write('Invalid MCP repository enrollment.\n');
+    return 1;
+  }
+  const rawEnrollment = env.SOFTWAREFACTORY_MCP_AUTHORIZED_REPOSITORIES;
+  let authorizedRepositories = [{
+    repositoryId: DEFAULT_FACTORY_SCOPE.repositoryId,
+    repository: DEFAULT_FACTORY_SCOPE.repository
+  }];
+  let valid = true;
+  if (rawEnrollment !== undefined) {
+    if (typeof rawEnrollment !== 'string' ||
+        Buffer.byteLength(rawEnrollment, 'utf8') > MAX_MCP_REQUEST_BYTES) {
+      valid = false;
+    } else {
+      try {
+        authorizedRepositories = JSON.parse(rawEnrollment);
+        valid = validateMcpConnectorEnrollment(authorizedRepositories);
+      } catch {
+        valid = false;
+      }
+    }
+  }
+  if (!valid) {
+    stderr.write('Invalid MCP repository enrollment.\n');
+    return 1;
+  }
+  try {
+    await startMcpStdioServer({ input, output, env, context: { authorizedRepositories } });
+    return 0;
+  } catch {
+    stderr.write('MCP server stopped.\n');
+    return 1;
   }
 }
 
