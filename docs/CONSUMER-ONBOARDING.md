@@ -4,6 +4,35 @@ The integration model is shared code with independently pinned, repository-local
 
 ![Target shared engine and isolated consumers](images/architecture.svg)
 
+## What Success Looks Like: 3-Stage New-Repo Onboarding Rubric (Discovery → Shadow PR → First Unattended Merge)
+
+New-repository onboarding (`#13`, `M03.01`) is measured by the deterministic, fail-closed `evaluateConsumerOnboardingSuccess(input)` scorecard in `tools/engineering-factory/consumer-onboarding.mjs` (backed by [`docs/evidence/m03-01-onboarding-success-contract.json`](evidence/m03-01-onboarding-success-contract.json)). Merging a disabled workflow is **Stage 1 (`STAGE_1_SHADOW_ONBOARDED`)**, never full acceptance: a repository is **onboarded and accepted (`STAGE_2_AUTONOMOUS_ACCEPTED`)** only after `>= 1` real (non-synthetic) bounded unattended `@copilot` issue lands cleanly onto its healthy protected default branch with `0` human interventions and `$0` incremental spend.
+
+### End-to-end customer journey
+
+1. **`1` natural-language request** initiates read-only discovery with zero live GitHub mutations.
+2. **`<= 5` mandatory settings** (`repository`, `repositoryId`, `pinnedFactorySha`, `stackProfile`, plus optional `stricterCoverageThresholds`; explicit owner auth/billing confirmation excluded).
+3. **`2` generated repository-local files** (`.github/workflows/softwarefactory-shadow-replay.yml` and `.github/softwarefactory-policy.json`) with `overwrittenExistingFiles === 0`, `competingBacklogsCreated === 0` (GitHub Issues remain sole backlog), `mandatoryExternalServices === 0`, and `incrementalBilledUsdCents === 0`.
+4. **Shadow verification & reviewable disabled-at-rest PR (`STAGE_1_SHADOW_ONBOARDED`, `<= 15 min`)**: dual 40-hex SHA pin (`verifyWorkflowPin`), `mode: "disabled"` + `killSwitch: true`, stronger local gates preserved, formal `APPROVED` independent review, per-repo credential isolation, `$0` AI-credit overage hard-stop, all `6` single-mutation shadow denials proven, and `1`-commit independent rollback verified.
+5. **`1` real bounded unattended `@copilot` issue merged (`STAGE_2_AUTONOMOUS_ACCEPTED`)**: lands on healthy protected `defaultBranch` with exact-head `APPROVED` review, `humanInterventions === 0`, `unauthorizedWrites === 0`, `productionDeployments === 0`, and `incrementalBilledUsdCents === 0` (synthetic runs always reject Stage 2 with `SYNTHETIC_RUN_CANNOT_ACCEPT_STAGE_2`).
+6. **Independent `1`-commit rollback**: reverting the 2-file onboarding commit + revoking only the consumer's `credentialId` (`verifyIndependentRollback`) stops that consumer (`STOPPED`) while leaving `Jamula/SoftwareFactory` and peer consumers untouched.
+
+### 3-stage pass/fail scorecard
+
+| Stage | Status / `evaluateConsumerOnboardingSuccess` output | Mandatory pass metrics | Fail-closed denial reasons |
+| --- | --- | --- | --- |
+| **Stage 0: Discovery & Dry-Run Plan** | `buildReadOnlyOnboardingPlan` → `READ_ONLY_ONBOARDING_PLAN_READY` | `mandatorySettingsCount <= 5`, `discoveryAndPlanDurationMs <= 300_000` (`<= 5 min`), `2` generated files, `overwrittenExistingFiles === 0`, `competingBacklogsCreated === 0` (`authoritativeBacklog: "github-issues"`), `mandatoryExternalServices === 0`, `incrementalBilledUsdCents === 0` (`$0`) | `MANDATORY_SETTINGS_LIMIT_EXCEEDED`, `DISCOVERY_DURATION_EXCEEDED`, `EXISTING_FILE_CONFLICT`, `EXISTING_FILES_OVERWRITTEN`, `COMPETING_BACKLOG_PROHIBITED`, `EXTERNAL_SERVICE_REQUIRED`, `NON_ZERO_INCREMENTAL_SPEND` |
+| **Stage 1: Shadow-Onboarded** | `valid: true`, `accepted: false`, `stage: "STAGE_1_SHADOW_ONBOARDED"` | `basicIntegrationDurationMs <= 900_000` (`<= 15 min`), `onboardingPrMerged === true`, `mode: "disabled"`, `killSwitch: true`, dual 40-hex SHA pin (`verifyWorkflowPin`), `effectiveCoverage.line >= Math.max(95, existingLine)` & `effectiveCoverage.branch >= Math.max(90, existingBranch)`, required checks/`appId`s + `maxActive <= maxConcurrency`, `allowCommentedBotApproval === false`, `sharedAdminToken === false`, `$0` AI-credit hard-stop, `6` shadow denials, `commitsToRevert === 1` independent rollback | `INTEGRATION_DURATION_EXCEEDED`, `ONBOARDING_PR_NOT_MERGED`, `PIN_REF_NOT_IMMUTABLE_SHA`, `PIN_SHA_MISMATCH`, `SHADOW_POSTURE_REQUIRED`, `LOCAL_GATE_WEAKENED`, `FORMAL_APPROVAL_REQUIRED`, `CREDENTIAL_ISOLATION_VIOLATION`, `AI_CREDIT_HARD_STOP_REQUIRED`, `SHADOW_REPLAY_INCOMPLETE`, `SINGLE_COMMIT_ROLLBACK_REQUIRED`, `FACTORY_ISOLATION_REQUIRED` |
+| **Stage 2: Autonomous Accepted ("Onboarded & Accepted")** | `valid: true`, `accepted: true`, `stage: "STAGE_2_AUTONOMOUS_ACCEPTED"` | All Stage 0 + Stage 1 gates **plus** non-synthetic (`synthetic === false`) receipt: `unattendedCopilotIssuesLanded >= 1` by `@copilot` (`copilot-swe-agent[bot]`) onto healthy protected `defaultBranch`, bounded scope + exact-head `APPROVED` review, `humanInterventions === 0`, `unauthorizedWrites === 0`, `productionDeployments === 0`, `incrementalBilledUsdCents === 0` | `SYNTHETIC_RUN_CANNOT_ACCEPT_STAGE_2`, `AUTONOMOUS_PROOF_REQUIRED`, `AUTONOMOUS_AGENT_INVALID`, `UNATTENDED_ISSUE_NOT_LANDED`, `DEFAULT_BRANCH_UNHEALTHY`, `AUTONOMOUS_GOVERNANCE_INCOMPLETE`, `HUMAN_INTERVENTION_REQUIRED`, `UNAUTHORIZED_WRITE_DETECTED`, `PRODUCTION_DEPLOYMENT_PROHIBITED`, `NON_ZERO_INCREMENTAL_SPEND` |
+
+### Public vs. private repository execution matrix
+
+| Repository visibility | `gh-aw` `.lock.yml` + `@copilot` (`copilot-swe-agent[bot]`) + `@microsoft/copilot-sdk` `2.0.3` | Repository Cloud Automations | Mandatory billing & credential controls |
+| --- | --- | --- | --- |
+| `public` | Supported (`copilotCloudAgentSupported: true`) | Not available (`copilotCloudAutomationsSupported: false`) | Per-repo `$0` AI-credit/Actions overage hard-stop (`paidOverageAllowed: false`), isolated `repo-read-only-shadow` credential (`sharedAdminToken: false`), zero personal PATs |
+| `private` | Supported (`copilotCloudAgentSupported: true`) | Supported (`copilotCloudAutomationsSupported: true`) | Per-repo `$0` AI-credit/Actions overage hard-stop (`paidOverageAllowed: false`), isolated `repo-read-only-shadow` credential (`sharedAdminToken: false`), zero personal PATs |
+| `internal` | Supported (`copilotCloudAgentSupported: true`) | Supported (`copilotCloudAutomationsSupported: true`) | Per-repo `$0` AI-credit/Actions overage hard-stop (`paidOverageAllowed: false`), isolated `repo-read-only-shadow` credential (`sharedAdminToken: false`), zero personal PATs |
+
 ## Lightweight read-only onboarding planner (`<= 5` mandatory settings)
 
 `buildReadOnlyOnboardingPlan(discoveryInput)` in `tools/engineering-factory/consumer-onboarding.mjs` implements Customer One's deterministic, metadata-only onboarding planner for both `"greenfield"` and `"existing-repository"` modes without live GitHub mutations, repository creation, credentials, external services, or incremental spend (`$0`).
@@ -74,13 +103,14 @@ Measured synthetic verification (`tests/engineering-factory/consumer-onboarding.
 5. **Isolate credentials per repository**: Scope shadow metadata access strictly to `[policy.repository]` (`scope: "repo-read-only-shadow"`, `sharedAdminToken: false`, `persistedInCheckout: false`) with a unique `credentialId` that is never shared across consumer repositories.
 6. **Prove mandatory single-mutation shadow denials before review**: Verify the onboarding package with `verifyConsumerOnboardingPackage`, confirming `SHADOW_ELIGIBLE` for a valid candidate alongside single-field negative mutations and exact-reason denials for stale review (`REVIEW_MISSING`), dismissed review (`REVIEW_MISSING`), `COMMENTED` bot review (`REVIEW_MISSING`), wrong repository (`UNTRUSTED_POLICY`), missing quota (`BUDGET_OR_CONCURRENCY`) and active-shadow kill-switch stop (`STOPPED`).
 7. **Verify independent single-repository rollback**: Prove via `verifyIndependentRollback` that setting `mode: "disabled"` and `killSwitch: true`, revoking only the target repository's `credentialId`, reverting the workflow SHA pin via a reviewed PR and confirming `queuedLiveMutations === 0` immediately stops the target repository (`STOPPED`) while peer consumers remain unaffected.
+8. **Score Stage 1 shadow onboarding vs. Stage 2 autonomous acceptance**: Run `evaluateConsumerOnboardingSuccess(input)` to confirm `STAGE_1_SHADOW_ONBOARDED` once the disabled-at-rest 2-file onboarding PR is merged, and gate `STAGE_2_AUTONOMOUS_ACCEPTED` ("Onboarded & Accepted") on a non-synthetic (`synthetic: false`) receipt proving `>= 1` bounded unattended `@copilot` issue landed onto the healthy protected default branch with `humanInterventions === 0`, `unauthorizedWrites === 0`, `productionDeployments === 0`, and `incrementalBilledUsdCents === 0`.
 
-| Intended consumer | Offline synthetic profile (`example-policies.json`) | Policy and local gates to retain |
-| --- | --- | --- |
-| FamilyTree (#36, M03) | `example/family-tree` (`web-genealogy-95-90`) | Private-data isolation, `95%/90%` baseline coverage, `maxActive: 1`, `APPROVED`-only review and independent auth/persistence review |
-| Spellbook (#11, M04) | `example/spellbook` (`ios-webkit-97-90`) | Stricter `97%` app line / `90%` branch gate, WebKit and iOS required check producers, `APPROVED`-only review and `maxActive: 2` concurrency cap |
-| FamilyHub (#12, M05) | `example/family-hub` (`strict-up-to-date-migration-gated`) | Migration-freeze gate (`migrationFreezeClear` required), `trunk` strict up-to-date base, explicit exact-head `APPROVED` review and production isolation |
-| Future repository | `baseline-95-90` or custom synthetic fixture | Explicit owner approval, unique `repositoryId` and `credentialId`, immutable 40-hex SHA pin, `>=95%/90%` or stricter local gates, included quota and independent single-commit rollback |
+| Rollout sequence | Intended consumer | Offline synthetic profile (`example-policies.json`) | Policy and local gates to retain |
+| --- | --- | --- | --- |
+| **1st (`M03`)** | `Jamula/Spellbook` (#11, M03) | `example/spellbook` (`ios-webkit-97-90`) | Stricter `97%` app line / `90%` branch gate, WebKit, iOS, and release required check producers, formal `APPROVED`-only review, and `maxActive: 2` concurrency cap |
+| **2nd (`M04`)** | `Jamula/FamilyTree` (#36, M04) | `example/family-tree` (`web-genealogy-95-90`) | Private-data isolation, `95%/90%` baseline coverage, `maxActive: 1`, formal `APPROVED`-only review, and independent auth/persistence review |
+| **3rd (`M05`)** | `FamilyHub` (#12, M05) | `example/family-hub` (`strict-up-to-date-migration-gated`) | Verified repository identity + migration-freeze clearance (`migrationFreezeClear: true`), `trunk` strict up-to-date base, formal exact-head `APPROVED` review, and production isolation |
+| **Future** | Greenfield or existing repository | `baseline-95-90` or custom synthetic fixture | Explicit owner approval, unique `repositoryId` and `credentialId`, immutable 40-hex SHA pin, `>=95%/90%` or stricter local gates, `$0` overage hard-stop, and independent `1`-commit rollback |
 
 ## Local contract verification
 

@@ -5,16 +5,20 @@ import {
   CONSUMER_BASELINE_COVERAGE,
   CONSUMER_COMPONENT_CATALOG,
   CONSUMER_CONTRACT_VERSION,
+  CONSUMER_ROLLOUT_ORDER,
   FACTORY_REPOSITORY,
   FACTORY_REPOSITORY_ID,
   MANDATORY_ONBOARDING_SETTINGS,
   MAX_MANDATORY_USER_SETTINGS,
   ONBOARDING_DISCOVERY_MODES,
   ONBOARDING_STACK_PROFILES,
+  ONBOARDING_SUCCESS_STAGES,
+  ONBOARDING_SUCCESS_THRESHOLDS,
   OPTIONAL_ONBOARDING_SETTINGS,
   REUSABLE_WORKFLOW_PREFIX,
   TRUSTED_WORKFLOW_CHECKOUT_PINS,
   buildReadOnlyOnboardingPlan,
+  evaluateConsumerOnboardingSuccess,
   planConsumerBootstrap,
   verifyConsumerOnboardingPackage,
   verifyIndependentRollback,
@@ -1770,4 +1774,810 @@ test('buildReadOnlyOnboardingPlan fails closed on >5 mandatory settings, unsafe 
   }
 
   assert.equal(traps, 0);
+});
+
+function planToOnboardingPackage(plan) {
+  return {
+    contractVersion: plan.contractVersion,
+    repositoryId: plan.repositoryId,
+    stackProfile: plan.stackProfile,
+    ownerAuthorized: true,
+    migrationFreezeClear: true,
+    autoActivate: plan.implicitActivation,
+    productionDeployEnabled: plan.productionDeployEnabled,
+    workflowPin: structuredClone(plan.workflowPin),
+    policy: structuredClone(plan.policy),
+    localGates: structuredClone(plan.localGates),
+    credentials: {
+      credentialId: plan.rollbackPlan.revokeCredentialId,
+      scope: 'repo-read-only-shadow',
+      allowedRepositories: [plan.repository],
+      sharedAdminToken: false,
+      persistedInCheckout: false
+    },
+    replaySuite: makeReplaySuite(plan.policy),
+    rollback: {
+      disableMode: plan.rollbackPlan.disableMode,
+      killSwitch: plan.rollbackPlan.killSwitch,
+      revokeCredentialId: plan.rollbackPlan.revokeCredentialId,
+      revertWorkflowPinPrRequired: plan.rollbackPlan.revertWorkflowPinPrRequired,
+      queuedLiveMutations: plan.rollbackPlan.queuedLiveMutations
+    }
+  };
+}
+
+function makeSuccessScorecardInput({
+  pkg,
+  peerPkg,
+  existingGates,
+  synthetic = true,
+  onboardingPrMerged = true,
+  mandatorySettingsCount = 4,
+  discoveryAndPlanDurationMs = 15,
+  basicIntegrationDurationMs = 300_000,
+  autonomousProof = null
+}) {
+  return {
+    synthetic,
+    onboardingPrMerged,
+    usability: {
+      mandatorySettingsCount,
+      generatedFileCount: 2,
+      discoveryAndPlanDurationMs,
+      basicIntegrationDurationMs,
+      overwrittenExistingFiles: 0,
+      competingBacklogsCreated: 0,
+      mandatoryExternalServices: 0,
+      incrementalBilledUsdCents: 0
+    },
+    governance: {
+      authoritativeBacklog: 'github-issues',
+      allowCommentedBotApproval: false,
+      independentApprovedReviewRequired: true,
+      perRepoAiCreditHardStop: true,
+      paidOverageAllowed: false
+    },
+    existingGates,
+    onboardingPackage: pkg,
+    peerRegistry: [
+      {
+        repository: peerPkg.policy.repository,
+        repositoryId: peerPkg.repositoryId,
+        credentialId: peerPkg.credentials.credentialId
+      }
+    ],
+    rollbackProof: {
+      commitsToRevert: 1,
+      factoryRepositoryUntouched: true,
+      rollbackReceipt: {
+        repository: pkg.policy.repository,
+        postPolicy: structuredClone(pkg.policy),
+        revokedCredentialId: pkg.credentials.credentialId,
+        pinRevertedViaReviewedPr: true,
+        queuedLiveMutations: 0
+      },
+      cohortPackages: [structuredClone(pkg), structuredClone(peerPkg)]
+    },
+    autonomousProof
+  };
+}
+
+test('evaluateConsumerOnboardingSuccess verifies M03->M04->M05 rollout order, greenfield/Spellbook/FamilyTree profiles, Stage 1 vs Stage 2, and published evidence contract', async () => {
+  assert.equal(Object.isFrozen(ONBOARDING_SUCCESS_STAGES), true);
+  assert.equal(Object.isFrozen(ONBOARDING_SUCCESS_THRESHOLDS), true);
+  assert.equal(Object.isFrozen(CONSUMER_ROLLOUT_ORDER), true);
+  assert.deepEqual(CONSUMER_ROLLOUT_ORDER, [
+    {
+      order: 1,
+      milestone: 'M03',
+      consumer: 'Jamula/Spellbook',
+      trackingIssue: 11,
+      syntheticRepository: 'example/spellbook',
+      stackProfile: 'ios-webkit-97-90'
+    },
+    {
+      order: 2,
+      milestone: 'M04',
+      consumer: 'Jamula/FamilyTree',
+      trackingIssue: 36,
+      syntheticRepository: 'example/family-tree',
+      stackProfile: 'web-genealogy-95-90'
+    },
+    {
+      order: 3,
+      milestone: 'M05',
+      consumer: 'FamilyHub',
+      trackingIssue: 12,
+      syntheticRepository: 'example/family-hub',
+      stackProfile: 'strict-up-to-date-migration-gated'
+    }
+  ]);
+
+  // 1. Greenfield repository (baseline-95-90)
+  const greenfieldPlan = buildReadOnlyOnboardingPlan({
+    repository: 'example/greenfield-app',
+    repositoryId: 900501,
+    pinnedFactorySha: reviewedWorkflowSha,
+    stackProfile: 'baseline-95-90'
+  });
+  const greenfieldPkg = planToOnboardingPackage(greenfieldPlan);
+
+  // 2. Existing Spellbook-shaped repository (M03 FIRST: 97/90 + WebKit/iOS/release gates + maxActive: 2)
+  const spellbookChecks = [
+    { name: 'fictional-webkit-gate', appId: 34567 },
+    { name: 'fictional-ios-gate', appId: 34568 },
+    { name: 'fictional-release-gate', appId: 34569 }
+  ];
+  const spellbookPlan = buildReadOnlyOnboardingPlan({
+    mode: 'existing-repository',
+    repository: 'example/spellbook',
+    repositoryId: 900202,
+    pinnedFactorySha: reviewedWorkflowSha,
+    stackProfile: 'ios-webkit-97-90',
+    discoveredRepository: {
+      defaultBranch: 'main',
+      mergeMethod: 'squash',
+      checks: spellbookChecks,
+      reviewers: ['synthetic-spellbook-reviewer'],
+      owners: [
+        { prefix: 'ios/', owner: 'synthetic-ios-owner' },
+        { prefix: 'src/', owner: 'synthetic-spellbook-owner' }
+      ],
+      coverage: { line: 97, branch: 90 },
+      maxConcurrency: 2,
+      existingFiles: ['.github/workflows/ios-ci.yml', 'src/bridge.ts']
+    }
+  });
+  const spellbookOnboardPkg = planToOnboardingPackage(spellbookPlan);
+
+  // 3. Existing FamilyTree-shaped repository (M04 SECOND: 95/90 + maxActive: 1)
+  const familyTreePlan = buildReadOnlyOnboardingPlan({
+    mode: 'existing-repository',
+    repository: 'example/family-tree',
+    repositoryId: 900101,
+    pinnedFactorySha: reviewedWorkflowSha,
+    stackProfile: 'web-genealogy-95-90',
+    discoveredRepository: {
+      defaultBranch: 'main',
+      mergeMethod: 'squash',
+      checks: [{ name: 'build-test', appId: 12345 }],
+      reviewers: ['synthetic-reviewer'],
+      owners: [{ prefix: 'src/', owner: 'synthetic-owner' }],
+      coverage: { line: 95, branch: 90 },
+      maxConcurrency: 1,
+      existingFiles: ['.github/workflows/ci.yml', 'src/tree.ts']
+    }
+  });
+  const familyTreeOnboardPkg = planToOnboardingPackage(familyTreePlan);
+
+  // Greenfield Stage 1 passes at exact SLA boundaries (5 settings, 300_000ms discovery, 900_000ms integration)
+  const greenfieldInput = makeSuccessScorecardInput({
+    pkg: greenfieldPkg,
+    peerPkg: familyTreeOnboardPkg,
+    existingGates: {
+      lineCoverage: 0,
+      branchCoverage: 0,
+      requiredChecks: [],
+      maxConcurrency: 1
+    },
+    mandatorySettingsCount: 5,
+    discoveryAndPlanDurationMs: 300_000,
+    basicIntegrationDurationMs: 900_000
+  });
+  // Also test omitted optional peerRegistry, requireAutonomousAcceptance, and autonomousProof
+  const omittedOptionalGreenfield = { ...greenfieldInput };
+  delete omittedOptionalGreenfield.peerRegistry;
+  delete omittedOptionalGreenfield.autonomousProof;
+  const greenfieldStage1 = evaluateConsumerOnboardingSuccess(omittedOptionalGreenfield);
+  assert.equal(Object.isFrozen(greenfieldStage1), true);
+  assert.equal(Object.isFrozen(greenfieldStage1.metrics), true);
+  assert.equal(greenfieldStage1.valid, true);
+  assert.equal(greenfieldStage1.accepted, false);
+  assert.equal(greenfieldStage1.stage, 'STAGE_1_SHADOW_ONBOARDED');
+  assert.equal(greenfieldStage1.reason, 'STAGE_1_SHADOW_ONBOARDED');
+  assert.equal(greenfieldStage1.shadowOnboarded, true);
+  assert.equal(greenfieldStage1.autonomousAccepted, false);
+  assert.equal(greenfieldStage1.liveActivation, false);
+  assert.deepEqual(greenfieldStage1.effectiveCoverage, { line: 95, branch: 90 });
+  assert.equal(greenfieldStage1.metrics.shadowDenialsVerified, 6);
+  assert.equal(greenfieldStage1.metrics.rollbackCommitsRequired, 1);
+
+  // Synthetic runs NEVER satisfy Stage 2 (neither synthetic top-level nor synthetic autonomousProof)
+  const validStage2Receipt = {
+    synthetic: false,
+    agent: '@copilot',
+    unattendedCopilotIssuesLanded: 1,
+    landedBranch: 'main',
+    protectedDefaultBranchHealthy: true,
+    boundedScopeVerified: true,
+    exactHeadApprovedReview: true,
+    humanInterventions: 0,
+    unauthorizedWrites: 0,
+    productionDeployments: 0,
+    incrementalBilledUsdCents: 0
+  };
+  const greenfieldSyntheticStage2 = evaluateConsumerOnboardingSuccess({
+    ...greenfieldInput,
+    synthetic: true,
+    autonomousProof: validStage2Receipt
+  });
+  assert.equal(greenfieldSyntheticStage2.valid, false);
+  assert.equal(greenfieldSyntheticStage2.accepted, false);
+  assert.equal(greenfieldSyntheticStage2.stage, 'STAGE_1_SHADOW_ONBOARDED');
+  assert.equal(greenfieldSyntheticStage2.reason, 'SYNTHETIC_RUN_CANNOT_ACCEPT_STAGE_2');
+
+  assert.equal(
+    evaluateConsumerOnboardingSuccess({
+      ...greenfieldInput,
+      synthetic: false,
+      autonomousProof: { ...validStage2Receipt, synthetic: true }
+    }).reason,
+    'SYNTHETIC_RUN_CANNOT_ACCEPT_STAGE_2'
+  );
+
+  // Spellbook Stage 1 (with explicit requireAutonomousAcceptance: false) & Stage 2 evaluator contract verification
+  const spellbookInput = makeSuccessScorecardInput({
+    pkg: spellbookOnboardPkg,
+    peerPkg: familyTreeOnboardPkg,
+    existingGates: {
+      lineCoverage: 97,
+      branchCoverage: 90,
+      requiredChecks: spellbookChecks,
+      maxConcurrency: 2
+    }
+  });
+  const spellbookStage1 = evaluateConsumerOnboardingSuccess({
+    ...spellbookInput,
+    requireAutonomousAcceptance: false
+  });
+  assert.equal(spellbookStage1.valid, true);
+  assert.equal(spellbookStage1.accepted, false);
+  assert.equal(spellbookStage1.stage, 'STAGE_1_SHADOW_ONBOARDED');
+  assert.deepEqual(spellbookStage1.effectiveCoverage, { line: 97, branch: 90 });
+
+  const spellbookStage2 = evaluateConsumerOnboardingSuccess({
+    ...spellbookInput,
+    synthetic: false,
+    requireAutonomousAcceptance: true,
+    autonomousProof: {
+      ...validStage2Receipt,
+      agent: 'copilot-swe-agent[bot]',
+      unattendedCopilotIssuesLanded: 2
+    }
+  });
+  assert.equal(Object.isFrozen(spellbookStage2), true);
+  assert.equal(Object.isFrozen(spellbookStage2.autonomousReceipt), true);
+  assert.equal(spellbookStage2.valid, true);
+  assert.equal(spellbookStage2.accepted, true);
+  assert.equal(spellbookStage2.stage, 'STAGE_2_AUTONOMOUS_ACCEPTED');
+  assert.equal(spellbookStage2.reason, 'STAGE_2_AUTONOMOUS_ACCEPTED');
+  assert.equal(spellbookStage2.shadowOnboarded, true);
+  assert.equal(spellbookStage2.autonomousAccepted, true);
+  assert.equal(spellbookStage2.liveActivation, true);
+  assert.equal(spellbookStage2.autonomousReceipt.unattendedCopilotIssuesLanded, 2);
+
+  // FamilyTree Stage 1 verification
+  const familyTreeStage1 = evaluateConsumerOnboardingSuccess(
+    makeSuccessScorecardInput({
+      pkg: familyTreeOnboardPkg,
+      peerPkg: spellbookOnboardPkg,
+      existingGates: {
+        lineCoverage: 95,
+        branchCoverage: 90,
+        requiredChecks: [{ name: 'build-test', appId: 12345 }],
+        maxConcurrency: 1
+      }
+    })
+  );
+  assert.equal(familyTreeStage1.valid, true);
+  assert.equal(familyTreeStage1.stage, 'STAGE_1_SHADOW_ONBOARDED');
+
+  // Cross-verify docs/evidence/m03-01-onboarding-success-contract.json and scan all 6 owned files for secret-like literals
+  const evidenceUrl = new URL('../../docs/evidence/m03-01-onboarding-success-contract.json', import.meta.url);
+  const evidenceRaw = await readFile(evidenceUrl, 'utf8');
+  const evidence = JSON.parse(evidenceRaw);
+  assert.equal(evidence.schemaVersion, 1);
+  assert.equal(evidence.milestone, 'M03.01');
+  assert.equal(evidence.issue, 13);
+  assert.equal(evidence.liveConsumerActivation, false);
+  assert.equal(evidence.incrementalBilledUsdCents, 0);
+  assert.deepEqual(evidence.rolloutOrder, CONSUMER_ROLLOUT_ORDER);
+  assert.deepEqual(evidence.thresholds, ONBOARDING_SUCCESS_THRESHOLDS);
+  assert.equal(evidence.verifiedProfiles[0].stage1Outcome.reason, greenfieldStage1.reason);
+  assert.equal(
+    evidence.verifiedProfiles[0].syntheticStage2AttemptOutcome.reason,
+    greenfieldSyntheticStage2.reason
+  );
+  assert.equal(evidence.verifiedProfiles[1].stage1Outcome.reason, spellbookStage1.reason);
+  assert.equal(
+    evidence.verifiedProfiles[1].stage2EvaluatorContractFixtureOutcome.reason,
+    spellbookStage2.reason
+  );
+  assert.equal(evidence.verifiedProfiles[2].stage1Outcome.reason, familyTreeStage1.reason);
+
+  const secretPattern = /(?:gh[pousr]_[A-Za-z0-9_]{16,}|github_pat_[A-Za-z0-9_]{16,}|sk-[A-Za-z0-9]{16,}|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----|Bearer\s+[A-Za-z0-9._-]{16,})/;
+  for (const relPath of [
+    '../../docs/CONSUMER-ONBOARDING.md',
+    '../../docs/CONSUMER-ADOPTION-CONTRACT.md',
+    '../../docs/WORKFLOWS.md',
+    '../../tools/engineering-factory/consumer-onboarding.mjs',
+    '../../tests/engineering-factory/consumer-onboarding.test.mjs',
+    '../../docs/evidence/m03-01-onboarding-success-contract.json'
+  ]) {
+    const textContent = await readFile(new URL(relPath, import.meta.url), 'utf8');
+    assert.doesNotMatch(textContent, secretPattern, `${relPath} must not contain secret-like literals`);
+  }
+});
+
+test('evaluateConsumerOnboardingSuccess fails closed across all usability, governance, gate-weakening, rollback, Stage 2, and prototype-pollution negative cases', () => {
+  const baseInput = makeSuccessScorecardInput({
+    pkg: spellbookPkg,
+    peerPkg: familyTreePkg,
+    existingGates: {
+      lineCoverage: 97,
+      branchCoverage: 90,
+      requiredChecks: spellbookPkg.localGates.requiredChecks,
+      maxConcurrency: 2
+    }
+  });
+  const validStage2 = {
+    synthetic: false,
+    agent: '@copilot',
+    unattendedCopilotIssuesLanded: 1,
+    landedBranch: 'main',
+    protectedDefaultBranchHealthy: true,
+    boundedScopeVerified: true,
+    exactHeadApprovedReview: true,
+    humanInterventions: 0,
+    unauthorizedWrites: 0,
+    productionDeployments: 0,
+    incrementalBilledUsdCents: 0
+  };
+
+  // Structural, type, negative-zero, proxy, and getter denials
+  let getterRuns = 0;
+  const getterObj = { ...baseInput };
+  Object.defineProperty(getterObj, 'synthetic', {
+    enumerable: true,
+    get: () => {
+      getterRuns += 1;
+      return true;
+    }
+  });
+  const missingKeyInput = { ...baseInput };
+  delete missingKeyInput.rollbackProof;
+
+  for (const bad of [
+    null,
+    'invalid',
+    [],
+    new Proxy({ ...baseInput }, {}),
+    getterObj,
+    missingKeyInput,
+    { ...baseInput, unknownKey: true },
+    { ...baseInput, synthetic: 'true' },
+    { ...baseInput, onboardingPrMerged: 1 },
+    { ...baseInput, requireAutonomousAcceptance: 'yes' },
+    { ...baseInput, usability: null },
+    { ...baseInput, usability: { ...baseInput.usability, mandatorySettingsCount: 0 } },
+    { ...baseInput, usability: { ...baseInput.usability, generatedFileCount: -0 } },
+    { ...baseInput, usability: { ...baseInput.usability, discoveryAndPlanDurationMs: -0 } },
+    { ...baseInput, usability: { ...baseInput.usability, discoveryAndPlanDurationMs: Number.POSITIVE_INFINITY } },
+    { ...baseInput, usability: { ...baseInput.usability, basicIntegrationDurationMs: -1 } },
+    { ...baseInput, usability: { ...baseInput.usability, basicIntegrationDurationMs: '100' } },
+    { ...baseInput, usability: { ...baseInput.usability, overwrittenExistingFiles: -1 } },
+    { ...baseInput, usability: { ...baseInput.usability, competingBacklogsCreated: 1.5 } },
+    { ...baseInput, usability: { ...baseInput.usability, mandatoryExternalServices: null } },
+    { ...baseInput, usability: { ...baseInput.usability, incrementalBilledUsdCents: -0 } },
+    { ...baseInput, governance: null },
+    { ...baseInput, governance: { ...baseInput.governance, authoritativeBacklog: '' } },
+    { ...baseInput, governance: { ...baseInput.governance, allowCommentedBotApproval: 0 } },
+    { ...baseInput, governance: { ...baseInput.governance, independentApprovedReviewRequired: 'true' } },
+    { ...baseInput, governance: { ...baseInput.governance, perRepoAiCreditHardStop: 1 } },
+    { ...baseInput, governance: { ...baseInput.governance, paidOverageAllowed: null } },
+    { ...baseInput, existingGates: null },
+    { ...baseInput, existingGates: { ...baseInput.existingGates, lineCoverage: -1 } },
+    { ...baseInput, existingGates: { ...baseInput.existingGates, branchCoverage: 101 } },
+    { ...baseInput, existingGates: { ...baseInput.existingGates, requiredChecks: 'bad' } },
+    { ...baseInput, existingGates: { ...baseInput.existingGates, requiredChecks: [{ name: '', appId: 1 }] } },
+    { ...baseInput, existingGates: { ...baseInput.existingGates, maxConcurrency: 0 } },
+    { ...baseInput, rollbackProof: null },
+    { ...baseInput, rollbackProof: { ...baseInput.rollbackProof, commitsToRevert: -0 } },
+    { ...baseInput, rollbackProof: { ...baseInput.rollbackProof, factoryRepositoryUntouched: 'true' } },
+    { ...baseInput, autonomousProof: 'bad' },
+    { ...baseInput, autonomousProof: { ...validStage2, synthetic: 'false' } },
+    { ...baseInput, autonomousProof: { ...validStage2, agent: '' } },
+    { ...baseInput, autonomousProof: { ...validStage2, unattendedCopilotIssuesLanded: -1 } },
+    { ...baseInput, autonomousProof: { ...validStage2, landedBranch: 'bad..branch' } },
+    { ...baseInput, autonomousProof: { ...validStage2, protectedDefaultBranchHealthy: 'yes' } },
+    { ...baseInput, autonomousProof: { ...validStage2, boundedScopeVerified: null } },
+    { ...baseInput, autonomousProof: { ...validStage2, exactHeadApprovedReview: 1 } },
+    { ...baseInput, autonomousProof: { ...validStage2, humanInterventions: -1 } },
+    { ...baseInput, autonomousProof: { ...validStage2, unauthorizedWrites: -0 } },
+    { ...baseInput, autonomousProof: { ...validStage2, productionDeployments: 1.2 } },
+    { ...baseInput, autonomousProof: { ...validStage2, incrementalBilledUsdCents: '0' } }
+  ]) {
+    const out = evaluateConsumerOnboardingSuccess(bad);
+    assert.equal(out.valid, false);
+    assert.equal(out.stage, 'NOT_ONBOARDED');
+    assert.equal(out.reason, 'SUCCESS_INPUT_INVALID');
+  }
+  assert.equal(getterRuns, 0);
+
+  // Prototype pollution cannot inject autonomousProof, peerRegistry, or requireAutonomousAcceptance
+  let protoTraps = 0;
+  const cleanOmitted = { ...baseInput };
+  delete cleanOmitted.peerRegistry;
+  delete cleanOmitted.autonomousProof;
+  try {
+    for (const key of ['autonomousProof', 'peerRegistry', 'requireAutonomousAcceptance']) {
+      Object.defineProperty(Object.prototype, key, {
+        configurable: true,
+        get: () => {
+          protoTraps += 1;
+          throw new Error('prototype getter must not execute');
+        }
+      });
+    }
+    assert.equal(evaluateConsumerOnboardingSuccess(cleanOmitted).stage, 'STAGE_1_SHADOW_ONBOARDED');
+  } finally {
+    delete Object.prototype.autonomousProof;
+    delete Object.prototype.peerRegistry;
+    delete Object.prototype.requireAutonomousAcceptance;
+  }
+  assert.equal(protoTraps, 0);
+
+  // Day-0 usability, speed, governance, package, stronger-gate, and rollback denials (all NOT_ONBOARDED)
+  assert.equal(
+    evaluateConsumerOnboardingSuccess({
+      ...baseInput,
+      usability: { ...baseInput.usability, mandatorySettingsCount: 6 }
+    }).reason,
+    'MANDATORY_SETTINGS_LIMIT_EXCEEDED'
+  );
+  assert.equal(
+    evaluateConsumerOnboardingSuccess({
+      ...baseInput,
+      usability: { ...baseInput.usability, generatedFileCount: 3 }
+    }).reason,
+    'GENERATED_FILES_COUNT_INVALID'
+  );
+  assert.equal(
+    evaluateConsumerOnboardingSuccess({
+      ...baseInput,
+      usability: { ...baseInput.usability, discoveryAndPlanDurationMs: 300_001 }
+    }).reason,
+    'DISCOVERY_DURATION_EXCEEDED'
+  );
+  assert.equal(
+    evaluateConsumerOnboardingSuccess({
+      ...baseInput,
+      usability: { ...baseInput.usability, basicIntegrationDurationMs: 900_001 }
+    }).reason,
+    'INTEGRATION_DURATION_EXCEEDED'
+  );
+  assert.equal(
+    evaluateConsumerOnboardingSuccess({
+      ...baseInput,
+      usability: { ...baseInput.usability, overwrittenExistingFiles: 1 }
+    }).reason,
+    'EXISTING_FILES_OVERWRITTEN'
+  );
+  assert.equal(
+    evaluateConsumerOnboardingSuccess({
+      ...baseInput,
+      usability: { ...baseInput.usability, competingBacklogsCreated: 1 }
+    }).reason,
+    'COMPETING_BACKLOG_PROHIBITED'
+  );
+  assert.equal(
+    evaluateConsumerOnboardingSuccess({
+      ...baseInput,
+      governance: { ...baseInput.governance, authoritativeBacklog: 'external-tracker' }
+    }).reason,
+    'COMPETING_BACKLOG_PROHIBITED'
+  );
+  assert.equal(
+    evaluateConsumerOnboardingSuccess({
+      ...baseInput,
+      usability: { ...baseInput.usability, mandatoryExternalServices: 1 }
+    }).reason,
+    'EXTERNAL_SERVICE_REQUIRED'
+  );
+  assert.equal(
+    evaluateConsumerOnboardingSuccess({
+      ...baseInput,
+      usability: { ...baseInput.usability, incrementalBilledUsdCents: 1 }
+    }).reason,
+    'NON_ZERO_INCREMENTAL_SPEND'
+  );
+  assert.equal(
+    evaluateConsumerOnboardingSuccess({
+      ...baseInput,
+      governance: { ...baseInput.governance, allowCommentedBotApproval: true }
+    }).reason,
+    'FORMAL_APPROVAL_REQUIRED'
+  );
+  assert.equal(
+    evaluateConsumerOnboardingSuccess({
+      ...baseInput,
+      governance: { ...baseInput.governance, independentApprovedReviewRequired: false }
+    }).reason,
+    'FORMAL_APPROVAL_REQUIRED'
+  );
+  assert.equal(
+    evaluateConsumerOnboardingSuccess({
+      ...baseInput,
+      governance: { ...baseInput.governance, perRepoAiCreditHardStop: false }
+    }).reason,
+    'AI_CREDIT_HARD_STOP_REQUIRED'
+  );
+  assert.equal(
+    evaluateConsumerOnboardingSuccess({
+      ...baseInput,
+      governance: { ...baseInput.governance, paidOverageAllowed: true }
+    }).reason,
+    'AI_CREDIT_HARD_STOP_REQUIRED'
+  );
+
+  // Underlying onboarding package verifier propagation
+  assert.equal(
+    evaluateConsumerOnboardingSuccess({
+      ...baseInput,
+      onboardingPackage: {
+        ...spellbookPkg,
+        workflowPin: { ...spellbookPkg.workflowPin, uses: `${REUSABLE_WORKFLOW_PREFIX}main` }
+      }
+    }).reason,
+    'PIN_REF_NOT_IMMUTABLE_SHA'
+  );
+  assert.equal(
+    evaluateConsumerOnboardingSuccess({
+      ...baseInput,
+      onboardingPackage: { ...spellbookPkg, stackProfile: 'unregistered-stack-profile' }
+    }).reason,
+    'UNSUPPORTED_STACK_PROFILE'
+  );
+
+  // Stronger-gate preservation sub-branches against existingGates and stackProfile
+  const loweredLinePkg = makeOnboardingPackage(
+    { ...spellbookPkg.policy, coverage: { line: 96, branch: 90 } },
+    {
+      repositoryId: 900202,
+      stackProfile: 'ios-webkit-97-90',
+      credentialId: 'cred-shadow-spellbook',
+      minLineCoverage: 95,
+      minBranchCoverage: 90
+    }
+  );
+  const loweredLocalMinLinePkg = makeOnboardingPackage(spellbookPkg.policy, {
+    repositoryId: 900202,
+    stackProfile: 'ios-webkit-97-90',
+    credentialId: 'cred-shadow-spellbook',
+    minLineCoverage: 95,
+    minBranchCoverage: 90
+  });
+  const loweredBranchPkg = makeOnboardingPackage(
+    { ...spellbookPkg.policy, coverage: { line: 97, branch: 91 } },
+    {
+      repositoryId: 900202,
+      stackProfile: 'ios-webkit-97-90',
+      credentialId: 'cred-shadow-spellbook',
+      minLineCoverage: 97,
+      minBranchCoverage: 90
+    }
+  );
+  const loweredLocalMinBranchPkg = makeOnboardingPackage(
+    { ...spellbookPkg.policy, coverage: { line: 97, branch: 92 } },
+    {
+      repositoryId: 900202,
+      stackProfile: 'ios-webkit-97-90',
+      credentialId: 'cred-shadow-spellbook',
+      minLineCoverage: 97,
+      minBranchCoverage: 90
+    }
+  );
+  const raisedBaselineMaxActivePkg = makeOnboardingPackage(
+    { ...familyTreePkg.policy, maxActive: 2 },
+    {
+      repositoryId: 900101,
+      stackProfile: 'web-genealogy-95-90',
+      credentialId: 'cred-shadow-family-tree',
+      maxConcurrency: 2
+    }
+  );
+  const raisedLocalGatesConcurrencyPkg = makeOnboardingPackage(
+    { ...spellbookPkg.policy, maxActive: 1 },
+    {
+      repositoryId: 900202,
+      stackProfile: 'ios-webkit-97-90',
+      credentialId: 'cred-shadow-spellbook',
+      maxConcurrency: 2
+    }
+  );
+  const oneCheckSpellbookPkg = makeOnboardingPackage(
+    { ...spellbookPkg.policy, checks: [spellbookPkg.policy.checks[0]] },
+    {
+      repositoryId: 900202,
+      stackProfile: 'ios-webkit-97-90',
+      credentialId: 'cred-shadow-spellbook',
+      requiredChecks: [spellbookPkg.policy.checks[0]]
+    }
+  );
+  const wrongBranchLockedPkg = makeOnboardingPackage(
+    { ...familyTreePkg.policy, defaultBranch: 'develop' },
+    {
+      repositoryId: 900101,
+      stackProfile: 'web-genealogy-95-90',
+      credentialId: 'cred-shadow-family-tree'
+    }
+  );
+  const wrongMergeLockedPkg = makeOnboardingPackage(
+    { ...familyTreePkg.policy, mergeMethod: 'rebase' },
+    {
+      repositoryId: 900101,
+      stackProfile: 'web-genealogy-95-90',
+      credentialId: 'cred-shadow-family-tree'
+    }
+  );
+
+  for (const weakenedInput of [
+    { ...baseInput, onboardingPackage: loweredLinePkg },
+    { ...baseInput, onboardingPackage: loweredLocalMinLinePkg },
+    {
+      ...baseInput,
+      existingGates: { ...baseInput.existingGates, branchCoverage: 92 },
+      onboardingPackage: loweredBranchPkg
+    },
+    {
+      ...baseInput,
+      existingGates: { ...baseInput.existingGates, branchCoverage: 92 },
+      onboardingPackage: loweredLocalMinBranchPkg
+    },
+    makeSuccessScorecardInput({
+      pkg: raisedBaselineMaxActivePkg,
+      peerPkg: spellbookPkg,
+      existingGates: {
+        lineCoverage: 95,
+        branchCoverage: 90,
+        requiredChecks: familyTreePkg.localGates.requiredChecks,
+        maxConcurrency: 2
+      }
+    }),
+    {
+      ...baseInput,
+      existingGates: { ...baseInput.existingGates, maxConcurrency: 1 },
+      onboardingPackage: raisedLocalGatesConcurrencyPkg
+    },
+    {
+      ...baseInput,
+      existingGates: {
+        ...baseInput.existingGates,
+        requiredChecks: [spellbookPkg.policy.checks[0]]
+      },
+      onboardingPackage: oneCheckSpellbookPkg
+    },
+    makeSuccessScorecardInput({
+      pkg: wrongBranchLockedPkg,
+      peerPkg: spellbookPkg,
+      existingGates: {
+        lineCoverage: 95,
+        branchCoverage: 90,
+        requiredChecks: familyTreePkg.localGates.requiredChecks,
+        maxConcurrency: 1
+      }
+    }),
+    makeSuccessScorecardInput({
+      pkg: wrongMergeLockedPkg,
+      peerPkg: spellbookPkg,
+      existingGates: {
+        lineCoverage: 95,
+        branchCoverage: 90,
+        requiredChecks: familyTreePkg.localGates.requiredChecks,
+        maxConcurrency: 1
+      }
+    }),
+    {
+      ...baseInput,
+      existingGates: {
+        ...baseInput.existingGates,
+        requiredChecks: [
+          ...baseInput.existingGates.requiredChecks,
+          { name: 'fictional-release-gate', appId: 34569 }
+        ]
+      }
+    }
+  ]) {
+    assert.equal(evaluateConsumerOnboardingSuccess(weakenedInput).reason, 'LOCAL_GATE_WEAKENED');
+  }
+
+  // Rollback and PR-merged gates
+  assert.equal(
+    evaluateConsumerOnboardingSuccess({
+      ...baseInput,
+      rollbackProof: { ...baseInput.rollbackProof, commitsToRevert: 2 }
+    }).reason,
+    'SINGLE_COMMIT_ROLLBACK_REQUIRED'
+  );
+  assert.equal(
+    evaluateConsumerOnboardingSuccess({
+      ...baseInput,
+      rollbackProof: { ...baseInput.rollbackProof, factoryRepositoryUntouched: false }
+    }).reason,
+    'FACTORY_ISOLATION_REQUIRED'
+  );
+  assert.equal(
+    evaluateConsumerOnboardingSuccess({
+      ...baseInput,
+      rollbackProof: {
+        ...baseInput.rollbackProof,
+        rollbackReceipt: {
+          ...baseInput.rollbackProof.rollbackReceipt,
+          pinRevertedViaReviewedPr: false
+        }
+      }
+    }).reason,
+    'TARGET_ROLLBACK_INCOMPLETE'
+  );
+  const mismatchedCohortTarget = makeOnboardingPackage(
+    { ...spellbookPkg.policy, creditLimit: 250 },
+    {
+      repositoryId: 900202,
+      stackProfile: 'ios-webkit-97-90',
+      credentialId: 'cred-shadow-spellbook'
+    }
+  );
+  assert.equal(
+    evaluateConsumerOnboardingSuccess({
+      ...baseInput,
+      rollbackProof: {
+        ...baseInput.rollbackProof,
+        rollbackReceipt: {
+          ...baseInput.rollbackProof.rollbackReceipt,
+          postPolicy: structuredClone(mismatchedCohortTarget.policy)
+        },
+        cohortPackages: [mismatchedCohortTarget, familyTreePkg]
+      }
+    }).reason,
+    'ROLLBACK_PACKAGE_MISMATCH'
+  );
+  assert.equal(
+    evaluateConsumerOnboardingSuccess({ ...baseInput, onboardingPrMerged: false }).reason,
+    'ONBOARDING_PR_NOT_MERGED'
+  );
+
+  // Stage 2 autonomous proof denials (all retain stage: STAGE_1_SHADOW_ONBOARDED, accepted: false)
+  const requireStage2WithoutProof = evaluateConsumerOnboardingSuccess({
+    ...baseInput,
+    synthetic: false,
+    requireAutonomousAcceptance: true
+  });
+  assert.equal(requireStage2WithoutProof.valid, false);
+  assert.equal(requireStage2WithoutProof.stage, 'STAGE_1_SHADOW_ONBOARDED');
+  assert.equal(requireStage2WithoutProof.reason, 'AUTONOMOUS_PROOF_REQUIRED');
+
+  for (const [badAutonomous, expectedReason] of [
+    [{ ...validStage2, agent: 'manual-developer' }, 'AUTONOMOUS_AGENT_INVALID'],
+    [{ ...validStage2, unattendedCopilotIssuesLanded: 0 }, 'UNATTENDED_ISSUE_NOT_LANDED'],
+    [{ ...validStage2, landedBranch: 'feature-branch' }, 'DEFAULT_BRANCH_UNHEALTHY'],
+    [{ ...validStage2, protectedDefaultBranchHealthy: false }, 'DEFAULT_BRANCH_UNHEALTHY'],
+    [{ ...validStage2, boundedScopeVerified: false }, 'AUTONOMOUS_GOVERNANCE_INCOMPLETE'],
+    [{ ...validStage2, exactHeadApprovedReview: false }, 'AUTONOMOUS_GOVERNANCE_INCOMPLETE'],
+    [{ ...validStage2, humanInterventions: 1 }, 'HUMAN_INTERVENTION_REQUIRED'],
+    [{ ...validStage2, unauthorizedWrites: 1 }, 'UNAUTHORIZED_WRITE_DETECTED'],
+    [{ ...validStage2, productionDeployments: 1 }, 'PRODUCTION_DEPLOYMENT_PROHIBITED'],
+    [{ ...validStage2, incrementalBilledUsdCents: 25 }, 'NON_ZERO_INCREMENTAL_SPEND']
+  ]) {
+    const out = evaluateConsumerOnboardingSuccess({
+      ...baseInput,
+      synthetic: false,
+      autonomousProof: badAutonomous
+    });
+    assert.equal(out.valid, false);
+    assert.equal(out.accepted, false);
+    assert.equal(out.stage, 'STAGE_1_SHADOW_ONBOARDED');
+    assert.equal(out.shadowOnboarded, true);
+    assert.equal(out.autonomousAccepted, false);
+    assert.equal(out.reason, expectedReason);
+  }
 });
