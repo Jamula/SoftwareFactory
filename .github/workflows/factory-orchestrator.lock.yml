@@ -1,5 +1,5 @@
-# gh-aw-metadata: {"schema_version":"v4","frontmatter_hash":"385658e6b1d02e5394faa5bb511e0ea73717a7dd8a26bbb68d80960909dc258f","body_hash":"4eea01b377888dd55ca770509760169d08d63159511b06725f78eb9364aedecb","compiler_version":"v1.2.2","strict":true,"agent_id":"copilot"}
-# gh-aw-manifest: {"version":1,"secrets":[],"actions":[{"repo":"actions/checkout","sha":"3d3c42e5aac5ba805825da76410c181273ba90b1","version":"v7.0.1"},{"repo":"actions/setup-node","sha":"949feb2413d6458794dcd2491c4babbbce0c15c1","version":"v7.1.0"}]}
+# gh-aw-metadata: {"schema_version":"v4","frontmatter_hash":"8c060a69cb77578d642d76c97de21c75d5790e22716aa4321f46219ff4df219d","body_hash":"5b40aece16871c16d19ef10c4d5af0a372425405a5dcfcec2984d12800623ff1","compiler_version":"v1.2.2","strict":true,"agent_id":"copilot"}
+# gh-aw-manifest: {"version":1,"secrets":[],"actions":[{"repo":"actions/checkout","sha":"3d3c42e5aac5ba805825da76410c181273ba90b1","version":"v7.0.1"},{"repo":"actions/setup-node","sha":"949feb2413d6458794dcd2491c4babbbce0c15c1","version":"v7.1.0"},{"repo":"actions/upload-artifact","sha":"cf430e030ddbb5b0abf93d22962f4752f3646cd9","version":"v7.0.2"},{"repo":"actions/download-artifact","sha":"9000827ccba6bdab643e8b6fd33ac0654aef8333","version":"v8.0.2"}]}
 # gh-aw-commit: 399a445fe2d8926c616b54b1b82a16b5b2be4445
 # gh-aw-work-queue-protocol: v3
 
@@ -13,13 +13,26 @@ on:
         type: string
         default: ''
       mode:
-        description: Orchestrator execution mode (shadow dry-run or lock verification)
+        description: Orchestrator execution mode (shadow reconciliation, synthetic smoke, or lock verification)
         required: false
         type: choice
         default: shadow
         options:
           - shadow
+          - smoke
           - verify-lock
+  schedule:
+    - cron: '3,13,23,33,43,53 * * * *'
+  issues:
+    types: [opened, edited, labeled, unlabeled, closed, reopened]
+  pull_request_target:
+    branches: [main]
+    types: [opened, reopened, synchronize, ready_for_review, closed]
+  workflow_run:
+    workflows: ["Factory validation", "Windows Aspire runtime", ".NET MAF specialist agents"]
+    types: [completed]
+  push:
+    branches: [main]
 permissions:
   contents: read
 concurrency:
@@ -27,15 +40,20 @@ concurrency:
   cancel-in-progress: false
 jobs:
   evaluate:
-    if: ${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.repository == 'Jamula/SoftwareFactory' && github.repository_id == '1471342715' && github.ref == 'refs/heads/main' && github.ref_protected == true && !endsWith(github.actor, '[bot]') }}
+    if: ${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.repository == 'Jamula/SoftwareFactory' && github.repository_id == '1471342715' && github.ref == 'refs/heads/main' && github.ref_protected == true && !endsWith(github.actor, '[bot]') && (github.event_name != 'workflow_run' || github.event.workflow_run.head_repository.id == 1471342715) }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       contents: read
+    outputs:
+      expected_work_queue_oid: ${{ steps.shadow_eval.outputs.expected_work_queue_oid }}
+      handoff_sha256: ${{ steps.shadow_eval.outputs.handoff_sha256 }}
     steps:
-      - name: Checkout trusted default branch
+      - name: Checkout immutable protected-branch workflow revision
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          repository: Jamula/SoftwareFactory
+          ref: ${{ github.workflow_sha }}
           persist-credentials: false
       - name: Setup pinned Node runtime
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -43,10 +61,18 @@ jobs:
           node-version: '26.13.1'
           package-manager-cache: false
       - name: Verify gh-aw workflow lock and execute shadow evaluation
+        id: shadow_eval
         env:
           FACTORY_GHAW_ENABLED: ${{ vars.FACTORY_GHAW_ENABLED }}
-          FACTORY_GHAW_MODE: ${{ inputs.mode }}
-          FACTORY_ISSUE_NUMBER: ${{ inputs.issue_number }}
+          FACTORY_GHAW_MODE: ${{ inputs.mode || 'shadow' }}
+          FACTORY_EXPECTED_WORKFLOW_PATH: .github/workflows/factory-orchestrator.lock.yml
+          FACTORY_ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue_number || '' }}
+          FACTORY_PULL_NUMBER: ${{ github.event.pull_request.number || '' }}
+          FACTORY_PULL_HEAD: ${{ github.event.pull_request.head.sha || '' }}
+          FACTORY_WORKFLOW_RUN_ID: ${{ github.event.workflow_run.id || '' }}
+          FACTORY_CHECK_HEAD: ${{ github.event.workflow_run.head_sha || '' }}
+          FACTORY_WORKFLOW_HEAD_REPO_ID: ${{ github.event.workflow_run.head_repository.id || '' }}
+          FACTORY_MAIN_HEAD: ${{ github.sha }}
         run: |
           set -euo pipefail
           test "$FACTORY_GHAW_ENABLED" = true
@@ -54,29 +80,142 @@ jobs:
           test "$GITHUB_REPOSITORY_ID" = 1471342715
           test "$GITHUB_REF" = refs/heads/main
           test "$GITHUB_REF_PROTECTED" = true
+          test "$GITHUB_WORKFLOW_REF" = Jamula/SoftwareFactory/.github/workflows/factory-orchestrator.lock.yml@refs/heads/main
+          if [ "$GITHUB_EVENT_NAME" = workflow_run ]; then
+            test "$FACTORY_WORKFLOW_HEAD_REPO_ID" = 1471342715
+          fi
+          FACTORY_GHAW_MODE="${FACTORY_GHAW_MODE:-shadow}"
           case "$FACTORY_GHAW_MODE" in
-            shadow|verify-lock) ;;
+            shadow|smoke|verify-lock) ;;
             *) echo "::error::Unsupported orchestrator mode"; exit 1 ;;
           esac
           if [ -n "$FACTORY_ISSUE_NUMBER" ] && ! printf '%s' "$FACTORY_ISSUE_NUMBER" | grep -Eq '^[1-9][0-9]{0,9}$'; then
             echo "::error::Invalid issue_number input"
             exit 1
           fi
+          for numeric_id in "$FACTORY_PULL_NUMBER" "$FACTORY_WORKFLOW_RUN_ID"; do
+            if [ -n "$numeric_id" ] && ! printf '%s' "$numeric_id" | grep -Eq '^[1-9][0-9]{0,15}$'; then
+              echo "::error::Invalid numeric event identifier"
+              exit 1
+            fi
+          done
+          for commit_sha in "$GITHUB_WORKFLOW_SHA" "$FACTORY_PULL_HEAD" "$FACTORY_CHECK_HEAD" "$FACTORY_MAIN_HEAD"; do
+            if [ -n "$commit_sha" ] && ! printf '%s' "$commit_sha" | grep -Eq '^[a-f0-9]{40}$'; then
+              echo "::error::Invalid event commit SHA"
+              exit 1
+            fi
+          done
           node --input-type=module -e '
             import {readFileSync} from "node:fs";
-            import {verifyGhAwWorkflowLock} from "./tools/engineering-factory/gh-aw-lock-verifier.mjs";
+            import {verifyEventTriggerMatrix, verifyGhAwWorkflowLock} from "./tools/engineering-factory/gh-aw-lock-verifier.mjs";
             const markdownSource = readFileSync(".github/workflows/factory-orchestrator.md", "utf8");
             const lockYamlSource = readFileSync(".github/workflows/factory-orchestrator.lock.yml", "utf8");
             const verdict = verifyGhAwWorkflowLock({markdownSource, lockYamlSource});
-            if (!verdict.valid) {
-              console.error(JSON.stringify(verdict));
+            const matrixVerdict = verifyEventTriggerMatrix(lockYamlSource);
+            if (!verdict.valid || !matrixVerdict.valid) {
+              console.error(JSON.stringify({verdict, matrixVerdict}));
               process.exit(1);
             }
-            console.log(JSON.stringify(verdict));
+            console.log(JSON.stringify({verdict, matrixVerdict}));
           '
-          if [ "$FACTORY_GHAW_MODE" = shadow ]; then
+          if [ "$FACTORY_GHAW_MODE" = smoke ]; then
             node tools/engineering-factory/run.mjs --smoke
+          elif [ "$FACTORY_GHAW_MODE" = shadow ]; then
+            case "$GITHUB_EVENT_NAME" in
+              schedule|workflow_dispatch|issues|pull_request_target|workflow_run|push) ;;
+              *) echo "::error::Unsupported orchestrator event"; exit 1 ;;
+            esac
+            node tools/engineering-factory/run.mjs --smoke
+            test -n "$GITHUB_WORKFLOW_SHA"
+            FACTORY_CHECKOUT_SHA="$(git rev-parse HEAD)"
+            test "$FACTORY_CHECKOUT_SHA" = "$GITHUB_WORKFLOW_SHA"
+            export FACTORY_CHECKOUT_SHA
+            SNAPSHOT_WORK_FILE="${RUNNER_TEMP:-/tmp}/factory-event-journal-snapshot.json"
+            CURSOR_WORK_FILE="${RUNNER_TEMP:-/tmp}/factory-recovery-cursor.json"
+            HANDOFF_FILE="${RUNNER_TEMP:-/tmp}/factory-work-queue-handoff.json"
+            EXPECTED_WORK_QUEUE_OID="0000000000000000000000000000000000000000"
+            if git fetch --quiet --no-tags --depth=1 origin refs/heads/work-queue 2>/dev/null; then
+              EXPECTED_WORK_QUEUE_OID="$(git rev-parse FETCH_HEAD)"
+              if [ ! -s "$SNAPSHOT_WORK_FILE" ]; then
+                git show FETCH_HEAD:state/event-journal-snapshot.json > "$SNAPSHOT_WORK_FILE" 2>/dev/null || rm -f "$SNAPSHOT_WORK_FILE"
+              fi
+              if [ ! -s "$CURSOR_WORK_FILE" ]; then
+                git show FETCH_HEAD:state/recovery-cursor.json > "$CURSOR_WORK_FILE" 2>/dev/null || rm -f "$CURSOR_WORK_FILE"
+              fi
+            fi
+            export SNAPSHOT_WORK_FILE CURSOR_WORK_FILE HANDOFF_FILE EXPECTED_WORK_QUEUE_OID
+            node --input-type=module -e '
+              import {appendFileSync, existsSync, renameSync, statSync, writeFileSync, readFileSync} from "node:fs";
+              import {buildShadowJournalHandoff, reconcileShadowOrchestratorRun} from "./tools/engineering-factory/shadow-runtime.mjs";
+              const snapPath = process.env.SNAPSHOT_WORK_FILE;
+              const cursorPath = process.env.CURSOR_WORK_FILE;
+              const handoffPath = process.env.HANDOFF_FILE;
+              const expectedWorkQueueOid = process.env.EXPECTED_WORK_QUEUE_OID;
+              let priorSnapshot;
+              if (snapPath && existsSync(snapPath)) {
+                const st = statSync(snapPath);
+                if (st.size > 0) {
+                  if (st.size > 2097152) process.exit(1);
+                  priorSnapshot = JSON.parse(readFileSync(snapPath, "utf8"));
+                }
+              }
+              let priorCursor = 0;
+              if (cursorPath && existsSync(cursorPath)) {
+                const cst = statSync(cursorPath);
+                if (cst.size > 0 && cst.size <= 4096) {
+                  const parsedCursor = JSON.parse(readFileSync(cursorPath, "utf8"));
+                  if (Number.isSafeInteger(parsedCursor?.pullCursor) && parsedCursor.pullCursor >= 0) {
+                    priorCursor = parsedCursor.pullCursor;
+                  }
+                }
+              }
+              const {snapshot, ...publicResult} = await reconcileShadowOrchestratorRun(
+                process.env,
+                {
+                  pullCursor: priorCursor,
+                  ...(priorSnapshot !== undefined ? {snapshot: priorSnapshot} : {})
+                }
+              );
+              if (publicResult.reason === "TRUST_UNKNOWN" || publicResult.reason === "INVALID_SNAPSHOT" || publicResult.reason === "LEASE_CONFLICT") {
+                console.error(JSON.stringify(publicResult));
+                process.exit(1);
+              }
+              if (snapshot && snapshot.exported && snapPath && handoffPath) {
+                const nextCursor = Number.isSafeInteger(publicResult.pullCursor) ? publicResult.pullCursor : priorCursor;
+                const built = buildShadowJournalHandoff({
+                  expectedWorkQueueOid,
+                  snapshot,
+                  pullCursor: nextCursor,
+                  repositoryId: publicResult.repositoryId ?? 1471342715
+                });
+                if (!built.ok) process.exit(1);
+                writeFileSync(`${snapPath}.tmp`, JSON.stringify(built.handoff.snapshot), "utf8");
+                renameSync(`${snapPath}.tmp`, snapPath);
+                if (cursorPath) {
+                  writeFileSync(`${cursorPath}.tmp`, JSON.stringify({schemaVersion: 1, pullCursor: nextCursor}), "utf8");
+                  renameSync(`${cursorPath}.tmp`, cursorPath);
+                }
+                writeFileSync(`${handoffPath}.tmp`, built.serialized, "utf8");
+                renameSync(`${handoffPath}.tmp`, handoffPath);
+                if (process.env.GITHUB_OUTPUT) {
+                  appendFileSync(
+                    process.env.GITHUB_OUTPUT,
+                    `expected_work_queue_oid=${expectedWorkQueueOid}\nhandoff_sha256=${built.sha256}\n`,
+                    "utf8"
+                  );
+                }
+              }
+              console.log(JSON.stringify(publicResult));
+            '
           fi
+      - name: Upload verified shadow journal handoff artifact
+        if: steps.shadow_eval.outputs.handoff_sha256 != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: factory-work-queue-handoff
+          path: ${{ runner.temp }}/factory-work-queue-handoff.json
+          if-no-files-found: error
+          retention-days: 1
 
   threat-and-policy-scan:
     needs: [evaluate]
@@ -88,9 +227,11 @@ jobs:
     outputs:
       scan_verified: ${{ steps.policy_scan.outputs.scan_verified }}
     steps:
-      - name: Checkout trusted default branch for policy scan
+      - name: Checkout immutable protected-branch workflow revision for policy scan
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          repository: Jamula/SoftwareFactory
+          ref: ${{ github.workflow_sha }}
           persist-credentials: false
       - name: Setup pinned Node runtime
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -103,25 +244,138 @@ jobs:
           set -euo pipefail
           node --input-type=module -e '
             import {readFileSync} from "node:fs";
-            import {verifyGhAwWorkflowLock} from "./tools/engineering-factory/gh-aw-lock-verifier.mjs";
+            import {verifyEventTriggerMatrix, verifyGhAwWorkflowLock} from "./tools/engineering-factory/gh-aw-lock-verifier.mjs";
             const markdownSource = readFileSync(".github/workflows/factory-orchestrator.md", "utf8");
             const lockYamlSource = readFileSync(".github/workflows/factory-orchestrator.lock.yml", "utf8");
             const verdict = verifyGhAwWorkflowLock({markdownSource, lockYamlSource});
-            if (!verdict.valid || verdict.liveDispatch !== false || verdict.liveMerge !== false) {
+            const matrixVerdict = verifyEventTriggerMatrix(lockYamlSource);
+            if (!verdict.valid || !matrixVerdict.valid || verdict.liveDispatch !== false || verdict.liveMerge !== false) {
               process.exit(1);
             }
           '
           echo "scan_verified=true" >> "$GITHUB_OUTPUT"
 
-  safe-outputs-dry-run:
+  # Staged Compare-and-Swap candidate & optional ref-scoped broker persistence stage:
+  # workflow GITHUB_TOKEN stays strictly contents:read (safe-outputs: staged:true; never contents:write
+  # or unauthenticated git push). By default this job stages the verified merged-tree CAS candidate
+  # artifact preserving all existing refs/heads/work-queue files; live CAS writes occur only when both
+  # vars.FACTORY_GHAW_PERSIST_ENABLED == 'true' and vars.FACTORY_WORK_QUEUE_BROKER_URL are provisioned.
+  safe-outputs-persist-journal:
     needs: [evaluate, threat-and-policy-scan]
-    if: ${{ false }}
+    if: ${{ vars.FACTORY_GHAW_ENABLED == 'true' && needs.evaluate.result == 'success' && needs.threat-and-policy-scan.result == 'success' && needs.threat-and-policy-scan.outputs.scan_verified == 'true' && needs.evaluate.outputs.handoff_sha256 != '' && !endsWith(github.actor, '[bot]') }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       contents: read
     steps:
-      - name: Safe-outputs live mutations remain disabled pending separate authorization
+      - name: Checkout immutable protected-branch workflow revision for CAS staging
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Jamula/SoftwareFactory
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - name: Setup pinned Node runtime
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '26.13.1'
+          package-manager-cache: false
+      - name: Download verified shadow journal handoff artifact
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: factory-work-queue-handoff
+          path: ${{ runner.temp }}/factory-handoff
+      - name: Persist journal snapshot to refs/heads/work-queue via non-force CAS
+        env:
+          EXPECTED_HANDOFF_SHA256: ${{ needs.evaluate.outputs.handoff_sha256 }}
+          EXPECTED_WORK_QUEUE_OID: ${{ needs.evaluate.outputs.expected_work_queue_oid }}
+          FACTORY_GHAW_PERSIST_ENABLED: ${{ vars.FACTORY_GHAW_PERSIST_ENABLED }}
+          FACTORY_WORK_QUEUE_BROKER_URL: ${{ vars.FACTORY_WORK_QUEUE_BROKER_URL }}
         run: |
           set -euo pipefail
-          echo "safe-outputs remain disabled until separate live authorization"
+          HANDOFF_INPUT="${RUNNER_TEMP:-/tmp}/factory-handoff/factory-work-queue-handoff.json"
+          STAGE_DIR="${RUNNER_TEMP:-/tmp}/factory-work-queue-stage"
+          STAGED_OUT_DIR="${RUNNER_TEMP:-/tmp}/factory-work-queue-staged"
+          rm -rf "$STAGE_DIR" "$STAGED_OUT_DIR"
+          mkdir -p "$STAGE_DIR" "$STAGED_OUT_DIR"
+          export HANDOFF_INPUT STAGE_DIR STAGED_OUT_DIR
+          node --input-type=module -e '
+            import {readFileSync, writeFileSync} from "node:fs";
+            import {join} from "node:path";
+            import {verifyShadowJournalHandoff} from "./tools/engineering-factory/shadow-runtime.mjs";
+            const raw = readFileSync(process.env.HANDOFF_INPUT, "utf8");
+            const checked = verifyShadowJournalHandoff(
+              raw,
+              process.env.EXPECTED_HANDOFF_SHA256,
+              process.env.EXPECTED_WORK_QUEUE_OID
+            );
+            if (!checked.ok) {
+              console.error(JSON.stringify(checked));
+              process.exit(1);
+            }
+            writeFileSync(join(process.env.STAGE_DIR, "event-journal-snapshot.json"), JSON.stringify(checked.snapshot), "utf8");
+            writeFileSync(join(process.env.STAGE_DIR, "recovery-cursor.json"), JSON.stringify({schemaVersion: 1, pullCursor: checked.pullCursor}), "utf8");
+          '
+          ACTUAL_OID="0000000000000000000000000000000000000000"
+          if git fetch --quiet --no-tags --depth=1 origin refs/heads/work-queue 2>/dev/null; then
+            ACTUAL_OID="$(git rev-parse FETCH_HEAD)"
+          fi
+          if [ "$ACTUAL_OID" != "$EXPECTED_WORK_QUEUE_OID" ]; then
+            echo "::error::CAS conflict on refs/heads/work-queue (expected $EXPECTED_WORK_QUEUE_OID, actual $ACTUAL_OID)"
+            exit 1
+          fi
+          SNAP_BLOB="$(git hash-object -w "$STAGE_DIR/event-journal-snapshot.json")"
+          CURSOR_BLOB="$(git hash-object -w "$STAGE_DIR/recovery-cursor.json")"
+          WQ_INDEX="$STAGE_DIR/work-queue.index"
+          rm -f "$WQ_INDEX"
+          if [ "$EXPECTED_WORK_QUEUE_OID" != "0000000000000000000000000000000000000000" ]; then
+            GIT_INDEX_FILE="$WQ_INDEX" git read-tree "$EXPECTED_WORK_QUEUE_OID"
+          fi
+          GIT_INDEX_FILE="$WQ_INDEX" git update-index --add --cacheinfo "100644,$SNAP_BLOB,state/event-journal-snapshot.json"
+          GIT_INDEX_FILE="$WQ_INDEX" git update-index --add --cacheinfo "100644,$CURSOR_BLOB,state/recovery-cursor.json"
+          EXPECTED_TREE_OID="$(GIT_INDEX_FILE="$WQ_INDEX" git write-tree)"
+          export EXPECTED_TREE_OID
+          node --input-type=module -e '
+            import {readFileSync, writeFileSync} from "node:fs";
+            import {join} from "node:path";
+            import {persistShadowJournalViaBroker} from "./tools/engineering-factory/shadow-runtime.mjs";
+            const rawHandoff = readFileSync(process.env.HANDOFF_INPUT, "utf8");
+            const stagedCandidate = {
+              schemaVersion: 1,
+              protocol: "v3",
+              staged: process.env.FACTORY_GHAW_PERSIST_ENABLED !== "true",
+              ref: "refs/heads/work-queue",
+              expectedOid: process.env.EXPECTED_WORK_QUEUE_OID,
+              expectedTreeOid: process.env.EXPECTED_TREE_OID,
+              handoffSha256: process.env.EXPECTED_HANDOFF_SHA256
+            };
+            writeFileSync(
+              join(process.env.STAGED_OUT_DIR, "work-queue-cas-staged.json"),
+              JSON.stringify(stagedCandidate),
+              "utf8"
+            );
+            if (process.env.FACTORY_GHAW_PERSIST_ENABLED === "true") {
+              const outcome = await persistShadowJournalViaBroker({
+                brokerUrl: process.env.FACTORY_WORK_QUEUE_BROKER_URL ?? "",
+                rawHandoff,
+                expectedHandoffSha256: process.env.EXPECTED_HANDOFF_SHA256,
+                expectedWorkQueueOid: process.env.EXPECTED_WORK_QUEUE_OID,
+                expectedTreeOid: process.env.EXPECTED_TREE_OID,
+                repository: process.env.GITHUB_REPOSITORY || "Jamula/SoftwareFactory",
+                inActions: process.env.GITHUB_ACTIONS === "true"
+              });
+              if (!outcome.ok) {
+                console.error(JSON.stringify(outcome));
+                process.exit(1);
+              }
+              console.log(JSON.stringify(outcome));
+            } else {
+              console.log(JSON.stringify({...stagedCandidate, reason: "CAS_CANDIDATE_STAGED"}));
+            }
+          '
+      - name: Upload staged work-queue CAS candidate artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: factory-work-queue-cas-staged
+          path: ${{ runner.temp }}/factory-work-queue-staged/work-queue-cas-staged.json
+          if-no-files-found: error
+          retention-days: 1
