@@ -4,7 +4,7 @@
   "issueNumber": 137,
   "repository": "Jamula/SoftwareFactory",
   "repositoryId": 1471342715,
-  "evaluatedMainHead": "1371a40aa7958fdd9dfe1dbe549952f62adeeae8",
+  "evaluatedMainHead": "4a4c6aeb5489921a84968840a8d1187d14c91108",
   "evaluatedAt": "2026-11-28T09:40:00Z",
   "cohortSource": "github-verified-wave5-outcomes",
   "ghAwWorkflowLock": {
@@ -16,7 +16,7 @@
     "evidenceMode": "github-verified-cohort",
     "cohortSource": "github-verified-wave5-outcomes",
     "syntheticReplayOnly": false,
-    "verifiedCohortOutcomesCount": 8,
+    "verifiedCohortOutcomesCount": 6,
     "liveAutonomousOutcomesCount": 0,
     "kaizenCohortVerified": true,
     "liveCohortVerified": false,
@@ -41,15 +41,27 @@
       "Post-#174 exact-lockfile warm-cache receipts on main @ 1371a40aa7958fdd9dfe1dbe549952f62adeeae8: Windows Aspire runtime run 46124140543 job 140914850338 completed in 95,000 ms (vs 133,000 ms on ec438f54 job 140878293210; 79,000 ms on #174 job 140903300485) with primary key hits on sf-npm-ci-v1-Windows-X64 and sf-aspire-nuget-v2-Windows-X64, and dotnet-agents skipped cleanly on JS-only PRs #176 and #179"
     ],
     "syntheticReplayEnvelopeElements": [
-      "W3C traceparent spans, CAS lease generations, Mission Control taskId/sessionId envelopes, and replay-modeled per-PR AI-credit envelopes (288 baseline vs 192 Wave 5; $0 actual incremental billed spend confirmed via closed #105) wrapping the real GitHub PR commits, CI/CodeQL/coverage receipts, reviews, and Squash Merge Queue commits",
-      "Exact-head synthetic thread-resolution review wrappers on #170 (synthetic-thread-resolved-6096196029 over ab291f113bbb -> 7c323ff23837), #174 (synthetic-thread-resolved-6096389890 over 9d745d037c1b -> c816342ca145), and #176 (synthetic-thread-resolved-6096534341 over 61a515444c99 -> f6585313fd5c) where review_on_push: false gated final heads via required_review_thread_resolution: true, while #171, #172, #173, #175, #177, #178, and #179 bind direct exact-head copilot-pull-request-reviewer[bot] review IDs",
+      "W3C traceparent spans, CAS lease generations, and Mission Control taskId/sessionId envelopes wrapping real GitHub PR commits, CI/CodeQL/coverage receipts, exact-head independent reviews, Squash Merge Queue commits, and post-merge Push-on-main runs (with unmeasured AI credits set to null and accountingVerified: false alongside $0 verified billed overage)",
+      "Every baseline PR (#160, #161, #164, #166, #167), shipped candidate (#168), and post-Kaizen Wave 5 PR (#171, #172, #173, #175, #177, #178, #179) binds an authentic exact-head copilot-pull-request-reviewer[bot] review ID on its merged headRefOid and a post-merge Push-on-main workflow run",
       "Isolated consumer repository chain (repositoryId 3333333333) verifying cross-repository query isolation and regression-rollback drill cohort exercising deterministic revert PR spec generation"
     ]
   },
   "supplementaryCohortBreakdowns": {
     "activeSameMorningWave4Baseline": {
-      "pullNumbers": [166, 167, 168, 169, 170],
-      "distinctIssueNumbers": [4, 5, 7, 8, 9],
+      "pullNumbers": [
+        166,
+        167,
+        168,
+        169,
+        170
+      ],
+      "distinctIssueNumbers": [
+        4,
+        5,
+        7,
+        8,
+        9
+      ],
       "medianCycleTimeMs": 2704000,
       "wave5MedianCycleTimeMs": 1986000,
       "medianCycleTimeDeltaMs": -718000,
@@ -66,7 +78,10 @@
       "warmPost174MainJobId": 140914850338,
       "warmPost174DurationMs": 95000,
       "mainDurationDeltaMs": -38000,
-      "dotnetAgentsSkippedOnJsOnlyPrs": [176, 179]
+      "dotnetAgentsSkippedOnJsOnlyPrs": [
+        176,
+        179
+      ]
     }
   },
   "observedWaves3To4Signals": [
@@ -98,7 +113,7 @@
   ],
   "readoutInput": {
     "repositoryId": 1471342715,
-    "evaluatedHeadSha": "1371a40aa7958fdd9dfe1dbe549952f62adeeae8",
+    "evaluatedHeadSha": "4a4c6aeb5489921a84968840a8d1187d14c91108",
     "evidenceMode": "github-verified-cohort",
     "cohortSource": "github-verified-wave5-outcomes",
     "liveAutonomousOutcomesCount": 0,
@@ -213,7 +228,7 @@
             "observedMs": 1795833217000
           }
         },
-        "circuitBreaker": {
+        "governanceAttestation": {
           "repositoryId": 1471342715,
           "ownedPaths": [
             "docs/COORDINATOR-EVENT-JOURNAL.md",
@@ -227,10 +242,6 @@
           ],
           "attempt": 1,
           "maxRetries": 2,
-          "runAiCredits": 24,
-          "maxRunAiCredits": 60,
-          "burnRateBps": 600,
-          "maxBurnSpikeBps": 2500,
           "incrementalBilledUsdCents": 0,
           "safeOutputsThreatDetected": false,
           "humanOwnerSignOffVerified": false,
@@ -238,8 +249,7 @@
           "implementationAgentIdentity": "copilot-swe-agent[bot]",
           "reviewerIdentity": "copilot-pull-request-reviewer[bot]",
           "mainHealthy": true,
-          "accountingVerified": true,
-          "isEstimated": false
+          "accountingVerified": false
         }
       },
       {
@@ -352,7 +362,7 @@
             "observedMs": 1795833336000
           }
         },
-        "circuitBreaker": {
+        "governanceAttestation": {
           "repositoryId": 1471342715,
           "ownedPaths": [
             "docs/GH-AW-ORCHESTRATION.md",
@@ -366,10 +376,6 @@
           ],
           "attempt": 1,
           "maxRetries": 2,
-          "runAiCredits": 28,
-          "maxRunAiCredits": 60,
-          "burnRateBps": 600,
-          "maxBurnSpikeBps": 2500,
           "incrementalBilledUsdCents": 0,
           "safeOutputsThreatDetected": false,
           "humanOwnerSignOffVerified": true,
@@ -377,8 +383,7 @@
           "implementationAgentIdentity": "copilot-swe-agent[bot]",
           "reviewerIdentity": "copilot-pull-request-reviewer[bot]",
           "mainHealthy": true,
-          "accountingVerified": true,
-          "isEstimated": false
+          "accountingVerified": false
         }
       },
       {
@@ -602,7 +607,7 @@
             "observedMs": 1795835459000
           }
         },
-        "circuitBreaker": {
+        "governanceAttestation": {
           "repositoryId": 1471342715,
           "ownedPaths": [
             "docs/MAF-INNER-ORCHESTRATION.md",
@@ -616,10 +621,6 @@
           ],
           "attempt": 1,
           "maxRetries": 2,
-          "runAiCredits": 32,
-          "maxRunAiCredits": 60,
-          "burnRateBps": 600,
-          "maxBurnSpikeBps": 2500,
           "incrementalBilledUsdCents": 0,
           "safeOutputsThreatDetected": false,
           "humanOwnerSignOffVerified": false,
@@ -627,8 +628,141 @@
           "implementationAgentIdentity": "copilot-swe-agent[bot]",
           "reviewerIdentity": "copilot-pull-request-reviewer[bot]",
           "mainHealthy": true,
-          "accountingVerified": true,
-          "isEstimated": false
+          "accountingVerified": false
+        }
+      },
+      {
+        "issueNumber": 8,
+        "pullNumber": 166,
+        "violations": [],
+        "stages": {
+          "eventDelivery": {
+            "traceparent": "00-16600000000000000000000000000166-0000000000000029-01",
+            "parentSpanId": null,
+            "deliveryId": "github-pr-166",
+            "repositoryId": 1471342715,
+            "observedMs": 1795837000000
+          },
+          "ghAwLock": {
+            "traceparent": "00-16600000000000000000000000000166-000000000000002a-01",
+            "parentSpanId": "0000000000000029",
+            "lockSha256": "9c1b723d338fff43d64c3b518616f7a635b9dce330e72aa2e29f7c8b67bb445f",
+            "observedMs": 1795837001000
+          },
+          "casLease": {
+            "traceparent": "00-16600000000000000000000000000166-000000000000002b-01",
+            "parentSpanId": "000000000000002a",
+            "leaseGeneration": 25,
+            "laneId": "sf-merge-queue-reread-lane",
+            "ownedPaths": [
+              "docs/evidence/m01-05-merge-queue-receipt.json",
+              "tests/engineering-factory/queue-reread.test.mjs",
+              "tools/engineering-factory/queue-reread.mjs"
+            ],
+            "observedMs": 1795837002000
+          },
+          "missionControlTask": {
+            "traceparent": "00-16600000000000000000000000000166-000000000000002c-01",
+            "parentSpanId": "000000000000002b",
+            "taskId": "00000166-0000-4000-8000-000000000166",
+            "sessionId": "session-pr-166",
+            "observedMs": 1795837003000
+          },
+          "candidateCommit": {
+            "traceparent": "00-16600000000000000000000000000166-000000000000002d-01",
+            "parentSpanId": "000000000000002c",
+            "commitSha": "ef5ec77d4c93f887db69e4524761b666f77f2ac5",
+            "signed": true,
+            "touchedPaths": [
+              "docs/evidence/m01-05-merge-queue-receipt.json",
+              "tests/engineering-factory/queue-reread.test.mjs",
+              "tools/engineering-factory/queue-reread.mjs"
+            ],
+            "observedMs": 1795838800000
+          },
+          "exactHeadValidation": {
+            "traceparent": "00-16600000000000000000000000000166-000000000000002e-01",
+            "parentSpanId": "000000000000002d",
+            "headSha": "ef5ec77d4c93f887db69e4524761b666f77f2ac5",
+            "ciReceiptId": "run-46106680112",
+            "codeqlReceiptId": "run-46106679801",
+            "coverageReceiptId": "run-46106680112-cov",
+            "expectedComponents": [
+              "engineering-factory.queue-reread"
+            ],
+            "coverageReports": [
+              {
+                "component": "engineering-factory.queue-reread",
+                "head": "ef5ec77d4c93f887db69e4524761b666f77f2ac5",
+                "lines": 1120,
+                "lineTotal": 1120,
+                "branches": 540,
+                "branchTotal": 544
+              }
+            ],
+            "lines": 1120,
+            "lineTotal": 1120,
+            "branches": 540,
+            "branchTotal": 544,
+            "observedMs": 1795838900000
+          },
+          "independentReview": {
+            "traceparent": "00-16600000000000000000000000000166-000000000000002f-01",
+            "parentSpanId": "000000000000002e",
+            "reviewId": "review-6095695594",
+            "reviewedHeadSha": "ef5ec77d4c93f887db69e4524761b666f77f2ac5",
+            "reviewerIdentity": "copilot-pull-request-reviewer[bot]",
+            "authorIdentity": "cyrusjamula",
+            "implementationAgentIdentity": "copilot-swe-agent[bot]",
+            "authorizedReviewers": [
+              "copilot-pull-request-reviewer[bot]",
+              "cyrusjamula"
+            ],
+            "reviewState": "COMMENTED",
+            "reviewHistoryComplete": true,
+            "outstandingChangesRequested": 0,
+            "unresolvedThreads": 0,
+            "summaryFindingsResolved": true,
+            "observedMs": 1795838950000
+          },
+          "mergeQueueSquash": {
+            "traceparent": "00-16600000000000000000000000000166-0000000000000030-01",
+            "parentSpanId": "000000000000002f",
+            "expectedHeadSha": "ef5ec77d4c93f887db69e4524761b666f77f2ac5",
+            "squashCommitSha": "b82b006da3ed860440daf00904f5b3239e8d01db",
+            "observedMs": 1795839526000
+          },
+          "verifiedMain": {
+            "traceparent": "00-16600000000000000000000000000166-0000000000000031-01",
+            "parentSpanId": "0000000000000030",
+            "mainCommitSha": "b82b006da3ed860440daf00904f5b3239e8d01db",
+            "mainHealthy": true,
+            "receiptId": "run-46106944779",
+            "observedMs": 1795839586000
+          }
+        },
+        "governanceAttestation": {
+          "repositoryId": 1471342715,
+          "ownedPaths": [
+            "docs/evidence/m01-05-merge-queue-receipt.json",
+            "tests/engineering-factory/queue-reread.test.mjs",
+            "tools/engineering-factory/queue-reread.mjs"
+          ],
+          "touchedPaths": [
+            "docs/evidence/m01-05-merge-queue-receipt.json",
+            "tests/engineering-factory/queue-reread.test.mjs",
+            "tools/engineering-factory/queue-reread.mjs"
+          ],
+          "attempt": 1,
+          "maxRetries": 2,
+          "incrementalBilledUsdCents": 0,
+          "safeOutputsThreatDetected": false,
+          "humanOwnerSignOffVerified": false,
+          "authorIdentity": "cyrusjamula",
+          "implementationAgentIdentity": "copilot-swe-agent[bot]",
+          "reviewerIdentity": "copilot-pull-request-reviewer[bot]",
+          "mainHealthy": true,
+          "accountingVerified": false
         }
       },
       {
@@ -745,7 +879,7 @@
             "observedMs": 1795839885000
           }
         },
-        "circuitBreaker": {
+        "governanceAttestation": {
           "repositoryId": 1471342715,
           "ownedPaths": [
             "docs/GITHUB-HOSTED-COPILOT-PILOT.md",
@@ -763,10 +897,6 @@
           ],
           "attempt": 1,
           "maxRetries": 2,
-          "runAiCredits": 27,
-          "maxRunAiCredits": 60,
-          "burnRateBps": 600,
-          "maxBurnSpikeBps": 2500,
           "incrementalBilledUsdCents": 0,
           "safeOutputsThreatDetected": false,
           "humanOwnerSignOffVerified": false,
@@ -774,8 +904,7 @@
           "implementationAgentIdentity": "copilot-swe-agent[bot]",
           "reviewerIdentity": "copilot-pull-request-reviewer[bot]",
           "mainHealthy": true,
-          "accountingVerified": true,
-          "isEstimated": false
+          "accountingVerified": false
         }
       },
       {
@@ -894,7 +1023,7 @@
             "observedMs": 1795843839000
           }
         },
-        "circuitBreaker": {
+        "governanceAttestation": {
           "repositoryId": 1471342715,
           "ownedPaths": [
             ".github/workflows/factory-orchestrator.lock.yml",
@@ -914,10 +1043,6 @@
           ],
           "attempt": 1,
           "maxRetries": 2,
-          "runAiCredits": 34,
-          "maxRunAiCredits": 60,
-          "burnRateBps": 600,
-          "maxBurnSpikeBps": 2500,
           "incrementalBilledUsdCents": 0,
           "safeOutputsThreatDetected": false,
           "humanOwnerSignOffVerified": true,
@@ -925,147 +1050,7 @@
           "implementationAgentIdentity": "copilot-swe-agent[bot]",
           "reviewerIdentity": "copilot-pull-request-reviewer[bot]",
           "mainHealthy": true,
-          "accountingVerified": true,
-          "isEstimated": false
-        }
-      },
-      {
-        "issueNumber": 7,
-        "pullNumber": 170,
-        "violations": [],
-        "stages": {
-          "eventDelivery": {
-            "traceparent": "00-17000000000000000000000000000170-0000000000000041-01",
-            "parentSpanId": null,
-            "deliveryId": "synthetic-replay-pr170",
-            "repositoryId": 1471342715,
-            "observedMs": 1795838238000
-          },
-          "ghAwLock": {
-            "traceparent": "00-17000000000000000000000000000170-0000000000000042-01",
-            "parentSpanId": "0000000000000041",
-            "lockSha256": "9c1b723d338fff43d64c3b518616f7a635b9dce330e72aa2e29f7c8b67bb445f",
-            "observedMs": 1795838239000
-          },
-          "casLease": {
-            "traceparent": "00-17000000000000000000000000000170-0000000000000043-01",
-            "parentSpanId": "0000000000000042",
-            "leaseGeneration": 6,
-            "laneId": "sf-shadow-dispatch-ledger-lane",
-            "ownedPaths": [
-              "docs/COORDINATOR-EVENT-JOURNAL.md",
-              "tests/engineering-factory/shadow-dispatch-ledger.test.mjs",
-              "tools/engineering-factory/shadow-dispatch-ledger.mjs"
-            ],
-            "observedMs": 1795838240000
-          },
-          "missionControlTask": {
-            "traceparent": "00-17000000000000000000000000000170-0000000000000044-01",
-            "parentSpanId": "0000000000000043",
-            "taskId": "00000170-0000-4000-8000-000000000170",
-            "sessionId": "synthetic-replay-session-170",
-            "observedMs": 1795838241000
-          },
-          "candidateCommit": {
-            "traceparent": "00-17000000000000000000000000000170-0000000000000045-01",
-            "parentSpanId": "0000000000000044",
-            "commitSha": "7c323ff23837d3ed7cfa431ae82eb07484bedacb",
-            "signed": true,
-            "touchedPaths": [
-              "docs/COORDINATOR-EVENT-JOURNAL.md",
-              "tests/engineering-factory/shadow-dispatch-ledger.test.mjs",
-              "tools/engineering-factory/shadow-dispatch-ledger.mjs"
-            ],
-            "observedMs": 1795849780000
-          },
-          "exactHeadValidation": {
-            "traceparent": "00-17000000000000000000000000000170-0000000000000046-01",
-            "parentSpanId": "0000000000000045",
-            "headSha": "7c323ff23837d3ed7cfa431ae82eb07484bedacb",
-            "ciReceiptId": "job-140902514410",
-            "codeqlReceiptId": "run-46119904580",
-            "coverageReceiptId": "job-140902665483",
-            "expectedComponents": [
-              "engineering-factory.shadow-dispatch-ledger"
-            ],
-            "coverageReports": [
-              {
-                "component": "engineering-factory.shadow-dispatch-ledger",
-                "head": "7c323ff23837d3ed7cfa431ae82eb07484bedacb",
-                "lines": 2461,
-                "lineTotal": 2491,
-                "branches": 1285,
-                "branchTotal": 1319
-              }
-            ],
-            "lines": 2461,
-            "lineTotal": 2491,
-            "branches": 1285,
-            "branchTotal": 1319,
-            "observedMs": 1795849986000
-          },
-          "independentReview": {
-            "traceparent": "00-17000000000000000000000000000170-0000000000000047-01",
-            "parentSpanId": "0000000000000046",
-            "reviewId": "synthetic-thread-resolved-6096196029",
-            "reviewedHeadSha": "7c323ff23837d3ed7cfa431ae82eb07484bedacb",
-            "reviewerIdentity": "copilot-pull-request-reviewer[bot]",
-            "authorIdentity": "cyrusjamula",
-            "implementationAgentIdentity": "copilot-swe-agent[bot]",
-            "authorizedReviewers": [
-              "copilot-pull-request-reviewer[bot]",
-              "cyrusjamula"
-            ],
-            "reviewState": "COMMENTED",
-            "reviewHistoryComplete": true,
-            "outstandingChangesRequested": 0,
-            "unresolvedThreads": 0,
-            "summaryFindingsResolved": true,
-            "observedMs": 1795849990000
-          },
-          "mergeQueueSquash": {
-            "traceparent": "00-17000000000000000000000000000170-0000000000000048-01",
-            "parentSpanId": "0000000000000047",
-            "expectedHeadSha": "7c323ff23837d3ed7cfa431ae82eb07484bedacb",
-            "squashCommitSha": "4ed89d68603b32878a3ea6eb639dd37e8013046d",
-            "observedMs": 1795850253000
-          },
-          "verifiedMain": {
-            "traceparent": "00-17000000000000000000000000000170-0000000000000049-01",
-            "parentSpanId": "0000000000000048",
-            "mainCommitSha": "4ed89d68603b32878a3ea6eb639dd37e8013046d",
-            "mainHealthy": true,
-            "receiptId": "run-46120523080",
-            "observedMs": 1795850343000
-          }
-        },
-        "circuitBreaker": {
-          "repositoryId": 1471342715,
-          "ownedPaths": [
-            "docs/COORDINATOR-EVENT-JOURNAL.md",
-            "tests/engineering-factory/shadow-dispatch-ledger.test.mjs",
-            "tools/engineering-factory/shadow-dispatch-ledger.mjs"
-          ],
-          "touchedPaths": [
-            "docs/COORDINATOR-EVENT-JOURNAL.md",
-            "tests/engineering-factory/shadow-dispatch-ledger.test.mjs",
-            "tools/engineering-factory/shadow-dispatch-ledger.mjs"
-          ],
-          "attempt": 1,
-          "maxRetries": 2,
-          "runAiCredits": 30,
-          "maxRunAiCredits": 60,
-          "burnRateBps": 600,
-          "maxBurnSpikeBps": 2500,
-          "incrementalBilledUsdCents": 0,
-          "safeOutputsThreatDetected": false,
-          "humanOwnerSignOffVerified": false,
-          "authorIdentity": "cyrusjamula",
-          "implementationAgentIdentity": "copilot-swe-agent[bot]",
-          "reviewerIdentity": "copilot-pull-request-reviewer[bot]",
-          "mainHealthy": true,
-          "accountingVerified": true,
-          "isEstimated": false
+          "accountingVerified": false
         }
       },
       {
@@ -1174,11 +1159,11 @@
             "parentSpanId": "0000000000000058",
             "mainCommitSha": "3cb2e6541b2e74b62c6fb61661fe97d29f757c26",
             "mainHealthy": true,
-            "receiptId": "run-46118148733",
-            "observedMs": 1795848528000
+            "receiptId": "run-46118347465",
+            "observedMs": 1795848603000
           }
         },
-        "circuitBreaker": {
+        "governanceAttestation": {
           "repositoryId": 1471342715,
           "ownedPaths": [
             "docs/evidence/m01-08-readiness-audit.json",
@@ -1192,10 +1177,6 @@
           ],
           "attempt": 1,
           "maxRetries": 2,
-          "runAiCredits": 18,
-          "maxRunAiCredits": 60,
-          "burnRateBps": 600,
-          "maxBurnSpikeBps": 2500,
           "incrementalBilledUsdCents": 0,
           "safeOutputsThreatDetected": false,
           "humanOwnerSignOffVerified": false,
@@ -1203,8 +1184,7 @@
           "implementationAgentIdentity": "copilot-swe-agent[bot]",
           "reviewerIdentity": "copilot-pull-request-reviewer[bot]",
           "mainHealthy": true,
-          "accountingVerified": true,
-          "isEstimated": false
+          "accountingVerified": false
         }
       },
       {
@@ -1331,7 +1311,7 @@
             "observedMs": 1795848603000
           }
         },
-        "circuitBreaker": {
+        "governanceAttestation": {
           "repositoryId": 1471342715,
           "ownedPaths": [
             "docs/ROADMAP.md",
@@ -1359,10 +1339,6 @@
           ],
           "attempt": 1,
           "maxRetries": 2,
-          "runAiCredits": 14,
-          "maxRunAiCredits": 60,
-          "burnRateBps": 600,
-          "maxBurnSpikeBps": 2500,
           "incrementalBilledUsdCents": 0,
           "safeOutputsThreatDetected": false,
           "humanOwnerSignOffVerified": false,
@@ -1370,8 +1346,7 @@
           "implementationAgentIdentity": "copilot-swe-agent[bot]",
           "reviewerIdentity": "copilot-pull-request-reviewer[bot]",
           "mainHealthy": true,
-          "accountingVerified": true,
-          "isEstimated": false
+          "accountingVerified": false
         }
       },
       {
@@ -1482,7 +1457,7 @@
             "observedMs": 1795849082000
           }
         },
-        "circuitBreaker": {
+        "governanceAttestation": {
           "repositoryId": 1471342715,
           "ownedPaths": [
             "docs/evidence/m01-04-durable-cas-recovery.json",
@@ -1494,10 +1469,6 @@
           ],
           "attempt": 1,
           "maxRetries": 2,
-          "runAiCredits": 18,
-          "maxRunAiCredits": 60,
-          "burnRateBps": 600,
-          "maxBurnSpikeBps": 2500,
           "incrementalBilledUsdCents": 0,
           "safeOutputsThreatDetected": false,
           "humanOwnerSignOffVerified": false,
@@ -1505,8 +1476,7 @@
           "implementationAgentIdentity": "copilot-swe-agent[bot]",
           "reviewerIdentity": "copilot-pull-request-reviewer[bot]",
           "mainHealthy": true,
-          "accountingVerified": true,
-          "isEstimated": false
+          "accountingVerified": false
         }
       },
       {
@@ -1625,7 +1595,7 @@
             "observedMs": 1795849775000
           }
         },
-        "circuitBreaker": {
+        "governanceAttestation": {
           "repositoryId": 1471342715,
           "ownedPaths": [
             "docs/CONSUMER-ADOPTION-CONTRACT.md",
@@ -1645,10 +1615,6 @@
           ],
           "attempt": 1,
           "maxRetries": 2,
-          "runAiCredits": 22,
-          "maxRunAiCredits": 60,
-          "burnRateBps": 600,
-          "maxBurnSpikeBps": 2500,
           "incrementalBilledUsdCents": 0,
           "safeOutputsThreatDetected": false,
           "humanOwnerSignOffVerified": false,
@@ -1656,8 +1622,7 @@
           "implementationAgentIdentity": "copilot-swe-agent[bot]",
           "reviewerIdentity": "copilot-pull-request-reviewer[bot]",
           "mainHealthy": true,
-          "accountingVerified": true,
-          "isEstimated": false
+          "accountingVerified": false
         }
       },
       {
@@ -1772,7 +1737,7 @@
             "observedMs": 1795850289000
           }
         },
-        "circuitBreaker": {
+        "governanceAttestation": {
           "repositoryId": 1471342715,
           "ownedPaths": [
             "docs/CURATED-LESSONS-MEMORY.md",
@@ -1788,10 +1753,6 @@
           ],
           "attempt": 1,
           "maxRetries": 2,
-          "runAiCredits": 20,
-          "maxRunAiCredits": 60,
-          "burnRateBps": 600,
-          "maxBurnSpikeBps": 2500,
           "incrementalBilledUsdCents": 0,
           "safeOutputsThreatDetected": false,
           "humanOwnerSignOffVerified": false,
@@ -1799,175 +1760,7 @@
           "implementationAgentIdentity": "copilot-swe-agent[bot]",
           "reviewerIdentity": "copilot-pull-request-reviewer[bot]",
           "mainHealthy": true,
-          "accountingVerified": true,
-          "isEstimated": false
-        }
-      },
-      {
-        "issueNumber": 15,
-        "pullNumber": 174,
-        "violations": [],
-        "stages": {
-          "eventDelivery": {
-            "traceparent": "00-17400000000000000000000000000174-00000000000000a1-01",
-            "parentSpanId": null,
-            "deliveryId": "synthetic-replay-pr174",
-            "repositoryId": 1471342715,
-            "observedMs": 1795848501000
-          },
-          "ghAwLock": {
-            "traceparent": "00-17400000000000000000000000000174-00000000000000a2-01",
-            "parentSpanId": "00000000000000a1",
-            "lockSha256": "9c1b723d338fff43d64c3b518616f7a635b9dce330e72aa2e29f7c8b67bb445f",
-            "observedMs": 1795848502000
-          },
-          "casLease": {
-            "traceparent": "00-17400000000000000000000000000174-00000000000000a3-01",
-            "parentSpanId": "00000000000000a2",
-            "leaseGeneration": 12,
-            "laneId": "sf-ci-acceleration-lane",
-            "ownedPaths": [
-              ".github/workflows/dotnet-agents.yml",
-              ".github/workflows/shadow-reconcile.yml",
-              ".github/workflows/validate.yml",
-              ".github/workflows/windows-aspire.yml",
-              "docs/VALIDATION-TIMING-BASELINE.md",
-              "docs/evidence/m02-01-ci-acceleration-receipt.json",
-              "tests/engineering-factory/ci-stage-benchmark.test.mjs",
-              "tests/engineering-factory/gh-aw-lock-verifier.test.mjs",
-              "tests/engineering-factory/main-health-audit.test.mjs",
-              "tools/engineering-factory/main-health-audit.mjs"
-            ],
-            "observedMs": 1795848503000
-          },
-          "missionControlTask": {
-            "traceparent": "00-17400000000000000000000000000174-00000000000000a4-01",
-            "parentSpanId": "00000000000000a3",
-            "taskId": "00000174-0000-4000-8000-000000000174",
-            "sessionId": "synthetic-replay-session-174",
-            "observedMs": 1795848504000
-          },
-          "candidateCommit": {
-            "traceparent": "00-17400000000000000000000000000174-00000000000000a5-01",
-            "parentSpanId": "00000000000000a4",
-            "commitSha": "c816342ca145b86a19104b4d5be9afaba1790119",
-            "signed": true,
-            "touchedPaths": [
-              ".github/workflows/dotnet-agents.yml",
-              ".github/workflows/shadow-reconcile.yml",
-              ".github/workflows/validate.yml",
-              ".github/workflows/windows-aspire.yml",
-              "docs/VALIDATION-TIMING-BASELINE.md",
-              "docs/evidence/m02-01-ci-acceleration-receipt.json",
-              "tests/engineering-factory/ci-stage-benchmark.test.mjs",
-              "tests/engineering-factory/gh-aw-lock-verifier.test.mjs",
-              "tests/engineering-factory/main-health-audit.test.mjs",
-              "tools/engineering-factory/main-health-audit.mjs"
-            ],
-            "observedMs": 1795850070000
-          },
-          "exactHeadValidation": {
-            "traceparent": "00-17400000000000000000000000000174-00000000000000a6-01",
-            "parentSpanId": "00000000000000a5",
-            "headSha": "c816342ca145b86a19104b4d5be9afaba1790119",
-            "ciReceiptId": "job-140903301570",
-            "codeqlReceiptId": "run-46120286004",
-            "coverageReceiptId": "job-140903447191",
-            "expectedComponents": [
-              "engineering-factory.main-health-audit"
-            ],
-            "coverageReports": [
-              {
-                "component": "engineering-factory.main-health-audit",
-                "head": "c816342ca145b86a19104b4d5be9afaba1790119",
-                "lines": 1262,
-                "lineTotal": 1262,
-                "branches": 590,
-                "branchTotal": 591
-              }
-            ],
-            "lines": 1262,
-            "lineTotal": 1262,
-            "branches": 590,
-            "branchTotal": 591,
-            "observedMs": 1795850179000
-          },
-          "independentReview": {
-            "traceparent": "00-17400000000000000000000000000174-00000000000000a7-01",
-            "parentSpanId": "00000000000000a6",
-            "reviewId": "synthetic-thread-resolved-6096389890",
-            "reviewedHeadSha": "c816342ca145b86a19104b4d5be9afaba1790119",
-            "reviewerIdentity": "copilot-pull-request-reviewer[bot]",
-            "authorIdentity": "cyrusjamula",
-            "implementationAgentIdentity": "copilot-swe-agent[bot]",
-            "authorizedReviewers": [
-              "copilot-pull-request-reviewer[bot]",
-              "cyrusjamula"
-            ],
-            "reviewState": "COMMENTED",
-            "reviewHistoryComplete": true,
-            "outstandingChangesRequested": 0,
-            "unresolvedThreads": 0,
-            "summaryFindingsResolved": true,
-            "observedMs": 1795850190000
-          },
-          "mergeQueueSquash": {
-            "traceparent": "00-17400000000000000000000000000174-00000000000000a8-01",
-            "parentSpanId": "00000000000000a7",
-            "expectedHeadSha": "c816342ca145b86a19104b4d5be9afaba1790119",
-            "squashCommitSha": "c47a77ab24caa16dd69b99f5a2a997e067efb8bd",
-            "observedMs": 1795850450000
-          },
-          "verifiedMain": {
-            "traceparent": "00-17400000000000000000000000000174-00000000000000a9-01",
-            "parentSpanId": "00000000000000a8",
-            "mainCommitSha": "c47a77ab24caa16dd69b99f5a2a997e067efb8bd",
-            "mainHealthy": true,
-            "receiptId": "run-46120784314",
-            "observedMs": 1795850520000
-          }
-        },
-        "circuitBreaker": {
-          "repositoryId": 1471342715,
-          "ownedPaths": [
-            ".github/workflows/dotnet-agents.yml",
-            ".github/workflows/shadow-reconcile.yml",
-            ".github/workflows/validate.yml",
-            ".github/workflows/windows-aspire.yml",
-            "docs/VALIDATION-TIMING-BASELINE.md",
-            "docs/evidence/m02-01-ci-acceleration-receipt.json",
-            "tests/engineering-factory/ci-stage-benchmark.test.mjs",
-            "tests/engineering-factory/gh-aw-lock-verifier.test.mjs",
-            "tests/engineering-factory/main-health-audit.test.mjs",
-            "tools/engineering-factory/main-health-audit.mjs"
-          ],
-          "touchedPaths": [
-            ".github/workflows/dotnet-agents.yml",
-            ".github/workflows/shadow-reconcile.yml",
-            ".github/workflows/validate.yml",
-            ".github/workflows/windows-aspire.yml",
-            "docs/VALIDATION-TIMING-BASELINE.md",
-            "docs/evidence/m02-01-ci-acceleration-receipt.json",
-            "tests/engineering-factory/ci-stage-benchmark.test.mjs",
-            "tests/engineering-factory/gh-aw-lock-verifier.test.mjs",
-            "tests/engineering-factory/main-health-audit.test.mjs",
-            "tools/engineering-factory/main-health-audit.mjs"
-          ],
-          "attempt": 1,
-          "maxRetries": 2,
-          "runAiCredits": 22,
-          "maxRunAiCredits": 60,
-          "burnRateBps": 600,
-          "maxBurnSpikeBps": 2500,
-          "incrementalBilledUsdCents": 0,
-          "safeOutputsThreatDetected": false,
-          "humanOwnerSignOffVerified": true,
-          "authorIdentity": "cyrusjamula",
-          "implementationAgentIdentity": "copilot-swe-agent[bot]",
-          "reviewerIdentity": "copilot-pull-request-reviewer[bot]",
-          "mainHealthy": true,
-          "accountingVerified": true,
-          "isEstimated": false
+          "accountingVerified": false
         }
       },
       {
@@ -2080,7 +1873,7 @@
             "observedMs": 1795850672000
           }
         },
-        "circuitBreaker": {
+        "governanceAttestation": {
           "repositoryId": 1471342715,
           "ownedPaths": [
             "docs/evidence/m02-07-kaizen-audit-cohort.json",
@@ -2094,10 +1887,6 @@
           ],
           "attempt": 1,
           "maxRetries": 2,
-          "runAiCredits": 26,
-          "maxRunAiCredits": 60,
-          "burnRateBps": 600,
-          "maxBurnSpikeBps": 2500,
           "incrementalBilledUsdCents": 0,
           "safeOutputsThreatDetected": false,
           "humanOwnerSignOffVerified": true,
@@ -2105,8 +1894,7 @@
           "implementationAgentIdentity": "copilot-swe-agent[bot]",
           "reviewerIdentity": "copilot-pull-request-reviewer[bot]",
           "mainHealthy": true,
-          "accountingVerified": true,
-          "isEstimated": false
+          "accountingVerified": false
         }
       },
       {
@@ -2217,7 +2005,7 @@
             "observedMs": 1795851848000
           }
         },
-        "circuitBreaker": {
+        "governanceAttestation": {
           "repositoryId": 1471342715,
           "ownedPaths": [
             "tests/engineering-factory/curated-lessons.test.mjs",
@@ -2229,10 +2017,6 @@
           ],
           "attempt": 1,
           "maxRetries": 2,
-          "runAiCredits": 20,
-          "maxRunAiCredits": 60,
-          "burnRateBps": 600,
-          "maxBurnSpikeBps": 2500,
           "incrementalBilledUsdCents": 0,
           "safeOutputsThreatDetected": false,
           "humanOwnerSignOffVerified": false,
@@ -2240,151 +2024,7 @@
           "implementationAgentIdentity": "copilot-swe-agent[bot]",
           "reviewerIdentity": "copilot-pull-request-reviewer[bot]",
           "mainHealthy": true,
-          "accountingVerified": true,
-          "isEstimated": false
-        }
-      },
-      {
-        "issueNumber": 16,
-        "pullNumber": 176,
-        "violations": [],
-        "stages": {
-          "eventDelivery": {
-            "traceparent": "00-17600000000000000000000000000176-00000000000000d1-01",
-            "parentSpanId": null,
-            "deliveryId": "synthetic-replay-pr176",
-            "repositoryId": 1471342715,
-            "observedMs": 1795848631000
-          },
-          "ghAwLock": {
-            "traceparent": "00-17600000000000000000000000000176-00000000000000d2-01",
-            "parentSpanId": "00000000000000d1",
-            "lockSha256": "9c1b723d338fff43d64c3b518616f7a635b9dce330e72aa2e29f7c8b67bb445f",
-            "observedMs": 1795848632000
-          },
-          "casLease": {
-            "traceparent": "00-17600000000000000000000000000176-00000000000000d3-01",
-            "parentSpanId": "00000000000000d2",
-            "leaseGeneration": 15,
-            "laneId": "sf-maf-throughput-cohort-lane",
-            "ownedPaths": [
-              "docs/MAF-INNER-ORCHESTRATION.md",
-              "docs/evidence/m02-04-maf-throughput-cohort.json",
-              "tests/engineering-factory/portfolio-train-benchmark.test.mjs",
-              "tools/engineering-factory/portfolio-train-benchmark.mjs"
-            ],
-            "observedMs": 1795848633000
-          },
-          "missionControlTask": {
-            "traceparent": "00-17600000000000000000000000000176-00000000000000d4-01",
-            "parentSpanId": "00000000000000d3",
-            "taskId": "00000176-0000-4000-8000-000000000176",
-            "sessionId": "synthetic-replay-session-176",
-            "observedMs": 1795848634000
-          },
-          "candidateCommit": {
-            "traceparent": "00-17600000000000000000000000000176-00000000000000d5-01",
-            "parentSpanId": "00000000000000d4",
-            "commitSha": "f6585313fd5c4e884eb3d9a31ab4d3d172d26480",
-            "signed": true,
-            "touchedPaths": [
-              "docs/MAF-INNER-ORCHESTRATION.md",
-              "docs/evidence/m02-04-maf-throughput-cohort.json",
-              "tests/engineering-factory/portfolio-train-benchmark.test.mjs",
-              "tools/engineering-factory/portfolio-train-benchmark.mjs"
-            ],
-            "observedMs": 1795851634000
-          },
-          "exactHeadValidation": {
-            "traceparent": "00-17600000000000000000000000000176-00000000000000d6-01",
-            "parentSpanId": "00000000000000d5",
-            "headSha": "f6585313fd5c4e884eb3d9a31ab4d3d172d26480",
-            "ciReceiptId": "job-140909505890",
-            "codeqlReceiptId": "run-46122298630",
-            "coverageReceiptId": "job-140909660907",
-            "expectedComponents": [
-              "engineering-factory.portfolio-train-benchmark"
-            ],
-            "coverageReports": [
-              {
-                "component": "engineering-factory.portfolio-train-benchmark",
-                "head": "f6585313fd5c4e884eb3d9a31ab4d3d172d26480",
-                "lines": 1812,
-                "lineTotal": 1812,
-                "branches": 727,
-                "branchTotal": 727
-              }
-            ],
-            "lines": 1812,
-            "lineTotal": 1812,
-            "branches": 727,
-            "branchTotal": 727,
-            "observedMs": 1795851766000
-          },
-          "independentReview": {
-            "traceparent": "00-17600000000000000000000000000176-00000000000000d7-01",
-            "parentSpanId": "00000000000000d6",
-            "reviewId": "synthetic-thread-resolved-6096534341",
-            "reviewedHeadSha": "f6585313fd5c4e884eb3d9a31ab4d3d172d26480",
-            "reviewerIdentity": "copilot-pull-request-reviewer[bot]",
-            "authorIdentity": "cyrusjamula",
-            "implementationAgentIdentity": "copilot-swe-agent[bot]",
-            "authorizedReviewers": [
-              "copilot-pull-request-reviewer[bot]",
-              "cyrusjamula"
-            ],
-            "reviewState": "COMMENTED",
-            "reviewHistoryComplete": true,
-            "outstandingChangesRequested": 0,
-            "unresolvedThreads": 0,
-            "summaryFindingsResolved": true,
-            "observedMs": 1795851767000
-          },
-          "mergeQueueSquash": {
-            "traceparent": "00-17600000000000000000000000000176-00000000000000d8-01",
-            "parentSpanId": "00000000000000d7",
-            "expectedHeadSha": "f6585313fd5c4e884eb3d9a31ab4d3d172d26480",
-            "squashCommitSha": "1371a40aa7958fdd9dfe1dbe549952f62adeeae8",
-            "observedMs": 1795853103000
-          },
-          "verifiedMain": {
-            "traceparent": "00-17600000000000000000000000000176-00000000000000d9-01",
-            "parentSpanId": "00000000000000d8",
-            "mainCommitSha": "1371a40aa7958fdd9dfe1dbe549952f62adeeae8",
-            "mainHealthy": true,
-            "receiptId": "run-46124140550",
-            "observedMs": 1795853167000
-          }
-        },
-        "circuitBreaker": {
-          "repositoryId": 1471342715,
-          "ownedPaths": [
-            "docs/MAF-INNER-ORCHESTRATION.md",
-            "docs/evidence/m02-04-maf-throughput-cohort.json",
-            "tests/engineering-factory/portfolio-train-benchmark.test.mjs",
-            "tools/engineering-factory/portfolio-train-benchmark.mjs"
-          ],
-          "touchedPaths": [
-            "docs/MAF-INNER-ORCHESTRATION.md",
-            "docs/evidence/m02-04-maf-throughput-cohort.json",
-            "tests/engineering-factory/portfolio-train-benchmark.test.mjs",
-            "tools/engineering-factory/portfolio-train-benchmark.mjs"
-          ],
-          "attempt": 1,
-          "maxRetries": 2,
-          "runAiCredits": 32,
-          "maxRunAiCredits": 60,
-          "burnRateBps": 600,
-          "maxBurnSpikeBps": 2500,
-          "incrementalBilledUsdCents": 0,
-          "safeOutputsThreatDetected": false,
-          "humanOwnerSignOffVerified": false,
-          "authorIdentity": "cyrusjamula",
-          "implementationAgentIdentity": "copilot-swe-agent[bot]",
-          "reviewerIdentity": "copilot-pull-request-reviewer[bot]",
-          "mainHealthy": true,
-          "accountingVerified": true,
-          "isEstimated": false
+          "accountingVerified": false
         }
       }
     ],
@@ -2521,18 +2161,30 @@
         "complete": true,
         "windowStartMs": 1795830520000,
         "windowEndMs": 1795843720000,
-        "acceptedOutcomes": 9,
-        "distinctIssueNumbers": [4, 5, 6, 8, 9, 11, 14, 17, 66],
-        "mergedPullNumbers": [155, 157, 160, 161, 162, 164, 166, 167, 169],
-        "coveredLines": 44476,
-        "totalLines": 44535,
-        "coveredBranches": 23367,
-        "totalBranches": 23599,
+        "acceptedOutcomes": 5,
+        "distinctIssueNumbers": [
+          5,
+          6,
+          8,
+          9,
+          14
+        ],
+        "mergedPullNumbers": [
+          160,
+          161,
+          164,
+          166,
+          167
+        ],
+        "coveredLines": 5305,
+        "totalLines": 5309,
+        "coveredBranches": 2623,
+        "totalBranches": 2644,
         "securityFindings": 0,
         "mainFailures": 0,
         "routineHumanInterventions": 0,
         "reworkRateBps": 7857,
-        "aiCreditsTotal": 288,
+        "aiCreditsTotal": null,
         "incrementalBilledUsdCents": 0,
         "medianCycleTimeMs": 55716000
       },
@@ -2543,18 +2195,33 @@
         "complete": true,
         "windowStartMs": 1795845341000,
         "windowEndMs": 1795858541000,
-        "acceptedOutcomes": 8,
-        "distinctIssueNumbers": [6, 10, 11, 13, 14, 15, 16, 137],
-        "mergedPullNumbers": [171, 172, 173, 174, 175, 176, 177, 178, 179],
-        "coveredLines": 45473,
-        "totalLines": 45532,
-        "coveredBranches": 23783,
-        "totalBranches": 24015,
+        "acceptedOutcomes": 6,
+        "distinctIssueNumbers": [
+          6,
+          10,
+          11,
+          13,
+          14,
+          137
+        ],
+        "mergedPullNumbers": [
+          171,
+          172,
+          173,
+          175,
+          177,
+          178,
+          179
+        ],
+        "coveredLines": 9435,
+        "totalLines": 9435,
+        "coveredBranches": 4355,
+        "totalBranches": 4374,
         "securityFindings": 0,
         "mainFailures": 0,
         "routineHumanInterventions": 0,
         "reworkRateBps": 6400,
-        "aiCreditsTotal": 192,
+        "aiCreditsTotal": null,
         "incrementalBilledUsdCents": 0,
         "medianCycleTimeMs": 1986000
       }
@@ -2596,6 +2263,10 @@
       "cohortSource": "github-verified-wave5-outcomes",
       "pullNumber": 168,
       "issueNumber": 5
+    },
+    "revisedExitContract": {
+      "ownerApprovedStreamlinedCohort": true,
+      "issueNumber": 137
     }
   },
   "regressionDrill": {
@@ -2606,70 +2277,35 @@
       "complete": true,
       "windowStartMs": 1795845341000,
       "windowEndMs": 1795858541000,
-      "acceptedOutcomes": 8,
-      "distinctIssueNumbers": [6, 10, 11, 13, 14, 15, 16, 137],
-      "mergedPullNumbers": [171, 172, 173, 174, 175, 176, 177, 178, 179],
-      "coveredLines": 45473,
-      "totalLines": 45532,
-      "coveredBranches": 23783,
-      "totalBranches": 24015,
+      "acceptedOutcomes": 6,
+      "distinctIssueNumbers": [
+        6,
+        10,
+        11,
+        13,
+        14,
+        137
+      ],
+      "mergedPullNumbers": [
+        171,
+        172,
+        173,
+        175,
+        177,
+        178,
+        179
+      ],
+      "coveredLines": 9435,
+      "totalLines": 9435,
+      "coveredBranches": 4355,
+      "totalBranches": 4374,
       "securityFindings": 0,
       "mainFailures": 0,
       "routineHumanInterventions": 0,
       "reworkRateBps": 8200,
-      "aiCreditsTotal": 272,
-      "incrementalBilledUsdCents": 0,
+      "aiCreditsTotal": null,
+      "incrementalBilledUsdCents": 5,
       "medianCycleTimeMs": 58000000
-    },
-    "governedPr174Candidate": {
-      "proposalId": "feedback:1471342715:issue15-exact-lockfile-ci-caching",
-      "repositoryId": 1471342715,
-      "laneId": "sf-ci-acceleration-lane",
-      "scope": "factory-velocity",
-      "contractDomain": "workflow",
-      "touchesContract": true,
-      "ownedPaths": [
-        ".github/workflows/dotnet-agents.yml",
-        ".github/workflows/shadow-reconcile.yml",
-        ".github/workflows/validate.yml",
-        ".github/workflows/windows-aspire.yml",
-        "docs/VALIDATION-TIMING-BASELINE.md",
-        "docs/evidence/m02-01-ci-acceleration-receipt.json",
-        "tests/engineering-factory/ci-stage-benchmark.test.mjs",
-        "tests/engineering-factory/gh-aw-lock-verifier.test.mjs",
-        "tests/engineering-factory/main-health-audit.test.mjs",
-        "tools/engineering-factory/main-health-audit.mjs"
-      ],
-      "touchedPaths": [
-        ".github/workflows/dotnet-agents.yml",
-        ".github/workflows/shadow-reconcile.yml",
-        ".github/workflows/validate.yml",
-        ".github/workflows/windows-aspire.yml",
-        "docs/VALIDATION-TIMING-BASELINE.md",
-        "docs/evidence/m02-01-ci-acceleration-receipt.json",
-        "tests/engineering-factory/ci-stage-benchmark.test.mjs",
-        "tests/engineering-factory/gh-aw-lock-verifier.test.mjs",
-        "tests/engineering-factory/main-health-audit.test.mjs",
-        "tools/engineering-factory/main-health-audit.mjs"
-      ],
-      "targetPaths": [
-        ".github/workflows/dotnet-agents.yml",
-        ".github/workflows/shadow-reconcile.yml",
-        ".github/workflows/validate.yml",
-        ".github/workflows/windows-aspire.yml",
-        "docs/VALIDATION-TIMING-BASELINE.md",
-        "docs/evidence/m02-01-ci-acceleration-receipt.json",
-        "tests/engineering-factory/ci-stage-benchmark.test.mjs",
-        "tests/engineering-factory/gh-aw-lock-verifier.test.mjs",
-        "tests/engineering-factory/main-health-audit.test.mjs",
-        "tools/engineering-factory/main-health-audit.mjs"
-      ],
-      "targetRevertCommitSha": "c47a77ab24caa16dd69b99f5a2a997e067efb8bd",
-      "squashCommitSha": "c47a77ab24caa16dd69b99f5a2a997e067efb8bd",
-      "cohortId": "m02-07-waves3-4-vs-wave5",
-      "cohortSource": "github-verified-wave5-outcomes",
-      "pullNumber": 174,
-      "issueNumber": 15
     },
     "standardWave5ShippedCandidate": {
       "proposalId": "failure:1471342715:pr161-sentence-polarity-and-quota-binding",
@@ -2711,11 +2347,11 @@
     "autoPolicyMutation": false,
     "reason": "KAIZEN_COHORT_EVALUATED",
     "repositoryId": 1471342715,
-    "evaluatedHeadSha": "1371a40aa7958fdd9dfe1dbe549952f62adeeae8",
+    "evaluatedHeadSha": "4a4c6aeb5489921a84968840a8d1187d14c91108",
     "evidenceMode": "github-verified-cohort",
     "cohortSource": "github-verified-wave5-outcomes",
     "syntheticReplayOnly": false,
-    "verifiedCohortOutcomesCount": 8,
+    "verifiedCohortOutcomesCount": 6,
     "liveAutonomousOutcomesCount": 0,
     "kaizenCohortVerified": true,
     "liveCohortVerified": false,
@@ -2728,17 +2364,17 @@
       "squash-merge-queue"
     ],
     "provenanceCounts": {
-      "totalRepositoryChains": 15,
-      "verifiedNineLinkChains": 15,
+      "totalRepositoryChains": 13,
+      "verifiedNineLinkChains": 13,
       "isolatedOutCount": 1,
       "provenanceCompletenessPct": 100,
       "protectedSelfModifications": 0,
-      "humanApprovedProtectedChains": 3,
+      "humanApprovedProtectedChains": 2,
       "killSwitchTrips": 0,
       "unapprovedSpendUsdCents": 0,
       "zeroUnapprovedSpend": true,
-      "totalRunAiCredits": 367,
-      "copilotAgentChainsCount": 15
+      "totalRunAiCredits": null,
+      "copilotAgentChainsCount": 13
     },
     "proposalCounts": {
       "totalProposals": 4,
@@ -2766,9 +2402,6 @@
       "status": "VERIFIED_IMPROVEMENT",
       "repositoryId": 1471342715,
       "cohortId": "m02-07-waves3-4-vs-wave5",
-      "cohortSource": "github-verified-wave5-outcomes",
-      "beforeDistinctIssues": 9,
-      "afterDistinctIssues": 8,
       "cohortComplete": true,
       "verifiedImprovement": true,
       "rollbackRequired": false,
@@ -2776,8 +2409,11 @@
       "metricsDelta": {
         "medianCycleTimeDeltaMs": -53730000,
         "reworkRateDeltaBps": -1457,
-        "aiCreditsPerOutcomeDelta": -8
-      }
+        "aiCreditsPerOutcomeDelta": null
+      },
+      "cohortSource": "github-verified-wave5-outcomes",
+      "beforeDistinctIssues": 5,
+      "afterDistinctIssues": 6
     },
     "revertCandidateSpec": null
   },
@@ -2810,34 +2446,6 @@
       "targetRevertCommitSha": "ec438f54088f30856c2df6ff626e894dde2a0100",
       "sourcePullNumber": 168,
       "sourceIssueNumber": 5,
-      "requiresHumanApproval": true,
-      "directMainMutation": false,
-      "autoPolicyMutation": false,
-      "gatePipelineRequired": [
-        "ci-98-95",
-        "codeql",
-        "independent-review",
-        "squash-merge-queue"
-      ]
-    },
-    "governedPr174RevertSpec": {
-      "valid": true,
-      "shadow": true,
-      "liveMutation": false,
-      "revertRequired": true,
-      "provenanceVerified": true,
-      "reason": "REVERT_CANDIDATE_GENERATED",
-      "revertProposalId": "revert:1471342715:feedback:1471342715:issue15-exact-lockfile-ci-caching",
-      "sourceProposalId": "feedback:1471342715:issue15-exact-lockfile-ci-caching",
-      "deliveryKind": "human-approved-revert-pr",
-      "repositoryId": 1471342715,
-      "cohortId": "m02-07-waves3-4-vs-wave5",
-      "cohortSource": "github-verified-wave5-outcomes",
-      "scope": "factory-velocity",
-      "laneId": "sf-ci-acceleration-lane",
-      "targetRevertCommitSha": "c47a77ab24caa16dd69b99f5a2a997e067efb8bd",
-      "sourcePullNumber": 174,
-      "sourceIssueNumber": 15,
       "requiresHumanApproval": true,
       "directMainMutation": false,
       "autoPolicyMutation": false,

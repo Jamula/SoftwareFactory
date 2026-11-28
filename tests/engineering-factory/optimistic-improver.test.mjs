@@ -2859,14 +2859,24 @@ test('github-verified-cohort mode & cohortSource provenance validation enforce >
   const zeroBefore = buildBaselineCohort({
     acceptedOutcomes: 0,
     distinctIssueNumbers: [],
-    mergedPullNumbers: []
+    mergedPullNumbers: [],
+    aiCreditsTotal: null
   });
   const fiveAfter = buildCandidateCohort({
     acceptedOutcomes: 5,
     distinctIssueNumbers: [6, 13, 14, 15, 137],
     mergedPullNumbers: [172, 174, 175, 177, 178, 179],
-    medianCycleTimeMs: 300_000
+    medianCycleTimeMs: 300_000,
+    aiCreditsTotal: null
   });
+  assert.equal(
+    verifyCohortImprovementOrRollback({
+      cohortSource: 'github-verified-wave5-outcomes',
+      beforeCohort: buildBaselineCohort({acceptedOutcomes: 5}),
+      afterCohort: fiveAfter
+    }).reason,
+    'UNMEASURED_AI_CREDITS_MUST_BE_NULL'
+  );
   const insufficientWithSource = verifyCohortImprovementOrRollback({
     cohortSource: 'github-verified-wave5-outcomes',
     beforeCohort: zeroBefore,
@@ -2939,12 +2949,14 @@ test('github-verified-cohort mode & cohortSource provenance validation enforce >
     cohortSource: 'github-verified-wave5-outcomes',
     beforeCohort: buildBaselineCohort({
       acceptedOutcomes: 5,
-      distinctIssueNumbers: [1, 2, 3, 4, 5]
+      distinctIssueNumbers: [1, 2, 3, 4, 5],
+      aiCreditsTotal: null
     }),
     afterCohort: buildCandidateCohort({
       acceptedOutcomes: 5,
       distinctIssueNumbers: [6, 7, 8, 9, 10],
-      reworkRateBps: 2500
+      reworkRateBps: 2500,
+      aiCreditsTotal: null
     })
   });
   const baseRevertMeta = {
@@ -3005,9 +3017,41 @@ test('github-verified-cohort mode & cohortSource provenance validation enforce >
   );
 
   // evaluateKaizenCohortReadout fail-closed checks on github-verified-cohort
+  const toGovChain = c => {
+    const {circuitBreaker: cb, ...rest} = c;
+    return {
+      ...rest,
+      governanceAttestation: {
+        repositoryId: cb.repositoryId,
+        ownedPaths: cb.ownedPaths,
+        touchedPaths: cb.touchedPaths,
+        attempt: cb.attempt,
+        maxRetries: cb.maxRetries,
+        incrementalBilledUsdCents: cb.incrementalBilledUsdCents,
+        safeOutputsThreatDetected: cb.safeOutputsThreatDetected,
+        humanOwnerSignOffVerified: cb.humanOwnerSignOffVerified,
+        authorIdentity: cb.authorIdentity,
+        implementationAgentIdentity: cb.implementationAgentIdentity,
+        reviewerIdentity: cb.reviewerIdentity,
+        mainHealthy: cb.mainHealthy,
+        accountingVerified: false
+      }
+    };
+  };
   const baseInput = buildValidReadoutInput();
   const scBottleneckId = baseInput.proposalInput.scorecard.bottlenecks[0].id;
-  const rolloutChain = buildBoundAuditChain({
+  const baseSeeds = ['1', '2', '3', '5', '6'];
+  const baselineChains = baseSeeds.map((seed, idx) => toGovChain(buildBoundAuditChain({
+    traceSeed: seed,
+    commitSeed: seed,
+    squashSeed: seed,
+    deliveryId: `ghv-base-${idx + 1}`,
+    startedAtMs: 100_000 + idx * 5_000,
+    completedAtMs: 110_000 + idx * 5_000,
+    pullNumber: 155 + idx,
+    issueNumber: 1 + idx
+  })));
+  const rolloutChain = toGovChain(buildBoundAuditChain({
     traceSeed: 'e',
     commitSeed: 'a',
     squashSeed: '4',
@@ -3016,23 +3060,24 @@ test('github-verified-cohort mode & cohortSource provenance validation enforce >
     completedAtMs: 198_000,
     pullNumber: 168,
     issueNumber: 5
-  });
-  const wave5Chains = ['1', '2', '3', '4', '5'].map((seed, idx) => buildBoundAuditChain({
+  }));
+  const afterSeeds = ['7', '8', '9', 'b', 'c'];
+  const wave5Chains = afterSeeds.map((seed, idx) => toGovChain(buildBoundAuditChain({
     traceSeed: seed,
     commitSeed: seed,
-    squashSeed: (idx + 5).toString(16),
+    squashSeed: seed,
     deliveryId: `ghv-del-${idx + 1}`,
     startedAtMs: 205_000 + idx * 5_000,
     completedAtMs: 210_000 + idx * 5_000,
     pullNumber: 171 + idx,
     issueNumber: 10 + idx
-  }));
+  })));
   const ghVerifiedInput = buildValidReadoutInput({
-    evaluatedHeadSha: '9'.repeat(40),
+    evaluatedHeadSha: wave5Chains[4].stages.mergeQueueSquash.squashCommitSha,
     evidenceMode: 'github-verified-cohort',
     cohortSource: 'github-verified-wave5-outcomes',
     liveAutonomousOutcomesCount: 0,
-    auditChains: [rolloutChain, ...wave5Chains],
+    auditChains: [...baselineChains, rolloutChain, ...wave5Chains],
     cohortInput: {
       cohortSource: 'github-verified-wave5-outcomes',
       beforeCohort: buildBaselineCohort({
@@ -3040,13 +3085,23 @@ test('github-verified-cohort mode & cohortSource provenance validation enforce >
         windowEndMs: 190_000,
         acceptedOutcomes: 5,
         distinctIssueNumbers: [1, 2, 3, 4, 5],
-        mergedPullNumbers: [155, 160, 161, 164, 167]
+        mergedPullNumbers: [155, 156, 157, 158, 159],
+        coveredLines: baselineChains.reduce((s, c) => s + c.stages.exactHeadValidation.lines, 0),
+        totalLines: baselineChains.reduce((s, c) => s + c.stages.exactHeadValidation.lineTotal, 0),
+        coveredBranches: baselineChains.reduce((s, c) => s + c.stages.exactHeadValidation.branches, 0),
+        totalBranches: baselineChains.reduce((s, c) => s + c.stages.exactHeadValidation.branchTotal, 0),
+        aiCreditsTotal: null
       }),
       afterCohort: buildCandidateCohort({
         acceptedOutcomes: 5,
         distinctIssueNumbers: [10, 11, 12, 13, 14],
         mergedPullNumbers: [171, 172, 173, 174, 175],
-        medianCycleTimeMs: 300_000
+        coveredLines: wave5Chains.reduce((s, c) => s + c.stages.exactHeadValidation.lines, 0),
+        totalLines: wave5Chains.reduce((s, c) => s + c.stages.exactHeadValidation.lineTotal, 0),
+        coveredBranches: wave5Chains.reduce((s, c) => s + c.stages.exactHeadValidation.branches, 0),
+        totalBranches: wave5Chains.reduce((s, c) => s + c.stages.exactHeadValidation.branchTotal, 0),
+        medianCycleTimeMs: 300_000,
+        aiCreditsTotal: null
       })
     },
     shippedCandidate: {
@@ -3054,7 +3109,7 @@ test('github-verified-cohort mode & cohortSource provenance validation enforce >
       repositoryId: SF_REPO_ID,
       laneId: 'sf-velocity-lane',
       targetPaths: ['tools/engineering-factory/stage-latency.mjs'],
-      squashCommitSha: '4'.repeat(40),
+      squashCommitSha: rolloutChain.stages.mergeQueueSquash.squashCommitSha,
       pullNumber: 168,
       issueNumber: 5
     }
@@ -3078,14 +3133,17 @@ test('github-verified-cohort mode & cohortSource provenance validation enforce >
     evaluateKaizenCohortReadout({
       ...ghVerifiedInput,
       cohortInput: {
-        ...ghVerifiedInput.cohortInput,
+        beforeCohort: {...ghVerifiedInput.cohortInput.beforeCohort, aiCreditsTotal: 150},
+        afterCohort: {...ghVerifiedInput.cohortInput.afterCohort, aiCreditsTotal: 150},
         cohortSource: 'synthetic-precohort-replay'
       }
     }).reason,
     'INCONSISTENT_COHORT_SOURCE'
   );
-  const withoutCohortInputSource = {...ghVerifiedInput.cohortInput};
-  delete withoutCohortInputSource.cohortSource;
+  const withoutCohortInputSource = {
+    beforeCohort: {...ghVerifiedInput.cohortInput.beforeCohort, aiCreditsTotal: 150},
+    afterCohort: {...ghVerifiedInput.cohortInput.afterCohort, aiCreditsTotal: 150}
+  };
   assert.equal(
     evaluateKaizenCohortReadout({
       ...ghVerifiedInput,
@@ -3097,18 +3155,76 @@ test('github-verified-cohort mode & cohortSource provenance validation enforce >
     }).reason,
     'INCONSISTENT_COHORT_SOURCE'
   );
-  // Regression with cohortInput omitting cohortSource still stamps input.cohortSource onto revertCandidateSpec
+  // Regression with cohortInput omitting cohortSource uses numeric AI credits when cohortSource is omitted on cohortInput
   const ghVerifiedRegressWithoutCohortInputSource = evaluateKaizenCohortReadout({
     ...ghVerifiedInput,
     cohortInput: {
       beforeCohort: withoutCohortInputSource.beforeCohort,
-      afterCohort: {...withoutCohortInputSource.afterCohort, reworkRateBps: 2500}
+      afterCohort: {
+        ...withoutCohortInputSource.afterCohort,
+        reworkRateBps: 2500
+      }
     }
   });
   assert.equal(ghVerifiedRegressWithoutCohortInputSource.valid, true);
   assert.equal(
     ghVerifiedRegressWithoutCohortInputSource.revertCandidateSpec.cohortSource,
     'github-verified-wave5-outcomes'
+  );
+  // Default github-verified-cohort without revisedExitContract keeps issue137ReadyToClose: false
+  const ghVerifiedDefault = evaluateKaizenCohortReadout(ghVerifiedInput);
+  assert.equal(ghVerifiedDefault.valid, true);
+  assert.equal(ghVerifiedDefault.kaizenCohortVerified, true);
+  assert.equal(ghVerifiedDefault.issue137ReadyToClose, false);
+  assert.equal(
+    evaluateKaizenCohortReadout({
+      ...ghVerifiedInput,
+      revisedExitContract: {ownerApprovedStreamlinedCohort: false, issueNumber: 137}
+    }).reason,
+    'INVALID_REVISED_EXIT_CONTRACT'
+  );
+  assert.equal(
+    evaluateKaizenCohortReadout({
+      ...ghVerifiedInput,
+      auditChains: [buildBoundAuditChain({pullNumber: 168, issueNumber: 5}), ...wave5Chains]
+    }).reason,
+    'UNVERIFIED_CREDIT_ACCOUNTING_CLAIM'
+  );
+  const preMergeMainChain = structuredClone(rolloutChain);
+  preMergeMainChain.stages.verifiedMain.observedMs =
+    preMergeMainChain.stages.mergeQueueSquash.observedMs;
+  assert.equal(
+    evaluateKaizenCohortReadout({
+      ...ghVerifiedInput,
+      auditChains: [...baselineChains, preMergeMainChain, ...wave5Chains]
+    }).reason,
+    'PRE_MERGE_MAIN_RECEIPT_REJECTED'
+  );
+  assert.equal(
+    evaluateKaizenCohortReadout({
+      ...ghVerifiedInput,
+      cohortInput: {
+        ...ghVerifiedInput.cohortInput,
+        beforeCohort: {
+          ...ghVerifiedInput.cohortInput.beforeCohort,
+          mergedPullNumbers: [9000, 9001, 9002, 9003, 9004]
+        }
+      }
+    }).reason,
+    'UNVERIFIED_COHORT_ISSUE_PROVENANCE'
+  );
+  assert.equal(
+    evaluateKaizenCohortReadout({
+      ...ghVerifiedInput,
+      cohortInput: {
+        ...ghVerifiedInput.cohortInput,
+        beforeCohort: {
+          ...ghVerifiedInput.cohortInput.beforeCohort,
+          coveredLines: 499
+        }
+      }
+    }).reason,
+    'COHORT_COVERAGE_PROVENANCE_MISMATCH'
   );
 
   assert.equal(
@@ -3134,7 +3250,8 @@ test('github-verified-cohort mode & cohortSource provenance validation enforce >
           windowEndMs: 190_000,
           acceptedOutcomes: 4,
           distinctIssueNumbers: [1, 2, 3, 4],
-          mergedPullNumbers: [155, 160, 161, 164]
+          mergedPullNumbers: [155, 160, 161, 164],
+          aiCreditsTotal: null
         })
       }
     }).reason,
@@ -3145,8 +3262,17 @@ test('github-verified-cohort mode & cohortSource provenance validation enforce >
       ...ghVerifiedInput,
       cohortInput: {
         cohortSource: 'github-verified-wave5-outcomes',
-        beforeCohort: buildBaselineCohort({windowStartMs: 90_000, windowEndMs: 190_000, acceptedOutcomes: 5}),
-        afterCohort: buildCandidateCohort({acceptedOutcomes: 5, medianCycleTimeMs: 300_000})
+        beforeCohort: buildBaselineCohort({
+          windowStartMs: 90_000,
+          windowEndMs: 190_000,
+          acceptedOutcomes: 5,
+          aiCreditsTotal: null
+        }),
+        afterCohort: buildCandidateCohort({
+          acceptedOutcomes: 5,
+          medianCycleTimeMs: 300_000,
+          aiCreditsTotal: null
+        })
       }
     }).reason,
     'MISSING_COHORT_ISSUE_PROVENANCE'
@@ -3183,7 +3309,7 @@ test('github-verified-cohort mode & cohortSource provenance validation enforce >
       ...ghVerifiedInput,
       shippedCandidate: {
         ...ghVerifiedInput.shippedCandidate,
-        squashCommitSha: '9'.repeat(40),
+        squashCommitSha: wave5Chains[4].stages.mergeQueueSquash.squashCommitSha,
         pullNumber: 175,
         issueNumber: 14
       }
@@ -3218,7 +3344,7 @@ test('github-verified-cohort mode & cohortSource provenance validation enforce >
   );
 });
 
-test('docs/evidence/m02-07-kaizen-audit-cohort.json deterministically verifies Pre-Kaizen Waves 3-4 vs Post-Kaizen Wave 5 on main @ 1371a40a with honest cohortSource attribution', () => {
+test('docs/evidence/m02-07-kaizen-audit-cohort.json deterministically verifies Pre-Kaizen Waves 3-4 vs Post-Kaizen Wave 5 on main @ 4a4c6aeb with honest cohortSource attribution', () => {
   const receiptUrl = new URL('../../docs/evidence/m02-07-kaizen-audit-cohort.json', import.meta.url);
   const rawReceipt = readFileSync(receiptUrl, 'utf8');
   const receipt = JSON.parse(rawReceipt);
@@ -3227,12 +3353,12 @@ test('docs/evidence/m02-07-kaizen-audit-cohort.json deterministically verifies P
   assert.equal(receipt.issueNumber, 137);
   assert.equal(receipt.repository, 'Jamula/SoftwareFactory');
   assert.equal(receipt.repositoryId, SF_REPO_ID);
-  assert.equal(receipt.evaluatedMainHead, '1371a40aa7958fdd9dfe1dbe549952f62adeeae8');
+  assert.equal(receipt.evaluatedMainHead, '4a4c6aeb5489921a84968840a8d1187d14c91108');
   assert.equal(receipt.cohortSource, 'github-verified-wave5-outcomes');
   assert.equal(receipt.liveExecutionDisclosure.evidenceMode, 'github-verified-cohort');
   assert.equal(receipt.liveExecutionDisclosure.cohortSource, 'github-verified-wave5-outcomes');
   assert.equal(receipt.liveExecutionDisclosure.syntheticReplayOnly, false);
-  assert.equal(receipt.liveExecutionDisclosure.verifiedCohortOutcomesCount, 8);
+  assert.equal(receipt.liveExecutionDisclosure.verifiedCohortOutcomesCount, 6);
   assert.equal(receipt.liveExecutionDisclosure.liveAutonomousOutcomesCount, 0);
   assert.equal(receipt.liveExecutionDisclosure.kaizenCohortVerified, true);
   assert.equal(receipt.liveExecutionDisclosure.liveCohortVerified, false);
@@ -3248,28 +3374,28 @@ test('docs/evidence/m02-07-kaizen-audit-cohort.json deterministically verifies P
   assert.equal(pr168Chain.stages.exactHeadValidation.coverageReceiptId, 'job-140876259372');
   assert.equal(pr168Chain.stages.verifiedMain.receiptId, 'run-46112285635');
 
-  const pr176Chain = receipt.readoutInput.auditChains.find(
-    c => c.pullNumber === 176 && c.stages.eventDelivery.repositoryId === SF_REPO_ID
+  const pr171Chain = receipt.readoutInput.auditChains.find(
+    c => c.pullNumber === 171 && c.stages.eventDelivery.repositoryId === SF_REPO_ID
   );
-  assert.equal(pr176Chain.stages.exactHeadValidation.ciReceiptId, 'job-140909505890');
-  assert.equal(pr176Chain.stages.exactHeadValidation.codeqlReceiptId, 'run-46122298630');
-  assert.equal(pr176Chain.stages.exactHeadValidation.coverageReceiptId, 'job-140909660907');
-  assert.equal(pr176Chain.stages.verifiedMain.receiptId, 'run-46124140550');
+  assert.equal(pr171Chain.stages.verifiedMain.receiptId, 'run-46118347465');
+  assert.equal(
+    pr171Chain.stages.verifiedMain.observedMs > pr171Chain.stages.mergeQueueSquash.observedMs,
+    true
+  );
 
   // Direct replay across queryCausalAuditTrail, proposeOptimisticImprovements, and verifyCohortImprovementOrRollback
   const auditRes = queryCausalAuditTrail(receipt.readoutInput.auditChains, {repositoryId: SF_REPO_ID});
   assert.equal(auditRes.valid, true);
-  assert.equal(auditRes.totalRepositoryChains, 15);
+  assert.equal(auditRes.totalRepositoryChains, 13);
   assert.equal(auditRes.isolatedOutCount, 1);
 
-  // Confirm all 7 required issues (#6, #7, #13, #14, #15, #16, #137) are verified in auditTrail
+  // Confirm all required exact-head-reviewed issues (#5, #6, #8, #9, #10, #11, #13, #14, #137) are verified in auditTrail
   const verifiedIssues = new Set(auditRes.records.map(r => r.issueNumber));
-  for (const requiredIssue of [6, 7, 13, 14, 15, 16, 137]) {
+  for (const requiredIssue of [5, 6, 8, 9, 10, 11, 13, 14, 137]) {
     assert.equal(verifiedIssues.has(requiredIssue), true, `missing issue #${requiredIssue}`);
   }
-  // Confirm all 9 Wave 5 PRs (#171-#179) are verified in auditTrail
   const verifiedPulls = new Set(auditRes.records.map(r => r.pullNumber));
-  for (const requiredPr of [171, 172, 173, 174, 175, 176, 177, 178, 179]) {
+  for (const requiredPr of [160, 161, 164, 166, 167, 168, 171, 172, 173, 175, 177, 178, 179]) {
     assert.equal(verifiedPulls.has(requiredPr), true, `missing PR #${requiredPr}`);
   }
 
@@ -3358,18 +3484,6 @@ test('docs/evidence/m02-07-kaizen-audit-cohort.json deterministically verifies P
   assert.equal(governedRegression.issue137ReadyToClose, false);
   for (const [key, expectedVal] of Object.entries(receipt.expectedRegressionDrillSummary.governedRevertSpec)) {
     assert.deepEqual(governedRegression.revertCandidateSpec[key], expectedVal, `governedRevertSpec.${key}`);
-  }
-
-  const pr174Chain = receipt.readoutInput.auditChains.find(
-    c => c.pullNumber === 174 && c.stages.eventDelivery.repositoryId === SF_REPO_ID
-  );
-  const pr174RevertSpec = buildAutomaticRevertCandidateSpec(governedRegression.cohortVerdict, {
-    ...receipt.regressionDrill.governedPr174Candidate,
-    provenanceChain: {stages: pr174Chain.stages}
-  });
-  assert.equal(pr174RevertSpec.valid, true);
-  for (const [key, expectedVal] of Object.entries(receipt.expectedRegressionDrillSummary.governedPr174RevertSpec)) {
-    assert.deepEqual(pr174RevertSpec[key], expectedVal, `governedPr174RevertSpec.${key}`);
   }
 
   const pr178Chain = receipt.readoutInput.auditChains.find(
