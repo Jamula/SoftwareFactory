@@ -45,7 +45,8 @@ flowchart TB
 
   W6 -->|"Immutable 40-Hex SHA"| W7
   W3 & W4 & W5 -->|"workflow_run completed"| W1 & W9
-  W3 & W5 & CQL & W9 -->|"Required by Ruleset 28054442 / 16162572"| MQ["GitHub Native Squash Merge Queue (ALLGREEN)"]
+  W9 -->|"Zero-trust enqueuePullRequest / dequeuePullRequest"| MQ["GitHub Native Squash Merge Queue (ALLGREEN)"]
+  W3 & W5 & CQL -->|"Required by Ruleset 28054442 / 16162572"| MQ
 ```
 
 ### 2. Candidate PR, `merge_group`, and protected-`main` sequence diagram

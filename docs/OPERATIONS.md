@@ -68,18 +68,18 @@ sequenceDiagram
   participant W2 as Fresh Worker Run #2
   participant Main as Protected main + main-health-audit.mjs
 
-  W1->>WQ: Acquire lease gen=7 (issue #42, TTL=3600s)
+  W1->>WQ: claimWorkQueueLease -> gen=7 (issue #42, TTL=3600s)
   Note over W1: Runner lost / timed out without terminal release
   Rec->>WQ: reconcileWorkQueueRunStates({refStore, observedRuns, nowMs})
-  WQ-->>Rec: Non-force CAS advances to gen=8 (gen=7 fenced & expired)
-  W1--xWQ: Late write with stale gen=7 rejected (CAS_GENERATION_MISMATCH)
-  Rec->>W2: Re-admit issue #42 cleanly under gen=8 (0 duplicate active leases)
+  WQ-->>Rec: Non-force CAS marks entry requeued at gen=8 (gen=7 fenced)
+  W1--xWQ: Late renew/settle with stale gen=7 rejected (STALE_GENERATION)
+  W2->>WQ: claimWorkQueueLease(issue #42) -> replacement lease gen=9 (0 duplicate active leases)
   W2->>Main: PR squashed via Merge Queue -> post-merge push checks run
   alt Post-merge main check fails
     Main->>Rec: Emit HALTED_ON_POST_MERGE_MAIN_FAILURE + trip kill switch
     Note over Rec,Main: Next wave blocked until remediation PR restores mainRecoveryVerified: true
   else Post-merge main green
-    Main->>WQ: Release gen=8 as accepted & unblock dependent issues
+    Main->>WQ: settleWorkQueueLease(gen=9, accepted) & unblock dependent issues
   end
 ```
 
