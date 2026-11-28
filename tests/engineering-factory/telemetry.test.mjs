@@ -816,6 +816,50 @@ test('correlateAutonomousExecutionReceipt correlates OTel traceparent, authorita
   assert.deepEqual(telemetrySummary(res),{outcome:'blocked',reason:'REVIEW'});
  }
 
+ // Stored receipt with non-enumerable stage durations and humanTouches fields preserves all validated fields
+ const nonEnumStages={};
+ Object.defineProperty(nonEnumStages,'review',{value:50,enumerable:false});
+ Object.defineProperty(nonEnumStages,'reconcile',{value:15,enumerable:false});
+ const nonEnumTouches={};
+ Object.defineProperty(nonEnumTouches,'state',{value:'verified',enumerable:false});
+ Object.defineProperty(nonEnumTouches,'verified',{value:true,enumerable:false});
+ Object.defineProperty(nonEnumTouches,'count',{value:2,enumerable:false});
+ const storedNonEnumNested={
+  ...storedBlockedReceipt,
+  stages:nonEnumStages,
+  humanTouches:nonEnumTouches
+ };
+ const preservedNested=correlateAutonomousExecutionReceipt({
+  traceparent:`00-${traceId}-${spanId}-00`,
+  receipt:storedNonEnumNested,
+  aiCreditAccounting:{
+   accountingSource:'authoritative',
+   isEstimated:false,
+   includedQuotaAttributed:true,
+   aiCreditsUsed:25,
+   maxAiCredits:25,
+   incrementalBilledUsdCents:0
+  },
+  missionControl:{
+   taskId:taskIdUpper.toLowerCase(),
+   sessionId:'mc-sess-hosted-02',
+   taskState:'completed',
+   lockSha256,
+   casLeaseGeneration:1
+  }
+ });
+ assert.equal(preservedNested.valid,true);
+ assert.deepEqual(preservedNested.receipt.stages,{review:50,reconcile:15});
+ assert.deepEqual(preservedNested.receipt.humanTouches,{state:'verified',verified:true,count:2});
+ assert.deepEqual(receiptStageRows(preservedNested.receipt),{
+  valid:true,
+  source:'github-hosted',
+  rows:[
+   {id:'gh-aw-run-4002-review-review',repositoryId:1471342715,stage:'review',at:1764300010000,duration:50,source:'github-hosted'},
+   {id:'gh-aw-run-4002-review-reconcile',repositoryId:1471342715,stage:'reconcile',at:1764300010000,duration:15,source:'github-hosted'}
+  ]
+ });
+
  // 3. Missing/non-boolean flags, estimated / unknown / unverified accounting fail closed with AI_CREDIT_ACCOUNTING_UNVERIFIED -> QUOTA
  const missingIsEstimated={...baseInput.aiCreditAccounting};
  delete missingIsEstimated.isEstimated;

@@ -634,6 +634,7 @@ export function correlateAutonomousExecutionReceipt(input) {
   const expectedQuotaState=aiCreditsUsed<maxAiCredits?'verified-included':'exhausted';
   if(baseReceipt.quota.verified===true&&baseReceipt.quota.state!==expectedQuotaState)
     return autonomousDeny('INVALID_RECEIPT','INVALID_EVIDENCE');
+  const normalizedStages=normalizeStageDurations(baseReceipt.stages).stages;
 
   const correlatedReceipt=Object.freeze({
     schemaVersion:EXECUTION_RECEIPT_SCHEMA_VERSION,
@@ -649,10 +650,14 @@ export function correlateAutonomousExecutionReceipt(input) {
     outcome:baseReceipt.outcome,
     reason:baseReceipt.reason,
     durationMs:baseReceipt.durationMs,
-    stages:Object.freeze({...baseReceipt.stages}),
+    stages:Object.freeze({...normalizedStages}),
     quota:Object.freeze({state:expectedQuotaState,verified:true,includedOnly:true}),
     cost:Object.freeze({state:'verified-zero',verified:true,currency:'USD',amountMicros:0}),
-    humanTouches:Object.freeze({...baseReceipt.humanTouches}),
+    humanTouches:Object.freeze({
+      state:baseReceipt.humanTouches.state,
+      verified:baseReceipt.humanTouches.verified,
+      count:baseReceipt.humanTouches.count
+    }),
     correlation:Object.freeze({traceId,spanId})
   });
   const otelAttributes=Object.freeze({
