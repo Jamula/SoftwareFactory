@@ -319,14 +319,31 @@ test('preserves >=97% app line and >=90% branch coverage and rejects lowering 97
     branchTotal: 100
   });
 
-  // Malformed branchless list fails closed with APP_COVERAGE_INVALID
-  assert.equal(
-    evaluateSpellbookShadowReadiness({
-      ...withBranchless,
-      appCoverage: { ...withBranchless.appCoverage, branchless: 'not-array' }
-    }).reason,
-    'APP_COVERAGE_INVALID'
-  );
+  // Malformed or non-enumerable nested appCoverage data fails closed with APP_COVERAGE_INVALID
+  const nonEnumReport = { ...withBranchless.appCoverage.reports[0] };
+  Object.defineProperty(nonEnumReport, 'lines', {
+    value: 98,
+    enumerable: false,
+    configurable: true
+  });
+  const nonEnumBranchless = { ...withBranchless.appCoverage.branchless[0] };
+  Object.defineProperty(nonEnumBranchless, 'reason', {
+    value: withBranchless.appCoverage.branchless[0].reason,
+    enumerable: false,
+    configurable: true
+  });
+  for (const badAppCov of [
+    { ...withBranchless.appCoverage, expectedComponents: 'not-array' },
+    { ...withBranchless.appCoverage, reports: 'not-array' },
+    { ...withBranchless.appCoverage, reports: [nonEnumReport, ...withBranchless.appCoverage.reports.slice(1)] },
+    { ...withBranchless.appCoverage, branchless: 'not-array' },
+    { ...withBranchless.appCoverage, branchless: [nonEnumBranchless] }
+  ]) {
+    assert.equal(
+      evaluateSpellbookShadowReadiness({ ...withBranchless, appCoverage: badAppCov }).reason,
+      'APP_COVERAGE_INVALID'
+    );
+  }
 
   // Unjustified 0/0 component or all-branchless 0/0 inventory fails closed
   const unjustifiedBranchless = structuredClone(withBranchless);

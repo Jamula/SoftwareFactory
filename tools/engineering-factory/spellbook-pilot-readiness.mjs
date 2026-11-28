@@ -212,6 +212,24 @@ function sanitizeOnboardingPackage(pkg) {
   return validReplaySuiteScalars(pkg.replaySuite) ? pkg : { ...pkg, replaySuite: null };
 }
 
+const validAppCoverageShape = appCov =>
+  plainWithOptional(
+    appCov,
+    ['head', 'expectedComponents', 'reports'],
+    ['branchless']
+  ) &&
+  sha40(appCov.head) &&
+  dense(appCov.expectedComponents) &&
+  dense(appCov.reports) &&
+  appCov.reports.every(r =>
+    exact(r, ['component', 'head', 'lines', 'lineTotal', 'branches', 'branchTotal'])
+  ) &&
+  (!Object.hasOwn(appCov, 'branchless') ||
+    (dense(appCov.branchless) &&
+      appCov.branchless.every(entry =>
+        exact(entry, ['component', 'head', 'reviewedBy', 'reason'])
+      )));
+
 function sameData(candidateVal, expectedVal) {
   if (!expectedVal || typeof expectedVal !== 'object') {
     return Object.is(candidateVal, expectedVal);
@@ -541,15 +559,7 @@ export function evaluateSpellbookShadowReadiness(input) {
     return shadowDeny(candidateDecision.reason);
   }
 
-  if (
-    !plainWithOptional(
-      input.appCoverage,
-      ['head', 'expectedComponents', 'reports'],
-      ['branchless']
-    ) ||
-    !sha40(input.appCoverage.head) ||
-    (Object.hasOwn(input.appCoverage, 'branchless') && !dense(input.appCoverage.branchless))
-  ) {
+  if (!validAppCoverageShape(input.appCoverage)) {
     return shadowDeny('APP_COVERAGE_INVALID');
   }
   if (input.appCoverage.head !== input.candidate.head) {
