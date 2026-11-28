@@ -1344,6 +1344,8 @@ export function evaluateKaizenCohortReadout(input) {
   let totalRunAiCredits = 0;
   let humanApprovedProtectedChains = 0;
   let copilotAgentChainsCount = 0;
+  let latestSquashMergedAtMs = -1;
+  const copilotAgentIssueIds = new Set();
   const rawChainBySquashSha = new Map();
 
   for (const entry of input.auditChains) {
@@ -1372,19 +1374,25 @@ export function evaluateKaizenCohortReadout(input) {
     if (entry.stages.independentReview.implementationAgentIdentity.toLowerCase() ===
         'copilot-swe-agent[bot]') {
       copilotAgentChainsCount++;
+      if (hasOwnEnumerableData(entry, 'issueNumber')) {
+        copilotAgentIssueIds.add(entry.issueNumber);
+      }
+    }
+    const squashMergedAtMs = entry.stages.mergeQueueSquash.observedMs;
+    if (squashMergedAtMs > latestSquashMergedAtMs) {
+      latestSquashMergedAtMs = squashMergedAtMs;
     }
     rawChainBySquashSha.set(entry.stages.mergeQueueSquash.squashCommitSha, entry);
   }
 
-  const headRecord = auditTrail.records.find(rec => rec.squashCommitSha === evaluatedHeadSha);
-  if (!headRecord) {
+  const headRawEntry = rawChainBySquashSha.get(evaluatedHeadSha);
+  if (!headRawEntry) {
     return invalidKaizenReadout('UNVERIFIED_EVALUATED_HEAD_SHA', repositoryId);
   }
-  const latestCompletedAtMs = auditTrail.records[auditTrail.records.length - 1].completedAtMs;
-  if (headRecord.completedAtMs < latestCompletedAtMs) {
+  if (headRawEntry.stages.mergeQueueSquash.observedMs < latestSquashMergedAtMs) {
     return invalidKaizenReadout('STALE_EVALUATED_HEAD_SHA', repositoryId);
   }
-  if (copilotAgentChainsCount < liveAutonomousOutcomesCount) {
+  if (copilotAgentIssueIds.size < liveAutonomousOutcomesCount) {
     return invalidKaizenReadout('INSUFFICIENT_VERIFIED_AGENT_PROVENANCE', repositoryId);
   }
 
@@ -1416,27 +1424,12 @@ export function evaluateKaizenCohortReadout(input) {
   if (beforeCohort.incrementalBilledUsdCents > 0) {
     return invalidKaizenReadout('UNAPPROVED_SPEND_OR_CREDIT_ANOMALY', repositoryId);
   }
-  if (evidenceMode === 'live-autonomous-cohort') {
-    if (cohortVerdict.status === 'INSUFFICIENT_COHORT') {
-      return invalidKaizenReadout('INSUFFICIENT_LIVE_COHORT_OUTCOMES', repositoryId);
-    }
-    if (liveAutonomousOutcomesCount !== afterCohort.acceptedOutcomes) {
-      return invalidKaizenReadout('LIVE_OUTCOME_COUNT_MISMATCH', repositoryId);
-    }
-    const afterWindowAgentChainsCount = auditTrail.records.filter(rec => {
-      const raw = rawChainBySquashSha.get(rec.squashCommitSha);
-      return rec.completedAtMs >= afterCohort.windowStartMs &&
-        rec.completedAtMs <= afterCohort.windowEndMs &&
-        raw.stages.independentReview.implementationAgentIdentity.toLowerCase() ===
-          'copilot-swe-agent[bot]';
-    }).length;
-    if (afterWindowAgentChainsCount < liveAutonomousOutcomesCount) {
-      return invalidKaizenReadout('INSUFFICIENT_VERIFIED_AGENT_PROVENANCE', repositoryId);
-    }
-  }
 
   const hasShippedCandidate = hasOwnEnumerableData(input, 'shippedCandidate');
   let revertCandidateSpec = null;
+  let shippedTargetSha = null;
+  let matchingAuditRecord = null;
+  let matchedRawEntry = null;
 
   if (!hasShippedCandidate) {
     if (cohortVerdict.rollbackRequired) {
@@ -1454,20 +1447,16 @@ export function evaluateKaizenCohortReadout(input) {
     }
 
     const candidateMeta = input.shippedCandidate;
-    const targetSha = hasOwnEnumerableData(candidateMeta, 'targetRevertCommitSha')
+    shippedTargetSha = hasOwnEnumerableData(candidateMeta, 'targetRevertCommitSha')
       ? candidateMeta.targetRevertCommitSha
       : candidateMeta.squashCommitSha;
-    const matchingAuditRecord = auditTrail.records.find(rec => rec.squashCommitSha === targetSha);
+    matchingAuditRecord = auditTrail.records.find(rec => rec.squashCommitSha === shippedTargetSha);
     if (!matchingAuditRecord) {
       return invalidKaizenReadout('UNVERIFIED_CANDIDATE_PROVENANCE', repositoryId);
     }
-    if (evidenceMode === 'live-autonomous-cohort' &&
-        matchingAuditRecord.completedAtMs > afterCohort.windowStartMs) {
-      return invalidKaizenReadout('CANDIDATE_NOT_SHIPPED_BEFORE_COHORT', repositoryId);
-    }
 
     const hasInlineProvenance = hasOwnEnumerableData(candidateMeta, 'provenanceChain');
-    const matchedRawEntry = rawChainBySquashSha.get(targetSha);
+    matchedRawEntry = rawChainBySquashSha.get(shippedTargetSha);
     const expectedProvenancePayload = {
       stages: matchedRawEntry.stages,
       ...(hasOwnEnumerableData(matchedRawEntry, 'coveragePolicy')
@@ -1507,10 +1496,41 @@ export function evaluateKaizenCohortReadout(input) {
     if (cohortVerdict.rollbackRequired) {
       const enrichedMeta = {
         ...candidateMeta,
+        scope: matchingProposal.scope,
         ...(hasInlineProvenance ? {} : {provenanceChain: expectedProvenancePayload}),
         ...(matchingProposal.requiresHumanApproval ? {requiresHumanApproval: true} : {})
       };
       revertCandidateSpec = buildAutomaticRevertCandidateSpec(cohortVerdict, enrichedMeta);
+    }
+  }
+
+  if (evidenceMode === 'live-autonomous-cohort') {
+    if (cohortVerdict.status === 'INSUFFICIENT_COHORT') {
+      return invalidKaizenReadout('INSUFFICIENT_LIVE_COHORT_OUTCOMES', repositoryId);
+    }
+    if (liveAutonomousOutcomesCount !== afterCohort.acceptedOutcomes) {
+      return invalidKaizenReadout('LIVE_OUTCOME_COUNT_MISMATCH', repositoryId);
+    }
+    if (matchedRawEntry.stages.mergeQueueSquash.observedMs < beforeCohort.windowEndMs) {
+      return invalidKaizenReadout('CANDIDATE_MERGED_BEFORE_BASELINE_END', repositoryId);
+    }
+    if (matchingAuditRecord.completedAtMs > afterCohort.windowStartMs) {
+      return invalidKaizenReadout('CANDIDATE_NOT_SHIPPED_BEFORE_COHORT', repositoryId);
+    }
+    const afterWindowIssueIds = new Set();
+    for (const rec of auditTrail.records) {
+      const raw = rawChainBySquashSha.get(rec.squashCommitSha);
+      if (rec.squashCommitSha !== shippedTargetSha &&
+          rec.issueNumber !== null &&
+          rec.startedAtMs >= afterCohort.windowStartMs &&
+          rec.completedAtMs <= afterCohort.windowEndMs &&
+          raw.stages.independentReview.implementationAgentIdentity.toLowerCase() ===
+            'copilot-swe-agent[bot]') {
+        afterWindowIssueIds.add(rec.issueNumber);
+      }
+    }
+    if (afterWindowIssueIds.size < liveAutonomousOutcomesCount) {
+      return invalidKaizenReadout('INSUFFICIENT_VERIFIED_AGENT_PROVENANCE', repositoryId);
     }
   }
 

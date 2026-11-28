@@ -1898,14 +1898,14 @@ test('evaluateKaizenCohortReadout binds 100% 9-link provenance, human-approved p
   assert.equal(insufficientPre.readoutStatus, 'INSUFFICIENT_COHORT');
   assert.equal(insufficientPre.liveCohortVerified, false);
 
-  // Live autonomous cohort mode succeeds ONLY when shippedCandidate rolled out at/before afterCohort.windowStartMs and >=5 verified copilot-swe-agent[bot] chains completed inside afterCohort window
+  // Live autonomous cohort mode succeeds ONLY when shippedCandidate merged after baseline, completed at/before afterCohort.windowStartMs, and >=5 distinct @copilot issue chains started & completed inside afterCohort window
   const rolloutChain = buildBoundAuditChain({
     traceSeed: 'e',
     commitSeed: 'a',
     squashSeed: '4',
     deliveryId: 'live-rollout-0',
-    startedAtMs: 195_000,
-    completedAtMs: 200_000,
+    startedAtMs: 192_000,
+    completedAtMs: 198_000,
     pullNumber: 199,
     issueNumber: 137
   });
@@ -1917,7 +1917,8 @@ test('evaluateKaizenCohortReadout binds 100% 9-link provenance, human-approved p
     deliveryId: `live-del-${idx + 1}`,
     startedAtMs: 205_000 + idx * 10_000,
     completedAtMs: 210_000 + idx * 10_000,
-    pullNumber: 200 + idx
+    pullNumber: 200 + idx,
+    issueNumber: 201 + idx
   }));
   const liveChains = [rolloutChain, ...livePostRolloutChains];
   const liveBottleneckId = preInput.proposalInput.scorecard.bottlenecks[0].id;
@@ -1933,13 +1934,18 @@ test('evaluateKaizenCohortReadout binds 100% 9-link provenance, human-approved p
     pullNumber: 199,
     issueNumber: 137
   };
+  const liveBaselineCohort = buildBaselineCohort({
+    windowStartMs: 90_000,
+    windowEndMs: 190_000,
+    acceptedOutcomes: 5
+  });
   const liveImproved = evaluateKaizenCohortReadout(buildValidReadoutInput({
     evaluatedHeadSha: '9'.repeat(40),
     evidenceMode: 'live-autonomous-cohort',
     liveAutonomousOutcomesCount: 5,
     auditChains: liveChains,
     cohortInput: {
-      beforeCohort: buildBaselineCohort({acceptedOutcomes: 5}),
+      beforeCohort: liveBaselineCohort,
       afterCohort: buildCandidateCohort({
         acceptedOutcomes: 5,
         medianCycleTimeMs: 310_000,
@@ -1962,7 +1968,12 @@ test('evaluateKaizenCohortReadout binds 100% 9-link provenance, human-approved p
     liveAutonomousOutcomesCount: 5,
     auditChains: liveChains,
     cohortInput: {
-      beforeCohort: buildBaselineCohort({acceptedOutcomes: 5, aiCreditsTotal: 150}),
+      beforeCohort: buildBaselineCohort({
+        windowStartMs: 90_000,
+        windowEndMs: 190_000,
+        acceptedOutcomes: 5,
+        aiCreditsTotal: 150
+      }),
       afterCohort: buildCandidateCohort({acceptedOutcomes: 5, aiCreditsTotal: 150})
     },
     shippedCandidate: liveShippedMeta
@@ -1972,14 +1983,14 @@ test('evaluateKaizenCohortReadout binds 100% 9-link provenance, human-approved p
   assert.equal(liveNeutral.liveCohortVerified, false);
   assert.equal(liveNeutral.issue137ReadyToClose, false);
 
-  // Live mode missing shippedCandidate or with rollout after afterCohort.windowStartMs fails closed
+  // Live mode missing shippedCandidate, merged during baseline, rolled out after windowStartMs, started pre-rollout, or reusing same issueNumber fails closed
   const liveWithoutShipped = buildValidReadoutInput({
     evaluatedHeadSha: '9'.repeat(40),
     evidenceMode: 'live-autonomous-cohort',
     liveAutonomousOutcomesCount: 5,
     auditChains: liveChains,
     cohortInput: {
-      beforeCohort: buildBaselineCohort({acceptedOutcomes: 5}),
+      beforeCohort: liveBaselineCohort,
       afterCohort: buildCandidateCohort({acceptedOutcomes: 5, medianCycleTimeMs: 310_000})
     }
   });
@@ -1990,14 +2001,114 @@ test('evaluateKaizenCohortReadout binds 100% 9-link provenance, human-approved p
   assert.equal(
     evaluateKaizenCohortReadout({
       ...liveWithoutShipped,
+      cohortInput: {
+        beforeCohort: buildBaselineCohort({acceptedOutcomes: 5}), // windowEndMs 200_000 > rollout mergeQueueSquash 192_070
+        afterCohort: buildCandidateCohort({acceptedOutcomes: 5, medianCycleTimeMs: 310_000})
+      },
+      shippedCandidate: liveShippedMeta
+    }).reason,
+    'CANDIDATE_MERGED_BEFORE_BASELINE_END'
+  );
+  assert.equal(
+    evaluateKaizenCohortReadout({
+      ...liveWithoutShipped,
       shippedCandidate: {
         ...liveShippedMeta,
         squashCommitSha: '9'.repeat(40),
-        pullNumber: 204
+        pullNumber: 204,
+        issueNumber: 205
       }
     }).reason,
     'CANDIDATE_NOT_SHIPPED_BEFORE_COHORT'
   );
+
+  const preStartedChains = [
+    rolloutChain,
+    buildBoundAuditChain({
+      traceSeed: '1',
+      commitSeed: '1',
+      squashSeed: '5',
+      deliveryId: 'pre-started-1',
+      startedAtMs: 195_000,
+      completedAtMs: 215_000,
+      pullNumber: 200,
+      issueNumber: 201
+    }),
+    ...livePostRolloutChains.slice(1)
+  ];
+  assert.equal(
+    evaluateKaizenCohortReadout({
+      ...liveWithoutShipped,
+      auditChains: preStartedChains,
+      shippedCandidate: liveShippedMeta
+    }).reason,
+    'INSUFFICIENT_VERIFIED_AGENT_PROVENANCE'
+  );
+
+  const sameIssueChains = [
+    rolloutChain,
+    ...liveSeeds.map((seed, idx) => buildBoundAuditChain({
+      traceSeed: seed,
+      commitSeed: seed,
+      squashSeed: (idx + 5).toString(16),
+      deliveryId: `dup-iss-${idx + 1}`,
+      startedAtMs: 205_000 + idx * 10_000,
+      completedAtMs: 210_000 + idx * 10_000,
+      pullNumber: 200 + idx,
+      issueNumber: 201
+    }))
+  ];
+  assert.equal(
+    evaluateKaizenCohortReadout({
+      ...liveWithoutShipped,
+      auditChains: sameIssueChains,
+      shippedCandidate: liveShippedMeta
+    }).reason,
+    'INSUFFICIENT_VERIFIED_AGENT_PROVENANCE'
+  );
+
+  // Knowledge-map proposal rollback preserves matchingProposal.scope when shippedCandidate omits optional scope
+  const kmChain = buildBoundAuditChain({
+    traceSeed: 'b',
+    commitSeed: 'b',
+    squashSeed: 'd',
+    laneId: 'sf-knowledge-lane',
+    ownedPaths: ['tools/engineering-factory/ONBOARDING.txt']
+  });
+  const kmRollback = evaluateKaizenCohortReadout(buildValidReadoutInput({
+    evaluatedHeadSha: 'd'.repeat(40),
+    auditChains: [kmChain],
+    proposalInput: {
+      scorecard: {...buildSampleScorecard(), bottlenecks: []},
+      knowledgeLanes: buildKnowledgeLanes(),
+      failureTaxonomy: [],
+      feedbackItems: [
+        {
+          id: 'km-onboarding-clarity',
+          repositoryId: SF_REPO_ID,
+          laneId: 'sf-knowledge-lane',
+          source: 'operator',
+          metricName: 'explorationSteps',
+          baselineValue: 12,
+          targetValue: 6,
+          targetPaths: ['tools/engineering-factory/ONBOARDING.txt']
+        }
+      ]
+    },
+    cohortInput: {
+      beforeCohort: buildBaselineCohort(),
+      afterCohort: buildCandidateCohort({reworkRateBps: 2100})
+    },
+    shippedCandidate: {
+      proposalId: `feedback:${SF_REPO_ID}:km-onboarding-clarity`,
+      repositoryId: SF_REPO_ID,
+      laneId: 'sf-knowledge-lane',
+      targetPaths: ['tools/engineering-factory/ONBOARDING.txt'],
+      squashCommitSha: 'd'.repeat(40)
+    }
+  }));
+  assert.equal(kmRollback.valid, true);
+  assert.equal(kmRollback.revertCandidateSpec.scope, 'knowledge-map');
 
   // Regression with inline provenanceChain, billed-spend regression, and contract-touching proposal propagates requiresHumanApproval: true
   const rawInlineChain = {stages: livePostRolloutChains[4].stages};
@@ -2313,27 +2424,45 @@ test('evaluateKaizenCohortReadout fails closed across malformed inputs, anti-rog
     'ANTI_ROGUE_VIOLATION_DETECTED'
   );
 
-  // Unverified or stale evaluatedHeadSha and insufficient agent provenance
+  // Unverified or stale evaluatedHeadSha (ordered by mergeQueueSquash.observedMs even when verifiedMain finishes out of merge order) and insufficient agent provenance
   assert.equal(
     evaluateKaizenCohortReadout({...validInput, evaluatedHeadSha: 'f'.repeat(40)}).reason,
     'UNVERIFIED_EVALUATED_HEAD_SHA'
   );
-  const newerChain = buildBoundAuditChain({
+  const olderMergeSlowHealth = buildBoundAuditChain({
+    traceSeed: 'a',
+    commitSeed: '1',
+    squashSeed: '2',
+    deliveryId: 'del-slow-health',
+    startedAtMs: 210_000,
+    completedAtMs: 290_000, // health check finished AFTER newerMergeFastHealth
+    pullNumber: 141
+  });
+  const newerMergeFastHealth = buildBoundAuditChain({
     traceSeed: 'b',
     commitSeed: '3',
     squashSeed: '4',
-    deliveryId: 'del-2',
-    startedAtMs: 250_000,
+    deliveryId: 'del-fast-health',
+    startedAtMs: 250_000, // mergeQueueSquash.observedMs = 250_070 > 210_070
     completedAtMs: 260_000,
-    pullNumber: 142
+    pullNumber: 142,
+    issueNumber: 138
   });
   assert.equal(
     evaluateKaizenCohortReadout({
       ...validInput,
       evaluatedHeadSha: '2'.repeat(40),
-      auditChains: [validInput.auditChains[0], newerChain]
+      auditChains: [olderMergeSlowHealth, newerMergeFastHealth]
     }).reason,
     'STALE_EVALUATED_HEAD_SHA'
+  );
+  assert.equal(
+    evaluateKaizenCohortReadout({
+      ...validInput,
+      evaluatedHeadSha: '4'.repeat(40),
+      auditChains: [olderMergeSlowHealth, newerMergeFastHealth]
+    }).valid,
+    true
   );
   assert.equal(
     evaluateKaizenCohortReadout({...validInput, liveAutonomousOutcomesCount: 2}).reason,
@@ -2413,10 +2542,14 @@ test('evaluateKaizenCohortReadout fails closed across malformed inputs, anti-rog
     'UNAPPROVED_SPEND_OR_CREDIT_ANOMALY'
   );
 
+  const scBottleneckId = validInput.proposalInput.scorecard.bottlenecks[0].id;
   const sixWindowEdgeChains = ['1', '2', '3', '4', '5', '6'].map((seed, idx) => {
     let startedAtMs = 110_000;
     let completedAtMs = 120_000;
-    if (idx === 3 || idx === 4) {
+    if (idx === 0) {
+      startedAtMs = 192_000;
+      completedAtMs = 198_000;
+    } else if (idx === 3 || idx === 4) {
       startedAtMs = 210_000 + idx * 1_000;
       completedAtMs = 220_000 + idx * 1_000;
     } else if (idx === 5) {
@@ -2431,48 +2564,91 @@ test('evaluateKaizenCohortReadout fails closed across malformed inputs, anti-rog
       startedAtMs,
       completedAtMs,
       agentIdentity: idx === 3 ? 'manual-helper-agent' : 'copilot-swe-agent[bot]',
-      pullNumber: 300 + idx
+      pullNumber: 300 + idx,
+      issueNumber: idx === 4 ? null : 300 + idx
     });
   });
+  const edgeRolloutMeta = {
+    proposalId: `bottleneck:${SF_REPO_ID}:${scBottleneckId}`,
+    repositoryId: SF_REPO_ID,
+    laneId: 'sf-velocity-lane',
+    targetPaths: ['tools/engineering-factory/stage-latency.mjs'],
+    squashCommitSha: '5'.repeat(40),
+    pullNumber: 300,
+    issueNumber: 300
+  };
+  const edgeBaseline = buildBaselineCohort({windowStartMs: 90_000, windowEndMs: 190_000, acceptedOutcomes: 5});
   assert.equal(
     evaluateKaizenCohortReadout({
       ...validInput,
       evaluatedHeadSha: 'a'.repeat(40),
       evidenceMode: 'live-autonomous-cohort',
-      liveAutonomousOutcomesCount: 5,
+      liveAutonomousOutcomesCount: 4, // wait: <5 triggers UNVERIFIED_LIVE_COHORT_CLAIM, use 5 with beforeCohort acceptedOutcomes: 4
       auditChains: sixWindowEdgeChains,
       cohortInput: {
-        beforeCohort: buildBaselineCohort({acceptedOutcomes: 4}),
+        beforeCohort: {...edgeBaseline, acceptedOutcomes: 4},
         afterCohort: buildCandidateCohort({acceptedOutcomes: 5})
-      }
+      },
+      shippedCandidate: edgeRolloutMeta
+    }).reason,
+    'UNVERIFIED_LIVE_COHORT_CLAIM'
+  );
+  // Add one more chain with distinct issue so copilotAgentIssueIds.size >= 5 before reaching live window check
+  const sevenWindowEdgeChains = [
+    ...sixWindowEdgeChains,
+    buildBoundAuditChain({
+      traceSeed: '7',
+      commitSeed: '7',
+      squashSeed: 'b',
+      deliveryId: 'out-del-6',
+      startedAtMs: 320_000,
+      completedAtMs: 330_000,
+      pullNumber: 306,
+      issueNumber: 306
+    })
+  ];
+  assert.equal(
+    evaluateKaizenCohortReadout({
+      ...validInput,
+      evaluatedHeadSha: 'b'.repeat(40),
+      evidenceMode: 'live-autonomous-cohort',
+      liveAutonomousOutcomesCount: 5,
+      auditChains: sevenWindowEdgeChains,
+      cohortInput: {
+        beforeCohort: {...edgeBaseline, acceptedOutcomes: 4},
+        afterCohort: buildCandidateCohort({acceptedOutcomes: 5})
+      },
+      shippedCandidate: edgeRolloutMeta
     }).reason,
     'INSUFFICIENT_LIVE_COHORT_OUTCOMES'
   );
   assert.equal(
     evaluateKaizenCohortReadout({
       ...validInput,
-      evaluatedHeadSha: 'a'.repeat(40),
+      evaluatedHeadSha: 'b'.repeat(40),
       evidenceMode: 'live-autonomous-cohort',
       liveAutonomousOutcomesCount: 5,
-      auditChains: sixWindowEdgeChains,
+      auditChains: sevenWindowEdgeChains,
       cohortInput: {
-        beforeCohort: buildBaselineCohort({acceptedOutcomes: 5}),
+        beforeCohort: edgeBaseline,
         afterCohort: buildCandidateCohort({acceptedOutcomes: 6})
-      }
+      },
+      shippedCandidate: edgeRolloutMeta
     }).reason,
     'LIVE_OUTCOME_COUNT_MISMATCH'
   );
   assert.equal(
     evaluateKaizenCohortReadout({
       ...validInput,
-      evaluatedHeadSha: 'a'.repeat(40),
+      evaluatedHeadSha: 'b'.repeat(40),
       evidenceMode: 'live-autonomous-cohort',
       liveAutonomousOutcomesCount: 5,
-      auditChains: sixWindowEdgeChains,
+      auditChains: sevenWindowEdgeChains,
       cohortInput: {
-        beforeCohort: buildBaselineCohort({acceptedOutcomes: 5}),
+        beforeCohort: edgeBaseline,
         afterCohort: buildCandidateCohort({acceptedOutcomes: 5, medianCycleTimeMs: 300_000})
-      }
+      },
+      shippedCandidate: edgeRolloutMeta
     }).reason,
     'INSUFFICIENT_VERIFIED_AGENT_PROVENANCE'
   );
@@ -2499,7 +2675,6 @@ test('evaluateKaizenCohortReadout fails closed across malformed inputs, anti-rog
     'INVALID_CANDIDATE_META'
   );
 
-  const scBottleneckId = validInput.proposalInput.scorecard.bottlenecks[0].id;
   const validShipped = {
     proposalId: `bottleneck:${SF_REPO_ID}:${scBottleneckId}`,
     repositoryId: SF_REPO_ID,
