@@ -12,12 +12,13 @@ on:
         type: string
         default: ''
       mode:
-        description: Orchestrator execution mode (shadow dry-run or lock verification)
+        description: Orchestrator execution mode (shadow reconciliation, synthetic smoke, or lock verification)
         required: false
         type: choice
         default: shadow
         options:
           - shadow
+          - smoke
           - verify-lock
   schedule:
     - cron: '3,13,23,33,43,53 * * * *'

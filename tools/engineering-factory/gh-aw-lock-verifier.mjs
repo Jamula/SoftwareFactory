@@ -1435,6 +1435,31 @@ function isTrustedControlPlaneCheckout(withMap, releaseCommit, trustedShas) {
   return trimmedRef === 'refs/heads/main' || trustedShas.has(trimmedRef);
 }
 
+function isTrustedEvalOrHelperCheckout(
+  checkoutWith,
+  releaseCommit,
+  trustedShas,
+  job,
+  stepIdx,
+  workflowEnvSafe
+) {
+  if (isTrustedControlPlaneCheckout(checkoutWith, releaseCommit, trustedShas)) return true;
+  if (checkoutWith.repository !== undefined) {
+    if (typeof checkoutWith.repository !== 'string') return false;
+    const trimmedRepo = checkoutWith.repository.trim();
+    if (trimmedRepo !== 'Jamula/SoftwareFactory' && trimmedRepo !== '${{ github.repository }}') {
+      return false;
+    }
+  }
+  if (classifyEventMatrixCheckoutRef(checkoutWith.ref, 'main', trustedShas) !== 'workflow_sha') {
+    return false;
+  }
+  const jobAst = job.if === undefined ? null : parseIfExpression(job.if);
+  return resolveJobProtectedBranchProvenance(job, jobAst, 'refs/heads/main', workflowEnvSafe)
+    .trustedCheckoutStepIndices
+    .has(stepIdx);
+}
+
 function isTrustedScanJobCheckout(checkoutWith, releaseCommit, trustedShas, lockOn) {
   if (checkoutWith.path !== undefined) return {ok: false, needsUpstreamRefProvenance: false};
   if (checkoutWith.ref === undefined && checkoutWith.repository === undefined) {
@@ -1645,7 +1670,8 @@ export function verifyGhAwWorkflowLock(input) {
       if (!Array.isArray(job.steps) || job.steps.length === 0) return deny('INVALID_LOCK_YAML');
       let hasUnconditionalThreatScanRunStep = false;
       let canRegisterPolicyScanProducer = true;
-      for (const step of job.steps) {
+      for (let stepIdx = 0; stepIdx < job.steps.length; stepIdx++) {
+        const step = job.steps[stepIdx];
         if (!isMapObject(step)) return deny('INVALID_LOCK_YAML');
         if (!isSafeOutput && toleratesError(step)) return deny('MISSING_THREAT_SCAN_GATE');
         if (isThreatScan && !isSafeScanEnv(step.env)) return deny('MISSING_THREAT_SCAN_GATE');
@@ -1689,7 +1715,14 @@ export function verifyGhAwWorkflowLock(input) {
               if (scanCheckout.needsUpstreamRefProvenance) scanNeedsRefProvenance = true;
             } else if (!jobHasWriteScope && hasPrRefExposureTrigger &&
                        (!isSafeScanEnv(lockDoc.env) || !isSafeScanEnv(job.env) || !isSafeScanEnv(step.env) ||
-                        !isTrustedControlPlaneCheckout(checkoutWith, releaseCheck.release.commit, trustedShas))) {
+                        !isTrustedEvalOrHelperCheckout(
+                          checkoutWith,
+                          releaseCheck.release.commit,
+                          trustedShas,
+                          job,
+                          stepIdx,
+                          workflowEnvSafeForScan
+                        ))) {
               return deny('UNTRUSTED_PR_CHECKOUT');
             }
           }

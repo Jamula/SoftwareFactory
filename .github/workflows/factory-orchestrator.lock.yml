@@ -1,4 +1,4 @@
-# gh-aw-metadata: {"schema_version":"v4","frontmatter_hash":"c718a4d4d2d61af5b25ad336e83e6f29c756814419a774a7c5111e056be693fe","body_hash":"5b40aece16871c16d19ef10c4d5af0a372425405a5dcfcec2984d12800623ff1","compiler_version":"v1.2.2","strict":true,"agent_id":"copilot"}
+# gh-aw-metadata: {"schema_version":"v4","frontmatter_hash":"8c060a69cb77578d642d76c97de21c75d5790e22716aa4321f46219ff4df219d","body_hash":"5b40aece16871c16d19ef10c4d5af0a372425405a5dcfcec2984d12800623ff1","compiler_version":"v1.2.2","strict":true,"agent_id":"copilot"}
 # gh-aw-manifest: {"version":1,"secrets":[],"actions":[{"repo":"actions/checkout","sha":"3d3c42e5aac5ba805825da76410c181273ba90b1","version":"v7.0.1"},{"repo":"actions/setup-node","sha":"949feb2413d6458794dcd2491c4babbbce0c15c1","version":"v7.1.0"}]}
 # gh-aw-commit: 399a445fe2d8926c616b54b1b82a16b5b2be4445
 # gh-aw-work-queue-protocol: v3
@@ -13,12 +13,13 @@ on:
         type: string
         default: ''
       mode:
-        description: Orchestrator execution mode (shadow dry-run or lock verification)
+        description: Orchestrator execution mode (shadow reconciliation, synthetic smoke, or lock verification)
         required: false
         type: choice
         default: shadow
         options:
           - shadow
+          - smoke
           - verify-lock
   schedule:
     - cron: '3,13,23,33,43,53 * * * *'
@@ -45,11 +46,11 @@ jobs:
     permissions:
       contents: read
     steps:
-      - name: Checkout trusted default branch
+      - name: Checkout immutable protected-branch workflow revision
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: Jamula/SoftwareFactory
-          ref: refs/heads/main
+          ref: ${{ github.workflow_sha }}
           persist-credentials: false
       - name: Setup pinned Node runtime
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -60,6 +61,7 @@ jobs:
         env:
           FACTORY_GHAW_ENABLED: ${{ vars.FACTORY_GHAW_ENABLED }}
           FACTORY_GHAW_MODE: ${{ inputs.mode || 'shadow' }}
+          FACTORY_EXPECTED_WORKFLOW_PATH: .github/workflows/factory-orchestrator.lock.yml
           FACTORY_ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue_number || '' }}
           FACTORY_PULL_NUMBER: ${{ github.event.pull_request.number || '' }}
           FACTORY_PULL_HEAD: ${{ github.event.pull_request.head.sha || '' }}
@@ -80,7 +82,7 @@ jobs:
           fi
           FACTORY_GHAW_MODE="${FACTORY_GHAW_MODE:-shadow}"
           case "$FACTORY_GHAW_MODE" in
-            shadow|verify-lock) ;;
+            shadow|smoke|verify-lock) ;;
             *) echo "::error::Unsupported orchestrator mode"; exit 1 ;;
           esac
           if [ -n "$FACTORY_ISSUE_NUMBER" ] && ! printf '%s' "$FACTORY_ISSUE_NUMBER" | grep -Eq '^[1-9][0-9]{0,9}$'; then
@@ -93,7 +95,7 @@ jobs:
               exit 1
             fi
           done
-          for commit_sha in "$FACTORY_PULL_HEAD" "$FACTORY_CHECK_HEAD" "$FACTORY_MAIN_HEAD"; do
+          for commit_sha in "$GITHUB_WORKFLOW_SHA" "$FACTORY_PULL_HEAD" "$FACTORY_CHECK_HEAD" "$FACTORY_MAIN_HEAD"; do
             if [ -n "$commit_sha" ] && ! printf '%s' "$commit_sha" | grep -Eq '^[a-f0-9]{40}$'; then
               echo "::error::Invalid event commit SHA"
               exit 1
@@ -112,8 +114,33 @@ jobs:
             }
             console.log(JSON.stringify({verdict, matrixVerdict}));
           '
-          if [ "$FACTORY_GHAW_MODE" = shadow ]; then
+          if [ "$FACTORY_GHAW_MODE" = smoke ]; then
             node tools/engineering-factory/run.mjs --smoke
+          elif [ "$FACTORY_GHAW_MODE" = shadow ]; then
+            node tools/engineering-factory/run.mjs --smoke
+            test -n "$GITHUB_WORKFLOW_SHA"
+            FACTORY_CHECKOUT_SHA="$(git rev-parse HEAD)"
+            test "$FACTORY_CHECKOUT_SHA" = "$GITHUB_WORKFLOW_SHA"
+            export FACTORY_CHECKOUT_SHA
+            case "$GITHUB_EVENT_NAME" in
+              schedule)
+                node tools/engineering-factory/run.mjs --inventory
+                ;;
+              workflow_dispatch)
+                if [ -n "$FACTORY_ISSUE_NUMBER" ]; then
+                  node tools/engineering-factory/run.mjs --reconcile-event
+                else
+                  node tools/engineering-factory/run.mjs --inventory
+                fi
+                ;;
+              issues|pull_request_target|workflow_run|push)
+                node tools/engineering-factory/run.mjs --reconcile-event
+                ;;
+              *)
+                echo "::error::Unsupported orchestrator event: $GITHUB_EVENT_NAME"
+                exit 1
+                ;;
+            esac
           fi
 
   threat-and-policy-scan:

@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import {spawnSync} from 'node:child_process';
-import {mkdtempSync, readFileSync, rmSync, writeFileSync} from 'node:fs';
+import {chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {dirname, join, resolve} from 'node:path';
 import test from 'node:test';
-import {fileURLToPath} from 'node:url';
+import {fileURLToPath, pathToFileURL} from 'node:url';
 import {
   PINNED_FACTORY_POLICY_SCAN_RUN_SHA256,
   PINNED_GHAW_DETECTION_CONCLUSION_SCRIPT_SHA256,
@@ -2523,14 +2523,27 @@ test('enforces verifyGhAwWorkflowLock trigger parity, workflow_run repo guard, e
     lockYamlSource: buildHelperWrLock({activationWrGuard: ''})
   }).reason, 'MISSING_WORKFLOW_RUN_REPO_GUARD');
 
-  // Evaluate job checkout omitting ref/repository or poisoned env under pull_request_target/review fails closed
+  // Evaluate job checkout omitting ref/repository, unallowlisted repo, or github.workflow_sha without protected ref provenance fails closed
+  for (const untrustedEvalCheckout of [
+    '      - name: Checkout immutable protected-branch workflow revision\n        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1\n        with:\n          persist-credentials: false',
+    '      - name: Checkout immutable protected-branch workflow revision\n        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1\n        with:\n          repository: attacker/evil-fork\n          ref: ${{ github.workflow_sha }}\n          persist-credentials: false',
+    '      - name: Checkout immutable protected-branch workflow revision\n        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1\n        with:\n          repository: 12345\n          ref: ${{ github.workflow_sha }}\n          persist-credentials: false'
+  ]) {
+    assert.equal(
+      rehashPair(
+        trackedMd,
+        trackedLock.replace(
+          '      - name: Checkout immutable protected-branch workflow revision\n        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1\n        with:\n          repository: Jamula/SoftwareFactory\n          ref: ${{ github.workflow_sha }}\n          persist-credentials: false',
+          untrustedEvalCheckout
+        )
+      ).reason,
+      'UNTRUSTED_PR_CHECKOUT'
+    );
+  }
   assert.equal(
     rehashPair(
       trackedMd,
-      trackedLock.replace(
-        '      - name: Checkout trusted default branch\n        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1\n        with:\n          repository: Jamula/SoftwareFactory\n          ref: refs/heads/main\n          persist-credentials: false',
-        '      - name: Checkout trusted default branch\n        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1\n        with:\n          persist-credentials: false'
-      )
+      trackedLock.replace('          test "$GITHUB_REF_PROTECTED" = true\n', '')
     ).reason,
     'UNTRUSTED_PR_CHECKOUT'
   );
@@ -2547,7 +2560,7 @@ test('enforces verifyGhAwWorkflowLock trigger parity, workflow_run repo guard, e
     'UNTRUSTED_PR_TEXT_INTERPOLATION'
   );
 
-  // Execute the tracked evaluate & policy_scan shell scripts to verify default shadow mode on non-dispatch events & fail-closed checks
+  // Execute the tracked evaluate & policy_scan shell scripts offline across all modes & triggers
   const evalScriptMatch = /name: Verify gh-aw workflow lock and execute shadow evaluation[\s\S]*?run: \|\n((?: {10}.*\n)+)/.exec(trackedLock);
   const scanScriptMatch = /id: policy_scan\n {8}run: \|\n((?: {10}.*\n)+)/.exec(trackedLock);
   assert.ok(evalScriptMatch !== null);
@@ -2557,82 +2570,161 @@ test('enforces verifyGhAwWorkflowLock trigger parity, workflow_run repo guard, e
   assert.equal(computeNormalizedScriptSha256(scanScript), PINNED_FACTORY_POLICY_SCAN_RUN_SHA256);
 
   const validSha = 'a'.repeat(40);
-  const baseEvalEnv = {
-    ...process.env,
-    FACTORY_GHAW_ENABLED: 'true',
-    GITHUB_REPOSITORY: 'Jamula/SoftwareFactory',
-    GITHUB_REPOSITORY_ID: '1471342715',
-    GITHUB_REF: 'refs/heads/main',
-    GITHUB_REF_PROTECTED: 'true',
-    GITHUB_WORKFLOW_REF: 'Jamula/SoftwareFactory/.github/workflows/factory-orchestrator.lock.yml@refs/heads/main',
-    GITHUB_EVENT_NAME: 'schedule',
-    FACTORY_GHAW_MODE: '',
-    FACTORY_ISSUE_NUMBER: '',
-    FACTORY_PULL_NUMBER: '',
-    FACTORY_PULL_HEAD: '',
-    FACTORY_WORKFLOW_RUN_ID: '',
-    FACTORY_CHECK_HEAD: '',
-    FACTORY_WORKFLOW_HEAD_REPO_ID: '',
-    FACTORY_MAIN_HEAD: validSha
-  };
-
-  // Empty FACTORY_GHAW_MODE on non-workflow_dispatch (schedule) normalizes to shadow and succeeds
-  const scheduleRun = spawnSync('bash', ['-c', evalScript], {cwd: repoRoot, env: baseEvalEnv, encoding: 'utf8'});
-  assert.equal(scheduleRun.status, 0, scheduleRun.stderr);
-  assert.match(scheduleRun.stdout, /"SHADOW_PLAN"/);
-
-  // verify-lock mode skips smoke and succeeds
-  const verifyOnlyRun = spawnSync('bash', ['-c', evalScript], {
-    cwd: repoRoot,
-    env: {...baseEvalEnv, GITHUB_EVENT_NAME: 'workflow_dispatch', FACTORY_GHAW_MODE: 'verify-lock', FACTORY_ISSUE_NUMBER: '5'},
-    encoding: 'utf8'
-  });
-  assert.equal(verifyOnlyRun.status, 0, verifyOnlyRun.stderr);
-  assert.doesNotMatch(verifyOnlyRun.stdout, /"SHADOW_PLAN"/);
-
-  // workflow_run with matching head_repository.id succeeds; fork head_repository.id and PR-controlled merge-ref revisions fail closed!
-  const sameRepoWrRun = spawnSync('bash', ['-c', evalScript], {
-    cwd: repoRoot,
-    env: {
-      ...baseEvalEnv,
-      GITHUB_EVENT_NAME: 'workflow_run',
-      FACTORY_WORKFLOW_RUN_ID: '998877',
-      FACTORY_CHECK_HEAD: validSha,
-      FACTORY_WORKFLOW_HEAD_REPO_ID: '1471342715'
-    },
-    encoding: 'utf8'
-  });
-  assert.equal(sameRepoWrRun.status, 0, sameRepoWrRun.stderr);
-
-  for (const rejectedEnv of [
-    {...baseEvalEnv, GITHUB_EVENT_NAME: 'workflow_run', FACTORY_WORKFLOW_HEAD_REPO_ID: '999999'},
-    {
-      ...baseEvalEnv,
-      GITHUB_EVENT_NAME: 'pull_request_review',
-      GITHUB_REF: 'refs/pull/42/merge',
-      GITHUB_REF_PROTECTED: 'false',
-      GITHUB_WORKFLOW_REF: 'Jamula/SoftwareFactory/.github/workflows/factory-orchestrator.lock.yml@refs/pull/42/merge',
-      FACTORY_PULL_NUMBER: '42',
-      FACTORY_PULL_HEAD: validSha
-    },
-    {
-      ...baseEvalEnv,
-      GITHUB_WORKFLOW_REF: 'Jamula/SoftwareFactory/.github/workflows/factory-orchestrator.lock.yml@refs/pull/42/merge'
-    },
-    {...baseEvalEnv, GITHUB_REF: 'refs/heads/feature'},
-    {...baseEvalEnv, GITHUB_REF_PROTECTED: 'false'},
-    {...baseEvalEnv, FACTORY_GHAW_MODE: 'live-dispatch'},
-    {...baseEvalEnv, FACTORY_ISSUE_NUMBER: '0'},
-    {...baseEvalEnv, FACTORY_PULL_NUMBER: 'abc'},
-    {...baseEvalEnv, FACTORY_PULL_HEAD: 'not-a-sha'}
-  ]) {
-    const failedRun = spawnSync('bash', ['-c', evalScript], {cwd: repoRoot, env: rejectedEnv, encoding: 'utf8'});
-    assert.notEqual(failedRun.status, 0);
-  }
-
-  // Execute policy_scan script and verify scan_verified=true output
+  const prHeadSha = 'b'.repeat(40);
   const tmpDir = mkdtempSync(join(tmpdir(), 'sf-policy-scan-'));
   try {
+    const binDir = join(tmpDir, 'bin');
+    mkdirSync(binDir);
+    const fakeGitPath = join(binDir, 'git');
+    writeFileSync(fakeGitPath, '#!/usr/bin/env bash\necho "${MOCK_GIT_HEAD}"\n', 'utf8');
+    chmodSync(fakeGitPath, 0o755);
+
+    const mockFetchFile = join(tmpDir, 'mock-fetch.mjs');
+    writeFileSync(mockFetchFile, [
+      `const mainSha = ${JSON.stringify(validSha)};`,
+      `const prSha = ${JSON.stringify(prHeadSha)};`,
+      'const repoRoot = "https://api.github.com/repos/Jamula/SoftwareFactory";',
+      'const json = body => new Response(JSON.stringify(body), {status: 200, headers: {"content-type": "application/json"}});',
+      'globalThis.fetch = async rawUrl => {',
+      '  const url = String(rawUrl);',
+      '  if (url === repoRoot) return json({id: 1471342715, full_name: "Jamula/SoftwareFactory", fork: false});',
+      '  if (url === `${repoRoot}/branches/main`) return json({name: "main", protected: true, commit: {sha: mainSha}});',
+      '  if (url.startsWith(`${repoRoot}/issues?`)) return json([{number: 5, repository_url: repoRoot}]);',
+      '  if (url.startsWith(`${repoRoot}/pulls?`)) return json([{number: 42, base: {repo: {id: 1471342715, full_name: "Jamula/SoftwareFactory"}}}]);',
+      '  if (url === `${repoRoot}/issues/5`) return json({number: 5, state: "open", repository_url: repoRoot});',
+      '  if (url === `${repoRoot}/pulls/42`) {',
+      '    return json({',
+      '      number: 42, state: "open", draft: false,',
+      '      head: {sha: prSha, repo: {id: 1471342715, full_name: "Jamula/SoftwareFactory"}},',
+      '      base: {ref: "main", sha: mainSha, repo: {id: 1471342715, full_name: "Jamula/SoftwareFactory"}}',
+      '    });',
+      '  }',
+      '  if (url === `${repoRoot}/actions/runs/998877`) {',
+      '    return json({',
+      '      id: 998877, status: "completed", conclusion: "success", event: "pull_request", head_sha: prSha,',
+      '      repository: {id: 1471342715, full_name: "Jamula/SoftwareFactory"},',
+      '      head_repository: {id: 1471342715, full_name: "Jamula/SoftwareFactory"}',
+      '    });',
+      '  }',
+      '  return new Response("unexpected url: " + url, {status: 404});',
+      '};'
+    ].join('\n'), 'utf8');
+
+    const baseEvalEnv = {
+      ...process.env,
+      PATH: `${binDir}:${process.env.PATH ?? ''}`,
+      NODE_OPTIONS: `--import=${pathToFileURL(mockFetchFile).href}`,
+      MOCK_GIT_HEAD: validSha,
+      FACTORY_GHAW_ENABLED: 'true',
+      FACTORY_EXPECTED_WORKFLOW_PATH: '.github/workflows/factory-orchestrator.lock.yml',
+      GITHUB_REPOSITORY: 'Jamula/SoftwareFactory',
+      GITHUB_REPOSITORY_ID: '1471342715',
+      GITHUB_REF: 'refs/heads/main',
+      GITHUB_REF_PROTECTED: 'true',
+      GITHUB_WORKFLOW_REF: 'Jamula/SoftwareFactory/.github/workflows/factory-orchestrator.lock.yml@refs/heads/main',
+      GITHUB_WORKFLOW_SHA: validSha,
+      GITHUB_SHA: validSha,
+      GITHUB_RUN_ID: '46100001',
+      GITHUB_EVENT_NAME: 'schedule',
+      FACTORY_GHAW_MODE: '',
+      FACTORY_ISSUE_NUMBER: '',
+      FACTORY_PULL_NUMBER: '',
+      FACTORY_PULL_HEAD: '',
+      FACTORY_WORKFLOW_RUN_ID: '',
+      FACTORY_CHECK_HEAD: '',
+      FACTORY_WORKFLOW_HEAD_REPO_ID: '',
+      FACTORY_MAIN_HEAD: validSha
+    };
+
+    // Empty FACTORY_GHAW_MODE on non-workflow_dispatch (schedule) normalizes to shadow, runs smoke + recovery inventory
+    const scheduleRun = spawnSync('bash', ['-c', evalScript], {cwd: repoRoot, env: baseEvalEnv, encoding: 'utf8'});
+    assert.equal(scheduleRun.status, 0, scheduleRun.stderr);
+    assert.match(scheduleRun.stdout, /"SHADOW_PLAN"/);
+    assert.match(scheduleRun.stdout, /"issues":\[5\],"pulls":\[42\]/);
+
+    // workflow_dispatch without issue_number in shadow mode also runs recovery inventory
+    const manualInvRun = spawnSync('bash', ['-c', evalScript], {
+      cwd: repoRoot,
+      env: {...baseEvalEnv, GITHUB_EVENT_NAME: 'workflow_dispatch', FACTORY_GHAW_MODE: 'shadow'},
+      encoding: 'utf8'
+    });
+    assert.equal(manualInvRun.status, 0, manualInvRun.stderr);
+    assert.match(manualInvRun.stdout, /"issues":\[5\],"pulls":\[42\]/);
+
+    // smoke mode runs only the synthetic smoke check without live GitHub reads
+    const smokeOnlyRun = spawnSync('bash', ['-c', evalScript], {
+      cwd: repoRoot,
+      env: {...baseEvalEnv, GITHUB_EVENT_NAME: 'workflow_dispatch', FACTORY_GHAW_MODE: 'smoke'},
+      encoding: 'utf8'
+    });
+    assert.equal(smokeOnlyRun.status, 0, smokeOnlyRun.stderr);
+    assert.match(smokeOnlyRun.stdout, /"SHADOW_PLAN"/);
+    assert.doesNotMatch(smokeOnlyRun.stdout, /"issues":\[5\]/);
+
+    // verify-lock mode skips both smoke and live GitHub reads
+    const verifyOnlyRun = spawnSync('bash', ['-c', evalScript], {
+      cwd: repoRoot,
+      env: {...baseEvalEnv, GITHUB_EVENT_NAME: 'workflow_dispatch', FACTORY_GHAW_MODE: 'verify-lock', FACTORY_ISSUE_NUMBER: '5'},
+      encoding: 'utf8'
+    });
+    assert.equal(verifyOnlyRun.status, 0, verifyOnlyRun.stderr);
+    assert.doesNotMatch(verifyOnlyRun.stdout, /"SHADOW_PLAN"/);
+
+    // Scoped journal reconciliation runs across workflow_dispatch(issue), issues, pull_request_target, workflow_run, and push
+    for (const [eventEnv, expectedKind] of [
+      [{...baseEvalEnv, GITHUB_EVENT_NAME: 'workflow_dispatch', FACTORY_GHAW_MODE: 'shadow', FACTORY_ISSUE_NUMBER: '5'}, 'manual'],
+      [{...baseEvalEnv, GITHUB_EVENT_NAME: 'issues', FACTORY_ISSUE_NUMBER: '5'}, 'issue'],
+      [{...baseEvalEnv, GITHUB_EVENT_NAME: 'pull_request_target', FACTORY_PULL_NUMBER: '42', FACTORY_PULL_HEAD: prHeadSha}, 'pull'],
+      [
+        {
+          ...baseEvalEnv,
+          GITHUB_EVENT_NAME: 'workflow_run',
+          FACTORY_WORKFLOW_RUN_ID: '998877',
+          FACTORY_CHECK_HEAD: prHeadSha,
+          FACTORY_WORKFLOW_HEAD_REPO_ID: '1471342715'
+        },
+        'check'
+      ],
+      [{...baseEvalEnv, GITHUB_EVENT_NAME: 'push'}, 'main']
+    ]) {
+      const reconciledRun = spawnSync('bash', ['-c', evalScript], {cwd: repoRoot, env: eventEnv, encoding: 'utf8'});
+      assert.equal(reconciledRun.status, 0, reconciledRun.stderr);
+      assert.match(reconciledRun.stdout, /"reconciled":true/);
+      assert.match(reconciledRun.stdout, /"reason":"SHADOW_RECONCILED"/);
+      assert.match(reconciledRun.stdout, new RegExp(`"kind":"${expectedKind}"`));
+    }
+
+    // Fork workflow_run, checkout SHA mismatch, PR merge-ref revisions, unknown events, and malformed inputs fail closed
+    for (const rejectedEnv of [
+      {...baseEvalEnv, GITHUB_EVENT_NAME: 'workflow_run', FACTORY_WORKFLOW_HEAD_REPO_ID: '999999'},
+      {...baseEvalEnv, MOCK_GIT_HEAD: prHeadSha},
+      {...baseEvalEnv, GITHUB_WORKFLOW_SHA: ''},
+      {...baseEvalEnv, GITHUB_EVENT_NAME: 'repository_dispatch'},
+      {
+        ...baseEvalEnv,
+        GITHUB_EVENT_NAME: 'pull_request_review',
+        GITHUB_REF: 'refs/pull/42/merge',
+        GITHUB_REF_PROTECTED: 'false',
+        GITHUB_WORKFLOW_REF: 'Jamula/SoftwareFactory/.github/workflows/factory-orchestrator.lock.yml@refs/pull/42/merge',
+        FACTORY_PULL_NUMBER: '42',
+        FACTORY_PULL_HEAD: prHeadSha
+      },
+      {
+        ...baseEvalEnv,
+        GITHUB_WORKFLOW_REF: 'Jamula/SoftwareFactory/.github/workflows/factory-orchestrator.lock.yml@refs/pull/42/merge'
+      },
+      {...baseEvalEnv, GITHUB_REF: 'refs/heads/feature'},
+      {...baseEvalEnv, GITHUB_REF_PROTECTED: 'false'},
+      {...baseEvalEnv, FACTORY_GHAW_MODE: 'live-dispatch'},
+      {...baseEvalEnv, FACTORY_ISSUE_NUMBER: '0'},
+      {...baseEvalEnv, FACTORY_PULL_NUMBER: 'abc'},
+      {...baseEvalEnv, FACTORY_PULL_HEAD: 'not-a-sha'}
+    ]) {
+      const failedRun = spawnSync('bash', ['-c', evalScript], {cwd: repoRoot, env: rejectedEnv, encoding: 'utf8'});
+      assert.notEqual(failedRun.status, 0);
+    }
+
+    // Execute policy_scan script and verify scan_verified=true output
     const ghOutFile = join(tmpDir, 'github_output.txt');
     writeFileSync(ghOutFile, '', 'utf8');
     const scanRun = spawnSync('bash', ['-c', scanScript], {
