@@ -1,4 +1,4 @@
-import test from 'node:test';import assert from 'node:assert/strict';import {readFileSync} from 'node:fs';import {pilotReadiness as check,evaluateSelfPilotCycles as evaluate,verifyM01AutonomousExit as verifyExit,evaluateCustomerOnePilotReadinessDossier as evaluateDossier,M01_STRUCTURAL_PREREQUISITES,M01_CUSTOMER_ONE_PREREQUISITES,M01_CUSTOMER_ONE_SLOS} from '../../tools/engineering-factory/pilot-readiness.mjs';
+import test from 'node:test';import assert from 'node:assert/strict';import {readFileSync,readdirSync} from 'node:fs';import {pilotReadiness as check,evaluateSelfPilotCycles as evaluate,verifyM01AutonomousExit as verifyExit,evaluateCustomerOnePilotReadinessDossier as evaluateDossier,M01_STRUCTURAL_PREREQUISITES,M01_CUSTOMER_ONE_PREREQUISITES,M01_CUSTOMER_ONE_SLOS} from '../../tools/engineering-factory/pilot-readiness.mjs';
 const p={repositoryId:1,pin:'a'.repeat(40),lineMin:97,branchMin:90,firstPilot:false};
 const e={repositoryId:1,pin:p.pin,enrolled:true,stop:false,upstreamAccepted:true,review:true,coverageLine:97,coverageBranch:90,requiredChecks:true,quotaVerified:true,rollbackVerified:true,securityClear:true};
 const m01Prereqs=Object.fromEntries(M01_STRUCTURAL_PREREQUISITES.map(k=>[k,true]));
@@ -219,7 +219,7 @@ const dossierCycle=(n,extra={})=>{
 };
 const dossierInput=(extra={})=>({
  repositoryId:1471342715,
- pin:'cec2745b7b8a21e77ad9f2839d4255d42305d419',
+ pin:'b0924c3807f797e6090e1dc3e1e65fc9caa07550',
  enrolled:true,
  stop:false,
  lineMin:98,
@@ -232,11 +232,14 @@ const dossierInput=(extra={})=>({
  ...extra
 });
 
-test('Customer One readiness audit JSON matches deterministic dossier evaluation on cec2745b7b8a21e77ad9f2839d4255d42305d419',()=>{
+test('Customer One readiness audit JSON matches deterministic dossier evaluation on b0924c3807f797e6090e1dc3e1e65fc9caa07550',()=>{
  const audit=JSON.parse(readFileSync(new URL('../../docs/evidence/m01-08-readiness-audit.json',import.meta.url),'utf8'));
- assert.equal(audit.evaluatedCommit,'cec2745b7b8a21e77ad9f2839d4255d42305d419');
+ assert.equal(audit.evaluatedCommit,'b0924c3807f797e6090e1dc3e1e65fc9caa07550');
+ assert.equal(audit.dossierInput.pin,'b0924c3807f797e6090e1dc3e1e65fc9caa07550');
  assert.equal(audit.repositoryId,1471342715);
  assert.equal(audit.issueNumber,10);
+ assert.equal(audit.summary.engineeringFoundationsDeliveredCount,7);
+ assert.equal(audit.summary.pilotEntryBlockingCount,3);
  assert.equal(audit.summary.pilotEntryReady,false);
  assert.equal(audit.summary.m01ExitEvidenceReady,false);
  assert.equal(audit.summary.liveActivation,false);
@@ -244,13 +247,21 @@ test('Customer One readiness audit JSON matches deterministic dossier evaluation
  assert.equal(audit.summary.deliveredLiveUnattendedCycles,0);
  assert.deepEqual(
   audit.deliveredEngineeringFoundations.map(f=>f.prerequisite),
-  ['noPythonVerified','ghAwLockVerified','workQueueCasVerified','unifiedCliVerified','antiRogueCircuitBreakersVerified','crossOsAspireRuntimeVerified']
+  ['noPythonVerified','mainCodeqlHealthy','ghAwLockVerified','workQueueCasVerified','unifiedCliVerified','antiRogueCircuitBreakersVerified','crossOsAspireRuntimeVerified']
  );
  assert.deepEqual(
   audit.liveOperationalBlockers.filter(b=>b.prerequisite!==null).map(b=>b.prerequisite),
-  ['mainCodeqlHealthy','hardStopBillingVerified','nativeCloudSmokeVerified','repoScopedLiveAuthVerified']
+  ['hardStopBillingVerified','nativeCloudSmokeVerified','repoScopedLiveAuthVerified']
  );
+ const trackedComponents=['engineering-coordinator','engineering-factory'].flatMap(pkg=>
+  readdirSync(new URL(`../../tools/${pkg}`,import.meta.url))
+   .filter(f=>f.endsWith('.mjs'))
+   .map(f=>`${pkg}.${f.slice(0,-4)}`)
+ ).sort();
+ assert.equal(trackedComponents.length,70);
+ assert.deepEqual(audit.dossierInput.expectedComponents,trackedComponents);
  const actual=evaluateDossier(audit.dossierInput);
+ assert.deepEqual(actual.blockingPrerequisites,['hardStopBillingVerified','nativeCloudSmokeVerified','repoScopedLiveAuthVerified']);
  assert.deepEqual(actual,audit.dossierEvaluation);
 });
 

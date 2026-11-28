@@ -2,12 +2,17 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {
   EXECUTION_RECEIPT_SCHEMA_VERSION,
+  AUTONOMOUS_RECEIPT_SCHEMA_VERSION,
+  AI_CREDIT_USD_CENTS,
+  MAX_AI_CREDITS,
+  ALLOWED_MISSION_CONTROL_TASK_STATES,
   localEndpoint,
   localOtlpConfiguration,
   createSignals,
   telemetrySummary,
   createExecutionReceipt,
-  receiptStageRows
+  receiptStageRows,
+  correlateAutonomousExecutionReceipt
 } from '../../tools/engineering-factory/telemetry.mjs';
 import {aggregateStage} from '../../tools/engineering-factory/stage-aggregate.mjs';
 import {planLanes} from '../../tools/engineering-coordinator/planner.mjs';
@@ -509,4 +514,585 @@ test('receiptStageRows feeds stage-aggregate for #18 and rejects invalid or tamp
  ]){
   assert.deepEqual(receiptStageRows(invalid),{valid:false,reason:'INVALID_RECEIPT',rows:[]});
  }
+});
+
+test('telemetrySummary maps Wave 2/3 deterministic denials cleanly to canonical OTel categories without collapsing to OTHER',()=>{
+ const wave2And3Denials=[
+  // QUOTA
+  ['AI_CREDIT_ACCOUNTING_UNVERIFIED','QUOTA'],
+  ['AI_CREDIT_CAP_EXCEEDED','QUOTA'],
+  ['AI_CREDIT_ANOMALY','QUOTA'],
+  ['ACCOUNTING_ESTIMATED_OR_MISSING','QUOTA'],
+  ['INCLUDED_QUOTA_NOT_ATTRIBUTED','QUOTA'],
+  ['INCREMENTAL_SPEND_NONZERO','QUOTA'],
+  ['PAID_OVERAGE_ALLOWED','QUOTA'],
+  ['OVERAGE_LIMIT_NONZERO','QUOTA'],
+  ['OVERAGE_ENABLED','QUOTA'],
+  ['WORKER_CAPACITY_UNVERIFIED','QUOTA'],
+  ['WORKER_LADDER_VIOLATION','QUOTA'],
+  ['PORTFOLIO_CAPACITY_EXHAUSTED','QUOTA'],
+  ['QUOTA','QUOTA'],
+  // SECURITY
+  ['UNSAFE_TELEMETRY_PAYLOAD','SECURITY'],
+  ['INVALID_TRACEPARENT','SECURITY'],
+  ['TRACE_ID_MISMATCH','SECURITY'],
+  ['SPAN_LINKAGE_BROKEN','SECURITY'],
+  ['INVALID_GH_AW_LOCK_HASH','SECURITY'],
+  ['SAFE_OUTPUTS_THREAT_FLAGGED','SECURITY'],
+  ['PROTECTED_CONTROL_PLANE_TOUCH','SECURITY'],
+  ['FORCE_UPDATE_FORBIDDEN','SECURITY'],
+  ['UNPROTECTED_WORK_QUEUE_REF','SECURITY'],
+  ['CROSS_REPO_CANDIDATE_REJECTED','SECURITY'],
+  ['PROVENANCE_ISOLATION_VIOLATION','SECURITY'],
+  ['SEPARATE_AUTHORIZATION_REQUIRED','SECURITY'],
+  ['AGENT_JOB_WRITE_PERMISSION','SECURITY'],
+  ['FRONTMATTER_HASH_MISMATCH','SECURITY'],
+  ['MISSING_THREAT_SCAN_GATE','SECURITY'],
+  ['UNTRUSTED_CODEQL_PRODUCER','SECURITY'],
+  ['OS_ROOT_TRUST_MODIFIED','SECURITY'],
+  ['SECURITY','SECURITY'],
+  // LEASE
+  ['CAS_CONFLICT','LEASE'],
+  ['LEASE_NOT_HELD','LEASE'],
+  ['STALE_GENERATION','LEASE'],
+  ['INVALID_CAS_LEASE','LEASE'],
+  ['EXECUTION_TTL_INVALID','LEASE'],
+  ['MISSING_CONCURRENCY_GUARD','LEASE'],
+  ['WORK_QUEUE_PROTOCOL_UNSUPPORTED','LEASE'],
+  ['UNAUTHORIZED_CONCURRENT_AGENT_CLAIM','LEASE'],
+  ['LEASE','LEASE'],
+  // POLICY
+  ['PILOT_ENTRY_BLOCKED','POLICY'],
+  ['M01_PREREQUISITES_UNVERIFIED','POLICY'],
+  ['POLICY_BELOW_M01_TARGET','POLICY'],
+  ['OUT_OF_LANE_EDIT','POLICY'],
+  ['LANE_OWNERSHIP_VIOLATION','POLICY'],
+  ['RETRY_CAP_EXCEEDED','POLICY'],
+  ['RETRY_CEILING_EXCEEDED','POLICY'],
+  ['LAPTOP_DEPENDENCY_FORBIDDEN','POLICY'],
+  ['PYTHON_INVOCATION_FORBIDDEN','POLICY'],
+  ['LIVE_DISPATCH_DISABLED','POLICY'],
+  ['SYNTHETIC_CYCLES_NOT_DELIVERED_WORK','POLICY'],
+  ['HUMAN_INTERVENTION_NONZERO','POLICY'],
+  ['POLICY','POLICY'],
+  // REVIEW
+  ['SELF_APPROVAL_FORBIDDEN','REVIEW'],
+  ['SELF_REVIEW_FORBIDDEN','REVIEW'],
+  ['UNAUTHORIZED_REVIEWER','REVIEW'],
+  ['FORMAL_APPROVAL_REQUIRED','REVIEW'],
+  ['INDEPENDENT_REVIEW_REQUIRED','REVIEW'],
+  ['REVIEW_FINDINGS_UNRESOLVED','REVIEW'],
+  ['REVIEW','REVIEW'],
+  // COVERAGE
+  ['COVERAGE_BELOW_THRESHOLD','COVERAGE'],
+  ['COMPONENT_BELOW_TARGET','COVERAGE'],
+  ['BRANCHLESS_UNJUSTIFIED','COVERAGE'],
+  ['COVERAGE_BELOW_CONSUMER_GATE','COVERAGE'],
+  ['DOTNET_COVERAGE_BELOW_TARGET','COVERAGE'],
+  ['JS_COVERAGE_BELOW_TARGET','COVERAGE'],
+  // CHECKS
+  ['CODEQL_PYTHON_RESIDUAL','CHECKS'],
+  ['CODEQL_CHECKS_INCOMPLETE','CHECKS'],
+  ['MISSING_CODEQL_CHECKS','CHECKS'],
+  ['POST_MERGE_MAIN_FAILED','CHECKS'],
+  ['MAIN_UNHEALTHY','CHECKS'],
+  ['REQUIRED_CHECKS_INCOMPLETE','CHECKS'],
+  ['LIVE_CYCLES_PENDING','CHECKS'],
+  ['SCENARIO_MISSING','CHECKS'],
+  ['CHECKS','CHECKS'],
+  // STALE / DEPENDENCY / INVALID_EVIDENCE
+  ['STALE_HARD_STOP_RECEIPT','STALE'],
+  ['STALE_HEAD_SUPERSEDED','STALE'],
+  ['REVIEW_HEAD_MISMATCH','STALE'],
+  ['STALE','STALE'],
+  ['UPSTREAM_BLOCKED','DEPENDENCY'],
+  ['M01_UPSTREAM_NOT_ACCEPTED','DEPENDENCY'],
+  ['FAMILYTREE_PILOT_NOT_ACCEPTED','DEPENDENCY'],
+  ['DEPENDENCY','DEPENDENCY'],
+  ['INVALID_MISSION_CONTROL_TASK','INVALID_EVIDENCE'],
+  ['PREREQUISITES_UNKNOWN','INVALID_EVIDENCE'],
+  ['BATCH_BOUNDARY_UNKNOWN','INVALID_EVIDENCE'],
+  ['INVALID_EVIDENCE','INVALID_EVIDENCE']
+ ];
+ for(const [code,expectedReason] of wave2And3Denials){
+  const summary=telemetrySummary({shadow:true,reason:code});
+  assert.deepEqual(summary,{outcome:'blocked',reason:expectedReason});
+ }
+ for(const runtimeCode of ['REF_STORE_UNAVAILABLE','STORE_UNAVAILABLE','EXECUTION_TIMEOUT','RUNTIME']){
+  assert.deepEqual(telemetrySummary({shadow:true,reason:runtimeCode}),{outcome:'failed',reason:'RUNTIME'});
+ }
+ // Canonical outcome+reason passthrough (e.g. anti-rogue provenance / circuit-breaker / correlated receipt)
+ assert.deepEqual(
+  telemetrySummary({shadow:true,valid:true,outcome:'eligible',reason:'NONE'}),
+  {outcome:'eligible',reason:'NONE'}
+ );
+ assert.deepEqual(
+  telemetrySummary({shadow:true,valid:true,state:'failed',outcome:'failed',reason:'LEASE'}),
+  {outcome:'failed',reason:'LEASE'}
+ );
+ assert.deepEqual(
+  telemetrySummary({shadow:true,reason:'NONE'}),
+  {outcome:'blocked',reason:'NONE'}
+ );
+});
+
+test('correlateAutonomousExecutionReceipt correlates OTel traceparent, authoritative gh-aw AI credits, and Mission Control metadata fail-closed',()=>{
+ assert.equal(AUTONOMOUS_RECEIPT_SCHEMA_VERSION,1);
+ assert.equal(AI_CREDIT_USD_CENTS,1);
+ assert.equal(MAX_AI_CREDITS,1_000_000);
+ assert.deepEqual(ALLOWED_MISSION_CONTROL_TASK_STATES,[
+  'queued','in_progress','completed','failed','cancelled','timed_out'
+ ]);
+
+ const traceId='0123456789abcdef0123456789abcdef';
+ const spanId='fedcba9876543210';
+ const parentSpanId='1122334455667788';
+ const traceparent=`00-${traceId}-${spanId}-01`;
+ const lockSha256='ab'.repeat(32);
+ const taskIdUpper='01936D8E-7F2A-7B00-8A11-3C4D5E6F7081';
+ const runtimeToken=['gh','p_','x'.repeat(24)].join('');
+ const runtimeOauthToken=['gh','o_','o'.repeat(24)].join('');
+ const runtimeFinePat=['github','_pat_','y'.repeat(24)].join('');
+ const runtimeSkKey=['s','k-','z'.repeat(24)].join('');
+ const runtimeAkia=['AK','IA','0123456789ABCDEF'].join('');
+ const runtimeXox=['xo','xb-','123456789012'].join('');
+ const runtimeJwt=['ey','JhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0'].join('');
+
+ // 1. Raw receipt input with untrusted result payload stripped + sampled W3C traceparent + authoritative AI credits
+ const baseInput={
+  traceparent,
+  parentSpanId,
+  laptopCollectorRequired:false,
+  shadow:true,
+  liveDispatch:false,
+  liveMerge:false,
+  receipt:{
+   source:'github-hosted',
+   repositoryId:1471342715,
+   receiptId:'gh-aw-run-4001-dispatch',
+   observedMs:1764300000000,
+   stage:'dispatch',
+   durationMs:140,
+   stages:{reconcile:20,dispatch:140},
+   humanTouches:{verified:true,count:0},
+   result:{
+    shadow:true,
+    reason:'SHADOW_ALLOCATION',
+    prompt:'raw user prompt text must be stripped',
+    token:runtimeToken,
+    actor:'untrusted-caller'
+   }
+  },
+  aiCreditAccounting:{
+   accountingSource:'authoritative',
+   aiCreditUnitUsdCents:1,
+   isEstimated:false,
+   includedQuotaAttributed:true,
+   aiCreditsUsed:4,
+   maxAiCredits:25,
+   incrementalBilledUsdCents:0
+  },
+  missionControl:{
+   taskId:taskIdUpper,
+   sessionId:'mc-sess-hosted-01',
+   taskState:'completed',
+   lockSha256,
+   casLeaseGeneration:7,
+   actor:'copilot-swe-agent[bot]'
+  }
+ };
+
+ const correlated=correlateAutonomousExecutionReceipt(baseInput);
+ assert.equal(correlated.valid,true);
+ assert.equal(correlated.schemaVersion,1);
+ assert.equal(correlated.shadow,true);
+ assert.equal(correlated.liveDispatch,false);
+ assert.equal(correlated.liveMerge,false);
+ assert.equal(correlated.laptopCollectorRequired,false);
+ assert.equal(correlated.state,'correlated');
+ assert.equal(correlated.outcome,'eligible');
+ assert.equal(correlated.reason,'NONE');
+ assert.equal(correlated.otelReason,'NONE');
+ assert.deepEqual(correlated.telemetry,{
+  traceparent,
+  version:'00',
+  traceId,
+  spanId,
+  parentSpanId,
+  traceFlags:'01',
+  sampled:true,
+  aspireOtlpCompatible:true,
+  laptopCollectorRequired:false
+ });
+ assert.deepEqual(correlated.aiCreditAccounting,{
+  accountingSource:'authoritative',
+  isEstimated:false,
+  aiCreditUnitUsdCents:1,
+  aiCreditsUsed:4,
+  maxAiCredits:25,
+  remainingAiCredits:21,
+  includedAiCreditsUsdCents:4,
+  includedAiCreditsUsdMicros:40_000,
+  incrementalBilledUsdCents:0,
+  includedQuotaAttributed:true
+ });
+ assert.deepEqual(correlated.missionControl,{
+  taskId:taskIdUpper.toLowerCase(),
+  sessionId:'mc-sess-hosted-01',
+  taskState:'completed',
+  lockSha256,
+  casLeaseGeneration:7,
+  actor:'copilot-swe-agent[bot]'
+ });
+ assert.deepEqual(correlated.otelAttributes,{
+  stage:'dispatch',
+  outcome:'eligible',
+  reason:'NONE',
+  taskState:'completed',
+  accountingState:'authoritative-zero-incremental'
+ });
+ // Omitted top-level execution cost and quota stay unknown rather than fabricated from AI-credit accounting alone
+ assert.deepEqual(correlated.receipt.cost,{
+  state:'unknown',
+  verified:false,
+  currency:null,
+  amountMicros:null
+ });
+ assert.deepEqual(correlated.receipt.quota,{
+  state:'unknown',
+  verified:false,
+  includedOnly:null
+ });
+ assert.deepEqual(telemetrySummary(correlated),{outcome:'eligible',reason:'NONE'});
+
+ // Ensure zero secret/prompt leakage and zero unbounded IDs in OTel attributes
+ const serializedCorrelated=JSON.stringify(correlated);
+ for(const forbidden of ['raw user prompt text',runtimeToken,'untrusted-caller','SHADOW_ALLOCATION'])
+  assert.equal(serializedCorrelated.includes(forbidden),false);
+ const serializedAttrs=JSON.stringify(correlated.otelAttributes);
+ for(const unbounded of [taskIdUpper.toLowerCase(),'mc-sess-hosted-01',traceId,spanId,lockSha256,'gh-aw-run-4001-dispatch','1471342715'])
+  assert.equal(serializedAttrs.includes(unbounded),false);
+
+ // Correlated receipt feeds receiptStageRows (#18 scorecard interface) directly
+ assert.deepEqual(receiptStageRows(correlated.receipt),{
+  valid:true,
+  source:'github-hosted',
+  rows:[
+   {id:'gh-aw-run-4001-dispatch-reconcile',repositoryId:1471342715,stage:'reconcile',at:1764300000000,duration:20,source:'github-hosted'},
+   {id:'gh-aw-run-4001-dispatch-dispatch',repositoryId:1471342715,stage:'dispatch',at:1764300000000,duration:140,source:'github-hosted'}
+  ]
+ });
+
+ // 2. Pre-created createExecutionReceipt with exhausted quota (aiCreditsUsed === maxAiCredits), unsampled traceparent, explicit accounting flags, omitted optional actor/unitCents, blocked stage
+ const storedBlockedReceipt=createExecutionReceipt({
+  source:'github-hosted',
+  repositoryId:1471342715,
+  receiptId:'gh-aw-run-4002-review',
+  observedMs:1764300010000,
+  stage:'review',
+  outcome:'blocked',
+  reason:'REVIEW',
+  durationMs:50,
+  quota:{verified:true,includedOnly:true,available:false},
+  cost:{verified:true,currency:'USD',amountMicros:0},
+  correlation:{traceId,spanId}
+ });
+ for(const taskState of ALLOWED_MISSION_CONTROL_TASK_STATES){
+  const res=correlateAutonomousExecutionReceipt({
+   traceparent:`00-${traceId}-${spanId}-00`,
+   receipt:storedBlockedReceipt,
+   aiCreditAccounting:{
+    accountingSource:'authoritative',
+    isEstimated:false,
+    includedQuotaAttributed:true,
+    aiCreditsUsed:25,
+    maxAiCredits:25,
+    incrementalBilledUsdCents:0
+   },
+   missionControl:{
+    taskId:taskIdUpper.toLowerCase(),
+    sessionId:'mc-sess-hosted-02',
+    taskState,
+    lockSha256,
+    casLeaseGeneration:1
+   }
+  });
+  assert.equal(res.valid,true);
+  assert.equal(res.state,'blocked');
+  assert.equal(res.outcome,'blocked');
+  assert.equal(res.reason,'REVIEW');
+  assert.equal(res.telemetry.sampled,false);
+  assert.equal(res.telemetry.parentSpanId,null);
+  assert.equal(res.receipt.quota.state,'exhausted');
+  assert.deepEqual(res.receipt.cost,{
+   state:'verified-zero',
+   verified:true,
+   currency:'USD',
+   amountMicros:0
+  });
+  assert.equal(res.aiCreditAccounting.remainingAiCredits,0);
+  assert.equal(res.missionControl.actor,null);
+  assert.deepEqual(telemetrySummary(res),{outcome:'blocked',reason:'REVIEW'});
+ }
+
+ // Stored receipt with non-enumerable stage durations, quota, cost, and humanTouches fields preserves all validated fields
+ const nonEnumStages={};
+ Object.defineProperty(nonEnumStages,'review',{value:50,enumerable:false});
+ Object.defineProperty(nonEnumStages,'reconcile',{value:15,enumerable:false});
+ const nonEnumQuota={};
+ Object.defineProperty(nonEnumQuota,'state',{value:'unknown',enumerable:false});
+ Object.defineProperty(nonEnumQuota,'verified',{value:false,enumerable:false});
+ Object.defineProperty(nonEnumQuota,'includedOnly',{value:null,enumerable:false});
+ const nonEnumCost={};
+ Object.defineProperty(nonEnumCost,'state',{value:'unknown',enumerable:false});
+ Object.defineProperty(nonEnumCost,'verified',{value:false,enumerable:false});
+ Object.defineProperty(nonEnumCost,'currency',{value:null,enumerable:false});
+ Object.defineProperty(nonEnumCost,'amountMicros',{value:null,enumerable:false});
+ const nonEnumTouches={};
+ Object.defineProperty(nonEnumTouches,'state',{value:'verified',enumerable:false});
+ Object.defineProperty(nonEnumTouches,'verified',{value:true,enumerable:false});
+ Object.defineProperty(nonEnumTouches,'count',{value:2,enumerable:false});
+ const storedNonEnumNested={
+  ...storedBlockedReceipt,
+  stages:nonEnumStages,
+  quota:nonEnumQuota,
+  cost:nonEnumCost,
+  humanTouches:nonEnumTouches
+ };
+ const preservedNested=correlateAutonomousExecutionReceipt({
+  traceparent:`00-${traceId}-${spanId}-00`,
+  receipt:storedNonEnumNested,
+  aiCreditAccounting:{
+   accountingSource:'authoritative',
+   isEstimated:false,
+   includedQuotaAttributed:true,
+   aiCreditsUsed:25,
+   maxAiCredits:25,
+   incrementalBilledUsdCents:0
+  },
+  missionControl:{
+   taskId:taskIdUpper.toLowerCase(),
+   sessionId:'mc-sess-hosted-02',
+   taskState:'completed',
+   lockSha256,
+   casLeaseGeneration:1
+  }
+ });
+ assert.equal(preservedNested.valid,true);
+ assert.deepEqual(preservedNested.receipt.stages,{review:50,reconcile:15});
+ assert.deepEqual(preservedNested.receipt.quota,{state:'unknown',verified:false,includedOnly:null});
+ assert.deepEqual(preservedNested.receipt.cost,{state:'unknown',verified:false,currency:null,amountMicros:null});
+ assert.deepEqual(preservedNested.receipt.humanTouches,{state:'verified',verified:true,count:2});
+ assert.deepEqual(receiptStageRows(preservedNested.receipt),{
+  valid:true,
+  source:'github-hosted',
+  rows:[
+   {id:'gh-aw-run-4002-review-review',repositoryId:1471342715,stage:'review',at:1764300010000,duration:50,source:'github-hosted'},
+   {id:'gh-aw-run-4002-review-reconcile',repositoryId:1471342715,stage:'reconcile',at:1764300010000,duration:15,source:'github-hosted'}
+  ]
+ });
+
+ // Independent boundary combinations: per-run maxAiCredits cap vs. overall included-quota availability
+ const runCapAtLimitWithIncludedQuotaRemaining=correlateAutonomousExecutionReceipt({
+  ...baseInput,
+  receipt:createExecutionReceipt({
+   source:'github-hosted',
+   repositoryId:1471342715,
+   receiptId:'gh-aw-run-4003-dispatch',
+   observedMs:1764300020000,
+   stage:'dispatch',
+   outcome:'eligible',
+   reason:'NONE',
+   durationMs:80,
+   quota:{verified:true,includedOnly:true,available:true},
+   correlation:{traceId,spanId}
+  }),
+  aiCreditAccounting:{
+   ...baseInput.aiCreditAccounting,
+   aiCreditsUsed:25,
+   maxAiCredits:25
+  }
+ });
+ assert.equal(runCapAtLimitWithIncludedQuotaRemaining.valid,true);
+ assert.equal(runCapAtLimitWithIncludedQuotaRemaining.receipt.quota.state,'verified-included');
+ assert.equal(runCapAtLimitWithIncludedQuotaRemaining.aiCreditAccounting.remainingAiCredits,0);
+
+ const quotaExhaustedBeforeRunCap=correlateAutonomousExecutionReceipt({
+  ...baseInput,
+  traceparent:`00-${traceId}-${spanId}-00`,
+  receipt:storedBlockedReceipt,
+  aiCreditAccounting:{
+   ...baseInput.aiCreditAccounting,
+   aiCreditsUsed:4,
+   maxAiCredits:25
+  }
+ });
+ assert.equal(quotaExhaustedBeforeRunCap.valid,true);
+ assert.equal(quotaExhaustedBeforeRunCap.receipt.quota.state,'exhausted');
+ assert.equal(quotaExhaustedBeforeRunCap.aiCreditAccounting.remainingAiCredits,21);
+
+ // 3. Missing/non-boolean flags, estimated / unknown / unverified accounting fail closed with AI_CREDIT_ACCOUNTING_UNVERIFIED -> QUOTA
+ const missingIsEstimated={...baseInput.aiCreditAccounting};
+ delete missingIsEstimated.isEstimated;
+ const missingIncludedQuota={...baseInput.aiCreditAccounting};
+ delete missingIncludedQuota.includedQuotaAttributed;
+ for(const badAccounting of [
+  missingIsEstimated,
+  missingIncludedQuota,
+  {...baseInput.aiCreditAccounting,accountingSource:'estimated'},
+  {...baseInput.aiCreditAccounting,accountingSource:'unknown'},
+  {...baseInput.aiCreditAccounting,accountingSource:'verified'},
+  {...baseInput.aiCreditAccounting,accountingSource:''},
+  {...baseInput.aiCreditAccounting,accountingSource:null},
+  {...baseInput.aiCreditAccounting,isEstimated:true},
+  {...baseInput.aiCreditAccounting,isEstimated:'false'},
+  {...baseInput.aiCreditAccounting,includedQuotaAttributed:'true'},
+  {...baseInput.aiCreditAccounting,aiCreditsUsed:-1},
+  {...baseInput.aiCreditAccounting,aiCreditsUsed:-0},
+  {...baseInput.aiCreditAccounting,aiCreditsUsed:MAX_AI_CREDITS+1},
+  {...baseInput.aiCreditAccounting,maxAiCredits:-1},
+  {...baseInput.aiCreditAccounting,maxAiCredits:1.5},
+  {...baseInput.aiCreditAccounting,incrementalBilledUsdCents:-0},
+  {...baseInput.aiCreditAccounting,incrementalBilledUsdCents:Number.NaN}
+ ]){
+  const denied=correlateAutonomousExecutionReceipt({...baseInput,aiCreditAccounting:badAccounting});
+  assert.equal(denied.valid,false);
+  assert.equal(denied.reason,'AI_CREDIT_ACCOUNTING_UNVERIFIED');
+  assert.equal(denied.otelReason,'QUOTA');
+  assert.equal(denied.receipt,null);
+  assert.deepEqual(telemetrySummary(denied),{outcome:'blocked',reason:'QUOTA'});
+ }
+
+ // 4. Cap breaches, nonzero incremental spend, unattributed quota, wrong AI credit unit
+ const overCap=correlateAutonomousExecutionReceipt({
+  ...baseInput,
+  aiCreditAccounting:{...baseInput.aiCreditAccounting,aiCreditsUsed:26,maxAiCredits:25}
+ });
+ assert.equal(overCap.valid,false);
+ assert.equal(overCap.reason,'AI_CREDIT_CAP_EXCEEDED');
+ assert.equal(overCap.otelReason,'QUOTA');
+
+ const nonZeroSpend=correlateAutonomousExecutionReceipt({
+  ...baseInput,
+  aiCreditAccounting:{...baseInput.aiCreditAccounting,incrementalBilledUsdCents:1}
+ });
+ assert.equal(nonZeroSpend.valid,false);
+ assert.equal(nonZeroSpend.reason,'INCREMENTAL_SPEND_NONZERO');
+ assert.equal(nonZeroSpend.otelReason,'QUOTA');
+
+ const unattributed=correlateAutonomousExecutionReceipt({
+  ...baseInput,
+  aiCreditAccounting:{...baseInput.aiCreditAccounting,includedQuotaAttributed:false}
+ });
+ assert.equal(unattributed.valid,false);
+ assert.equal(unattributed.reason,'INCLUDED_QUOTA_NOT_ATTRIBUTED');
+ assert.equal(unattributed.otelReason,'QUOTA');
+
+ const badUnit=correlateAutonomousExecutionReceipt({
+  ...baseInput,
+  aiCreditAccounting:{...baseInput.aiCreditAccounting,aiCreditUnitUsdCents:2}
+ });
+ assert.equal(badUnit.valid,false);
+ assert.equal(badUnit.reason,'INVALID_POLICY');
+ assert.equal(badUnit.otelReason,'POLICY');
+
+ // 5. Prompt, secret, token, and unbounded-dimension rejection without executing getters/proxies
+ let traps=0;
+ const trap=()=>{traps++;throw Error('unexpected getter or proxy trap');};
+ const proxyInput=new Proxy(baseInput,{get:trap,ownKeys:trap,getOwnPropertyDescriptor:trap});
+ const getterInput={...baseInput};
+ Object.defineProperty(getterInput,'traceparent',{enumerable:true,get:trap});
+ const nonEnumMc={...baseInput.missionControl};
+ Object.defineProperty(nonEnumMc,'sessionId',{value:'mc-sess-hosted-01',enumerable:false});
+ const symbolAccounting={...baseInput.aiCreditAccounting,[Symbol('tag')]:1};
+ const getterReceipt={...baseInput.receipt};
+ Object.defineProperty(getterReceipt,'receiptId',{enumerable:true,get:trap});
+ const symbolReceipt={...baseInput.receipt,[Symbol('r')]:1};
+ const nonEnumReceipt={...baseInput.receipt};
+ Object.defineProperty(nonEnumReceipt,'stage',{value:'dispatch',enumerable:false});
+
+ for(const unsafePayload of [
+  {...baseInput,prompt:'raw prompt'},
+  {...baseInput,token:runtimeToken},
+  {...baseInput,otelLabels:{taskId:taskIdUpper}},
+  {...baseInput,otelAttributes:{sessionId:'mc-1'}},
+  {...baseInput,traceparent:`00-${traceId}-${spanId}-01-${runtimeToken}`},
+  {...baseInput,aiCreditAccounting:{...baseInput.aiCreditAccounting,apiKey:runtimeSkKey}},
+  {...baseInput,missionControl:{...baseInput.missionControl,rawPrompt:'system instructions'}},
+  {...baseInput,missionControl:{...baseInput.missionControl,dimensions:{unbounded:'x'}}},
+  {...baseInput,parentSpanId:`mc${runtimeToken}`},
+  {...baseInput,missionControl:{...baseInput.missionControl,sessionId:runtimeToken}},
+  {...baseInput,missionControl:{...baseInput.missionControl,sessionId:`mc${runtimeToken}`}},
+  {...baseInput,missionControl:{...baseInput.missionControl,sessionId:`mc${runtimeOauthToken}`}},
+  {...baseInput,missionControl:{...baseInput.missionControl,sessionId:`sess${runtimeFinePat}`}},
+  {...baseInput,missionControl:{...baseInput.missionControl,sessionId:`mc${runtimeSkKey}`}},
+  {...baseInput,missionControl:{...baseInput.missionControl,sessionId:`mc${runtimeAkia}`}},
+  {...baseInput,missionControl:{...baseInput.missionControl,sessionId:`mc${runtimeXox}`}},
+  {...baseInput,missionControl:{...baseInput.missionControl,sessionId:runtimeFinePat}},
+  {...baseInput,missionControl:{...baseInput.missionControl,sessionId:runtimeSkKey}},
+  {...baseInput,missionControl:{...baseInput.missionControl,taskState:`Bearer ${runtimeJwt}`}},
+  {...baseInput,missionControl:{...baseInput.missionControl,sessionId:'s'.repeat(513)}},
+  {...baseInput,receipt:{...baseInput.receipt,secret:'top-secret'}},
+  {...baseInput,receipt:{...baseInput.receipt,receiptId:runtimeSkKey}},
+  {...baseInput,receipt:{...baseInput.receipt,receiptId:`id${runtimeToken}`}}
+ ]){
+  const denied=correlateAutonomousExecutionReceipt(unsafePayload);
+  assert.equal(denied.valid,false);
+  assert.equal(denied.reason,'UNSAFE_TELEMETRY_PAYLOAD');
+  assert.equal(denied.otelReason,'SECURITY');
+  assert.equal(JSON.stringify(denied).includes(runtimeToken),false);
+ }
+
+ // 6. Traceparent, Mission Control, lockSha256, CAS lease, policy, and receipt mismatches
+ const expectedDenials=[
+  [null,'INVALID_EVIDENCE','INVALID_EVIDENCE'],
+  [[],'INVALID_EVIDENCE','INVALID_EVIDENCE'],
+  [proxyInput,'INVALID_EVIDENCE','INVALID_EVIDENCE'],
+  [getterInput,'INVALID_EVIDENCE','INVALID_EVIDENCE'],
+  [{...baseInput,extraField:1},'INVALID_EVIDENCE','INVALID_EVIDENCE'],
+  [{traceparent,receipt:baseInput.receipt,aiCreditAccounting:baseInput.aiCreditAccounting},'INVALID_EVIDENCE','INVALID_EVIDENCE'],
+  [{...baseInput,laptopCollectorRequired:true},'LAPTOP_DEPENDENCY_FORBIDDEN','POLICY'],
+  [{...baseInput,shadow:false},'LIVE_DISPATCH_DISABLED','POLICY'],
+  [{...baseInput,liveDispatch:true},'LIVE_DISPATCH_DISABLED','POLICY'],
+  [{...baseInput,liveMerge:true},'LIVE_DISPATCH_DISABLED','POLICY'],
+  [{...baseInput,traceparent:123},'INVALID_TRACEPARENT','SECURITY'],
+  [{...baseInput,traceparent:'01-0123456789abcdef0123456789abcdef-fedcba9876543210-01'},'INVALID_TRACEPARENT','SECURITY'],
+  [{...baseInput,traceparent:`00-${'0'.repeat(32)}-${spanId}-01`},'INVALID_TRACEPARENT','SECURITY'],
+  [{...baseInput,traceparent:`00-${traceId}-${'0'.repeat(16)}-01`},'INVALID_TRACEPARENT','SECURITY'],
+  [{...baseInput,parentSpanId:'0'.repeat(16)},'INVALID_TRACEPARENT','SECURITY'],
+  [{...baseInput,parentSpanId:spanId},'INVALID_TRACEPARENT','SECURITY'],
+  [{...baseInput,aiCreditAccounting:null},'INVALID_EVIDENCE','INVALID_EVIDENCE'],
+  [{...baseInput,aiCreditAccounting:symbolAccounting},'INVALID_EVIDENCE','INVALID_EVIDENCE'],
+  [{...baseInput,aiCreditAccounting:{...baseInput.aiCreditAccounting,unknownKey:1}},'INVALID_EVIDENCE','INVALID_EVIDENCE'],
+  [{...baseInput,aiCreditAccounting:{accountingSource:'authoritative',isEstimated:false,includedQuotaAttributed:true,aiCreditsUsed:1,maxAiCredits:2}},'INVALID_EVIDENCE','INVALID_EVIDENCE'],
+  [{...baseInput,missionControl:nonEnumMc},'INVALID_EVIDENCE','INVALID_EVIDENCE'],
+  [{...baseInput,missionControl:{...baseInput.missionControl,extraMc:1}},'INVALID_EVIDENCE','INVALID_EVIDENCE'],
+  [{...baseInput,missionControl:{...baseInput.missionControl,taskId:123}},'INVALID_MISSION_CONTROL_TASK','INVALID_EVIDENCE'],
+  [{...baseInput,missionControl:{...baseInput.missionControl,taskId:'00000000-0000-0000-0000-000000000000'}},'INVALID_MISSION_CONTROL_TASK','INVALID_EVIDENCE'],
+  [{...baseInput,missionControl:{...baseInput.missionControl,taskId:'01936d8e7f2a7b008a113c4d5e6f7081'}},'INVALID_MISSION_CONTROL_TASK','INVALID_EVIDENCE'],
+  [{...baseInput,missionControl:{...baseInput.missionControl,sessionId:123}},'INVALID_MISSION_CONTROL_TASK','INVALID_EVIDENCE'],
+  [{...baseInput,missionControl:{...baseInput.missionControl,sessionId:'bad session spaces'}},'INVALID_MISSION_CONTROL_TASK','INVALID_EVIDENCE'],
+  [{...baseInput,missionControl:{...baseInput.missionControl,taskState:'arbitrary_unbounded_state'}},'INVALID_MISSION_CONTROL_TASK','INVALID_EVIDENCE'],
+  [{...baseInput,missionControl:{...baseInput.missionControl,lockSha256:123}},'INVALID_GH_AW_LOCK_HASH','SECURITY'],
+  [{...baseInput,missionControl:{...baseInput.missionControl,lockSha256:'0'.repeat(64)}},'INVALID_GH_AW_LOCK_HASH','SECURITY'],
+  [{...baseInput,missionControl:{...baseInput.missionControl,lockSha256:'abc'}},'INVALID_GH_AW_LOCK_HASH','SECURITY'],
+  [{...baseInput,missionControl:{...baseInput.missionControl,casLeaseGeneration:0}},'INVALID_CAS_LEASE','LEASE'],
+  [{...baseInput,missionControl:{...baseInput.missionControl,casLeaseGeneration:1_000_000_001}},'INVALID_CAS_LEASE','LEASE'],
+  [{...baseInput,missionControl:{...baseInput.missionControl,actor:'human-pat-user'}},'PROVENANCE_MISMATCH','SECURITY'],
+  [{...baseInput,receipt:null},'INVALID_RECEIPT','INVALID_EVIDENCE'],
+  [{...baseInput,receipt:getterReceipt},'INVALID_RECEIPT','INVALID_EVIDENCE'],
+  [{...baseInput,receipt:symbolReceipt},'INVALID_RECEIPT','INVALID_EVIDENCE'],
+  [{...baseInput,receipt:nonEnumReceipt},'INVALID_RECEIPT','INVALID_EVIDENCE'],
+  [{...baseInput,receipt:{...baseInput.receipt,stage:'invalid-stage'}},'INVALID_RECEIPT','INVALID_EVIDENCE'],
+  [{...baseInput,receipt:{...storedBlockedReceipt,valid:false}},'INVALID_RECEIPT','INVALID_EVIDENCE'],
+  [{...baseInput,receipt:{...storedBlockedReceipt,correlation:{traceId:'f'.repeat(32),spanId}}},'TRACE_ID_MISMATCH','SECURITY'],
+  [{...baseInput,receipt:{...storedBlockedReceipt,correlation:{traceId,spanId:'a'.repeat(16)}}},'SPAN_LINKAGE_BROKEN','SECURITY']
+ ];
+ for(const [candidate,reason,otelReason] of expectedDenials){
+  const denied=correlateAutonomousExecutionReceipt(candidate);
+  assert.equal(denied.valid,false);
+  assert.equal(denied.reason,reason);
+  assert.equal(denied.otelReason,otelReason);
+ }
+ assert.equal(traps,0);
 });
