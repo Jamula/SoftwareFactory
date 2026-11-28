@@ -2,7 +2,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {fileURLToPath} from 'node:url';
 import {spawnSync} from 'node:child_process';
-import {plan,readInventory,smoke} from '../../tools/engineering-factory/shadow-runtime.mjs';
+import {plan,readInventory,reconcileShadowOrchestratorRun,smoke} from '../../tools/engineering-factory/shadow-runtime.mjs';
 const task=(id,over={})=>({id,priority:0,state:'approved',dependencies:[],paths:['src/'+id],...over});
 const input=(tasks,over={})=>({enabled:true,stop:false,capacity:2,quotaVerified:true,tasks,...over});
 test('shadow smoke and dependency ranking',()=>{
@@ -200,4 +200,153 @@ test('CLI injected inventory, smoke and error paths are deterministic',async()=>
  assert.equal(await run(['--smoke'],{...io,replay:()=>({reason:'FAILED',ready:[]})}),1);
  assert.equal(await run(['--smoke'],{...io,replay:()=>({reason:'SHADOW_PLAN',ready:[2]})}),1);
  assert.equal(await run(['--smoke','--inventory'],io),2);
+});
+
+test('orchestrator shadow evaluation deduplicates persisted snapshots, retries deferred claims, and recovers missed inventory on schedule',async()=>{
+  const mainSha='a'.repeat(40);
+  const prSha='b'.repeat(40);
+  const apiBase='https://api.github.com/repos/Jamula/SoftwareFactory';
+  let transientIssueFail=false;
+  const mockRequest=async rawUrl=>{
+    const url=String(rawUrl);
+    if(url===apiBase) return json({id:1471342715,full_name:'Jamula/SoftwareFactory',fork:false});
+    if(url===apiBase+'/branches/main') return json({name:'main',protected:true,commit:{sha:mainSha}});
+    if(url.startsWith(apiBase+'/issues?')) return json([{number:5,repository_url:apiBase}]);
+    if(url.startsWith(apiBase+'/pulls?')) return json([{number:42,base:{repo:{id:1471342715,full_name:'Jamula/SoftwareFactory'}}}]);
+    if(url===apiBase+'/issues/5') {
+      if(transientIssueFail) return new Response('rate limit',{status:429});
+      return json({number:5,state:'open',repository_url:apiBase});
+    }
+    if(url===apiBase+'/pulls/42') {
+      return json({
+        number:42,state:'open',draft:false,
+        head:{sha:prSha,repo:{id:1471342715,full_name:'Jamula/SoftwareFactory'}},
+        base:{ref:'main',sha:mainSha,repo:{id:1471342715,full_name:'Jamula/SoftwareFactory'}}
+      });
+    }
+    return new Response('not found',{status:404});
+  };
+  const baseEnv={
+    GITHUB_EVENT_NAME:'issues',
+    GITHUB_REPOSITORY:'Jamula/SoftwareFactory',
+    GITHUB_REPOSITORY_ID:'1471342715',
+    GITHUB_REF:'refs/heads/main',
+    GITHUB_REF_PROTECTED:'true',
+    GITHUB_WORKFLOW_REF:'Jamula/SoftwareFactory/.github/workflows/factory-orchestrator.lock.yml@refs/heads/main',
+    GITHUB_WORKFLOW_SHA:mainSha,
+    GITHUB_SHA:mainSha,
+    FACTORY_CHECKOUT_SHA:mainSha,
+    FACTORY_EXPECTED_WORKFLOW_PATH:'.github/workflows/factory-orchestrator.lock.yml',
+    GITHUB_RUN_ID:'run-issue-5',
+    FACTORY_ISSUE_NUMBER:'5'
+  };
+
+  // 1. Transient failure defers claim in exported snapshot; scheduled heartbeat after retry window recovers it + missed PR #42!
+  transientIssueFail=true;
+  const deferredRun=await reconcileShadowOrchestratorRun(baseEnv,{request:mockRequest,clock:()=>1000});
+  assert.equal(deferredRun.reconciled,false);
+  assert.equal(deferredRun.reason,'EVIDENCE_UNKNOWN');
+  assert.equal(deferredRun.snapshot.exported,true);
+
+  // On the 10-minute heartbeat (t=600000, after 30s lease expires but while 1h deferral is active), issue #5 stays deferred while missed PR #42 reconciles!
+  const midSchedule=await reconcileShadowOrchestratorRun(
+    {...baseEnv,GITHUB_EVENT_NAME:'schedule',FACTORY_ISSUE_NUMBER:'',GITHUB_RUN_ID:'run-sched-1'},
+    {request:mockRequest,clock:()=>600000,snapshot:deferredRun.snapshot}
+  );
+  assert.equal(midSchedule.reconciled,true);
+  assert.equal(midSchedule.reason,'SHADOW_RECONCILED');
+  assert.equal(midSchedule.recoveredCount,1);
+
+  // Once retry deferral elapses at t=3605000 and transient failure clears, scheduled wake recovers deferred issue #5!
+  transientIssueFail=false;
+  const recoveredSchedule=await reconcileShadowOrchestratorRun(
+    {...baseEnv,GITHUB_EVENT_NAME:'schedule',FACTORY_ISSUE_NUMBER:'',GITHUB_RUN_ID:'run-sched-2'},
+    {request:mockRequest,clock:()=>3605000,snapshot:midSchedule.snapshot}
+  );
+  assert.equal(recoveredSchedule.recoveredCount,1);
+  assert.equal(recoveredSchedule.reason,'SHADOW_RECONCILED');
+
+  // Re-delivering already-completed run-issue-5 against restored snapshot deduplicates cleanly!
+  const dupDelivery=await reconcileShadowOrchestratorRun(baseEnv,{
+    request:mockRequest,clock:()=>3606000,snapshot:recoveredSchedule.snapshot
+  });
+  assert.equal(dupDelivery.reconciled,false);
+  assert.equal(dupDelivery.reason,'DUPLICATE_DELIVERY');
+
+  // Subsequent scheduled wake with unchanged open issue #5 and PR #42 sees both already reconciled -> NO_CLAIM!
+  const steadySchedule=await reconcileShadowOrchestratorRun(
+    {...baseEnv,GITHUB_EVENT_NAME:'workflow_dispatch',FACTORY_ISSUE_NUMBER:'',GITHUB_RUN_ID:'run-sched-3'},
+    {request:mockRequest,clock:()=>3607000,snapshot:dupDelivery.snapshot}
+  );
+  assert.equal(steadySchedule.reconciled,true);
+  assert.equal(steadySchedule.recoveredCount,0);
+  assert.equal(steadySchedule.reason,'NO_CLAIM');
+
+  // Missed open issue #5 when starting from an empty journal snapshot is discovered and reconciled on schedule!
+  const freshMissedWake=await reconcileShadowOrchestratorRun(
+    {...baseEnv,GITHUB_EVENT_NAME:'schedule',FACTORY_ISSUE_NUMBER:'',GITHUB_RUN_ID:'run-sched-fresh'},
+    {request:mockRequest,clock:()=>5000,maxRecoveryItems:5}
+  );
+  assert.equal(freshMissedWake.recoveredCount,2);
+  assert.equal(freshMissedWake.reason,'SHADOW_RECONCILED');
+
+  // Heartbeat with deferred pull read during drain increments deferredCount cleanly
+  let pullCall=0;
+  const flakyPullReq=async rawUrl=>{
+    const url=String(rawUrl);
+    if(url===apiBase+'/pulls/42') {
+      pullCall++;
+      return pullCall===1
+        ?mockRequest(rawUrl)
+        :new Response('rate limit',{status:429});
+    }
+    if(url.startsWith(apiBase+'/issues?')) return json([]);
+    return mockRequest(rawUrl);
+  };
+  const deferredDrain=await reconcileShadowOrchestratorRun(
+    {...baseEnv,GITHUB_EVENT_NAME:'schedule',FACTORY_ISSUE_NUMBER:''},
+    {request:flakyPullReq,clock:()=>1000}
+  );
+  assert.equal(deferredDrain.deferredCount,1);
+
+  // Clock skew mid-drain breaks cleanly; readInventory failure returns READ_FAILED; invalid inputs fail closed!
+  let tick=0;
+  const skewClock=()=>tick++<2?1000:500;
+  const skewDrain=await reconcileShadowOrchestratorRun(
+    {...baseEnv,GITHUB_EVENT_NAME:'schedule',FACTORY_ISSUE_NUMBER:''},
+    {request:mockRequest,clock:skewClock}
+  );
+  assert.equal(skewDrain.recoveredCount,0);
+
+  assert.equal((await reconcileShadowOrchestratorRun(
+    {...baseEnv,GITHUB_EVENT_NAME:'schedule',FACTORY_ISSUE_NUMBER:''},
+    {request:async()=>new Response('fail',{status:500}),clock:()=>1000}
+  )).reason,'READ_FAILED');
+
+  assert.equal((await reconcileShadowOrchestratorRun(
+    {...baseEnv,GITHUB_EVENT_NAME:'schedule',FACTORY_ISSUE_NUMBER:''},
+    {request:mockRequest,clock:()=>{throw new Error('clock');}}
+  )).reason,'CLOCK_UNKNOWN');
+  assert.equal((await reconcileShadowOrchestratorRun(
+    {...baseEnv,GITHUB_EVENT_NAME:'schedule',FACTORY_ISSUE_NUMBER:''},
+    {request:mockRequest,clock:()=>-1}
+  )).reason,'CLOCK_UNKNOWN');
+  assert.equal((await reconcileShadowOrchestratorRun(
+    {...baseEnv,GITHUB_EVENT_NAME:'schedule',FACTORY_ISSUE_NUMBER:''},
+    {request:mockRequest,clock:()=>1000,snapshot:{}}
+  )).reason,'INVALID_SNAPSHOT');
+
+  for(const [badEnv,badOpts] of [
+    [null,{}],
+    [baseEnv,null],
+    [baseEnv,{request:'bad'}],
+    [baseEnv,{clock:'bad'}],
+    [baseEnv,{maxRecoveryItems:0}],
+    [baseEnv,{maxRecoveryItems:51}],
+    [{...baseEnv,GITHUB_REPOSITORY:'Other/Repo'},{repository:'Jamula/SoftwareFactory',repositoryId:1471342715}],
+    [{...baseEnv,GITHUB_EVENT_NAME:'repository_dispatch'},{}],
+    [{...baseEnv,FACTORY_CHECKOUT_SHA:'c'.repeat(40)},{}]
+  ]) {
+    assert.equal((await reconcileShadowOrchestratorRun(badEnv,badOpts)).reason,'TRUST_UNKNOWN');
+  }
 });

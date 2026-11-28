@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {spawnSync} from 'node:child_process';
 import {chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
-import {dirname, join, resolve} from 'node:path';
+import {delimiter, dirname, join, resolve} from 'node:path';
 import test from 'node:test';
 import {fileURLToPath, pathToFileURL} from 'node:url';
 import {
@@ -1663,7 +1663,7 @@ test('enforces exact SHA-256 normalized script digest on run: scan-output produc
     }).reason, 'MISSING_THREAT_SCAN_GATE');
   }
 
-  // Omitted ref in scan-job checkout succeeds when evaluate job establishes case-sensitive protected default-branch provenance
+  // Omitted ref or github.workflow_sha in scan-job checkout succeeds when evaluate establishes protected default-branch provenance, and fails otherwise
   const evalRefProvFixture = buildFixture({
     evaluateIf: "${{ vars.FACTORY_GHAW_ENABLED == 'true' && github.ref == 'refs/heads/main' && github.ref_protected == true && !endsWith(github.actor, '[bot]') }}",
     runBody: '          set -euo pipefail\n          test "$GITHUB_REF" = refs/heads/main\n          test "$GITHUB_REF_PROTECTED" = true',
@@ -1673,6 +1673,23 @@ test('enforces exact SHA-256 normalized script digest on run: scan-output produc
     markdownSource: evalRefProvFixture.markdownSource,
     lockYamlSource: evalRefProvFixture.lockYamlSource
   }).valid, true);
+
+  for (const invalidScanWorkflowShaFixture of [
+    buildFixture({
+      threatSteps: `      - uses: actions/checkout@${checkoutSha}\n        with:\n          repository: Jamula/SoftwareFactory\n          ref: \${{ github.workflow_sha }}\n          persist-credentials: false\n${canonicalPolicyScanSteps}`
+    }),
+    buildFixture({
+      threatSteps: `      - uses: actions/checkout@${checkoutSha}\n        with:\n          repository: 12345\n          ref: \${{ github.workflow_sha }}\n          persist-credentials: false\n${canonicalPolicyScanSteps}`
+    }),
+    buildFixture({
+      threatSteps: `      - uses: actions/checkout@${checkoutSha}\n        with:\n          repository: attacker/evil-fork\n          ref: \${{ github.workflow_sha }}\n          persist-credentials: false\n${canonicalPolicyScanSteps}`
+    })
+  ]) {
+    assert.equal(verifyGhAwWorkflowLock({
+      markdownSource: invalidScanWorkflowShaFixture.markdownSource,
+      lockYamlSource: invalidScanWorkflowShaFixture.lockYamlSource
+    }).reason, 'MISSING_THREAT_SCAN_GATE');
+  }
 
   // Explicit caller-provided 64-hex SHA-256 allowlist for custom reviewed policy_scan run script
   const customPolicyRun = 'set -euo pipefail\nnode ./tools/custom-reviewed-policy-scan.mjs\necho "scan_verified=true" >> "$GITHUB_OUTPUT"';
@@ -2574,32 +2591,52 @@ test('enforces verifyGhAwWorkflowLock trigger parity, workflow_run repo guard, e
   const tmpDir = mkdtempSync(join(tmpdir(), 'sf-policy-scan-'));
   try {
     const binDir = join(tmpDir, 'bin');
+    const runnerTempA = join(tmpDir, 'runner-a');
+    const runnerTempB = join(tmpDir, 'runner-b');
     mkdirSync(binDir);
+    mkdirSync(runnerTempA);
+    mkdirSync(runnerTempB);
+    const remoteWorkQueueSnap = join(tmpDir, 'remote-work-queue-snapshot.json');
     const fakeGitPath = join(binDir, 'git');
-    writeFileSync(fakeGitPath, '#!/usr/bin/env bash\necho "${MOCK_GIT_HEAD}"\n', 'utf8');
+    writeFileSync(fakeGitPath, [
+      '#!/usr/bin/env bash',
+      'if [ "$1" = rev-parse ]; then',
+      '  echo "${MOCK_GIT_HEAD}"',
+      '  exit 0',
+      'fi',
+      'if [ "$1" = fetch ]; then',
+      '  test -s "${MOCK_REMOTE_WQ_SNAP:-}"',
+      '  exit $?',
+      'fi',
+      'if [ "$1" = show ]; then',
+      '  cat "${MOCK_REMOTE_WQ_SNAP}"',
+      '  exit $?',
+      'fi',
+      'exit 1'
+    ].join('\n') + '\n', 'utf8');
     chmodSync(fakeGitPath, 0o755);
 
     const mockFetchFile = join(tmpDir, 'mock-fetch.mjs');
     writeFileSync(mockFetchFile, [
       `const mainSha = ${JSON.stringify(validSha)};`,
       `const prSha = ${JSON.stringify(prHeadSha)};`,
-      'const repoRoot = "https://api.github.com/repos/Jamula/SoftwareFactory";',
+      'const apiBase = "https://api.github.com/repos/Jamula/SoftwareFactory";',
       'const json = body => new Response(JSON.stringify(body), {status: 200, headers: {"content-type": "application/json"}});',
       'globalThis.fetch = async rawUrl => {',
       '  const url = String(rawUrl);',
-      '  if (url === repoRoot) return json({id: 1471342715, full_name: "Jamula/SoftwareFactory", fork: false});',
-      '  if (url === `${repoRoot}/branches/main`) return json({name: "main", protected: true, commit: {sha: mainSha}});',
-      '  if (url.startsWith(`${repoRoot}/issues?`)) return json([{number: 5, repository_url: repoRoot}]);',
-      '  if (url.startsWith(`${repoRoot}/pulls?`)) return json([{number: 42, base: {repo: {id: 1471342715, full_name: "Jamula/SoftwareFactory"}}}]);',
-      '  if (url === `${repoRoot}/issues/5`) return json({number: 5, state: "open", repository_url: repoRoot});',
-      '  if (url === `${repoRoot}/pulls/42`) {',
+      '  if (url === apiBase) return json({id: 1471342715, full_name: "Jamula/SoftwareFactory", fork: false});',
+      '  if (url === apiBase + "/branches/main") return json({name: "main", protected: true, commit: {sha: mainSha}});',
+      '  if (url.startsWith(apiBase + "/issues?")) return json([{number: 5, repository_url: apiBase}]);',
+      '  if (url.startsWith(apiBase + "/pulls?")) return json([{number: 42, base: {repo: {id: 1471342715, full_name: "Jamula/SoftwareFactory"}}}]);',
+      '  if (url === apiBase + "/issues/5") return json({number: 5, state: "open", repository_url: apiBase});',
+      '  if (url === apiBase + "/pulls/42") {',
       '    return json({',
       '      number: 42, state: "open", draft: false,',
       '      head: {sha: prSha, repo: {id: 1471342715, full_name: "Jamula/SoftwareFactory"}},',
       '      base: {ref: "main", sha: mainSha, repo: {id: 1471342715, full_name: "Jamula/SoftwareFactory"}}',
       '    });',
       '  }',
-      '  if (url === `${repoRoot}/actions/runs/998877`) {',
+      '  if (url === apiBase + "/actions/runs/998877") {',
       '    return json({',
       '      id: 998877, status: "completed", conclusion: "success", event: "pull_request", head_sha: prSha,',
       '      repository: {id: 1471342715, full_name: "Jamula/SoftwareFactory"},',
@@ -2612,9 +2649,11 @@ test('enforces verifyGhAwWorkflowLock trigger parity, workflow_run repo guard, e
 
     const baseEvalEnv = {
       ...process.env,
-      PATH: `${binDir}:${process.env.PATH ?? ''}`,
+      PATH: `${binDir}${delimiter}${process.env.PATH ?? ''}`,
       NODE_OPTIONS: `--import=${pathToFileURL(mockFetchFile).href}`,
+      RUNNER_TEMP: runnerTempA,
       MOCK_GIT_HEAD: validSha,
+      MOCK_REMOTE_WQ_SNAP: remoteWorkQueueSnap,
       FACTORY_GHAW_ENABLED: 'true',
       FACTORY_EXPECTED_WORKFLOW_PATH: '.github/workflows/factory-orchestrator.lock.yml',
       GITHUB_REPOSITORY: 'Jamula/SoftwareFactory',
@@ -2636,20 +2675,24 @@ test('enforces verifyGhAwWorkflowLock trigger parity, workflow_run repo guard, e
       FACTORY_MAIN_HEAD: validSha
     };
 
-    // Empty FACTORY_GHAW_MODE on non-workflow_dispatch (schedule) normalizes to shadow, runs smoke + recovery inventory
+    // Missed-event -> scheduled wake replay: first schedule wake discovers & reconciles open issue #5 + PR #42 and persists snapshot
     const scheduleRun = spawnSync('bash', ['-c', evalScript], {cwd: repoRoot, env: baseEvalEnv, encoding: 'utf8'});
     assert.equal(scheduleRun.status, 0, scheduleRun.stderr);
     assert.match(scheduleRun.stdout, /"SHADOW_PLAN"/);
-    assert.match(scheduleRun.stdout, /"issues":\[5\],"pulls":\[42\]/);
+    assert.match(scheduleRun.stdout, /"recoveredCount":2/);
+    assert.match(scheduleRun.stdout, /"reason":"SHADOW_RECONCILED"/);
 
-    // workflow_dispatch without issue_number in shadow mode also runs recovery inventory
-    const manualInvRun = spawnSync('bash', ['-c', evalScript], {
+    // Promote persisted snapshot to simulated refs/heads/work-queue and verify fresh runner restores & deduplicates!
+    const snapAPath = join(runnerTempA, 'factory-event-journal-snapshot.json');
+    writeFileSync(remoteWorkQueueSnap, readFileSync(snapAPath, 'utf8'), 'utf8');
+    const secondScheduleOnFreshRunner = spawnSync('bash', ['-c', evalScript], {
       cwd: repoRoot,
-      env: {...baseEvalEnv, GITHUB_EVENT_NAME: 'workflow_dispatch', FACTORY_GHAW_MODE: 'shadow'},
+      env: {...baseEvalEnv, RUNNER_TEMP: runnerTempB, GITHUB_EVENT_NAME: 'workflow_dispatch', FACTORY_GHAW_MODE: 'shadow'},
       encoding: 'utf8'
     });
-    assert.equal(manualInvRun.status, 0, manualInvRun.stderr);
-    assert.match(manualInvRun.stdout, /"issues":\[5\],"pulls":\[42\]/);
+    assert.equal(secondScheduleOnFreshRunner.status, 0, secondScheduleOnFreshRunner.stderr);
+    assert.match(secondScheduleOnFreshRunner.stdout, /"recoveredCount":0/);
+    assert.match(secondScheduleOnFreshRunner.stdout, /"reason":"NO_CLAIM"/);
 
     // smoke mode runs only the synthetic smoke check without live GitHub reads
     const smokeOnlyRun = spawnSync('bash', ['-c', evalScript], {
@@ -2659,7 +2702,7 @@ test('enforces verifyGhAwWorkflowLock trigger parity, workflow_run repo guard, e
     });
     assert.equal(smokeOnlyRun.status, 0, smokeOnlyRun.stderr);
     assert.match(smokeOnlyRun.stdout, /"SHADOW_PLAN"/);
-    assert.doesNotMatch(smokeOnlyRun.stdout, /"issues":\[5\]/);
+    assert.doesNotMatch(smokeOnlyRun.stdout, /"recoveredCount"/);
 
     // verify-lock mode skips both smoke and live GitHub reads
     const verifyOnlyRun = spawnSync('bash', ['-c', evalScript], {
@@ -2671,6 +2714,7 @@ test('enforces verifyGhAwWorkflowLock trigger parity, workflow_run repo guard, e
     assert.doesNotMatch(verifyOnlyRun.stdout, /"SHADOW_PLAN"/);
 
     // Scoped journal reconciliation runs across workflow_dispatch(issue), issues, pull_request_target, workflow_run, and push
+    let runCounter = 100;
     for (const [eventEnv, expectedKind] of [
       [{...baseEvalEnv, GITHUB_EVENT_NAME: 'workflow_dispatch', FACTORY_GHAW_MODE: 'shadow', FACTORY_ISSUE_NUMBER: '5'}, 'manual'],
       [{...baseEvalEnv, GITHUB_EVENT_NAME: 'issues', FACTORY_ISSUE_NUMBER: '5'}, 'issue'],
@@ -2687,11 +2731,20 @@ test('enforces verifyGhAwWorkflowLock trigger parity, workflow_run repo guard, e
       ],
       [{...baseEvalEnv, GITHUB_EVENT_NAME: 'push'}, 'main']
     ]) {
-      const reconciledRun = spawnSync('bash', ['-c', evalScript], {cwd: repoRoot, env: eventEnv, encoding: 'utf8'});
+      const freshRunnerDir = join(tmpDir, `runner-ev-${++runCounter}`);
+      mkdirSync(freshRunnerDir);
+      const runEnv = {...eventEnv, RUNNER_TEMP: freshRunnerDir, GITHUB_RUN_ID: `4610${runCounter}`};
+      const reconciledRun = spawnSync('bash', ['-c', evalScript], {cwd: repoRoot, env: runEnv, encoding: 'utf8'});
       assert.equal(reconciledRun.status, 0, reconciledRun.stderr);
       assert.match(reconciledRun.stdout, /"reconciled":true/);
       assert.match(reconciledRun.stdout, /"reason":"SHADOW_RECONCILED"/);
       assert.match(reconciledRun.stdout, new RegExp(`"kind":"${expectedKind}"`));
+
+      // Replaying the exact same deliveryId against persisted snapshot deduplicates across runs!
+      const replayRun = spawnSync('bash', ['-c', evalScript], {cwd: repoRoot, env: runEnv, encoding: 'utf8'});
+      assert.equal(replayRun.status, 0, replayRun.stderr);
+      assert.match(replayRun.stdout, /"reconciled":false/);
+      assert.match(replayRun.stdout, /"reason":"DUPLICATE_DELIVERY"/);
     }
 
     // Fork workflow_run, checkout SHA mismatch, PR merge-ref revisions, unknown events, and malformed inputs fail closed

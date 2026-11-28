@@ -1468,10 +1468,24 @@ function isTrustedScanJobCheckout(checkoutWith, releaseCommit, trustedShas, lock
       !Object.hasOwn(lockOn, 'pull_request_review');
     return {ok: safeTriggerSet, needsUpstreamRefProvenance: true};
   }
-  return {
-    ok: isTrustedControlPlaneCheckout(checkoutWith, releaseCommit, trustedShas),
-    needsUpstreamRefProvenance: false
-  };
+  if (isTrustedControlPlaneCheckout(checkoutWith, releaseCommit, trustedShas)) {
+    return {ok: true, needsUpstreamRefProvenance: false};
+  }
+  if (checkoutWith.repository !== undefined) {
+    if (typeof checkoutWith.repository !== 'string') {
+      return {ok: false, needsUpstreamRefProvenance: false};
+    }
+    const trimmedRepo = checkoutWith.repository.trim();
+    if (trimmedRepo !== 'Jamula/SoftwareFactory' && trimmedRepo !== '${{ github.repository }}') {
+      return {ok: false, needsUpstreamRefProvenance: false};
+    }
+  }
+  if (!Object.hasOwn(lockOn, 'pull_request') &&
+      !Object.hasOwn(lockOn, 'pull_request_review') &&
+      classifyEventMatrixCheckoutRef(checkoutWith.ref, 'main', trustedShas) === 'workflow_sha') {
+    return {ok: true, needsUpstreamRefProvenance: true};
+  }
+  return {ok: false, needsUpstreamRefProvenance: false};
 }
 function normalizeNeeds(needsField) {
   if (typeof needsField === 'string') return [needsField];

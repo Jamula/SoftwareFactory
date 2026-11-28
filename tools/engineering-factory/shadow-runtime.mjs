@@ -1,14 +1,39 @@
 // Shadow scheduling and public metadata inventory. No mutation, agent dispatch or merge.
 import {types} from 'node:util';
-import {resolveTrustedScope} from './event-envelope.mjs';
+import {
+  exportJournalSnapshot,
+  importJournalSnapshot,
+  openEventJournal,
+  reconcileJournalOnce
+} from '../engineering-coordinator/event-journal.mjs';
+import {
+  createScopedJournalReader,
+  ownOptional,
+  readMainIdentity,
+  readOwn,
+  readPullIdentity,
+  reconcileEventTrigger,
+  resolveTrustedScope,
+  verifyWorkflowProvenance
+} from './event-envelope.mjs';
 
 const deny = reason => ({shadow:true, ready:[], reason});
 const blockedInventory = reason => ({
   shadow:true, evidenceComplete:false, liveDispatch:false, liveMerge:false, reason
 });
+const blockedOrchestratorEval = reason => ({
+  shadow:true, evidenceComplete:false, reconciled:false, liveDispatch:false, liveMerge:false, reason, snapshot:null
+});
 const DEFAULT_SCOPE = resolveTrustedScope({});
 const SCOPE_KEYS = new Set(['repository','repositoryId','branch','workflowPath']);
 const INVENTORY_OPTION_KEYS = new Set(['scope',...SCOPE_KEYS]);
+const ORCHESTRATOR_EVAL_OPTION_KEYS = new Set([
+  'scope',...SCOPE_KEYS,'request','clock','snapshot','maxRecoveryItems'
+]);
+const ORCHESTRATOR_EVENTS = new Set([
+  'schedule','workflow_dispatch','issues','pull_request_target','workflow_run','push'
+]);
+const DEFAULT_RECOVERY_RETRY_MS = 3600000;
 
 function isStrictPlainMap(value, allowedKeys) {
   if(value===null || typeof value!=='object' || types.isProxy(value) || Array.isArray(value) ||
@@ -160,4 +185,148 @@ export function smoke() {
     {id:2,priority:1,state:'approved',dependencies:[],paths:['src/web']},
     {id:3,priority:0,state:'approved',dependencies:[1],paths:['src/integration']}
   ]});
+}
+
+export async function reconcileShadowOrchestratorRun(env,options={}) {
+  if(!ownOptional(env,['GITHUB_EVENT_NAME','GITHUB_REPOSITORY','FACTORY_EXPECTED_WORKFLOW_PATH','FACTORY_ISSUE_NUMBER']) ||
+     !isStrictPlainMap(options,ORCHESTRATOR_EVAL_OPTION_KEYS)) {
+    return blockedOrchestratorEval('TRUST_UNKNOWN');
+  }
+  const request=options.request??fetch;
+  const clock=options.clock??Date.now;
+  const maxRecoveryItems=options.maxRecoveryItems??10;
+  if(typeof request!=='function' || typeof clock!=='function' ||
+     !positive(maxRecoveryItems) || maxRecoveryItems>50) {
+    return blockedOrchestratorEval('TRUST_UNKNOWN');
+  }
+  const scopeInput={};
+  for(const key of INVENTORY_OPTION_KEYS) {
+    if(options[key]!==undefined) scopeInput[key]=options[key];
+  }
+  const envWorkflowPath=readOwn(env,'FACTORY_EXPECTED_WORKFLOW_PATH');
+  if(envWorkflowPath!==undefined && scopeInput.workflowPath===undefined && scopeInput.scope===undefined) {
+    scopeInput.workflowPath=envWorkflowPath;
+  }
+  const resolved=resolveInventoryScope(scopeInput);
+  if(!resolved || readOwn(env,'GITHUB_REPOSITORY')!==resolved.repository) {
+    return blockedOrchestratorEval('TRUST_UNKNOWN');
+  }
+  const eventName=readOwn(env,'GITHUB_EVENT_NAME');
+  if(!ORCHESTRATOR_EVENTS.has(eventName)) return blockedOrchestratorEval('TRUST_UNKNOWN');
+  const workflowSha=verifyWorkflowProvenance(env,resolved,eventName,eventName!=='pull_request_target');
+  if(!workflowSha) return blockedOrchestratorEval('TRUST_UNKNOWN');
+
+  const explicitScope={
+    repository:resolved.repository,
+    repositoryId:resolved.repositoryId,
+    branch:resolved.branch,
+    workflowPath:resolved.workflowPath
+  };
+  const issueNumber=readOwn(env,'FACTORY_ISSUE_NUMBER','');
+  const isHeartbeat=eventName==='schedule' || (eventName==='workflow_dispatch' && issueNumber==='');
+  if(!isHeartbeat) {
+    const raw=await reconcileEventTrigger(env,{
+      scope:explicitScope,
+      request,
+      clock,
+      ...(options.snapshot!==undefined?{snapshot:options.snapshot}:{})
+    });
+    const {snapshot:exportedSnapshot=null,...publicResult}=raw;
+    return {...publicResult,snapshot:exportedSnapshot};
+  }
+
+  let now;
+  try { now=clock(); } catch { return blockedOrchestratorEval('CLOCK_UNKNOWN'); }
+  if(!Number.isSafeInteger(now) || now<0) return blockedOrchestratorEval('CLOCK_UNKNOWN');
+
+  const store=openEventJournal(':memory:');
+  try {
+    if(options.snapshot!==undefined) {
+      const imported=importJournalSnapshot(store,options.snapshot,{now});
+      if(!imported.imported) return blockedOrchestratorEval(imported.reason);
+    }
+    let inv;
+    try {
+      inv=await readInventory(request,explicitScope);
+    } catch {
+      return blockedOrchestratorEval('READ_FAILED');
+    }
+    const priorEntries=exportJournalSnapshot(store,{repositoryId:resolved.repositoryId}).entries;
+    if(inv.issues.length>0) {
+      const mainId=await readMainIdentity(request,explicitScope);
+      if(mainId.reason==='IDENTITY_ONLY') {
+        for(const issueNum of inv.issues.slice(0,maxRecoveryItems)) {
+          const seen=priorEntries.some(e=>e.kind==='issue' && e.subject===issueNum &&
+            (e.completed || e.head===mainId.head));
+          if(!seen) {
+            store.enqueue({
+              repositoryId:resolved.repositoryId,
+              deliveryId:`recovery-issue-${issueNum}-${mainId.head.slice(0,12)}`,
+              kind:'issue',
+              subject:issueNum,
+              head:mainId.head
+            });
+          }
+        }
+      }
+    }
+    for(const pullNum of inv.pulls.slice(0,maxRecoveryItems)) {
+      const pullId=await readPullIdentity(pullNum,request,explicitScope);
+      if(pullId.reason==='IDENTITY_ONLY') {
+        const seen=priorEntries.some(e=>e.kind==='pull' && e.subject===pullNum && e.head===pullId.head);
+        if(!seen) {
+          store.enqueue({
+            repositoryId:resolved.repositoryId,
+            deliveryId:`recovery-pull-${pullNum}-${pullId.head.slice(0,12)}`,
+            kind:'pull',
+            subject:pullNum,
+            head:pullId.head
+          });
+        }
+      }
+    }
+    const reader=createScopedJournalReader(explicitScope,{request});
+    const maxDrain=maxRecoveryItems*2+4;
+    let recoveredCount=0;
+    let deferredCount=0;
+    for(let pass=0;pass<maxDrain;pass++) {
+      const outcome=await reconcileJournalOnce({
+        journal:store,
+        repositoryId:resolved.repositoryId,
+        owner:'github-actions-recovery',
+        leaseMs:30000,
+        clock,
+        read:reader,
+        stop:false,
+        deferUnknown:(ticket,finished)=>store.defer(ticket,finished,DEFAULT_RECOVERY_RETRY_MS)
+      });
+      if(outcome.reason==='NO_CLAIM') break;
+      if(outcome.reason==='SHADOW_RECONCILED' || outcome.reason==='SHADOW_HEAD_SUPERSEDED') {
+        recoveredCount++;
+      } else if(outcome.reason==='EVIDENCE_UNKNOWN') {
+        deferredCount++;
+      } else {
+        break;
+      }
+    }
+    const exported=exportJournalSnapshot(store,{repositoryId:resolved.repositoryId});
+    return {
+      shadow:true,
+      evidenceComplete:false,
+      reconciled:true,
+      liveDispatch:false,
+      liveMerge:false,
+      reason:recoveredCount>0?'SHADOW_RECONCILED':'NO_CLAIM',
+      repository:resolved.repository,
+      repositoryId:resolved.repositoryId,
+      issues:inv.issues,
+      pulls:inv.pulls,
+      recoveredCount,
+      deferredCount,
+      workflowSha,
+      snapshot:exported
+    };
+  } finally {
+    store.close();
+  }
 }

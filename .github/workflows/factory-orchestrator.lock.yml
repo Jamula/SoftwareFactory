@@ -117,30 +117,47 @@ jobs:
           if [ "$FACTORY_GHAW_MODE" = smoke ]; then
             node tools/engineering-factory/run.mjs --smoke
           elif [ "$FACTORY_GHAW_MODE" = shadow ]; then
+            case "$GITHUB_EVENT_NAME" in
+              schedule|workflow_dispatch|issues|pull_request_target|workflow_run|push) ;;
+              *) echo "::error::Unsupported orchestrator event"; exit 1 ;;
+            esac
             node tools/engineering-factory/run.mjs --smoke
             test -n "$GITHUB_WORKFLOW_SHA"
             FACTORY_CHECKOUT_SHA="$(git rev-parse HEAD)"
             test "$FACTORY_CHECKOUT_SHA" = "$GITHUB_WORKFLOW_SHA"
             export FACTORY_CHECKOUT_SHA
-            case "$GITHUB_EVENT_NAME" in
-              schedule)
-                node tools/engineering-factory/run.mjs --inventory
-                ;;
-              workflow_dispatch)
-                if [ -n "$FACTORY_ISSUE_NUMBER" ]; then
-                  node tools/engineering-factory/run.mjs --reconcile-event
-                else
-                  node tools/engineering-factory/run.mjs --inventory
-                fi
-                ;;
-              issues|pull_request_target|workflow_run|push)
-                node tools/engineering-factory/run.mjs --reconcile-event
-                ;;
-              *)
-                echo "::error::Unsupported orchestrator event: $GITHUB_EVENT_NAME"
-                exit 1
-                ;;
-            esac
+            SNAPSHOT_WORK_FILE="${RUNNER_TEMP:-/tmp}/factory-event-journal-snapshot.json"
+            if [ ! -s "$SNAPSHOT_WORK_FILE" ] && git fetch --quiet --no-tags --depth=1 origin refs/heads/work-queue 2>/dev/null; then
+              git show FETCH_HEAD:state/event-journal-snapshot.json > "$SNAPSHOT_WORK_FILE" 2>/dev/null || rm -f "$SNAPSHOT_WORK_FILE"
+            fi
+            export SNAPSHOT_WORK_FILE
+            node --input-type=module -e '
+              import {existsSync, renameSync, statSync, writeFileSync, readFileSync} from "node:fs";
+              import {reconcileShadowOrchestratorRun} from "./tools/engineering-factory/shadow-runtime.mjs";
+              const snapPath = process.env.SNAPSHOT_WORK_FILE;
+              let priorSnapshot;
+              if (snapPath && existsSync(snapPath)) {
+                const st = statSync(snapPath);
+                if (st.size > 0) {
+                  if (st.size > 2097152) process.exit(1);
+                  priorSnapshot = JSON.parse(readFileSync(snapPath, "utf8"));
+                }
+              }
+              const {snapshot, ...publicResult} = await reconcileShadowOrchestratorRun(
+                process.env,
+                priorSnapshot !== undefined ? {snapshot: priorSnapshot} : {}
+              );
+              if (publicResult.reason === "TRUST_UNKNOWN" || publicResult.reason === "INVALID_SNAPSHOT" || publicResult.reason === "LEASE_CONFLICT") {
+                console.error(JSON.stringify(publicResult));
+                process.exit(1);
+              }
+              if (snapshot && snapshot.exported && snapPath) {
+                const tmpPath = `${snapPath}.tmp`;
+                writeFileSync(tmpPath, JSON.stringify(snapshot), "utf8");
+                renameSync(tmpPath, snapPath);
+              }
+              console.log(JSON.stringify(publicResult));
+            '
           fi
 
   threat-and-policy-scan:
@@ -153,11 +170,11 @@ jobs:
     outputs:
       scan_verified: ${{ steps.policy_scan.outputs.scan_verified }}
     steps:
-      - name: Checkout trusted default branch for policy scan
+      - name: Checkout immutable protected-branch workflow revision for policy scan
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: Jamula/SoftwareFactory
-          ref: refs/heads/main
+          ref: ${{ github.workflow_sha }}
           persist-credentials: false
       - name: Setup pinned Node runtime
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
