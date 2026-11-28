@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
 import {
   AI_CREDIT_USD_CENTS,
   AUTOMATION_ALLOWED_VISIBILITIES,
@@ -1070,3 +1071,271 @@ test('rejects proxies (including revoked proxies), getters, non-enumerable prope
 
   assert.equal(trapCalls, 0);
 });
+
+test('enforces official GitHub Copilot Cloud Agent setup schema on .github/workflows/copilot-setup-steps.yml', () => {
+  const workflowUrl = new URL('../../.github/workflows/copilot-setup-steps.yml', import.meta.url);
+  const raw = readFileSync(workflowUrl, 'utf8');
+  const lines = raw.split(/\r?\n/);
+
+  const collectKeysAtIndent = (indent, startIdx = 0, endIdx = lines.length) => {
+    const prefix = ' '.repeat(indent);
+    const keyRe = new RegExp(`^${prefix}([a-z0-9_-]+):(?:\\s|$)`);
+    const deeperOrEqualStopRe = indent > 0 ? new RegExp(`^ {0,${indent - 1}}[a-z0-9_-]+:`) : null;
+    const keys = [];
+    for (let i = startIdx; i < endIdx; i++) {
+      const line = lines[i];
+      if (!line.trim() || line.trimStart().startsWith('#')) continue;
+      if (deeperOrEqualStopRe && deeperOrEqualStopRe.test(line)) break;
+      const m = keyRe.exec(line);
+      if (m) keys.push({key: m[1], index: i});
+    }
+    return keys;
+  };
+
+  assert.match(raw, /^name:\s*"Copilot Setup Steps"\r?$/m);
+  assert.equal(/\b(?:py(?:thon3?)?|pip3?|pytest)\b/i.test(raw), false);
+  assert.equal(/secrets\./i.test(raw), false);
+
+  const topKeys = collectKeysAtIndent(0);
+  assert.deepEqual(topKeys.map((entry) => entry.key), ['name', 'on', 'permissions', 'jobs']);
+
+  const onIdx = topKeys.find((entry) => entry.key === 'on').index;
+  const permsIdx = topKeys.find((entry) => entry.key === 'permissions').index;
+  const jobsIdx = topKeys.find((entry) => entry.key === 'jobs').index;
+
+  const onTriggers = collectKeysAtIndent(2, onIdx + 1, permsIdx);
+  assert.deepEqual(onTriggers.map((entry) => entry.key), ['workflow_dispatch', 'push', 'pull_request']);
+
+  const onBlock = lines.slice(onIdx + 1, permsIdx).join('\n');
+  const pathMatches = [...onBlock.matchAll(/^\s*-\s*'?([^'\r\n]+)'?\s*$/gm)].map((m) => m[1]);
+  assert.deepEqual(pathMatches, [
+    '.github/workflows/copilot-setup-steps.yml',
+    '.github/workflows/copilot-setup-steps.yml'
+  ]);
+
+  const topPerms = collectKeysAtIndent(2, permsIdx + 1, jobsIdx);
+  assert.deepEqual(topPerms.map((entry) => entry.key), ['contents']);
+  assert.match(lines.slice(permsIdx + 1, jobsIdx).join('\n'), /^\s{2}contents:\s*read\s*$/m);
+
+  const jobKeys = collectKeysAtIndent(2, jobsIdx + 1);
+  assert.deepEqual(jobKeys.map((entry) => entry.key), ['copilot-setup-steps']);
+
+  const jobHeaderIdx = jobKeys[0].index;
+  const jobSettings = collectKeysAtIndent(4, jobHeaderIdx + 1);
+  const allowedCopilotSetupJobKeys = new Set([
+    'runs-on',
+    'timeout-minutes',
+    'permissions',
+    'steps',
+    'services',
+    'snapshot'
+  ]);
+  for (const {key} of jobSettings) {
+    assert.equal(allowedCopilotSetupJobKeys.has(key), true, `disallowed copilot-setup-steps job key: ${key}`);
+  }
+  assert.deepEqual(jobSettings.map((entry) => entry.key), [
+    'runs-on',
+    'timeout-minutes',
+    'permissions',
+    'steps'
+  ]);
+
+  const stepsIdx = jobSettings.find((entry) => entry.key === 'steps').index;
+  const jobMetaBlock = lines.slice(jobHeaderIdx + 1, stepsIdx).join('\n');
+  assert.match(jobMetaBlock, /^\s{4}runs-on:\s*ubuntu-latest\s*$/m);
+  assert.match(jobMetaBlock, /^\s{4}timeout-minutes:\s*15\s*$/m);
+  assert.match(jobMetaBlock, /^\s{4}permissions:\r?\n\s{6}contents:\s*read\s*$/m);
+
+  const usesMatches = [...raw.matchAll(/^\s*uses:\s*(.+)$/gm)].map((m) => m[1].trim());
+  assert.deepEqual(usesMatches, [
+    'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1',
+    'actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0',
+    'actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0'
+  ]);
+
+  assert.match(raw, /persist-credentials:\s*false/);
+  assert.match(raw, /node-version:\s*'26\.13\.1'/);
+  assert.match(raw, /package-manager-cache:\s*false/);
+  assert.match(raw, /dotnet-version:\s*'10\.0\.404'/);
+  assert.match(raw, /cache:\s*false/);
+  assert.match(raw, /'DOTNET_CLI_TELEMETRY_OPTOUT=1'/);
+  assert.match(raw, />>\s*"\$GITHUB_ENV"/);
+  assert.match(raw, /test "\$\{DOTNET_CLI_TELEMETRY_OPTOUT:-\}" = "1"/);
+  assert.match(raw, /test "\$\(node --version\)" = "v26\.13\.1"/);
+  assert.match(raw, /test "\$\(dotnet --version\)" = "10\.0\.404"/);
+  assert.match(raw, /^\s*npm ci --ignore-scripts\s*$/m);
+  assert.match(
+    raw,
+    /^\s*dotnet restore tests\/SoftwareFactory\.Agents\.Tests\/SoftwareFactory\.Agents\.Tests\.csproj --source https:\/\/api\.nuget\.org\/v3\/index\.json\s*$/m
+  );
+});
+
+test('validates M01.08 live native Cloud Agent acceptance evidence and pilot documentation alignment', () => {
+  const evidenceUrl = new URL('../../docs/evidence/m01-08-cloud-agent-acceptance.json', import.meta.url);
+  const workflowUrl = new URL('../../.github/workflows/copilot-setup-steps.yml', import.meta.url);
+  const pilotDocUrl = new URL('../../docs/GITHUB-HOSTED-COPILOT-PILOT.md', import.meta.url);
+
+  const evidence = JSON.parse(readFileSync(evidenceUrl, 'utf8'));
+  const workflowRaw = readFileSync(workflowUrl, 'utf8');
+  const pilotDoc = readFileSync(pilotDocUrl, 'utf8');
+
+  assert.equal(evidence.schemaVersion, 1);
+  assert.equal(evidence.evidenceId, 'm01-08-cloud-agent-acceptance');
+  assert.equal(evidence.milestone, 'M01.08');
+  assert.equal(evidence.issue, 10);
+  assert.equal(evidence.repository, 'Jamula/SoftwareFactory');
+  assert.equal(evidence.repositoryId, 1471342715);
+  assert.equal(evidence.repositoryVisibility, 'public');
+  assert.equal(evidence.shadow, true);
+  assert.equal(evidence.liveActivation, false);
+  assert.equal(evidence.m01ExitAccepted, false);
+
+  assert.equal(evidence.billingGuardrails.prerequisiteIssue, 105);
+  assert.equal(evidence.billingGuardrails.prerequisiteState, 'CLOSED');
+  assert.equal(evidence.billingGuardrails.aiCreditUnitUsdCents, AI_CREDIT_USD_CENTS);
+  assert.equal(evidence.billingGuardrails.incrementalBilledUsdCents, 0);
+  assert.equal(evidence.billingGuardrails.personalPatInActionsSecrets, false);
+  assert.equal(evidence.billingGuardrails.customPilotEnvironmentAbsent, true);
+  for (const meter of BILLING_METERS) {
+    assert.deepEqual(evidence.billingGuardrails.meters[meter], {
+      verified: true,
+      overageLimitUsdCents: 0,
+      overageAllowed: false
+    });
+  }
+
+  assert.deepEqual(evidence.cloudAgentIdentity, {
+    harness: 'copilot-cloud-agent',
+    runner: 'github-hosted',
+    nodeId: 'BOT_kgDOC9w8XQ',
+    databaseId: 198982749,
+    login: 'Copilot',
+    botHandle: 'copilot-swe-agent[bot]',
+    agentSlug: 'copilot-swe-agent',
+    coAuthorTrailer: 'Co-authored-by: copilot-swe-agent[bot] <198982749+Copilot@users.noreply.github.com>',
+    laptopOrChatDependency: false
+  });
+
+  assert.equal(evidence.setupWorkflowRemediation.workflowPath, '.github/workflows/copilot-setup-steps.yml');
+  assert.equal(evidence.setupWorkflowRemediation.workflowName, 'Copilot Setup Steps');
+  assert.equal(evidence.setupWorkflowRemediation.jobName, 'copilot-setup-steps');
+  assert.equal(evidence.setupWorkflowRemediation.runsOn, 'ubuntu-latest');
+  assert.equal(evidence.setupWorkflowRemediation.timeoutMinutes, 15);
+  assert.equal(evidence.setupWorkflowRemediation.persistCredentials, false);
+  assert.equal(evidence.setupWorkflowRemediation.nodeVersion, '26.13.1');
+  assert.equal(evidence.setupWorkflowRemediation.dotnetVersion, '10.0.404');
+  assert.equal(evidence.setupWorkflowRemediation.dotnetTelemetryOptOutPersistedToGithubEnv, true);
+  assert.deepEqual(evidence.setupWorkflowRemediation.copilotEnvironmentVariablesRequired, [
+    'DOTNET_CLI_TELEMETRY_OPTOUT=1'
+  ]);
+  assert.equal(workflowRaw.includes(evidence.setupWorkflowRemediation.pinnedActions.checkout), true);
+  assert.equal(workflowRaw.includes(evidence.setupWorkflowRemediation.pinnedActions.setupNode), true);
+  assert.equal(workflowRaw.includes(evidence.setupWorkflowRemediation.pinnedActions.setupDotnet), true);
+  assert.equal(workflowRaw.includes(evidence.setupWorkflowRemediation.lockedInstallCommand), true);
+  assert.equal(workflowRaw.includes(evidence.setupWorkflowRemediation.dotnetRestoreCommand), true);
+
+  const computePeakConcurrentRuns = (runs) => {
+    const events = [];
+    for (const run of runs) {
+      const startMs = Date.parse(run.startedAtUtc);
+      const endMs = Date.parse(run.completedAtUtc);
+      assert.equal(Number.isFinite(startMs) && Number.isFinite(endMs) && endMs >= startMs, true);
+      events.push({timeMs: startMs, delta: 1});
+      events.push({timeMs: endMs, delta: -1});
+    }
+    events.sort((a, b) => a.timeMs - b.timeMs || a.delta - b.delta);
+    let active = 0;
+    let peak = 0;
+    for (const event of events) {
+      active += event.delta;
+      if (active > peak) peak = active;
+    }
+    return peak;
+  };
+
+  const observedPeakWorkers = computePeakConcurrentRuns(evidence.verifiedRuns);
+  assert.equal(observedPeakWorkers, 1);
+  assert.deepEqual(evidence.workerScalingObservation.ladder, [...WORKER_LADDER]);
+  assert.equal(evidence.workerScalingObservation.actualWorkerMax, observedPeakWorkers);
+  assert.equal(
+    evidence.workerScalingObservation.workerShortfallFrom12,
+    Math.max(0, WORKER_GOAL_MAX - observedPeakWorkers)
+  );
+  assert.equal(evidence.workerScalingObservation.workerShortfallFrom12, 11);
+
+  const admissionReplay = evaluateCloudAgentAdmission(makeFixture({
+    repositoryId: evidence.repositoryId,
+    approvedRepositoryId: evidence.repositoryId,
+    repositoryVisibility: evidence.repositoryVisibility,
+    personalPatInActionsSecrets: evidence.billingGuardrails.personalPatInActionsSecrets,
+    harness: {
+      kind: evidence.cloudAgentIdentity.harness,
+      verified: true,
+      agentLogin: evidence.cloudAgentIdentity.botHandle
+    },
+    runner: {
+      kind: evidence.cloudAgentIdentity.runner,
+      verified: true,
+      ephemeral: true,
+      isolated: true
+    },
+    workerPool: {
+      requestedWorkers: observedPeakWorkers,
+      verifiedPriorWorkerTier: 0,
+      repoConcurrencyCap: 1,
+      verifiedWorkerCeiling: 1,
+      remainingIncludedSlots: 1,
+      reservations: []
+    }
+  }));
+  assert.equal(admissionReplay.admitted, true);
+  assert.equal(admissionReplay.actualWorkerMax, 1);
+  assert.equal(admissionReplay.workerShortfallFrom12, 11);
+
+  assert.equal(evidence.verifiedRuns.length, 2);
+  const [run181, run183] = evidence.verifiedRuns;
+
+  assert.equal(run181.issueNumber, 180);
+  assert.equal(run181.pullRequestNumber, 181);
+  assert.equal(run181.workflowRunId, 46129479064);
+  assert.equal(run181.headSha, '5bebc915d285cde66950b18a539a2b0aad899105');
+  assert.equal(run181.actorNodeId, 'BOT_kgDOC9w8XQ');
+  assert.equal(run181.actorAgent, 'copilot-swe-agent');
+  assert.equal(run181.changedFileCount, 0);
+  assert.equal(run181.unauthorizedWrites, 0);
+  assert.equal(run181.incrementalBilledUsdCents, 0);
+
+  assert.equal(run183.issueNumber, 182);
+  assert.equal(run183.pullRequestNumber, 183);
+  assert.equal(run183.workflowRunId, 46129821572);
+  assert.equal(run183.headSha, '681b943681e58395dc3bafe944a612ccf738afa4');
+  assert.equal(run183.actorNodeId, 'BOT_kgDOC9w8XQ');
+  assert.equal(run183.actorAgent, 'copilot-swe-agent');
+  assert.equal(run183.changedFileCount, 6);
+  assert.deepEqual(run183.changedFiles, [
+    '.vscode/mcp.json',
+    'bin/softwarefactory-mcp.mjs',
+    'docs/MCP-MULTI-AGENT-CONNECTOR.md',
+    'package.json',
+    'tests/engineering-factory/mcp-agent-connector.test.mjs',
+    'tools/engineering-factory/mcp-agent-connector.mjs'
+  ]);
+  assert.equal(run183.unauthorizedWrites, 0);
+  assert.equal(run183.incrementalBilledUsdCents, 0);
+
+  for (const expectedDocToken of [
+    '.github/workflows/copilot-setup-steps.yml',
+    'docs/evidence/m01-08-cloud-agent-acceptance.json',
+    'BOT_kgDOC9w8XQ',
+    'copilot-swe-agent',
+    '#180',
+    '#181',
+    '46129479064',
+    '#182',
+    '#183',
+    '681b943681e58395dc3bafe944a612ccf738afa4'
+  ]) {
+    assert.equal(pilotDoc.includes(expectedDocToken), true, `pilot doc missing ${expectedDocToken}`);
+  }
+});
+
