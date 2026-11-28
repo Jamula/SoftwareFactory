@@ -36,6 +36,19 @@ flowchart LR
    - `CoderExecutor` fans out to `TestAndCoverageExecutor` and `SecurityAndReviewExecutor` in the same Pregel superstep (`AddFanOutEdge`) and synchronizes at `GateAggregatorExecutor` (`AddFanInBarrierEdge`).
    - Only repairable test/coverage deficits within `Iteration < MaxRepairIterations` loop back to `CoderExecutor`; security/review findings, isolation violations, and exhausted repair budgets terminate fail-closed (`blocked`).
 
+## Selective repository guidance and curated lessons (`#14`)
+
+`tools/engineering-factory/curated-lessons.mjs` implements `#14`'s portable, deterministic context selector and matched cohort evaluator so MAF specialist executors (`PlannerExecutor`, `CoderExecutor`, `TestAndCoverageExecutor`, `SecurityAndReviewExecutor`) load only verified, scoped repository knowledge without an external knowledge store while keeping issue refinement and acceptance criteria in GitHub:
+
+- **Selective context assembly (`selectScopedGuidanceAndLessons(input)` & `validateCuratedLesson(lesson, context)`)**:
+  - Enforces strict `types.isProxy` rejection and own enumerable data-descriptor validation (`Object.prototype` / `Array.prototype` only) across guidance entries, curated lessons, policies, and checkpoint bindings.
+  - Validates provenance-bound lessons captured from accepted GitHub PRs and issues (`lessonId`, `repositoryId`, explicit `accepted-pr` / `accepted-issue` `sourceKind`, positive `sourceNumber`, 40-hex `sourceCommitSha`, 40-hex `verifiedHeadSha`, `componentScope`, bounded `guidanceText` `<= 512` chars, `observedAtMs`, and `maxFreshnessMs`).
+  - Fails closed (`state: 'blocked'`) before specialist prompt construction on stale timestamps (`STALE_CURATED_LESSON`), unverified `HEAD` SHAs (`UNVERIFIED_LESSON_HEAD_SHA`), mismatched `repositoryId` (`CROSS_REPO_ISOLATION_VIOLATION`), checkpoint issue mismatches (`CHECKPOINT_ISSUE_MISMATCH`), cross-repository private data references (`CROSS_REPO_PRIVATE_DATA_REJECTED`), untrusted sources (`UNTRUSTED_INSTRUCTION_SOURCE`), mandatory external knowledge-store flags (`EXTERNAL_KNOWLEDGE_STORE_FORBIDDEN`), secrets/credentials (`SECRET_OR_CREDENTIAL_DETECTED`), prompt-injection directives (`PROMPT_INJECTION_DETECTED`), or any attempt to weaken `98%/95%` SoftwareFactory or stricter consumer coverage/review/security/budget gates (`POLICY_WEAKENING_REJECTED`).
+  - Filters validated items by `targetComponent`, allowlisted `specialistRole`, and owned `changedPaths` with locale-independent UTF-16 code-unit tie-breaking within bounded `maxSelectedGuidance`, `maxSelectedLessons`, and `maxContextBytes` budgets, and pairs with `IntegrityVerifiedJsonCheckpointStore` issue-bound checkpoints (`checkpointEvidence.verifiedPaths`) to skip reloading guidance/lessons for paths already verified in committed prior supersteps (`omittedCheckpointedCount`). Selection is strictly read-only (`readOnly: true`, `autoPolicyMutation: false`) and never grants write or bypass authority over `EXACT_PROTECTED_CONTROL_PLANE_PATHS` (which remain governed under human-owner sign-off in `anti-rogue-audit.mjs`).
+- **Matched exploration, context, and rework cohort gate (`compareExplorationContextReduction(baselineCohort, candidateCohort, policy)`)**:
+  - Compares matched `>= 5`-unit accepted cohorts across equal non-overlapping observation windows with verified provenance, independent review, explicit per-unit `duplicateWork` and `unsupportedRouting` boolean evidence, and explicit validated `quotaCreditsRemaining` (`explorationStepsP50`, `contextBytesLoadedP50`, `repeatedContextLoadsP50`, `reworkIterationsRateBps`, `aiCreditsPerUnit`, and `acceptedUnitsPerDay`).
+  - Approves adoption (`status: 'ADOPTION_APPROVED'`, `adoptionApproved: true`) only when measured exploration steps, context bytes loaded, repeated context loads, or rework iteration rates decrease while remaining cost-neutral or lower-cost (`$0` unapproved spend, within `quotaCreditsRemaining`) with zero coverage, security, routing, duplicate-work, or throughput regressions.
+
 ## Integrity-verified JSON checkpointing (`#16`)
 
 `IntegrityVerifiedJsonCheckpointStore` implements `ICheckpointStore<JsonElement>` for `CheckpointManager.CreateJson`:
@@ -67,4 +80,7 @@ dotnet run --project src/SoftwareFactory.Agents/SoftwareFactory.Agents.csproj --
 # Verify Aspire 17 single-file AppHost restore and Release build
 dotnet restore apphost.cs --source https://api.nuget.org/v3/index.json
 dotnet build apphost.cs --configuration Release --no-restore
+
+# Verify selective curated-lessons & exploration/rework cohort evaluator (#14)
+node --test tests/engineering-factory/curated-lessons.test.mjs
 ```
