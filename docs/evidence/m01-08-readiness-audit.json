@@ -300,7 +300,7 @@
       "checklistState": "[ ]",
       "category": "owner-live-authorization",
       "issue": 10,
-      "requiredAction": "With Issue #105 ($0 Billing hard-stops and native Cloud Agent smoke check) and PR #168 (#5) closed/merged, land PR #170 (#6/#7 shadow-dispatch-ledger <-> work-queue-cas fencing), verify protected refs/heads/work-queue and hosted lock readiness, and record explicit owner repository-scoped live pilot authorization."
+      "requiredAction": "With Issue #105 ($0 Billing hard-stops and native Cloud Agent smoke check) and PR #168 (#5) closed/merged, land PR #170 (#6/#7 shadow-dispatch-ledger <-> work-queue-cas fencing), create protected refs/heads/work-queue, confirm hosted shadow/lock verification via FACTORY_GHAW_ENABLED=true, and verify live dispatch/admission/receipt-correlation wiring plus live cross-run work-queue state and laptop-offline recovery before recording explicit owner repository-scoped live pilot dispatch authorization."
     },
     {
       "id": "m01-08-three-live-unattended-cycles",
