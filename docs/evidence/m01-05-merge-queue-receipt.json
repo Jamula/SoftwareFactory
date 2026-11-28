@@ -81,6 +81,7 @@
   "cohortProvenance": {
     "cohort": "wave-3-supervised-merge-queue",
     "provenance": "github-timeline",
+    "headHistorySource": "pull_request-workflow-runs-verified-against-reviews-and-force-push-events",
     "windowStartIso": "2026-11-27T10:00:00.000Z",
     "windowEndIso": "2026-11-28T03:15:00.000Z",
     "sourceComplete": true,
@@ -88,7 +89,7 @@
     "unattendedIssue10Claimed": false,
     "unattendedIssue10Status": "pending-future-unattended-cloud-agent-cohort",
     "closesIssue8": false,
-    "disclosure": "Wave 3 PRs #145-#165 were merged into protected main via GitHub Native Squash Merge Queue under supervised Wave 3 coordinator/Agent-Merge sessions authenticated via user-scoped GitHub CLI. Routine coordinator touches are explicitly recorded (routineHumanTouchesCount=21, unattendedMergedCount=0, sloMet=false). This receipt proves serialized native Squash Merge Queue execution, merge_group check enforcement, parameterized queue-reread scope isolation, and deterministic latency/stage attribution, and explicitly does NOT claim unattended Issue #10 Cloud Agent completion or velocity-SLO attainment."
+    "disclosure": "Wave 3 PRs #145-#165 were merged into protected main via GitHub Native Squash Merge Queue under supervised Wave 3 coordinator/Agent-Merge sessions authenticated via user-scoped GitHub CLI. Branch-head transitions (including pre-rebase heads overwritten by force-pushes) are reconstructed from pull_request workflow_runs and cross-checked against all review commits and HeadRefForcePushedEvent records. Routine coordinator touches are explicitly recorded (routineHumanTouchesCount=21, unattendedMergedCount=0, sloMet=false). This receipt proves serialized native Squash Merge Queue execution, merge_group check enforcement, parameterized queue-reread scope isolation, and deterministic latency/stage attribution, and explicitly does NOT claim unattended Issue #10 Cloud Agent completion or velocity-SLO attainment."
   },
   "sloOptions": {
     "repositoryId": 1471342715,
@@ -125,7 +126,7 @@
       "unknownHumanTouchesCount": 0
     },
     "rework": {
-      "headChangesCount": 92,
+      "headChangesCount": 99,
       "redraftCount": 0,
       "republishCount": 0,
       "reeligibilityCount": 0,
@@ -278,9 +279,9 @@
           "parallel": true,
           "sampleCount": 21,
           "unknownCount": 0,
-          "p50Ms": 46000,
-          "p95Ms": 92000,
-          "maxMs": 98000
+          "p50Ms": 1000,
+          "p95Ms": 3000,
+          "maxMs": 11000
         },
         "linuxRuntimeMs": {
           "stage": "linuxRuntimeMs",
@@ -372,32 +373,28 @@
       "publicationEvents": [],
       "headCommits": [
         {
-          "sha": "a7e9ec86c90897975013f2626d938233cefe91bb",
+          "sha": "695827465bf3f70fcba94c5b4c59a91af45e0bc5",
           "at": 1795775016000
         },
         {
+          "sha": "889e3fc7598ed16292c9e5f82532de2f37d667a9",
+          "at": 1795775495000
+        },
+        {
+          "sha": "0e8b872bc9eefc7da92be60418281015417e0124",
+          "at": 1795775968000
+        },
+        {
+          "sha": "a7e9ec86c90897975013f2626d938233cefe91bb",
+          "at": 1795776252000
+        },
+        {
           "sha": "e290b816b5476108ddcf45094e31e2775327f62e",
-          "at": 1795813316000
-        },
-        {
-          "sha": "236e304c3691d96a29a85c591732129f5c1238cf",
-          "at": 1795813731000
-        },
-        {
-          "sha": "d58042895bc44c639fea9c86c62afc98532293c1",
-          "at": 1795813732000
-        },
-        {
-          "sha": "dbacac6541a0bca7981d2d72d1f4db27b4a97e75",
-          "at": 1795813732000
-        },
-        {
-          "sha": "340a580cadb99152bdc24401cd9cc7ac1a96c1c8",
-          "at": 1795813732000
+          "at": 1795813321000
         },
         {
           "sha": "e0095327a66ab7001211ed76418e297f3eebee85",
-          "at": 1795813732000
+          "at": 1795813777000
         }
       ],
       "eligibilityTimestamps": [
@@ -416,7 +413,7 @@
         }
       ],
       "stages": {
-        "ciQueueWaitMs": 46000,
+        "ciQueueWaitMs": 1000,
         "linuxRuntimeMs": 59000,
         "windowsRuntimeMs": 158000,
         "securityScanMs": 69000,
@@ -446,7 +443,7 @@
         },
         {
           "sha": "cb86ed2be7fb2ae89a20c3718331b0d29bc570ad",
-          "at": 1795776085000
+          "at": 1795776133000
         }
       ],
       "eligibilityTimestamps": [
@@ -465,7 +462,7 @@
         }
       ],
       "stages": {
-        "ciQueueWaitMs": 49000,
+        "ciQueueWaitMs": 1000,
         "linuxRuntimeMs": 51000,
         "windowsRuntimeMs": 152000,
         "securityScanMs": 88000,
@@ -495,35 +492,35 @@
         },
         {
           "sha": "fed9f31b8c0624ebe7bd2c86a4fd224ed12a8b5e",
-          "at": 1795775906000
+          "at": 1795775950000
         },
         {
           "sha": "f1ca347a51b17ddd28cb495b37c5c00e0214ac51",
-          "at": 1795776613000
+          "at": 1795776660000
         },
         {
           "sha": "439943ae190b9f8b05bf305c166e8022bec1a9f8",
-          "at": 1795776994000
+          "at": 1795777040000
         },
         {
           "sha": "985b3a42bd500ffff44b62b243a1732314aa82fa",
-          "at": 1795777590000
+          "at": 1795777634000
         },
         {
           "sha": "a8ff9e93f0934ffc91312cab5a832f738c407261",
-          "at": 1795778035000
+          "at": 1795778080000
         },
         {
           "sha": "79e65c16e0cba86924bcc654c42930b576638cc4",
-          "at": 1795778515000
+          "at": 1795778561000
         },
         {
           "sha": "be8f7dbfd16a0ade2a98cbf088cd62ca0184ca0e",
-          "at": 1795779076000
+          "at": 1795779121000
         },
         {
           "sha": "c1cbf3772fab6bef744076b1ca7dd439d531250b",
-          "at": 1795779695000
+          "at": 1795779740000
         }
       ],
       "eligibilityTimestamps": [
@@ -542,7 +539,7 @@
         }
       ],
       "stages": {
-        "ciQueueWaitMs": 45000,
+        "ciQueueWaitMs": 0,
         "linuxRuntimeMs": 53000,
         "windowsRuntimeMs": 145000,
         "securityScanMs": 92000,
@@ -572,19 +569,19 @@
         },
         {
           "sha": "39ef89e581b958f96373c3b96b11980387790f3d",
-          "at": 1795776080000
+          "at": 1795776189000
         },
         {
           "sha": "cbbd5cb6e860cfd9947e7e57bfef4336818a5d71",
-          "at": 1795776834000
+          "at": 1795776930000
         },
         {
           "sha": "90ed326aa3497faca1dc7cc3713d853497a064d3",
-          "at": 1795777317000
+          "at": 1795777411000
         },
         {
           "sha": "e463a2a6e0db1fde0c448bda3391804c1ce0421c",
-          "at": 1795777889000
+          "at": 1795777986000
         }
       ],
       "eligibilityTimestamps": [
@@ -603,7 +600,7 @@
         }
       ],
       "stages": {
-        "ciQueueWaitMs": 98000,
+        "ciQueueWaitMs": 1000,
         "linuxRuntimeMs": 58000,
         "windowsRuntimeMs": 149000,
         "securityScanMs": 99000,
@@ -633,43 +630,43 @@
         },
         {
           "sha": "bc255112a2d5781d35ba3e6569e406de36a755bc",
-          "at": 1795775528000
+          "at": 1795775596000
         },
         {
           "sha": "f3bda3fa0cfc40bac78fa0e63074bfc3a44dad6f",
-          "at": 1795776041000
+          "at": 1795776087000
         },
         {
           "sha": "120e2233fd0d4db8425c8414d00004cc72b706a5",
-          "at": 1795776504000
+          "at": 1795776549000
         },
         {
           "sha": "eaee53f7c025605190150b8b40eaabe975779900",
-          "at": 1795776901000
+          "at": 1795776947000
         },
         {
           "sha": "d3f0b26ce641c0a36a3dd0868eab25cde2542627",
-          "at": 1795777535000
+          "at": 1795777580000
         },
         {
           "sha": "b718b7848a084a1d6116d6f7121bc54673c3a6de",
-          "at": 1795778351000
+          "at": 1795778397000
         },
         {
           "sha": "eba97b15f33f7ba3f5f411eb2707c571f647ef37",
-          "at": 1795779185000
+          "at": 1795779230000
         },
         {
           "sha": "db4de2ba814e92c7db9789676f7de445b2edea14",
-          "at": 1795779771000
+          "at": 1795779816000
         },
         {
           "sha": "6151d779e5e8a393080436c4acaa0b8632b2cbfe",
-          "at": 1795780404000
+          "at": 1795780449000
         },
         {
           "sha": "64fa066050b30adcc1fbc1a19032a31bc01e8ccc",
-          "at": 1795780883000
+          "at": 1795780928000
         }
       ],
       "eligibilityTimestamps": [
@@ -688,7 +685,7 @@
         }
       ],
       "stages": {
-        "ciQueueWaitMs": 46000,
+        "ciQueueWaitMs": 1000,
         "linuxRuntimeMs": 75000,
         "windowsRuntimeMs": 144000,
         "securityScanMs": 85000,
@@ -718,11 +715,11 @@
         },
         {
           "sha": "c8feb7f51f48c706d80631fcd512c2dec7a540b5",
-          "at": 1795775527000
+          "at": 1795775574000
         },
         {
           "sha": "9bffe21d3769ca5a0c9fe955dc931179b0a90a9f",
-          "at": 1795776036000
+          "at": 1795776083000
         }
       ],
       "eligibilityTimestamps": [
@@ -741,7 +738,7 @@
         }
       ],
       "stages": {
-        "ciQueueWaitMs": 58000,
+        "ciQueueWaitMs": 11000,
         "linuxRuntimeMs": 61000,
         "windowsRuntimeMs": 135000,
         "securityScanMs": 98000,
@@ -771,23 +768,23 @@
         },
         {
           "sha": "ddb69a5fcae30cfdbb5045e5c8336a6a25a71874",
-          "at": 1795775655000
+          "at": 1795775701000
         },
         {
           "sha": "c3253c190b02fb7e5d616729c18a007fae782e28",
-          "at": 1795776143000
+          "at": 1795776189000
         },
         {
           "sha": "036f43c0b458c3014a14d3ce74c7188caa3dfadd",
-          "at": 1795776565000
+          "at": 1795776610000
         },
         {
           "sha": "62fbd97219e56c3424cdf1d09b618be674fc0572",
-          "at": 1795777201000
+          "at": 1795777246000
         },
         {
           "sha": "013731c1c97a6972367e57a39a51b67ed2668879",
-          "at": 1795777640000
+          "at": 1795777684000
         }
       ],
       "eligibilityTimestamps": [
@@ -806,7 +803,7 @@
         }
       ],
       "stages": {
-        "ciQueueWaitMs": 46000,
+        "ciQueueWaitMs": 2000,
         "linuxRuntimeMs": 85000,
         "windowsRuntimeMs": 125000,
         "securityScanMs": 95000,
@@ -836,11 +833,11 @@
         },
         {
           "sha": "14766150c7afb050de6563befdd7eeb12e915cc3",
-          "at": 1795775659000
+          "at": 1795775747000
         },
         {
           "sha": "fc87936e48725e47efb4732e78a2976c6947fa77",
-          "at": 1795776281000
+          "at": 1795776367000
         }
       ],
       "eligibilityTimestamps": [
@@ -859,7 +856,7 @@
         }
       ],
       "stages": {
-        "ciQueueWaitMs": 86000,
+        "ciQueueWaitMs": 0,
         "linuxRuntimeMs": 76000,
         "windowsRuntimeMs": 112000,
         "securityScanMs": 80000,
@@ -889,11 +886,11 @@
         },
         {
           "sha": "7acdb5e9b1e7872b32eb0bc92ed6ce4440985283",
-          "at": 1795776262000
+          "at": 1795776307000
         },
         {
           "sha": "51bdd926a0ce898ff7437c645d5ad1f9a400ece1",
-          "at": 1795776820000
+          "at": 1795776865000
         }
       ],
       "eligibilityTimestamps": [
@@ -912,7 +909,7 @@
         }
       ],
       "stages": {
-        "ciQueueWaitMs": 46000,
+        "ciQueueWaitMs": 1000,
         "linuxRuntimeMs": 59000,
         "windowsRuntimeMs": 112000,
         "securityScanMs": 87000,
@@ -942,15 +939,15 @@
         },
         {
           "sha": "4a7b37ebd2cb0380adea784f278b905bf20c8d07",
-          "at": 1795775737000
+          "at": 1795775810000
         },
         {
           "sha": "5504ca0dbbf60bc9f598da3935fee61272117a51",
-          "at": 1795776359000
+          "at": 1795776405000
         },
         {
           "sha": "8b183e8a97741d16063335fa4029e1ff0eb5bad0",
-          "at": 1795776748000
+          "at": 1795776794000
         }
       ],
       "eligibilityTimestamps": [
@@ -969,7 +966,7 @@
         }
       ],
       "stages": {
-        "ciQueueWaitMs": 48000,
+        "ciQueueWaitMs": 2000,
         "linuxRuntimeMs": 53000,
         "windowsRuntimeMs": 170000,
         "securityScanMs": 76000,
@@ -999,19 +996,19 @@
         },
         {
           "sha": "9e7da1aad5f87b8cc55e5784357b890bc5224de0",
-          "at": 1795776755000
+          "at": 1795776801000
         },
         {
           "sha": "35786a4647efec8333054116f363ff302c0f54fd",
-          "at": 1795778349000
+          "at": 1795778396000
         },
         {
           "sha": "d1829b9a5e5ade76ce9828c62a90a607b73a037f",
-          "at": 1795785036000
+          "at": 1795785082000
         },
         {
           "sha": "6f916c92ecbc38d3ba4f131f8ba115ecf46419ac",
-          "at": 1795785476000
+          "at": 1795785520000
         }
       ],
       "eligibilityTimestamps": [
@@ -1030,7 +1027,7 @@
         }
       ],
       "stages": {
-        "ciQueueWaitMs": 45000,
+        "ciQueueWaitMs": 1000,
         "linuxRuntimeMs": 56000,
         "windowsRuntimeMs": 138000,
         "securityScanMs": 120000,
@@ -1060,35 +1057,35 @@
         },
         {
           "sha": "d2768fc0812ec922a9776615aa146ee52def92ba",
-          "at": 1795775998000
+          "at": 1795776073000
         },
         {
           "sha": "d9920599ba918d42d856ffef3d28954a74162b81",
-          "at": 1795776966000
+          "at": 1795777089000
         },
         {
           "sha": "b13562a881f3037b282e429faf677924ce19dfe2",
-          "at": 1795777828000
+          "at": 1795777926000
         },
         {
           "sha": "f404f62740efb66cede4a56030b3e08a3acca487",
-          "at": 1795778281000
+          "at": 1795778367000
         },
         {
           "sha": "ec124fba333707c382fa463d0562c46f92a9a64d",
-          "at": 1795778873000
+          "at": 1795778964000
         },
         {
           "sha": "def480d32c6f9f6545a043f794d9c6319b9321e7",
-          "at": 1795779281000
+          "at": 1795779363000
         },
         {
           "sha": "2931da893f73cccac1ab16fd6428d8d57126ecab",
-          "at": 1795779876000
+          "at": 1795779987000
         },
         {
           "sha": "8c9cb3c6f57a262604807c2ce28b5be3938b80b6",
-          "at": 1795780504000
+          "at": 1795780596000
         }
       ],
       "eligibilityTimestamps": [
@@ -1107,7 +1104,7 @@
         }
       ],
       "stages": {
-        "ciQueueWaitMs": 92000,
+        "ciQueueWaitMs": 0,
         "linuxRuntimeMs": 73000,
         "windowsRuntimeMs": 263000,
         "securityScanMs": 93000,
@@ -1137,27 +1134,23 @@
         },
         {
           "sha": "5d9666a9f3875cba3afbeabc94d08959aaa9381d",
-          "at": 1795832973000
+          "at": 1795832977000
         },
         {
-          "sha": "b0de2ca9bf919ab496e3cf0b08853b2a81857244",
-          "at": 1795833888000
-        },
-        {
-          "sha": "6a272c5c45f36fd7aea011b83aa37b39579d6b52",
-          "at": 1795833888000
+          "sha": "e588e30d9affc6030edb83154f9a3a118e3219e4",
+          "at": 1795833504000
         },
         {
           "sha": "eb189d36444b3061e5bf0099432b3574478466d4",
-          "at": 1795833996000
+          "at": 1795834042000
         },
         {
           "sha": "137fcf712d8f80fc20696120255f8780460aa317",
-          "at": 1795834546000
+          "at": 1795834593000
         },
         {
           "sha": "69a128165e57e1d4a74c0dd7b29fd482d66688d8",
-          "at": 1795834963000
+          "at": 1795835009000
         }
       ],
       "eligibilityTimestamps": [
@@ -1176,7 +1169,7 @@
         }
       ],
       "stages": {
-        "ciQueueWaitMs": 48000,
+        "ciQueueWaitMs": 2000,
         "linuxRuntimeMs": 51000,
         "windowsRuntimeMs": 145000,
         "securityScanMs": 118000,
@@ -1206,7 +1199,7 @@
         },
         {
           "sha": "613d890bf1fe875712efd365825a983f536212e5",
-          "at": 1795776695000
+          "at": 1795776742000
         }
       ],
       "eligibilityTimestamps": [
@@ -1225,7 +1218,7 @@
         }
       ],
       "stages": {
-        "ciQueueWaitMs": 46000,
+        "ciQueueWaitMs": 0,
         "linuxRuntimeMs": 54000,
         "windowsRuntimeMs": 169000,
         "securityScanMs": 86000,
@@ -1255,19 +1248,19 @@
         },
         {
           "sha": "e65275a23391b598612fa4f2304034de25b82c5e",
-          "at": 1795776639000
+          "at": 1795776685000
         },
         {
           "sha": "1f0dee4f09633249dd686389b25b516588d35500",
-          "at": 1795777112000
+          "at": 1795777157000
         },
         {
           "sha": "95e1435a7d8762bb197fcd12ee1de05f5d6497f9",
-          "at": 1795777604000
+          "at": 1795777648000
         },
         {
           "sha": "ede5535f6ea55e8036e6d90801d103aeda48cd22",
-          "at": 1795778089000
+          "at": 1795778137000
         }
       ],
       "eligibilityTimestamps": [
@@ -1286,7 +1279,7 @@
         }
       ],
       "stages": {
-        "ciQueueWaitMs": 47000,
+        "ciQueueWaitMs": 0,
         "linuxRuntimeMs": 303000,
         "windowsRuntimeMs": 187000,
         "securityScanMs": 104000,
@@ -1316,19 +1309,19 @@
         },
         {
           "sha": "b06fbf7aa0174f51aeea4068dbbe55a3f5b20db6",
-          "at": 1795776754000
+          "at": 1795776799000
         },
         {
           "sha": "dc27934bb6f83362075ffe84f29ca6295d2175f8",
-          "at": 1795777960000
+          "at": 1795778007000
         },
         {
           "sha": "13e5ccdf48e63df6477183ee9df5be39ca5c6eb1",
-          "at": 1795778392000
+          "at": 1795778438000
         },
         {
           "sha": "012b086cd06c6ee920667f0d841dfd84414b9039",
-          "at": 1795778909000
+          "at": 1795778953000
         }
       ],
       "eligibilityTimestamps": [
@@ -1347,7 +1340,7 @@
         }
       ],
       "stages": {
-        "ciQueueWaitMs": 47000,
+        "ciQueueWaitMs": 3000,
         "linuxRuntimeMs": 61000,
         "windowsRuntimeMs": 147000,
         "securityScanMs": 93000,
@@ -1372,24 +1365,44 @@
       "publicationEvents": [],
       "headCommits": [
         {
-          "sha": "129f9dc710b858eddb2c9808cb980df7d708b3a1",
+          "sha": "8031e5e111700f9756606de629876efacff25376",
           "at": 1795777064000
         },
         {
+          "sha": "6e2bad2f6d1c2ec6900ebd69c1c0e01c1880b2b7",
+          "at": 1795777790000
+        },
+        {
+          "sha": "a3ded109f6e4842b9346d5ac93a1f24246b30455",
+          "at": 1795778338000
+        },
+        {
+          "sha": "38ad39718850b89f7c860bde1ebb29e4c894370b",
+          "at": 1795778906000
+        },
+        {
+          "sha": "4e71d80651149147e80931ac017faf9b18c1dcbc",
+          "at": 1795779719000
+        },
+        {
+          "sha": "129f9dc710b858eddb2c9808cb980df7d708b3a1",
+          "at": 1795780467000
+        },
+        {
           "sha": "4ab176fc30deb1b3d3f3104c250fd1e88d9d826a",
-          "at": 1795833158000
+          "at": 1795833160000
         },
         {
           "sha": "a50c8f7e88de3d75ba0315cd1d4a25910aae3968",
-          "at": 1795833764000
+          "at": 1795833767000
         },
         {
           "sha": "038b8b173b94c6aaf4059b507c3ad85b2e3b18bc",
-          "at": 1795834239000
+          "at": 1795834286000
         },
         {
           "sha": "82c2052c4f98b54d752fb083d03ad74e8ce9efcc",
-          "at": 1795834760000
+          "at": 1795834807000
         }
       ],
       "eligibilityTimestamps": [
@@ -1408,7 +1421,7 @@
         }
       ],
       "stages": {
-        "ciQueueWaitMs": 48000,
+        "ciQueueWaitMs": 1000,
         "linuxRuntimeMs": 61000,
         "windowsRuntimeMs": 136000,
         "securityScanMs": 104000,
@@ -1433,36 +1446,40 @@
       "publicationEvents": [],
       "headCommits": [
         {
-          "sha": "e818fb6258f453bd9d4296843aaa7ace717a575a",
+          "sha": "497bb8297a555d38c338bfeebf7f2fdc3e0f9f92",
           "at": 1795777518000
         },
         {
-          "sha": "60cccf05d4fb99ef298552c2f8c37dba477b6d21",
-          "at": 1795814870000
+          "sha": "599bb47c9909b1327ad67fd8d485590b79c54ef3",
+          "at": 1795778628000
         },
         {
-          "sha": "240688e52c2c96321057c61ef6e0b50bacd6811c",
-          "at": 1795814870000
+          "sha": "5056e9d60f4f705a3ce9ec554347ed522ddb0693",
+          "at": 1795779430000
         },
         {
-          "sha": "9b2062ef43d1e80d790a432c2b25d148c111c597",
-          "at": 1795814870000
+          "sha": "ef3ce061b6d564ff73f286f0a11d24c16aa87cce",
+          "at": 1795780161000
         },
         {
-          "sha": "0af6855d50c7cb302ca3ba08a0f94d730eaf100c",
-          "at": 1795814870000
+          "sha": "075ad9fb1ef1c9bc6b76bed6e5bc3e8fa92b9299",
+          "at": 1795780705000
+        },
+        {
+          "sha": "1bd32d0cc1ac3e4e7f2482945264e7e9d7054959",
+          "at": 1795781408000
         },
         {
           "sha": "d138861c9fa9adfdec678dafeb0937502b17bce4",
-          "at": 1795814871000
+          "at": 1795814934000
         },
         {
           "sha": "68892cdebda6d7a7c89b8f2396aa47bd195f9f18",
-          "at": 1795815581000
+          "at": 1795815628000
         },
         {
           "sha": "226f5f5765875fe08cebf384f4d61cef7bcd426c",
-          "at": 1795816303000
+          "at": 1795816348000
         }
       ],
       "eligibilityTimestamps": [
@@ -1481,7 +1498,7 @@
         }
       ],
       "stages": {
-        "ciQueueWaitMs": 46000,
+        "ciQueueWaitMs": 1000,
         "linuxRuntimeMs": 112000,
         "windowsRuntimeMs": 136000,
         "securityScanMs": 79000,
@@ -1506,20 +1523,24 @@
       "publicationEvents": [],
       "headCommits": [
         {
-          "sha": "dbb2a4e15595c9e54095b5eec9ded502f771e2e3",
+          "sha": "9b3de42c0237642c05746bed2b461a7422b410f5",
           "at": 1795778093000
         },
         {
+          "sha": "dbb2a4e15595c9e54095b5eec9ded502f771e2e3",
+          "at": 1795779430000
+        },
+        {
           "sha": "5fc48fdb68f939750ff2c15541e9bc4bb8cea7b0",
-          "at": 1795780458000
+          "at": 1795780503000
         },
         {
           "sha": "8c0dbffa76a1675abb9b66483207132dc6613201",
-          "at": 1795781335000
+          "at": 1795781379000
         },
         {
           "sha": "d01b35b3276b7d38378b7a25b6ae76629ae87019",
-          "at": 1795782166000
+          "at": 1795782211000
         }
       ],
       "eligibilityTimestamps": [
@@ -1540,7 +1561,7 @@
         }
       ],
       "stages": {
-        "ciQueueWaitMs": 46000,
+        "ciQueueWaitMs": 1000,
         "linuxRuntimeMs": 57000,
         "windowsRuntimeMs": 192000,
         "securityScanMs": 109000,
@@ -1570,31 +1591,31 @@
         },
         {
           "sha": "23db9aa8006fb2a13ef91a1d9b5d8688be6f5f3a",
-          "at": 1795780707000
+          "at": 1795780751000
         },
         {
           "sha": "382546e4a2f483a9b9a7b46737d15c300cf23b0a",
-          "at": 1795781844000
+          "at": 1795781889000
         },
         {
           "sha": "520bc7898cb9135fbb02fc7a3f1cba72799e4c32",
-          "at": 1795782903000
+          "at": 1795782947000
         },
         {
           "sha": "882518da091dd415fccd2098c326f0652cecdd5b",
-          "at": 1795783760000
+          "at": 1795783805000
         },
         {
           "sha": "9242000a655c6f8be2feb0d93a95b4a6346606eb",
-          "at": 1795784367000
+          "at": 1795784412000
         },
         {
           "sha": "bcc2a4e50634f92b283545ca08758aebfff55b2b",
-          "at": 1795785080000
+          "at": 1795785124000
         },
         {
           "sha": "24b40b486c48807ff622c8278baacb21d47802c4",
-          "at": 1795785788000
+          "at": 1795785833000
         }
       ],
       "eligibilityTimestamps": [
@@ -1613,7 +1634,7 @@
         }
       ],
       "stages": {
-        "ciQueueWaitMs": 45000,
+        "ciQueueWaitMs": 0,
         "linuxRuntimeMs": 76000,
         "windowsRuntimeMs": 192000,
         "securityScanMs": 85000,
@@ -1638,12 +1659,20 @@
       "publicationEvents": [],
       "headCommits": [
         {
-          "sha": "eb7ee38ddda3ed20abcd0c449feb4049f3519d64",
+          "sha": "055d8373c0e9b8a88eaf378622d9a3ec5b7fcd24",
           "at": 1795780204000
         },
         {
+          "sha": "b8c6299c9bb0b38760f39e06ac84fdc8990a4724",
+          "at": 1795781181000
+        },
+        {
+          "sha": "eb7ee38ddda3ed20abcd0c449feb4049f3519d64",
+          "at": 1795781816000
+        },
+        {
           "sha": "5f397eacfdafae41511c5b47820aa252013ca335",
-          "at": 1795782316000
+          "at": 1795782360000
         }
       ],
       "eligibilityTimestamps": [
@@ -1662,7 +1691,7 @@
         }
       ],
       "stages": {
-        "ciQueueWaitMs": 46000,
+        "ciQueueWaitMs": 2000,
         "linuxRuntimeMs": 51000,
         "windowsRuntimeMs": 165000,
         "securityScanMs": 102000,
@@ -3114,7 +3143,8 @@
   "queueRereadSnapshots": [
     {
       "id": "sf-pr-161-merge-group-position-1",
-      "note": "Replay snapshot bound to real PR #161 head/base during merge_group run 46101393942 (transient MergeQueueEntry ID normalized for offline replay after merge)",
+      "syntheticFixture": false,
+      "note": "Recorded PR #161 head/pullBaseOid/queueBaseOid during position-1 merge_group run 46101393942 (pullBaseOid === queueBaseOid === 1be6dc1...; only transient MergeQueueEntry ID is normalized after merge)",
       "scope": {
         "repositoryId": 1471342715,
         "repository": "Jamula/SoftwareFactory",
@@ -3178,8 +3208,9 @@
       }
     },
     {
-      "id": "sf-pr-157-merge-group-bound-base",
-      "note": "Replay snapshot bound to real PR #157 head and merge_group base 1f63648f991325ac6e8c5d33121b53f907f9e079 during run 46101395492 (transient MergeQueueEntry ID normalized for offline replay after merge)",
+      "id": "sf-pr-152-merge-group-position-1",
+      "syntheticFixture": false,
+      "note": "Recorded PR #152 head/pullBaseOid/queueBaseOid at position 1 on cec2745... (pullBaseOid === queueBaseOid; only transient MergeQueueEntry ID is normalized after merge)",
       "scope": {
         "repositoryId": 1471342715,
         "repository": "Jamula/SoftwareFactory",
@@ -3189,9 +3220,9 @@
         "repositoryId": 1471342715,
         "repository": "Jamula/SoftwareFactory",
         "branch": "main",
-        "number": 157,
-        "expectedHead": "69a128165e57e1d4a74c0dd7b29fd482d66688d8",
-        "expectedBase": "1f63648f991325ac6e8c5d33121b53f907f9e079"
+        "number": 152,
+        "expectedHead": "fc87936e48725e47efb4732e78a2976c6947fa77",
+        "expectedBase": "cec2745b7b8a21e77ad9f2839d4255d42305d419"
       },
       "reread": {
         "repositoryId": 1471342715,
@@ -3201,22 +3232,22 @@
         "pull": {
           "repositoryId": 1471342715,
           "repository": "Jamula/SoftwareFactory",
-          "number": 157,
+          "number": 152,
           "baseBranch": "main",
-          "base": "1f63648f991325ac6e8c5d33121b53f907f9e079",
-          "head": "69a128165e57e1d4a74c0dd7b29fd482d66688d8",
+          "base": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
+          "head": "fc87936e48725e47efb4732e78a2976c6947fa77",
           "state": "OPEN",
           "draft": false,
-          "mergeQueueEntryId": "PRME_replay_sf_157_46101395492"
+          "mergeQueueEntryId": "PRME_replay_sf_152_head"
         },
         "entry": {
           "repositoryId": 1471342715,
           "repository": "Jamula/SoftwareFactory",
           "branch": "main",
-          "id": "PRME_replay_sf_157_46101395492",
-          "pullRequestNumber": 157,
-          "head": "69a128165e57e1d4a74c0dd7b29fd482d66688d8",
-          "base": "1f63648f991325ac6e8c5d33121b53f907f9e079",
+          "id": "PRME_replay_sf_152_head",
+          "pullRequestNumber": 152,
+          "head": "fc87936e48725e47efb4732e78a2976c6947fa77",
+          "base": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
           "state": "LOCKED",
           "position": 1,
           "jump": false
@@ -3234,16 +3265,74 @@
         "repository": "Jamula/SoftwareFactory",
         "repositoryId": 1471342715,
         "branch": "main",
-        "number": 157,
-        "head": "69a128165e57e1d4a74c0dd7b29fd482d66688d8",
-        "base": "1f63648f991325ac6e8c5d33121b53f907f9e079",
-        "queueEntryId": "PRME_replay_sf_157_46101395492",
+        "number": 152,
+        "head": "fc87936e48725e47efb4732e78a2976c6947fa77",
+        "base": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
+        "queueEntryId": "PRME_replay_sf_152_head",
         "queueState": "LOCKED",
         "position": 1
       }
     },
     {
+      "id": "sf-pr-157-recorded-speculative-train-position-2",
+      "syntheticFixture": false,
+      "note": "Preserves recorded PR #157 pullBaseOid (1be6dc1...) and speculative position-2 queueBaseOid (1f63648... from PR #161 ahead in the train during run 46101395492), returning QUEUE_BASE_MISMATCH rather than substituting pull.base",
+      "scope": {
+        "repositoryId": 1471342715,
+        "repository": "Jamula/SoftwareFactory",
+        "defaultBranch": "main"
+      },
+      "intent": {
+        "repositoryId": 1471342715,
+        "repository": "Jamula/SoftwareFactory",
+        "branch": "main",
+        "number": 157,
+        "expectedHead": "69a128165e57e1d4a74c0dd7b29fd482d66688d8",
+        "expectedBase": "1be6dc1efb991d02637c334e6b6d3dda1530d6aa"
+      },
+      "reread": {
+        "repositoryId": 1471342715,
+        "repository": "Jamula/SoftwareFactory",
+        "branch": "main",
+        "stop": false,
+        "pull": {
+          "repositoryId": 1471342715,
+          "repository": "Jamula/SoftwareFactory",
+          "number": 157,
+          "baseBranch": "main",
+          "base": "1be6dc1efb991d02637c334e6b6d3dda1530d6aa",
+          "head": "69a128165e57e1d4a74c0dd7b29fd482d66688d8",
+          "state": "OPEN",
+          "draft": false,
+          "mergeQueueEntryId": "PRME_replay_sf_157_46101395492"
+        },
+        "entry": {
+          "repositoryId": 1471342715,
+          "repository": "Jamula/SoftwareFactory",
+          "branch": "main",
+          "id": "PRME_replay_sf_157_46101395492",
+          "pullRequestNumber": 157,
+          "head": "69a128165e57e1d4a74c0dd7b29fd482d66688d8",
+          "base": "1f63648f991325ac6e8c5d33121b53f907f9e079",
+          "state": "QUEUED",
+          "position": 2,
+          "jump": false
+        }
+      },
+      "expected": {
+        "shadow": true,
+        "evidenceComplete": false,
+        "queueObserved": false,
+        "mergeEligible": false,
+        "liveQueueWrite": false,
+        "liveMerge": false,
+        "dependentWorkAllowed": false,
+        "reason": "QUEUE_BASE_MISMATCH"
+      }
+    },
+    {
       "id": "consumer-familytree-parameterized-scope",
+      "syntheticFixture": true,
       "note": "Synthetic shadow queue-reread fixture proving parameterized scope binding for Jamula/FamilyTree (repositoryId 1467877692)",
       "scope": {
         "repositoryId": 1467877692,
@@ -3309,6 +3398,7 @@
     },
     {
       "id": "consumer-spellbook-parameterized-scope",
+      "syntheticFixture": true,
       "note": "Synthetic shadow queue-reread fixture proving parameterized scope binding for Jamula/Spellbook (repositoryId 1448979947)",
       "scope": {
         "repositoryId": 1448979947,
@@ -3389,9 +3479,9 @@
           "repositoryId": 1471342715,
           "repository": "Jamula/SoftwareFactory",
           "branch": "main",
-          "number": 157,
-          "expectedHead": "69a128165e57e1d4a74c0dd7b29fd482d66688d8",
-          "expectedBase": "1f63648f991325ac6e8c5d33121b53f907f9e079"
+          "number": 161,
+          "expectedHead": "82c2052c4f98b54d752fb083d03ad74e8ce9efcc",
+          "expectedBase": "1be6dc1efb991d02637c334e6b6d3dda1530d6aa"
         },
         "reread": {
           "repositoryId": 1471342715,
@@ -3401,22 +3491,22 @@
           "pull": {
             "repositoryId": 1471342715,
             "repository": "Jamula/SoftwareFactory",
-            "number": 157,
+            "number": 161,
             "baseBranch": "main",
-            "base": "1f63648f991325ac6e8c5d33121b53f907f9e079",
+            "base": "1be6dc1efb991d02637c334e6b6d3dda1530d6aa",
             "head": "ffffffffffffffffffffffffffffffffffffffff",
             "state": "OPEN",
             "draft": false,
-            "mergeQueueEntryId": "PRME_replay_sf_157_46101395492"
+            "mergeQueueEntryId": "PRME_replay_sf_161_46101393942"
           },
           "entry": {
             "repositoryId": 1471342715,
             "repository": "Jamula/SoftwareFactory",
             "branch": "main",
-            "id": "PRME_replay_sf_157_46101395492",
-            "pullRequestNumber": 157,
-            "head": "69a128165e57e1d4a74c0dd7b29fd482d66688d8",
-            "base": "1f63648f991325ac6e8c5d33121b53f907f9e079",
+            "id": "PRME_replay_sf_161_46101393942",
+            "pullRequestNumber": 161,
+            "head": "82c2052c4f98b54d752fb083d03ad74e8ce9efcc",
+            "base": "1be6dc1efb991d02637c334e6b6d3dda1530d6aa",
             "state": "LOCKED",
             "position": 1,
             "jump": false
@@ -3439,9 +3529,9 @@
           "repositoryId": 1471342715,
           "repository": "Jamula/SoftwareFactory",
           "branch": "main",
-          "number": 157,
-          "expectedHead": "69a128165e57e1d4a74c0dd7b29fd482d66688d8",
-          "expectedBase": "1f63648f991325ac6e8c5d33121b53f907f9e079"
+          "number": 161,
+          "expectedHead": "82c2052c4f98b54d752fb083d03ad74e8ce9efcc",
+          "expectedBase": "1be6dc1efb991d02637c334e6b6d3dda1530d6aa"
         },
         "reread": {
           "repositoryId": 1471342715,
@@ -3451,22 +3541,22 @@
           "pull": {
             "repositoryId": 1471342715,
             "repository": "Jamula/SoftwareFactory",
-            "number": 157,
+            "number": 161,
             "baseBranch": "main",
-            "base": "1f63648f991325ac6e8c5d33121b53f907f9e079",
-            "head": "69a128165e57e1d4a74c0dd7b29fd482d66688d8",
+            "base": "1be6dc1efb991d02637c334e6b6d3dda1530d6aa",
+            "head": "82c2052c4f98b54d752fb083d03ad74e8ce9efcc",
             "state": "OPEN",
             "draft": false,
-            "mergeQueueEntryId": "PRME_replay_sf_157_46101395492"
+            "mergeQueueEntryId": "PRME_replay_sf_161_46101393942"
           },
           "entry": {
             "repositoryId": 1471342715,
             "repository": "Jamula/SoftwareFactory",
             "branch": "main",
-            "id": "PRME_replay_sf_157_46101395492",
-            "pullRequestNumber": 157,
+            "id": "PRME_replay_sf_161_46101393942",
+            "pullRequestNumber": 161,
             "head": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
-            "base": "1f63648f991325ac6e8c5d33121b53f907f9e079",
+            "base": "1be6dc1efb991d02637c334e6b6d3dda1530d6aa",
             "state": "LOCKED",
             "position": 1,
             "jump": false
@@ -3477,7 +3567,7 @@
         "expectedMergeEligible": false
       },
       {
-        "id": "speculative-train-base-drift-reread",
+        "id": "speculative-train-pull-base-behind-expected-base",
         "category": "stale-base",
         "evaluator": "reconcileQueueSnapshot",
         "scope": {
@@ -3491,7 +3581,7 @@
           "branch": "main",
           "number": 157,
           "expectedHead": "69a128165e57e1d4a74c0dd7b29fd482d66688d8",
-          "expectedBase": "1be6dc1efb991d02637c334e6b6d3dda1530d6aa"
+          "expectedBase": "1f63648f991325ac6e8c5d33121b53f907f9e079"
         },
         "reread": {
           "repositoryId": 1471342715,
@@ -3517,12 +3607,12 @@
             "pullRequestNumber": 157,
             "head": "69a128165e57e1d4a74c0dd7b29fd482d66688d8",
             "base": "1f63648f991325ac6e8c5d33121b53f907f9e079",
-            "state": "LOCKED",
+            "state": "QUEUED",
             "position": 2,
             "jump": false
           }
         },
-        "expectedReason": "QUEUE_BASE_MISMATCH",
+        "expectedReason": "BASE_CHANGED",
         "expectedQueueObserved": false,
         "expectedMergeEligible": false
       },
@@ -3610,9 +3700,9 @@
           "repositoryId": 1471342715,
           "repository": "Jamula/SoftwareFactory",
           "branch": "main",
-          "number": 157,
-          "expectedHead": "69a128165e57e1d4a74c0dd7b29fd482d66688d8",
-          "expectedBase": "1f63648f991325ac6e8c5d33121b53f907f9e079"
+          "number": 161,
+          "expectedHead": "82c2052c4f98b54d752fb083d03ad74e8ce9efcc",
+          "expectedBase": "1be6dc1efb991d02637c334e6b6d3dda1530d6aa"
         },
         "reread": {
           "repositoryId": 1471342715,
@@ -3622,22 +3712,22 @@
           "pull": {
             "repositoryId": 1471342715,
             "repository": "Jamula/SoftwareFactory",
-            "number": 157,
+            "number": 161,
             "baseBranch": "main",
-            "base": "1f63648f991325ac6e8c5d33121b53f907f9e079",
-            "head": "69a128165e57e1d4a74c0dd7b29fd482d66688d8",
+            "base": "1be6dc1efb991d02637c334e6b6d3dda1530d6aa",
+            "head": "82c2052c4f98b54d752fb083d03ad74e8ce9efcc",
             "state": "OPEN",
             "draft": false,
-            "mergeQueueEntryId": "PRME_replay_sf_157_46101395492"
+            "mergeQueueEntryId": "PRME_replay_sf_161_46101393942"
           },
           "entry": {
             "repositoryId": 1471342715,
             "repository": "Jamula/SoftwareFactory",
             "branch": "main",
-            "id": "PRME_replay_sf_157_46101395492",
-            "pullRequestNumber": 157,
-            "head": "69a128165e57e1d4a74c0dd7b29fd482d66688d8",
-            "base": "1f63648f991325ac6e8c5d33121b53f907f9e079",
+            "id": "PRME_replay_sf_161_46101393942",
+            "pullRequestNumber": 161,
+            "head": "82c2052c4f98b54d752fb083d03ad74e8ce9efcc",
+            "base": "1be6dc1efb991d02637c334e6b6d3dda1530d6aa",
             "state": "UNMERGEABLE",
             "position": 1,
             "jump": false
@@ -3660,9 +3750,9 @@
           "repositoryId": 1471342715,
           "repository": "Jamula/SoftwareFactory",
           "branch": "main",
-          "number": 157,
-          "expectedHead": "69a128165e57e1d4a74c0dd7b29fd482d66688d8",
-          "expectedBase": "1f63648f991325ac6e8c5d33121b53f907f9e079"
+          "number": 161,
+          "expectedHead": "82c2052c4f98b54d752fb083d03ad74e8ce9efcc",
+          "expectedBase": "1be6dc1efb991d02637c334e6b6d3dda1530d6aa"
         },
         "reread": {
           "repositoryId": 1471342715,
@@ -3672,22 +3762,22 @@
           "pull": {
             "repositoryId": 1471342715,
             "repository": "Jamula/SoftwareFactory",
-            "number": 157,
+            "number": 161,
             "baseBranch": "main",
-            "base": "1f63648f991325ac6e8c5d33121b53f907f9e079",
-            "head": "69a128165e57e1d4a74c0dd7b29fd482d66688d8",
+            "base": "1be6dc1efb991d02637c334e6b6d3dda1530d6aa",
+            "head": "82c2052c4f98b54d752fb083d03ad74e8ce9efcc",
             "state": "OPEN",
             "draft": false,
-            "mergeQueueEntryId": "PRME_replay_sf_157_46101395492"
+            "mergeQueueEntryId": "PRME_replay_sf_161_46101393942"
           },
           "entry": {
             "repositoryId": 1471342715,
             "repository": "Jamula/SoftwareFactory",
             "branch": "main",
-            "id": "PRME_replay_sf_157_46101395492",
-            "pullRequestNumber": 157,
-            "head": "69a128165e57e1d4a74c0dd7b29fd482d66688d8",
-            "base": "1f63648f991325ac6e8c5d33121b53f907f9e079",
+            "id": "PRME_replay_sf_161_46101393942",
+            "pullRequestNumber": 161,
+            "head": "82c2052c4f98b54d752fb083d03ad74e8ce9efcc",
+            "base": "1be6dc1efb991d02637c334e6b6d3dda1530d6aa",
             "state": "LOCKED",
             "position": 1,
             "jump": true

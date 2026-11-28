@@ -254,8 +254,13 @@ test('validates m01-05-merge-queue-receipt.json against queue-reread, merge-queu
  assert.equal(cohort.sloMet,false);
  assert.equal(cohort.counts.unattendedMergedCount,0);
  assert.equal(cohort.routineHumanTouchesCount,21);
+ assert.deepEqual(JSON.parse(JSON.stringify(cohort.rework)),receipt.sloEvaluationSummary.rework);
  assert.deepEqual(JSON.parse(JSON.stringify(cohort.metrics)),receipt.sloEvaluationSummary.metrics);
  assert.deepEqual(JSON.parse(JSON.stringify(cohort.stageAttribution)),receipt.sloEvaluationSummary.stageAttribution);
+
+ const pr145Sample=receipt.sloSamples.find(s=>s.prNumber===145);
+ assert.ok(pr145Sample.headCommits.some(h=>h.sha.startsWith('695827465b')));
+ assert.ok(pr145Sample.headCommits.some(h=>h.sha.startsWith('889e3fc759')));
 
  const requiredMg=['Factory validation','Windows Aspire runtime','.NET MAF specialist agents','Reusable replay smoke'];
  assert.deepEqual(receipt.requiredMergeGroupWorkflows,requiredMg);
@@ -279,8 +284,15 @@ test('validates m01-05-merge-queue-receipt.json against queue-reread, merge-queu
  for(const snap of receipt.queueRereadSnapshots){
   const actual=reconcileQueueSnapshot(snap.intent,snap.reread,snap.scope);
   assert.deepEqual(actual,snap.expected);
-  if(snap.scope.repositoryId===DEFAULT_QUEUE_SCOPE.repositoryId)
+  if(snap.scope.repositoryId===DEFAULT_QUEUE_SCOPE.repositoryId){
    assert.deepEqual(reconcileQueueSnapshot(snap.intent,snap.reread),snap.expected);
+   if(snap.syntheticFixture===false){
+    const recordedMg=receipt.mergeGroupCheckReceipts.find(m=>m.prNumber===snap.intent.number);
+    assert.equal(snap.reread.pull.base,recordedMg.pullBaseOid);
+    assert.equal(snap.reread.entry.base,recordedMg.queueBaseOid);
+    assert.equal(snap.reread.pull.head,recordedMg.headRefOid);
+   }
+  }
  }
 
  assert.equal(receipt.negativeCaseVerification.allPassedFailClosed,true);
