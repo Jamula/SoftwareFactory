@@ -26,10 +26,14 @@
     "zeroGitOid": "0000000000000000000000000000000000000000",
     "maxLeaseTtlMs": 3600000,
     "lockWorkflowPath": ".github/workflows/factory-orchestrator.lock.yml",
-    "evaluatedCommitLockSha256": "9c1b723d338fff43d64c3b518616f7a635b9dce330e72aa2e29f7c8b67bb445f"
+    "evaluatedCommitLockSha256": "9c1b723d338fff43d64c3b518616f7a635b9dce330e72aa2e29f7c8b67bb445f",
+    "exercisedBackend": "local-in-memory-cas-snapshot-model",
+    "upstreamQueueCommitConformanceVerified": false
   },
   "provenance": {
     "captureKind": "deterministic-offline-cas-simulation",
+    "exercisedBackend": "SoftwareFactory local in-memory CAS state-snapshot model (createInMemoryWorkQueueRefStore / simulateDurableCasLifecycle)",
+    "upstreamGhAwProtocolConformanceVerified": false,
     "syntheticSimulationFixtures": true,
     "shadow": true,
     "liveDispatch": false,
@@ -38,7 +42,7 @@
     "factoryGhawEnabled": false,
     "liveRefProvisioningStatus": "optional-deferred-until-factory-ghaw-enabled",
     "blocksDirectCopilotDispatchIssue10": false,
-    "disclosure": "Deterministic offline acceptance receipt generated from tools/engineering-coordinator/work-queue-cas.mjs (simulateDurableCasLifecycle, claimWorkQueueLease, renewWorkQueueLease, settleWorkQueueLease, reconcileWorkQueueRunStates, planUnifiedWorkQueue) and tools/engineering-coordinator/planner.mjs on main @ ec438f54088f30856c2df6ff626e894dde2a0100. Per owner-approved M01 streamlined exit update (2026-11-28 UTC on #6), live ruleset-protected refs/heads/work-queue branch provisioning and live hosted CAS contention runs are optional/deferred until unattended gh-aw cron/event scheduling (FACTORY_GHAW_ENABLED=true) is enabled and do not block direct @copilot issue dispatch in #10."
+    "disclosure": "Deterministic offline acceptance receipt generated from SoftwareFactory's local in-memory CAS state-snapshot model in tools/engineering-coordinator/work-queue-cas.mjs (createInMemoryWorkQueueRefStore, simulateDurableCasLifecycle, claimWorkQueueLease, renewWorkQueueLease, settleWorkQueueLease, reconcileWorkQueueRunStates, planUnifiedWorkQueue) and tools/engineering-coordinator/planner.mjs on main @ ec438f54088f30856c2df6ff626e894dde2a0100. Upstream github/gh-aw QueueCommit transaction conformance (request, actor, operations in specs/work-queue/transactions.tsp) and live Git object-store ref updates are unverified in this offline snapshot replay (upstreamGhAwProtocolConformanceVerified: false). Per owner-approved M01 streamlined exit update (2026-11-28 UTC on #6), live ruleset-protected refs/heads/work-queue branch provisioning and live hosted CAS contention runs are optional/deferred until unattended gh-aw cron/event scheduling (FACTORY_GHAW_ENABLED=true) is enabled and do not block direct @copilot issue dispatch in #10."
   },
   "verifiedInvariants": {
     "atomicNonForceCasAcquisition": {
@@ -334,11 +338,15 @@
         "tools/engineering-coordinator/planner.mjs",
         "tools/engineering-coordinator/coordinator.mjs"
       ],
-      "backingEngine": "Git object database + non-force Compare-and-Swap on ruleset-protected refs/heads/work-queue (gh-aw tools.work-queue protocol v3)",
+      "exercisedBackend": "SoftwareFactory local in-memory CAS state-snapshot model (createInMemoryWorkQueueRefStore / simulateDurableCasLifecycle)",
+      "targetHostedBackingEngine": "Git object database + non-force Compare-and-Swap on ruleset-protected refs/heads/work-queue",
+      "upstreamGhAwProtocolConformanceVerified": false,
+      "upstreamConformanceNote": "Unverified in offline snapshot replay: upstream github/gh-aw specs/work-queue/transactions.tsp QueueCommit (request, actor, operations) wire conformance and live Git ref storage are not exercised here.",
       "incrementalMonthlyCostUsd": 0,
       "zeroExternalDatabaseOrDaemon": true,
       "laptopOfflineSafe": true,
       "crossRunHostedDurable": true,
+      "liveHostedGitRefVerified": false,
       "preventsFreshRunnerSplitBrainAlone": true,
       "escalationContingency": "Cloudflare Durable Objects (Free plan) only under separate owner approval if git-ref CAS contention ever warrants it; Temporal and LangGraph excluded.",
       "crossRunRehydrationDemonstration": {

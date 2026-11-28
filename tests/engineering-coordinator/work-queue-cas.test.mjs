@@ -2932,7 +2932,11 @@ test('m01-04-durable-cas-recovery.json deterministically replays protocol v3 git
   assert.equal(receipt.ghAwContract.protectedRef, PROTECTED_WORK_QUEUE_REF);
   assert.equal(receipt.ghAwContract.zeroGitOid, ZERO_GIT_OID);
   assert.equal(receipt.ghAwContract.maxLeaseTtlMs, MAX_LEASE_TTL_MS);
+  assert.equal(receipt.ghAwContract.exercisedBackend, 'local-in-memory-cas-snapshot-model');
+  assert.equal(receipt.ghAwContract.upstreamQueueCommitConformanceVerified, false);
 
+  assert.equal(receipt.provenance.upstreamGhAwProtocolConformanceVerified, false);
+  assert.match(receipt.provenance.exercisedBackend, /createInMemoryWorkQueueRefStore/);
   assert.equal(receipt.provenance.shadow, true);
   assert.equal(receipt.provenance.liveDispatch, false);
   assert.equal(receipt.provenance.liveMerge, false);
@@ -3120,6 +3124,9 @@ test('m01-04-durable-cas-recovery.json deterministically replays protocol v3 git
   assert.equal(comparison.ephemeralRunnerLocalSqlite.backingEngine, 'node:sqlite');
   assert.equal(comparison.ephemeralRunnerLocalSqlite.crossRunHostedDurable, false);
   assert.equal(comparison.ephemeralRunnerLocalSqlite.preventsFreshRunnerSplitBrainAlone, false);
+  assert.match(comparison.gitRefWorkQueueCas.exercisedBackend, /createInMemoryWorkQueueRefStore/);
+  assert.equal(comparison.gitRefWorkQueueCas.upstreamGhAwProtocolConformanceVerified, false);
+  assert.equal(comparison.gitRefWorkQueueCas.liveHostedGitRefVerified, false);
   assert.equal(comparison.gitRefWorkQueueCas.incrementalMonthlyCostUsd, 0);
   assert.equal(comparison.gitRefWorkQueueCas.crossRunHostedDurable, true);
   assert.equal(comparison.gitRefWorkQueueCas.preventsFreshRunnerSplitBrainAlone, true);
