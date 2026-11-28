@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { spawn } from 'node:child_process';
+import { PassThrough, Writable } from 'node:stream';
 import test from 'node:test';
 import {
   defaultSoftwareFactoryTestInventory
@@ -21,6 +23,7 @@ import {
   handleMcpConnectorRequest,
   isValidTraceparent,
   processMcpFramedMessages,
+  startMcpStdioServer,
   validateMultiAgentConnectorConfig
 } from '../../tools/engineering-factory/mcp-agent-connector.mjs';
 
@@ -31,6 +34,168 @@ const VALID_TRACEPARENT = '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-
 const FACTORY_REPO_ID = 1471342715;
 const CONSUMER_REPO_ID = 22001100;
 const NOW_MS = 1_795_740_000_000;
+
+const mcpCall = (name, args, context = authorizedContext()) => handleMcpConnectorRequest({
+  jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args }
+}, context).result;
+
+test('new read-only tools enforce enrollment, trusted lanes, identities and stricter coverage', () => {
+  const task = { id: 1, lane: 'api', state: 'approved', priority: 1, dependencies: [], paths: ['src/api/x.mjs'] };
+  const plan = mcpCall('plan_disjoint_lanes', { repositoryId: CONSUMER_REPO_ID, tasks: [task] });
+  assert.equal(plan.isError, false);
+  assert.equal(plan.structuredContent.reason, 'SHADOW_PLAN');
+  assert.equal(plan.structuredContent.scheduled.length, 1);
+  assert.equal(mcpCall('plan_disjoint_lanes', { repositoryId: CONSUMER_REPO_ID, tasks: [{ ...task, dependencies: [1] }] }).structuredContent.reason, 'DEPENDENCY_CYCLE');
+  assert.equal(mcpCall('plan_disjoint_lanes', { repositoryId: CONSUMER_REPO_ID, tasks: [{ ...task, paths: ['.github/workflows/x.yml'] }] }).structuredContent.reason, 'INVALID_OR_PROTECTED_PATH');
+  assert.equal(mcpCall('plan_disjoint_lanes', { repositoryId: FACTORY_REPO_ID, tasks: [] }).structuredContent.reason, 'NO_READY_WORK');
+  assert.equal(mcpCall('plan_disjoint_lanes', { repositoryId: 1, tasks: [] }).structuredContent.reason, 'UNAUTHORIZED_REPOSITORY');
+  assert.equal(mcpCall('plan_disjoint_lanes', { repositoryId: CONSUMER_REPO_ID, tasks: [] }, {}).structuredContent.reason, 'AUTHORIZATION_CONTEXT_INVALID');
+  assert.equal(mcpCall('plan_disjoint_lanes', { repositoryId: CONSUMER_REPO_ID }, authorizedContext()).structuredContent.reason, 'INVALID_PLAN_ARGUMENTS');
+  const discovery = {
+    repository: 'Synthetic/Spellbook', repositoryId: CONSUMER_REPO_ID,
+    pinnedFactorySha: 'afc3d223f287b029db32672908097efc67a259c9',
+    stackProfile: 'baseline-95-90'
+  };
+  const onboarding = mcpCall('build_consumer_onboarding_plan', { repositoryId: CONSUMER_REPO_ID, discovery });
+  assert.equal(onboarding.isError, false);
+  assert.equal(onboarding.structuredContent.plan.reason, 'READ_ONLY_ONBOARDING_PLAN_READY');
+  assert.equal(onboarding.structuredContent.plan.policy.coverage.line, 97);
+  assert.equal(mcpCall('build_consumer_onboarding_plan', { repositoryId: CONSUMER_REPO_ID, discovery: { ...discovery, repository: 'Other/Repo' } }).structuredContent.reason, 'INVALID_ONBOARDING_ARGUMENTS');
+  assert.equal(mcpCall('build_consumer_onboarding_plan', { repositoryId: CONSUMER_REPO_ID, discovery: { ...discovery, stricterCoverageThresholds: { line: 95, branch: 90 } } }).structuredContent.reason, 'COVERAGE_FLOOR_VIOLATION');
+  assert.equal(mcpCall('build_consumer_onboarding_plan', { repositoryId: CONSUMER_REPO_ID, discovery, success: {} }).isError, true);
+  const selection = {
+    repositoryId: CONSUMER_REPO_ID, repositorySlug: 'Synthetic/Spellbook', expectedHeadSha: HEAD_SHA,
+    nowMs: NOW_MS, targetComponent: 'api', specialistRole: 'api',
+    changedPaths: ['src/api/x.mjs'], guidanceEntries: [], curatedLessons: []
+  };
+  const selected = mcpCall('select_scoped_guidance_and_lessons', selection);
+  assert.equal(selected.isError, false);
+  assert.deepEqual(selected.structuredContent.effectiveGates, { minLineCoveragePct: 97, minBranchCoveragePct: 92 });
+  assert.equal(mcpCall('select_scoped_guidance_and_lessons', { ...selection, repositorySlug: 'Other/Repo' }).structuredContent.reason, 'CROSS_REPO_ACCESS_DENIED');
+  assert.equal(mcpCall('select_scoped_guidance_and_lessons', { ...selection, expectedHeadSha: OTHER_SHA }).structuredContent.reason, 'STALE_CONTEXT');
+  assert.equal(mcpCall('select_scoped_guidance_and_lessons', { ...selection, policy: { minLineCoveragePct: 95 } }).structuredContent.reason, 'COVERAGE_FLOOR_VIOLATION');
+  assert.equal(mcpCall('select_scoped_guidance_and_lessons', { ...selection, policy: [] }).structuredContent.reason, 'INVALID_SELECTION_INPUT');
+  assert.equal(mcpCall('select_scoped_guidance_and_lessons', { ...selection, guidanceEntries: [{ text: 'gh' + 'p_fake' }] }).structuredContent.reason, 'INVALID_OR_SECRET_ARGUMENTS');
+  assert.equal(mcpCall('get_factory_board_snapshot', { repositoryId: FACTORY_REPO_ID }).structuredContent.reason, 'BOARD_TRANSPORT_REQUIRED');
+  assert.equal(mcpCall('get_factory_board_snapshot', { repositoryId: FACTORY_REPO_ID, repository: 'Other/Repo' }).structuredContent.reason, 'INVALID_BOARD_ARGUMENTS');
+});
+
+test('stdio frames are ordered, bounded, UTF-8 checked, and use only an injected board transport', async () => {
+  const input = new PassThrough();
+  const output = new PassThrough();
+  let text = '';
+  output.on('data', chunk => { text += chunk.toString(); });
+  let calls = 0;
+  const request = async (url, options) => {
+    calls++;
+    assert.match(url, /^https:\/\/api\.github\.com\/repos\/Jamula\/SoftwareFactory\//);
+    assert.equal(options.headers.authorization, undefined);
+    return new Response('[]');
+  };
+  const server = startMcpStdioServer({ input, output, context: { ...authorizedContext(), boardTransport: { request } } });
+  const frame = (id, method, params) => JSON.stringify({ jsonrpc: '2.0', id, method, params });
+  const board = id => frame(id, 'tools/call', { name: 'get_factory_board_snapshot', arguments: { repositoryId: FACTORY_REPO_ID } });
+  input.write(`${frame(1, 'initialize')}\n${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' })}\n`);
+  input.write(`${frame('gh' + 'p_fake', 'ping')}\n`);
+  input.write(Buffer.from([0xff, 10]));
+  input.write(`${'x'.repeat(MAX_MCP_REQUEST_BYTES + 5)}\n`);
+  input.write(`${board(2)}\n${frame(3, 'ping')}\r\n`);
+  input.end('{bad');
+  await server;
+  const frames = text.trimEnd().split('\n').map(line => JSON.parse(line));
+  assert.deepEqual(frames.map(x => x.id), [1, null, null, null, 2, 3, null]);
+  assert.equal(frames[1].error.data.reason, 'INVALID_ID');
+  assert.equal(frames[2].error.code, -32700);
+  assert.equal(frames[3].error.data.reason, 'PAYLOAD_TOO_LARGE');
+  assert.equal(frames[4].result.structuredContent.source, 'github-rest');
+  assert.equal(frames[6].error.code, -32700);
+  assert.ok(calls > 0);
+  assert.equal(text.includes('DISABLED'), false);
+  assert.equal(text.includes('gh' + 'p_fake'), false);
+});
+
+test('stdio denies unauthorized boards before calling injected transport and hides transport errors', async () => {
+  let calls = 0;
+  const input = new PassThrough();
+  const output = new PassThrough();
+  let text = '';
+  output.on('data', chunk => { text += chunk; });
+  const server = startMcpStdioServer({ input, output, context: {
+    ...authorizedContext(),
+    boardTransport: { request: async () => { calls++; throw new Error('gh' + 'p_private'); } }
+  } });
+  const board = repositoryId => JSON.stringify({ jsonrpc: '2.0', id: repositoryId, method: 'tools/call', params: { name: 'get_factory_board_snapshot', arguments: { repositoryId } } });
+  input.end(`${board(999)}\n${board(FACTORY_REPO_ID)}\n`);
+  await server;
+  const frames = text.trim().split('\n').map(JSON.parse);
+  assert.equal(frames[0].result.structuredContent.reason, 'UNAUTHORIZED_REPOSITORY');
+  assert.equal(frames[1].result.structuredContent.reason, 'BOARD_READ_FAILED');
+  assert.ok(calls > 0);
+  assert.equal(text.includes('private'), false);
+});
+
+test('stdio times out noncooperative board reads and resumes ordered requests without further provider calls', async () => {
+  const input = new PassThrough();
+  const output = new PassThrough();
+  let text = '';
+  let resolveRequest;
+  let calls = 0;
+  output.on('data', chunk => { text += chunk; });
+  const server = startMcpStdioServer({ input, output, context: {
+    ...authorizedContext(),
+    boardTransport: { request: () => { calls++; return new Promise(resolve => { resolveRequest = resolve; }); } }
+  } });
+  input.end(`${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: {
+    name: 'get_factory_board_snapshot', arguments: { repositoryId: FACTORY_REPO_ID }
+  } })}\n${JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'ping' })}\n`);
+  await server;
+  const frames = text.trim().split('\n').map(JSON.parse);
+  assert.deepEqual(frames.map(frame => frame.id), [1, 2]);
+  assert.equal(frames[0].result.structuredContent.reason, 'BOARD_READ_FAILED');
+  resolveRequest(new Response('[]'));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(calls, 1);
+});
+
+test('stdio honors output backpressure and rejects closed output', async () => {
+  const input = new PassThrough();
+  const chunks = [];
+  const output = new Writable({
+    highWaterMark: 1,
+    write(chunk, encoding, callback) { chunks.push(chunk.toString()); setImmediate(callback); }
+  });
+  const server = startMcpStdioServer({ input, output });
+  input.end('{"jsonrpc":"2.0","id":1,"method":"ping"}\n{"jsonrpc":"2.0","id":2,"method":"ping"}\n');
+  await server;
+  assert.deepEqual(chunks.map(chunk => JSON.parse(chunk).id), [1, 2]);
+  const closed = new PassThrough();
+  closed.destroy();
+  const next = new PassThrough();
+  const failing = startMcpStdioServer({ input: next, output: closed });
+  next.end('{"jsonrpc":"2.0","id":1,"method":"ping"}\n');
+  await assert.rejects(failing, /OUTPUT_CLOSED/);
+});
+
+test('stdio subprocess emits only JSON responses and handles notifications', async () => {
+  const moduleUrl = new URL('../../tools/engineering-factory/mcp-agent-connector.mjs', import.meta.url).href;
+  const child = spawn(process.execPath, ['--input-type=module', '-e',
+    `import { startMcpStdioServer } from ${JSON.stringify(moduleUrl)}; await startMcpStdioServer();`],
+  { stdio: ['pipe', 'pipe', 'pipe'] });
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', data => { stdout += data; });
+  child.stderr.on('data', data => { stderr += data; });
+  const exited = new Promise((resolve, reject) => {
+    child.once('error', reject);
+    child.once('close', resolve);
+  });
+  child.stdin.end('{"jsonrpc":"2.0","id":1,"method":"initialize"}\n{"jsonrpc":"2.0","method":"notifications/initialized"}\n{"jsonrpc":"2.0","id":2,"method":"tools/list"}\n');
+  assert.equal(await exited, 0);
+  assert.equal(stderr, '');
+  const frames = stdout.trim().split('\n').map(JSON.parse);
+  assert.deepEqual(frames.map(frame => frame.id), [1, 2]);
+  assert.equal(frames[1].result.tools.length, 8);
+});
 
 const copilotConfig = (overrides = {}) => ({
   providerFamily: 'github-copilot',
@@ -222,7 +387,7 @@ test('constants freeze supported protocol versions, providers, roles, and read-o
   assert.deepEqual(CONNECTOR_ROLES, ['worker', 'independent-reviewer', 'specialist']);
   assert.equal(Object.isFrozen(PROVIDER_ADAPTERS), true);
   assert.equal(Object.isFrozen(FORBIDDEN_CONTROL_PLANE_PATHS), true);
-  assert.equal(MCP_CONNECTOR_TOOLS.length, 4);
+  assert.equal(MCP_CONNECTOR_TOOLS.length, 8);
   for (const tool of MCP_CONNECTOR_TOOLS) {
     assert.deepEqual(tool.annotations, {
       readOnlyHint: true,
@@ -650,7 +815,7 @@ test('handleMcpConnectorRequest enforces byte bounds, JSON-RPC 2.0 envelopes, no
     method: 'tools/list',
     params: { _meta: { progressToken: 'tok-1' }, cursor: 'page-1' }
   });
-  assert.equal(listRes.result.tools.length, 4);
+  assert.equal(listRes.result.tools.length, 8);
   assert.equal(handleMcpConnectorRequest({
     jsonrpc: '2.0',
     id: 5,

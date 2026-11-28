@@ -11,7 +11,9 @@ This document defines SoftwareFactory's versioned, read-only, deterministic **MC
 From the repository root, run `node bin/softwarefactory-mcp.mjs` or `npm run mcp`.
 The executable is also registered as `softwarefactory-mcp` in `package.json`.
 The process exchanges one JSON-RPC message per line on stdin and stdout; stdout
-is reserved for protocol messages. No additional npm runtime dependency is needed.
+is reserved for protocol messages. Use `node` directly (or `npm run --silent mcp`)
+for protocol clients, since npm's normal script banner can pollute stdout.
+No additional npm runtime dependency is needed.
 The workspace registration in `.vscode/mcp.json` starts the same server in VS Code.
 
 For Copilot CLI, add an entry to `~/.copilot/mcp-config.json`, replacing the

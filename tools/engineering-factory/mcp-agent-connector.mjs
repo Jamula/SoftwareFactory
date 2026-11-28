@@ -1,6 +1,10 @@
 // Read-only, deterministic MCP server and multi-agent isolation connector (#136).
 import { createHash } from 'node:crypto';
 import { types } from 'node:util';
+import { planLanes } from '../engineering-coordinator/planner.mjs';
+import { buildReadOnlyOnboardingPlan, evaluateConsumerOnboardingSuccess } from './consumer-onboarding.mjs';
+import { selectScopedGuidanceAndLessons } from './curated-lessons.mjs';
+import { fetchFactoryBoardSnapshot } from './factory-board.mjs';
 import {
   SPECIALIST_ROLES,
   validateKnowledgeMap,
@@ -196,7 +200,34 @@ export const MCP_CONNECTOR_TOOLS = Object.freeze([
       })
     }),
     annotations: READ_ONLY_TOOL_ANNOTATIONS
-  })
+  }),
+  ...[
+    ['plan_disjoint_lanes', 'Plan disjoint authorized lanes without dispatching.', ['repositoryId', 'tasks'], {
+      repositoryId: { type: 'integer', minimum: 1 }, tasks: { type: 'array', maxItems: 250 },
+      active: { type: 'array', maxItems: 32 }, policy: { type: 'object' }
+    }],
+    ['build_consumer_onboarding_plan', 'Build a read-only consumer onboarding plan and optional success evaluation.', ['repositoryId', 'discovery'], {
+      repositoryId: { type: 'integer', minimum: 1 }, discovery: { type: 'object' }, success: { type: 'object' }
+    }],
+    ['select_scoped_guidance_and_lessons', 'Select authorized, scoped guidance and lessons.', [
+      'repositoryId', 'repositorySlug', 'expectedHeadSha', 'nowMs', 'targetComponent',
+      'specialistRole', 'changedPaths', 'guidanceEntries', 'curatedLessons'
+    ], {
+      repositoryId: { type: 'integer', minimum: 1 }, repositorySlug: { type: 'string' },
+      expectedHeadSha: { type: 'string' }, nowMs: { type: 'integer', minimum: 0 },
+      targetComponent: { type: 'string' }, specialistRole: { type: 'string' },
+      changedPaths: { type: 'array', maxItems: 200 }, guidanceEntries: { type: 'array', maxItems: 100 },
+      curatedLessons: { type: 'array', maxItems: 200 }, issueNumber: { type: 'integer', minimum: 1 },
+      policy: { type: 'object' }, checkpointEvidence: { type: 'object' }, externalKnowledgeStoreRequired: { type: 'boolean' }
+    }],
+    ['get_factory_board_snapshot', 'Read an authorized board using an injected read-only transport.', ['repositoryId'], {
+      repositoryId: { type: 'integer', minimum: 1 }, repository: { type: 'string', maxLength: 160 }
+    }]
+  ].map(([name, description, required, properties]) => Object.freeze({
+    name, description,
+    inputSchema: Object.freeze({ type: 'object', additionalProperties: false, required: Object.freeze(required), properties: Object.freeze(properties) }),
+    annotations: READ_ONLY_TOOL_ANNOTATIONS
+  }))
 ]);
 
 const FORBIDDEN_OBJECT_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
@@ -743,7 +774,8 @@ export function createCopilotOnlyRollbackState(reason, verifiedCopilotBudget) {
 const isValidRpcId = id =>
   id === null ||
   Number.isSafeInteger(id) ||
-  (typeof id === 'string' && id.length > 0 && id.length <= 128 && !/[\u0000-\u001f\u007f]/.test(id));
+  (typeof id === 'string' && id.length > 0 && id.length <= 128 &&
+    !/[\u0000-\u001f\u007f]/.test(id) && !containsSecretToken(id));
 
 const jsonRpcError = (id, code, message, reason) => Object.freeze({
   jsonrpc: '2.0',
@@ -1266,6 +1298,85 @@ function handleGetBoundedWorkItemContext(args, context) {
   }, false);
 }
 
+const wrapperDenied = reason => toolCallOutcome({ shadow: true, readOnly: true, reason }, true);
+
+function handleAdditionalTool(name, args, context) {
+  const tree = inspectBoundedPlainTree(args);
+  if (!tree.valid || tree.hasSecret) return wrapperDenied('INVALID_OR_SECRET_ARGUMENTS');
+  const auth = parseAuthorizedRepositories(context.authorizedRepositories);
+  if (!auth.ok) return wrapperDenied(auth.reason);
+  const entry = auth.byId.get(args.repositoryId);
+  if (!entry) return wrapperDenied('UNAUTHORIZED_REPOSITORY');
+  let result;
+  if (name === 'plan_disjoint_lanes') {
+    if (!hasAllowedKeys(args, ['repositoryId', 'tasks'], ['active', 'policy'])) return wrapperDenied('INVALID_PLAN_ARGUMENTS');
+    let config = entry.projectConfig;
+    if (config === undefined && entry.repositoryId === DEFAULT_FACTORY_SCOPE.repositoryId) {
+      const map = buildSanitizedKnowledgeMap(entry, '0'.repeat(40), 0);
+      if (!map.ok) return wrapperDenied(map.reason);
+      config = {
+        schemaVersion: 1,
+        project: { key: 'softwarefactory', repository: entry.repository, defaultBranch: entry.defaultBranch },
+        execution: { enabled: false, mode: 'shadow', stop: false },
+        limits: { maxConcurrentLanes: 1, leaseMs: 1000, maxAttempts: 1, baseDelayMs: 1, maxDelayMs: 1 },
+        adapters: { workTracker: 'mock', engineeringAgent: 'mock', state: 'sqlite' },
+        lanes: map.lanes.map(lane => ({ id: lane.id, owners: [...lane.owners], prompt: 'docs/ENGINEERING-STANDARDS.md' }))
+      };
+    }
+    if (!validateProjectConfig(config) || config.project.repository !== entry.repository ||
+        config.project.defaultBranch !== entry.defaultBranch) return wrapperDenied('INVALID_PROJECT_CONFIG');
+    const inventories = [args.tasks, args.active ?? []];
+    if (inventories.some(items => !isDenseArray(items, 250) || items.some(item =>
+      !isPlainObject(item) || !isDenseArray(item.paths, 256) ||
+      item.paths.some(path => typeof path !== 'string' || FORBIDDEN_CONTROL_PLANE_PATHS.some(blocked => pathsOverlap(path, blocked)))))) {
+      return wrapperDenied('INVALID_OR_PROTECTED_PATH');
+    }
+    result = planLanes(config, args.tasks, args.active, args.policy);
+    return toolCallOutcome(result, !['SHADOW_PLAN', 'NO_READY_WORK'].includes(result.reason));
+  }
+  if (name === 'build_consumer_onboarding_plan') {
+    if (!hasAllowedKeys(args, ['repositoryId', 'discovery'], ['success']) ||
+        !isPlainObject(args.discovery) || args.discovery.repositoryId !== entry.repositoryId ||
+        args.discovery.repository !== entry.repository) return wrapperDenied('INVALID_ONBOARDING_ARGUMENTS');
+    const coverage = args.discovery.stricterCoverageThresholds;
+    if (coverage !== undefined && (!hasAllowedKeys(coverage, ['line', 'branch']) ||
+        coverage.line < entry.coverageThresholds.line || coverage.branch < entry.coverageThresholds.branch)) {
+      return wrapperDenied('COVERAGE_FLOOR_VIOLATION');
+    }
+    const discovery = { ...args.discovery, stricterCoverageThresholds: coverage ?? entry.coverageThresholds };
+    const plan = buildReadOnlyOnboardingPlan(discovery);
+    const success = args.success === undefined ? undefined : evaluateConsumerOnboardingSuccess(args.success);
+    if (success?.valid && (args.success.onboardingPackage?.repositoryId !== entry.repositoryId ||
+        args.success.onboardingPackage?.policy?.repository !== entry.repository ||
+        success.effectiveCoverage?.line < entry.coverageThresholds.line ||
+        success.effectiveCoverage?.branch < entry.coverageThresholds.branch)) {
+      return wrapperDenied('ONBOARDING_IDENTITY_OR_COVERAGE_MISMATCH');
+    }
+    result = success === undefined ? { plan } : { plan, success };
+    return toolCallOutcome(result, !plan.valid || (success !== undefined && !success.valid));
+  }
+  if (name === 'select_scoped_guidance_and_lessons') {
+    if (args.repositorySlug !== entry.repository) return wrapperDenied('CROSS_REPO_ACCESS_DENIED');
+    if ((entry.revision !== undefined && args.expectedHeadSha !== entry.revision) ||
+        (context.nowMs !== undefined && args.nowMs !== context.nowMs)) return wrapperDenied('STALE_CONTEXT');
+    if (args.policy !== undefined && !isPlainObject(args.policy)) return wrapperDenied('INVALID_SELECTION_INPUT');
+    const policy = { ...args.policy };
+    if ((policy.minLineCoveragePct !== undefined && policy.minLineCoveragePct < entry.coverageThresholds.line) ||
+        (policy.minBranchCoveragePct !== undefined && policy.minBranchCoveragePct < entry.coverageThresholds.branch)) {
+      return wrapperDenied('COVERAGE_FLOOR_VIOLATION');
+    }
+    policy.minLineCoveragePct ??= entry.coverageThresholds.line;
+    policy.minBranchCoveragePct ??= entry.coverageThresholds.branch;
+    result = selectScopedGuidanceAndLessons({ ...args, policy });
+    return toolCallOutcome(result, !result.valid);
+  }
+  if (!hasAllowedKeys(args, ['repositoryId'], ['repository']) ||
+      (args.repository !== undefined && args.repository !== entry.repository)) {
+    return wrapperDenied('INVALID_BOARD_ARGUMENTS');
+  }
+  return wrapperDenied('BOARD_TRANSPORT_REQUIRED');
+}
+
 export function handleMcpConnectorRequest(rawOrObject, context = {}) {
   let envelope;
   if (typeof rawOrObject === 'string') {
@@ -1400,6 +1511,10 @@ export function handleMcpConnectorRequest(rawOrObject, context = {}) {
       const outcome = validateMultiAgentConnectorConfig(toolArgs);
       return jsonRpcResult(responseId, toolCallOutcome(outcome, !outcome.valid));
     }
+    if (['plan_disjoint_lanes', 'build_consumer_onboarding_plan',
+      'select_scoped_guidance_and_lessons', 'get_factory_board_snapshot'].includes(envelope.params.name)) {
+      return jsonRpcResult(responseId, handleAdditionalTool(envelope.params.name, toolArgs, context));
+    }
     return jsonRpcError(responseId, -32602, 'INVALID_PARAMS', 'UNKNOWN_TOOL');
   }
 
@@ -1515,6 +1630,118 @@ export function processMcpFramedMessages(lines, context = {}) {
     responses: Object.freeze(responses),
     framedOutput: responses.length === 0 ? '' : `${responses.join('\n')}\n`
   });
+}
+
+// Transport is injected separately from JSON-only authorization context; defaults never reach gh or fetch.
+export async function startMcpStdioServer({ input = process.stdin, output = process.stdout, env = process.env, context = {} } = {}) {
+  void env;
+  let transport;
+  let requestContext = context;
+  if (isPlainObject(context) && Object.hasOwn(context, 'boardTransport')) {
+    transport = context.boardTransport;
+    requestContext = Object.fromEntries(Object.entries(context).filter(([key]) => key !== 'boardTransport'));
+  }
+  const validTransport = isPlainObject(transport) &&
+    hasAllowedKeys(transport, ['request']) && typeof transport.request === 'function';
+  let pending = Buffer.alloc(0);
+  let oversized = false;
+  const writeFrame = async response => {
+    if (response !== null && !output.write(`${serializeMcpStdioFrame(response)}\n`)) {
+      await new Promise((resolve, reject) => {
+        const cleanup = () => {
+          output.off('drain', drained);
+          output.off('error', failed);
+          output.off('close', closed);
+        };
+        const drained = () => { cleanup(); resolve(); };
+        const failed = error => { cleanup(); reject(error); };
+        const closed = () => { cleanup(); reject(new Error('OUTPUT_CLOSED')); };
+        output.once('drain', drained);
+        output.once('error', failed);
+        output.once('close', closed);
+        if (output.destroyed) closed();
+      });
+    }
+  };
+  const handleFrame = async () => {
+    let response;
+    if (oversized) {
+      response = jsonRpcError(null, -32600, 'INVALID_REQUEST', 'PAYLOAD_TOO_LARGE');
+    } else {
+      let text;
+      try {
+        const bytes = pending.length && pending[pending.length - 1] === 13 ? pending.subarray(0, -1) : pending;
+        text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+      } catch {
+        response = jsonRpcError(null, -32700, 'PARSE_ERROR', 'MALFORMED_JSON');
+      }
+      if (text !== undefined) response = handleMcpConnectorRequest(text, requestContext);
+      if (validTransport && response?.result?.structuredContent?.reason === 'BOARD_TRANSPORT_REQUIRED') {
+        const envelope = JSON.parse(text);
+        const entry = parseAuthorizedRepositories(requestContext.authorizedRepositories).byId.get(envelope.params.arguments.repositoryId);
+        const controller = new AbortController();
+        let timer;
+        let active = true;
+        try {
+          const snapshot = await Promise.race([
+            fetchFactoryBoardSnapshot({
+              repo: entry.repository,
+              execGh: async () => { throw new Error('DISABLED'); },
+              request: (url, options) => {
+                if (!active) throw new Error('BOARD_READ_EXPIRED');
+                return transport.request(url, { ...options, signal: controller.signal });
+              }
+            }),
+            new Promise((_, reject) => {
+              timer = setTimeout(() => reject(new Error('BOARD_READ_TIMEOUT')), 5000);
+            })
+          ]);
+          const inspected = inspectBoundedPlainTree(snapshot);
+          response = snapshot.ok !== true
+            ? jsonRpcResult(envelope.id, wrapperDenied('BOARD_READ_FAILED'))
+            : inspected.valid && !inspected.hasSecret &&
+            Buffer.byteLength(JSON.stringify(snapshot)) <= MAX_MCP_REQUEST_BYTES
+            ? jsonRpcResult(envelope.id, toolCallOutcome(snapshot, false))
+            : jsonRpcResult(envelope.id, wrapperDenied('BOARD_RESULT_UNSAFE'));
+        } catch {
+          response = jsonRpcResult(envelope.id, wrapperDenied('BOARD_READ_FAILED'));
+        } finally {
+          active = false;
+          controller.abort();
+          clearTimeout(timer);
+        }
+      }
+    }
+    pending = Buffer.alloc(0);
+    oversized = false;
+    await writeFrame(response);
+  };
+  for await (const chunk of input) {
+    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    let start = 0;
+    while (start < bytes.length) {
+      const newline = bytes.indexOf(10, start);
+      const end = newline < 0 ? bytes.length : newline;
+      const part = bytes.subarray(start, end);
+      if (!oversized) {
+        if (pending.length + part.length > MAX_MCP_REQUEST_BYTES + 1) {
+          oversized = true;
+          pending = Buffer.alloc(0);
+        } else {
+          pending = Buffer.concat([pending, part]);
+        }
+      }
+      if (newline < 0) break;
+      if (pending.length > MAX_MCP_REQUEST_BYTES &&
+          pending[pending.length - 1] !== 13) oversized = true;
+      await handleFrame();
+      start = newline + 1;
+    }
+  }
+  if (pending.length || oversized) {
+    if (pending.length > MAX_MCP_REQUEST_BYTES) oversized = true;
+    await handleFrame();
+  }
 }
 
 function resolveVerifiedCopilotBudget(input, authorValidation, reviewerValidation) {
