@@ -72,6 +72,14 @@
       "expectedReason": "SPELLBOOK_CONCURRENCY_CAP_EXCEEDED"
     },
     {
+      "scenario": "path-only-owner-cannot-approve-scaling-above-2",
+      "expectedReason": "SPELLBOOK_CONCURRENCY_CAP_EXCEEDED"
+    },
+    {
+      "scenario": "missing-repository-owner-evidence-retains-2-agent-cap",
+      "expectedReason": "SPELLBOOK_CONCURRENCY_CAP_EXCEEDED"
+    },
+    {
       "scenario": "omit-webkit-ios-or-release-readiness-check-role",
       "expectedReason": "SPELLBOOK_REQUIRED_CHECKS_MISSING"
     },
@@ -146,6 +154,7 @@
       "ownerAuthorized": false,
       "repository": "example/spellbook",
       "repositoryId": 900202,
+      "repositoryOwners": ["synthetic-spellbook-repo-owner"],
       "pinnedWorkflowSha": "afc3d223f287b029db32672908097efc67a259c9",
       "pinnedCheckoutSha": "1208481843e73d1d2506085c654e84255303541d",
       "zeroIncrementalSpendVerified": false,

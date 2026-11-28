@@ -372,15 +372,23 @@ test('enforces <=2 concurrent-agent cap and rejects 3+ until separately verified
     'SPELLBOOK_CONCURRENCY_CAP_EXCEEDED'
   );
 
-  // 3+ concurrent agents rejected without valid independent scalingApproval
+  // 3+ concurrent agents rejected without valid independent repository-owner scalingApproval
   const validScaling = {
     approved: true,
     approvedMaxConcurrentAgents: 4,
     measuredCapacityVerified: true,
     includedQuotaVerified: true,
     zeroIncrementalSpendVerified: true,
-    approver: 'synthetic-spellbook-owner'
+    approver: 'synthetic-spellbook-repo-owner'
   };
+
+  // Ensure repository owner has no path-owner entry in policy.owners
+  assert.equal(
+    baseInput.onboardingPackage.policy.owners.some(
+      o => o.owner.toLowerCase() === 'synthetic-spellbook-repo-owner'
+    ),
+    false
+  );
 
   for (const badScaling of [
     null,
@@ -394,7 +402,10 @@ test('enforces <=2 concurrent-agent cap and rejects 3+ until separately verified
     { ...validScaling, zeroIncrementalSpendVerified: false },
     { ...validScaling, approver: 'SYNTHETIC-SPELLBOOK-AUTHOR' },
     { ...validScaling, approver: 'Copilot-SWE-Agent[bot]' },
-    { ...validScaling, approver: 'synthetic-spellbook-owner[bot]' },
+    { ...validScaling, approver: 'synthetic-spellbook-repo-owner[bot]' },
+    // Path-only owners in policy.owners ('ios/' and 'src/') cannot authorize repository scaling
+    { ...validScaling, approver: 'synthetic-ios-owner' },
+    { ...validScaling, approver: 'synthetic-spellbook-owner' },
     { ...validScaling, approver: 'untrusted-external-user' }
   ]) {
     const res = evaluateSpellbookShadowReadiness(
@@ -409,13 +420,47 @@ test('enforces <=2 concurrent-agent cap and rejects 3+ until separately verified
     assert.equal(res.reason, 'SPELLBOOK_CONCURRENCY_CAP_EXCEEDED');
   }
 
-  // Verified independent scaling approval unlocks approved tier while keeping liveActivation: false
+  // Missing repository-owner authority evidence (omitted, null, [], or ownerAuthorized: false) retains <=2 agent cap
+  for (const mutateAuth of [
+    auth => {
+      delete auth.repositoryOwners;
+    },
+    auth => {
+      auth.repositoryOwners = null;
+    },
+    auth => {
+      auth.repositoryOwners = [];
+    },
+    auth => {
+      auth.ownerAuthorized = false;
+    }
+  ]) {
+    const atTwo = readyInput();
+    mutateAuth(atTwo.authorization);
+    if (atTwo.authorization.ownerAuthorized) {
+      assert.equal(evaluateSpellbookShadowReadiness(atTwo).ready, true);
+    }
+
+    const scaledMissingRepoOwner = withConcurrency(baseInput, {
+      maxConcurrentAgents: 4,
+      policyMaxActive: 4,
+      localMaxConcurrency: 4,
+      scalingApproval: validScaling
+    });
+    mutateAuth(scaledMissingRepoOwner.authorization);
+    assert.equal(
+      evaluateSpellbookShadowReadiness(scaledMissingRepoOwner).reason,
+      'SPELLBOOK_CONCURRENCY_CAP_EXCEEDED'
+    );
+  }
+
+  // Verified repository owner (with no policy.owners path entry) unlocks approved tier while keeping liveActivation: false
   const scaled = evaluateSpellbookShadowReadiness(
     withConcurrency(baseInput, {
       maxConcurrentAgents: 4,
       policyMaxActive: 4,
       localMaxConcurrency: 4,
-      scalingApproval: validScaling
+      scalingApproval: { ...validScaling, approver: 'SYNTHETIC-SPELLBOOK-REPO-OWNER' }
     })
   );
   assert.equal(scaled.ready, true);
@@ -696,7 +741,21 @@ test('prevents duplicate existing PRs, enforces Spellbook profile isolation, and
   const matrixByScenario = new Map(
     evidence.shadowDenialMatrix.map(row => [row.scenario, row.expectedReason])
   );
-  assert.equal(matrixByScenario.size, 17);
+  assert.equal(matrixByScenario.size, 19);
+  const missingOwnersScaling = withConcurrency(baseInput, {
+    maxConcurrentAgents: 3,
+    policyMaxActive: 3,
+    localMaxConcurrency: 3,
+    scalingApproval: {
+      approved: true,
+      approvedMaxConcurrentAgents: 3,
+      measuredCapacityVerified: true,
+      includedQuotaVerified: true,
+      zeroIncrementalSpendVerified: true,
+      approver: 'synthetic-spellbook-repo-owner'
+    }
+  });
+  delete missingOwnersScaling.authorization.repositoryOwners;
   const replayMatrix = [
     [
       'lower-policy-line-coverage-to-generic-95-baseline',
@@ -711,6 +770,23 @@ test('prevents duplicate existing PRs, enforces Spellbook profile isolation, and
         scalingApproval: null
       })
     ],
+    [
+      'path-only-owner-cannot-approve-scaling-above-2',
+      withConcurrency(baseInput, {
+        maxConcurrentAgents: 3,
+        policyMaxActive: 3,
+        localMaxConcurrency: 3,
+        scalingApproval: {
+          approved: true,
+          approvedMaxConcurrentAgents: 3,
+          measuredCapacityVerified: true,
+          includedQuotaVerified: true,
+          zeroIncrementalSpendVerified: true,
+          approver: 'synthetic-ios-owner'
+        }
+      })
+    ],
+    ['missing-repository-owner-evidence-retains-2-agent-cap', missingOwnersScaling],
     [
       'omit-webkit-ios-or-release-readiness-check-role',
       { ...baseInput, requiredCheckRoles: { webkit: baseInput.requiredCheckRoles.webkit } }
@@ -909,6 +985,22 @@ test('rejects live and revoked proxies, getters, non-enumerable properties, symb
     { ...baseInput, authorization: getterAuth },
     { ...baseInput, authorization: { ...baseInput.authorization, repository: '' } },
     { ...baseInput, authorization: { ...baseInput.authorization, repositoryId: 0 } },
+    { ...baseInput, authorization: { ...baseInput.authorization, repositoryOwners: 'not-array' } },
+    { ...baseInput, authorization: { ...baseInput.authorization, repositoryOwners: [''] } },
+    {
+      ...baseInput,
+      authorization: {
+        ...baseInput.authorization,
+        repositoryOwners: ['copilot-swe-agent[bot]']
+      }
+    },
+    {
+      ...baseInput,
+      authorization: {
+        ...baseInput.authorization,
+        repositoryOwners: ['owner-a', 'OWNER-A']
+      }
+    },
     { ...baseInput, authorization: { ...baseInput.authorization, pinnedWorkflowSha: 'bad' } },
     { ...baseInput, authorization: { ...baseInput.authorization, pinnedCheckoutSha: 'bad' } },
     { ...baseInput, authorization: { ...baseInput.authorization, zeroIncrementalSpendVerified: 'yes' } },

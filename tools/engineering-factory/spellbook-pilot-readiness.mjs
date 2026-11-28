@@ -43,6 +43,16 @@ const REQUIRED_INPUT_KEYS = Object.freeze([
   'rollback'
 ]);
 const OPTIONAL_INPUT_KEYS = Object.freeze(['scalingApproval', 'peerRegistry']);
+const REQUIRED_AUTH_KEYS = Object.freeze([
+  'ownerAuthorized',
+  'repository',
+  'repositoryId',
+  'pinnedWorkflowSha',
+  'pinnedCheckoutSha',
+  'zeroIncrementalSpendVerified',
+  'productionReleaseEnabled'
+]);
+const OPTIONAL_AUTH_KEYS = Object.freeze(['repositoryOwners']);
 
 const ROLE_PATTERNS = Object.freeze({
   webkit: /webkit/i,
@@ -192,24 +202,31 @@ function validScalingApprovalShape(rawScaling) {
   );
 }
 
+function validRepositoryOwners(owners) {
+  if (owners === null) return true;
+  if (
+    !dense(owners) ||
+    !owners.every(o => text(o, 80) && !o.toLowerCase().endsWith('[bot]'))
+  ) {
+    return false;
+  }
+  return new Set(owners.map(o => o.toLowerCase())).size === owners.length;
+}
+
 function validAuthorizationShape(auth) {
+  if (!plainWithOptional(auth, REQUIRED_AUTH_KEYS, OPTIONAL_AUTH_KEYS)) {
+    return false;
+  }
+  const rawOwners = Object.hasOwn(auth, 'repositoryOwners') ? auth.repositoryOwners : null;
   return (
-    exact(auth, [
-      'ownerAuthorized',
-      'repository',
-      'repositoryId',
-      'pinnedWorkflowSha',
-      'pinnedCheckoutSha',
-      'zeroIncrementalSpendVerified',
-      'productionReleaseEnabled'
-    ]) &&
     typeof auth.ownerAuthorized === 'boolean' &&
     text(auth.repository) &&
     posInt(auth.repositoryId) &&
     sha40(auth.pinnedWorkflowSha) &&
     sha40(auth.pinnedCheckoutSha) &&
     typeof auth.zeroIncrementalSpendVerified === 'boolean' &&
-    typeof auth.productionReleaseEnabled === 'boolean'
+    typeof auth.productionReleaseEnabled === 'boolean' &&
+    validRepositoryOwners(rawOwners)
   );
 }
 
@@ -352,26 +369,6 @@ export function evaluateSpellbookShadowReadiness(input) {
     return shadowDeny('CANDIDATE_SNAPSHOT_INVALID');
   }
 
-  const scalingFlagsValid = Boolean(
-    rawScaling !== null &&
-      rawScaling.approved &&
-      rawScaling.approvedMaxConcurrentAgents >= 3 &&
-      rawScaling.approvedMaxConcurrentAgents <= SPELLBOOK_SCALING_CEILING &&
-      rawScaling.measuredCapacityVerified &&
-      rawScaling.includedQuotaVerified &&
-      rawScaling.zeroIncrementalSpendVerified &&
-      !rawScaling.approver.toLowerCase().endsWith('[bot]') &&
-      rawScaling.approver.toLowerCase() !== input.candidate.author.toLowerCase() &&
-      rawScaling.approver.toLowerCase() !== input.candidate.agent.toLowerCase()
-  );
-  const preAllowedConcurrencyCap = scalingFlagsValid
-    ? rawScaling.approvedMaxConcurrentAgents
-    : SPELLBOOK_DEFAULT_MAX_CONCURRENT_AGENTS;
-
-  if (input.maxConcurrentAgents > preAllowedConcurrencyCap) {
-    return shadowDeny('SPELLBOOK_CONCURRENCY_CAP_EXCEEDED');
-  }
-
   const peerRegistry = Object.hasOwn(input, 'peerRegistry') ? input.peerRegistry : [];
   const pkg = input.onboardingPackage;
   const onboarding = verifyConsumerOnboardingPackage(pkg, peerRegistry);
@@ -406,9 +403,34 @@ export function evaluateSpellbookShadowReadiness(input) {
     return shadowDeny('SPELLBOOK_COVERAGE_FLOOR_VIOLATION');
   }
 
-  const scalingApproved =
-    scalingFlagsValid &&
-    pkg.policy.owners.some(o => o.owner.toLowerCase() === rawScaling.approver.toLowerCase());
+  if (
+    input.authorization.repository !== pkg.policy.repository ||
+    input.authorization.repositoryId !== pkg.repositoryId ||
+    input.authorization.pinnedWorkflowSha !== onboarding.pinnedWorkflowSha ||
+    input.authorization.pinnedCheckoutSha !== onboarding.pinnedCheckoutSha
+  ) {
+    return shadowDeny('AUTHORIZATION_SCOPE_MISMATCH');
+  }
+
+  const rawRepoOwners = Object.hasOwn(input.authorization, 'repositoryOwners')
+    ? input.authorization.repositoryOwners
+    : null;
+  const verifiedRepoOwners =
+    input.authorization.ownerAuthorized && rawRepoOwners !== null ? rawRepoOwners : [];
+
+  const scalingApproved = Boolean(
+    rawScaling !== null &&
+      rawScaling.approved &&
+      rawScaling.approvedMaxConcurrentAgents >= 3 &&
+      rawScaling.approvedMaxConcurrentAgents <= SPELLBOOK_SCALING_CEILING &&
+      rawScaling.measuredCapacityVerified &&
+      rawScaling.includedQuotaVerified &&
+      rawScaling.zeroIncrementalSpendVerified &&
+      !rawScaling.approver.toLowerCase().endsWith('[bot]') &&
+      rawScaling.approver.toLowerCase() !== input.candidate.author.toLowerCase() &&
+      rawScaling.approver.toLowerCase() !== input.candidate.agent.toLowerCase() &&
+      verifiedRepoOwners.some(owner => owner.toLowerCase() === rawScaling.approver.toLowerCase())
+  );
   const allowedConcurrencyCap = scalingApproved
     ? rawScaling.approvedMaxConcurrentAgents
     : SPELLBOOK_DEFAULT_MAX_CONCURRENT_AGENTS;
@@ -419,15 +441,6 @@ export function evaluateSpellbookShadowReadiness(input) {
     pkg.localGates.maxConcurrency > input.maxConcurrentAgents
   ) {
     return shadowDeny('SPELLBOOK_CONCURRENCY_CAP_EXCEEDED');
-  }
-
-  if (
-    input.authorization.repository !== pkg.policy.repository ||
-    input.authorization.repositoryId !== pkg.repositoryId ||
-    input.authorization.pinnedWorkflowSha !== onboarding.pinnedWorkflowSha ||
-    input.authorization.pinnedCheckoutSha !== onboarding.pinnedCheckoutSha
-  ) {
-    return shadowDeny('AUTHORIZATION_SCOPE_MISMATCH');
   }
 
   if (!verifyRequiredCheckRoles(input.requiredCheckRoles, pkg.localGates)) {
