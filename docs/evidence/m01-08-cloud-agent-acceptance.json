@@ -59,6 +59,10 @@
     "dotnetVersion": "10.0.404",
     "lockedInstallCommand": "npm ci --ignore-scripts",
     "dotnetRestoreCommand": "dotnet restore tests/SoftwareFactory.Agents.Tests/SoftwareFactory.Agents.Tests.csproj --source https://api.nuget.org/v3/index.json",
+    "dotnetTelemetryOptOutPersistedToGithubEnv": true,
+    "copilotEnvironmentVariablesRequired": [
+      "DOTNET_CLI_TELEMETRY_OPTOUT=1"
+    ],
     "pinnedActions": {
       "checkout": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
       "setupNode": "actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1",
@@ -75,8 +79,8 @@
       10,
       12
     ],
-    "actualWorkerMax": 2,
-    "workerShortfallFrom12": 10
+    "actualWorkerMax": 1,
+    "workerShortfallFrom12": 11
   },
   "verifiedRuns": [
     {

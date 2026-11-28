@@ -1158,6 +1158,9 @@ test('enforces official GitHub Copilot Cloud Agent setup schema on .github/workf
   assert.match(raw, /package-manager-cache:\s*false/);
   assert.match(raw, /dotnet-version:\s*'10\.0\.404'/);
   assert.match(raw, /cache:\s*false/);
+  assert.match(raw, /'DOTNET_CLI_TELEMETRY_OPTOUT=1'/);
+  assert.match(raw, />>\s*"\$GITHUB_ENV"/);
+  assert.match(raw, /test "\$\{DOTNET_CLI_TELEMETRY_OPTOUT:-\}" = "1"/);
   assert.match(raw, /test "\$\(node --version\)" = "v26\.13\.1"/);
   assert.match(raw, /test "\$\(dotnet --version\)" = "10\.0\.404"/);
   assert.match(raw, /^\s*npm ci --ignore-scripts\s*$/m);
@@ -1221,15 +1224,44 @@ test('validates M01.08 live native Cloud Agent acceptance evidence and pilot doc
   assert.equal(evidence.setupWorkflowRemediation.persistCredentials, false);
   assert.equal(evidence.setupWorkflowRemediation.nodeVersion, '26.13.1');
   assert.equal(evidence.setupWorkflowRemediation.dotnetVersion, '10.0.404');
+  assert.equal(evidence.setupWorkflowRemediation.dotnetTelemetryOptOutPersistedToGithubEnv, true);
+  assert.deepEqual(evidence.setupWorkflowRemediation.copilotEnvironmentVariablesRequired, [
+    'DOTNET_CLI_TELEMETRY_OPTOUT=1'
+  ]);
   assert.equal(workflowRaw.includes(evidence.setupWorkflowRemediation.pinnedActions.checkout), true);
   assert.equal(workflowRaw.includes(evidence.setupWorkflowRemediation.pinnedActions.setupNode), true);
   assert.equal(workflowRaw.includes(evidence.setupWorkflowRemediation.pinnedActions.setupDotnet), true);
   assert.equal(workflowRaw.includes(evidence.setupWorkflowRemediation.lockedInstallCommand), true);
   assert.equal(workflowRaw.includes(evidence.setupWorkflowRemediation.dotnetRestoreCommand), true);
 
+  const computePeakConcurrentRuns = (runs) => {
+    const events = [];
+    for (const run of runs) {
+      const startMs = Date.parse(run.startedAtUtc);
+      const endMs = Date.parse(run.completedAtUtc);
+      assert.equal(Number.isFinite(startMs) && Number.isFinite(endMs) && endMs >= startMs, true);
+      events.push({timeMs: startMs, delta: 1});
+      events.push({timeMs: endMs, delta: -1});
+    }
+    events.sort((a, b) => a.timeMs - b.timeMs || a.delta - b.delta);
+    let active = 0;
+    let peak = 0;
+    for (const event of events) {
+      active += event.delta;
+      if (active > peak) peak = active;
+    }
+    return peak;
+  };
+
+  const observedPeakWorkers = computePeakConcurrentRuns(evidence.verifiedRuns);
+  assert.equal(observedPeakWorkers, 1);
   assert.deepEqual(evidence.workerScalingObservation.ladder, [...WORKER_LADDER]);
-  assert.equal(evidence.workerScalingObservation.actualWorkerMax, 2);
-  assert.equal(evidence.workerScalingObservation.workerShortfallFrom12, 10);
+  assert.equal(evidence.workerScalingObservation.actualWorkerMax, observedPeakWorkers);
+  assert.equal(
+    evidence.workerScalingObservation.workerShortfallFrom12,
+    Math.max(0, WORKER_GOAL_MAX - observedPeakWorkers)
+  );
+  assert.equal(evidence.workerScalingObservation.workerShortfallFrom12, 11);
 
   const admissionReplay = evaluateCloudAgentAdmission(makeFixture({
     repositoryId: evidence.repositoryId,
@@ -1248,17 +1280,17 @@ test('validates M01.08 live native Cloud Agent acceptance evidence and pilot doc
       isolated: true
     },
     workerPool: {
-      requestedWorkers: evidence.workerScalingObservation.actualWorkerMax,
-      verifiedPriorWorkerTier: 1,
-      repoConcurrencyCap: 2,
-      verifiedWorkerCeiling: 2,
-      remainingIncludedSlots: 2,
+      requestedWorkers: observedPeakWorkers,
+      verifiedPriorWorkerTier: 0,
+      repoConcurrencyCap: 1,
+      verifiedWorkerCeiling: 1,
+      remainingIncludedSlots: 1,
       reservations: []
     }
   }));
   assert.equal(admissionReplay.admitted, true);
-  assert.equal(admissionReplay.actualWorkerMax, 2);
-  assert.equal(admissionReplay.workerShortfallFrom12, 10);
+  assert.equal(admissionReplay.actualWorkerMax, 1);
+  assert.equal(admissionReplay.workerShortfallFrom12, 11);
 
   assert.equal(evidence.verifiedRuns.length, 2);
   const [run181, run183] = evidence.verifiedRuns;
