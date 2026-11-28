@@ -129,14 +129,14 @@ test('all advertised array schemas declare item types', () => {
   for (const tool of MCP_CONNECTOR_TOOLS) visit(tool.inputSchema);
 });
 
-function syntheticOnboardingPackage(repository, repositoryId, localLine = 98, localBranch = 95, stackProfile = 'baseline-95-90') {
+function syntheticOnboardingPackage(repository, repositoryId, localLine = 98, localBranch = 95, stackProfile = 'baseline-95-90', policyOverrides = {}) {
   const plan = buildReadOnlyOnboardingPlan({
     repository, repositoryId, pinnedFactorySha: 'afc3d223f287b029db32672908097efc67a259c9',
     stackProfile, stricterCoverageThresholds: stackProfile === 'baseline-95-90'
       ? { line: 98, branch: 95 } : { line: 100, branch: 100 }
   });
   assert.equal(plan.valid, true);
-  const policy = structuredClone(plan.policy);
+  const policy = { ...structuredClone(plan.policy), ...policyOverrides };
   const candidate = {
     policySource: 'trusted-default-branch', repository, issue: 10, pr: 20,
     head: HEAD_SHA, observedHead: HEAD_SHA, base: BASE_SHA, observedBase: BASE_SHA,
@@ -263,6 +263,30 @@ test('onboarding success preserves enrolled local gates and accepts only safe cr
   assert.equal(mcpCall('build_consumer_onboarding_plan', { ...args, success: {
     ...syntheticSuccess(other, peer), requireAutonomousAcceptance: true
   } }).structuredContent.reason, 'ONBOARDING_IDENTITY_OR_GATE_MISMATCH');
+  for (const policyOverrides of [
+    { reviewers: ['synthetic-unapproved-reviewer'] },
+    { reviewers: ['synthetic-reviewer', 'synthetic-unapproved-reviewer'] },
+    { owners: [{ prefix: 'src/', owner: 'synthetic-unapproved-owner' }] },
+    { owners: [{ prefix: 'src/', owner: 'synthetic-owner' }, { prefix: 'other/', owner: 'synthetic-other-owner' }] },
+    { mergeMethod: 'merge' },
+    { creditLimit: 101 },
+    { riskClasses: ['low', 'high', 'extra-risk'] }
+  ]) {
+    const changed = syntheticOnboardingPackage('Synthetic/Spellbook', CONSUMER_REPO_ID, 97, 92, 'baseline-95-90', policyOverrides);
+    for (const proof of [syntheticSuccess(changed, peer), { ...syntheticSuccess(changed, peer), requireAutonomousAcceptance: true }]) {
+      const evaluated = evaluateConsumerOnboardingSuccess(proof);
+      assert.equal(evaluated.valid || evaluated.shadowOnboarded, true);
+      assert.equal(mcpCall('build_consumer_onboarding_plan', { ...args, success: proof }).structuredContent.reason, 'ONBOARDING_IDENTITY_OR_GATE_MISMATCH');
+    }
+  }
+  const caseOnly = syntheticOnboardingPackage('Synthetic/Spellbook', CONSUMER_REPO_ID, 97, 92, 'baseline-95-90', { reviewers: ['SYNTHETIC-REVIEWER'] });
+  assert.equal(mcpCall('build_consumer_onboarding_plan', { ...args, success: syntheticSuccess(caseOnly, peer) }).isError, false);
+  const alternateProfile = syntheticOnboardingPackage('Synthetic/Spellbook', CONSUMER_REPO_ID, 97, 92, 'web-genealogy-95-90');
+  assert.equal(evaluateConsumerOnboardingSuccess(syntheticSuccess(alternateProfile, peer)).valid, true);
+  assert.equal(mcpCall('build_consumer_onboarding_plan', { ...args, success: syntheticSuccess(alternateProfile, peer) }).structuredContent.reason, 'ONBOARDING_IDENTITY_OR_GATE_MISMATCH');
+  const alternatePin = { ...discovery, pinnedFactorySha: HEAD_SHA, pinnedCheckoutSha: BASE_SHA, observedCheckoutRef: BASE_SHA };
+  assert.equal(buildReadOnlyOnboardingPlan(alternatePin).valid, true);
+  assert.equal(mcpCall('build_consumer_onboarding_plan', { ...args, discovery: alternatePin, success: syntheticSuccess(good, peer) }).structuredContent.reason, 'ONBOARDING_IDENTITY_OR_GATE_MISMATCH');
   const bad = syntheticSuccess(good, peer);
   bad.onboardingPackage.credentials.sharedAdminToken = true;
   assert.equal(mcpCall('build_consumer_onboarding_plan', { ...args, success: bad }).structuredContent.reason, 'INVALID_OR_SECRET_ARGUMENTS');

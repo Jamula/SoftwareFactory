@@ -1415,6 +1415,16 @@ function handleAdditionalTool(name, args, context) {
       const pkg = args.success.onboardingPackage;
       if (!plan.valid || pkg.repositoryId !== entry.repositoryId ||
           pkg.policy.repository !== entry.repository || pkg.policy.defaultBranch !== entry.defaultBranch ||
+          pkg.stackProfile !== plan.stackProfile || pkg.policy.mergeMethod !== plan.policy.mergeMethod ||
+          pkg.workflowPin.reviewedWorkflowSha !== plan.workflowPin.reviewedWorkflowSha ||
+          pkg.workflowPin.reviewedCheckoutSha !== plan.workflowPin.reviewedCheckoutSha ||
+          pkg.policy.creditLimit > plan.policy.creditLimit ||
+          pkg.policy.riskClasses.some(risk => !plan.policy.riskClasses.includes(risk)) ||
+          pkg.policy.reviewers.some(reviewer => !plan.policy.reviewers.some(
+            authorized => authorized.toLowerCase() === reviewer.toLowerCase())) ||
+          pkg.policy.owners.length !== plan.policy.owners.length ||
+          pkg.policy.owners.some(owner => !plan.policy.owners.some(
+            expected => expected.prefix === owner.prefix && expected.owner === owner.owner)) ||
           pkg.policy.coverage.line < Math.max(entry.coverageThresholds.line, plan.policy.coverage.line) ||
           pkg.policy.coverage.branch < Math.max(entry.coverageThresholds.branch, plan.policy.coverage.branch) ||
           pkg.localGates.minLineCoverage < Math.max(entry.coverageThresholds.line, plan.localGates.minLineCoverage) ||
