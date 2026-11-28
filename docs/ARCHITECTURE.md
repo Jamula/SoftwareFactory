@@ -140,7 +140,7 @@ flowchart LR
 
 ## Workflows and effective `main` protection boundary
 
-SoftwareFactory maintains nine workflows (`10` files under `.github/workflows/`, documented in [Workflow guide](WORKFLOWS.md)):
+SoftwareFactory maintains ten workflows (`11` files under `.github/workflows/`, documented in [Workflow guide](WORKFLOWS.md)):
 
 1. `factory-orchestrator.md` + `factory-orchestrator.lock.yml` (**Factory gh-aw outer orchestrator**): default-off (`vars.FACTORY_GHAW_ENABLED == 'true'`), SHA-256 hash-locked `github/gh-aw` (`v1.2.2`) outer orchestrator with `tools.work-queue`, `safe-outputs` (`staged: true`), and `contents: read` privilege separation across `workflow_dispatch`, 10-minute `schedule`, `issues`, `pull_request_target`, `workflow_run`, and `push` (`main`).
 2. `factory-automode-enqueue.yml` (**Factory automode Merge Queue gatekeeper**): privilege-separated (`evaluate` read-only → `apply-queue-actions` queue mutation, gated on `vars.FACTORY_KILL_SWITCH != 'true' && vars.FACTORY_AUTOMODE_ENABLED != 'false'`) zero-trust Squash Merge Queue gatekeeper powered by `automode-enqueuer.mjs` (`#8`, `#10`).
@@ -151,6 +151,7 @@ SoftwareFactory maintains nine workflows (`10` files under `.github/workflows/`,
 7. `reusable-replay-smoke.yml` (**Reusable replay smoke**): exercises the pinned consumer reusable workflow (`afc3d223f287b029db32672908097efc67a259c9`) on contract changes, `merge_group`, and `main`.
 8. `shadow-tests.yml` (**Engineering factory shadow replay**): `workflow_call` synthetic replay of pinned SoftwareFactory tests (`1208481843e73d1d2506085c654e84255303541d`); [docs/consumer-shadow-tests.yml](consumer-shadow-tests.yml) remains an inert example pinned to `fbecbf99b4c8e1696194bd6fa5220b2328cd1379`.
 9. `otel-sdk-lock-evidence.yml` (**OpenTelemetry SDK dependency evidence**): isolated `@opentelemetry/*` lockfile integrity and registry provenance check on same-repo PRs.
+10. `copilot-setup-steps.yml` (**Copilot Setup Steps**): pre-firewall Node `26.13.1` + `.NET 10.0.404` dependency restore setup for native GitHub Copilot Cloud Agent (`copilot-swe-agent[bot]`, `#10`).
 
 ### Ruleset vs. independent review reconciliation
 

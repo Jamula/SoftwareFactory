@@ -2,7 +2,7 @@
 
 ## Repository workflow inventory
 
-SoftwareFactory ships nine workflows (`10` files under `.github/workflows/`). Every workflow pins third-party Actions to immutable 40-character commit SHAs, disables Git credential persistence (`persist-credentials: false`) when checking out code, pins Node.js `26.13.1` and `.NET SDK 10.0.404` where used, enforces poison-safe exact-lockfile caching (restoring read-only on PRs/merge groups and saving only from protected `refs/heads/main` on `Jamula/SoftwareFactory` `1471342715`), and never checks out or executes untrusted pull-request code in a privileged context.
+SoftwareFactory ships ten workflows (`11` files under `.github/workflows/`). Every workflow pins third-party Actions to immutable 40-character commit SHAs, disables Git credential persistence (`persist-credentials: false`) when checking out code, pins Node.js `26.13.1` and `.NET SDK 10.0.404` where used, enforces poison-safe exact-lockfile caching (restoring read-only on PRs/merge groups and saving only from protected `refs/heads/main` on `Jamula/SoftwareFactory` `1471342715`), and never checks out or executes untrusted pull-request code in a privileged context.
 
 | Workflow file | Name | Triggers | Permissions | Purpose and trust boundary |
 | --- | --- | --- | --- | --- |
@@ -15,6 +15,7 @@ SoftwareFactory ships nine workflows (`10` files under `.github/workflows/`). Ev
 | `.github/workflows/reusable-replay-smoke.yml` | Reusable replay smoke | Path-filtered `pull_request`, `merge_group` (`checks_requested`), `push` (`main`) | `contents: read` | Exercises the consumer reusable-workflow contract (`pinned-synthetic-replay`) by calling `.github/workflows/shadow-tests.yml` at an immutable commit SHA (`afc3d223f287b029db32672908097efc67a259c9`). Validates the pinned consumer contract rather than the current candidate head. |
 | `.github/workflows/shadow-tests.yml` | Engineering factory shadow replay | `workflow_call` | `contents: read` | Reusable synthetic replay workflow for external callers. Checks out a pinned SoftwareFactory revision (`1208481843e73d1d2506085c654e84255303541d`) with `persist-credentials: false` and runs `tests/engineering-factory/core.test.mjs` on Node.js `26.13.1`. Does not inspect consumer PR data, execute consumer code, dispatch agents, or mutate GitHub. |
 | `.github/workflows/otel-sdk-lock-evidence.yml` | OpenTelemetry SDK dependency evidence | Path-filtered `pull_request` (`.github/workflows/otel-sdk-lock-evidence.yml`) | `contents: read` | Same-repository PR workflow that validates pinned `@opentelemetry/*` dependency resolution, `https://registry.npmjs.org/` URL provenance, subresource integrity hashes, and ESM imports inside an isolated temporary directory (`--ignore-scripts`), publishing a 1-day evidence artifact. |
+| `.github/workflows/copilot-setup-steps.yml` | Copilot Setup Steps | `workflow_dispatch`, path-filtered `push` and `pull_request` (`.github/workflows/copilot-setup-steps.yml`) | `contents: read` | Pre-firewall environment setup for native GitHub Copilot Cloud Agent (`copilot-swe-agent[bot]`, `#10`): installs pinned Node.js `26.13.1` and `.NET SDK 10.0.404`, runs `npm ci --ignore-scripts` and `dotnet restore`, and persists `.NET` telemetry opt-out with zero Python references. |
 
 Hosted coding-agent execution standardizes on native GitHub Cloud Agents (`copilot-swe-agent[bot]` / Repository Cloud Automations; see [GitHub-hosted Copilot pilot](GITHUB-HOSTED-COPILOT-PILOT.md)) with zero personal PATs in Actions secrets rather than a DIY CLI-in-Actions workflow.
 
@@ -37,10 +38,11 @@ flowchart TB
     CQL["Organization Ruleset 16162572<br/>(CodeQL + Secret Scanning)"]
   end
 
-  subgraph REUSE["Consumer Contract & Dependency Provenance"]
+  subgraph REUSE["Consumer Contract, Cloud Agent Setup & Dependency Provenance"]
     W6["reusable-replay-smoke.yml<br/>(Calls pinned shadow-tests.yml)"]
     W7["shadow-tests.yml<br/>(workflow_call 40-hex SHA synthetic replay)"]
     W8["otel-sdk-lock-evidence.yml<br/>(Isolated @opentelemetry/* registry & SRI check)"]
+    W10["copilot-setup-steps.yml<br/>(Pre-firewall Node 26.13.1 + .NET 10.0.404 setup for @copilot)"]
   end
 
   W6 -->|"Immutable 40-Hex SHA"| W7

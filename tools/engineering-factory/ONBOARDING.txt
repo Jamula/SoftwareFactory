@@ -55,6 +55,8 @@ Shipped workflows (.github/workflows/):
 - reusable-replay-smoke.yml & shadow-tests.yml: SHA-pinned reusable consumer
   synthetic replay (docs/consumer-shadow-tests.yml is an inert caller example).
 - otel-sdk-lock-evidence.yml: @opentelemetry/* lockfile provenance check.
+- copilot-setup-steps.yml: pre-firewall Node 26.13.1 + .NET 10.0.404 restore
+  environment setup for native GitHub Copilot Cloud Agent (#10).
 
 3-Stage Consumer Onboarding Journey (tools/engineering-factory/consumer-onboarding.mjs):
 1. Stage 0 — Read-Only Discovery (<=5 min, <=5 mandatory settings):

@@ -19,7 +19,7 @@ Complete index of all shipped guides under `docs/`, organized by domain. See als
 
 | Document | Audience | Purpose |
 | --- | --- | --- |
-| [Workflow guide](WORKFLOWS.md) | CI maintainers | Inventory of all 9 GitHub Actions / `gh-aw` workflows, `Default-Branch-Ruleset` `28054442`, and poison-safe CI caching |
+| [Workflow guide](WORKFLOWS.md) | CI maintainers | Inventory of all 10 GitHub Actions / `gh-aw` workflows, `Default-Branch-Ruleset` `28054442`, and poison-safe CI caching |
 | [GitHub Agentic Workflows (`gh-aw`) orchestration](GH-AW-ORCHESTRATION.md) | Orchestration engineers | `github/gh-aw` (`v1.2.2+`) `.md` → `.lock.yml` SHA-256 verification, `safe-outputs`, and `refs/heads/work-queue` non-force git-ref CAS |
 | [GitHub-hosted Copilot pilot](GITHUB-HOSTED-COPILOT-PILOT.md) | Operators / billing owners | `#105` provider-level `$0` overage hard-stops (`1 AI credit = $0.01`), native `copilot-swe-agent[bot]` / Cloud Automations smoke receipts |
 | [Cloud Agent admission gate and unified CLI](CLOUD-AGENT-ADMISSION.md) | Orchestration engineers | `#7` fail-closed non-estimated AI-credit admission gate, worker ladder (`1→12`), and unified `run.mjs` CLI |
@@ -43,6 +43,7 @@ Complete index of all shipped guides under `docs/`, organized by domain. See als
 | [Coordinator review provider](COORDINATOR-REVIEW-PROVIDER.md) | Engineers | Atomic `repo:pr:head` Copilot review-request intent store and capacity-gated shadow review provider |
 | [Durable local shadow host](LOCAL-SHADOW-HOST.md) | Developers | Local SQLite-fenced shadow tick harness (`local-shadow-host.mjs`) for offline testing |
 | [SoftwareFactory live board Canvas](FACTORY-BOARD-CANVAS.md) | Developers / operators | `#135` read-only `.github/extensions/factory-board` live milestones, issue activity, PR checks/reviews, and merge-queue status board |
+| [Hosted Live Board dashboard](HOSTED-DASHBOARD.md) | Operators / stakeholders | `#180` zero-spend CSP-hardened static GitHub Pages bundle for the SoftwareFactory Live Board |
 | [MCP server and multi-agent isolation connector](MCP-MULTI-AGENT-CONNECTOR.md) | Engineers | `#136` (`M02.06 P2` deferred) read-only MCP tool boundary and external-gate isolation for Codex/Claude connectors |
 
 ## 4. Observability, Aspire `17.0.0`, CI acceleration, and Kaizen (`M01.02` / `M02`)

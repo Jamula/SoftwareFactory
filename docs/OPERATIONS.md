@@ -79,7 +79,7 @@ sequenceDiagram
     Main->>Rec: Emit HALTED_ON_POST_MERGE_MAIN_FAILURE + trip kill switch
     Note over Rec,Main: Next wave blocked until remediation PR restores mainRecoveryVerified: true
   else Post-merge main green
-    Main->>WQ: settleWorkQueueLease(gen=9, accepted) & unblock dependent issues
+    Main->>WQ: settleWorkQueueLease({ ..., generation: 9, outcome: "completed" }) & unblock dependents
   end
 ```
 
