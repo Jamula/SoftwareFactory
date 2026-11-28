@@ -328,7 +328,10 @@ function makeFullHealthyInput() {
 
 test('replays recorded b0924c38 main quality audit receipt with 13/13 green Push on main checks and flips to MAIN_HEALTHY once CodeQL code_scanning ruleset is present', () => {
   assert.equal(ACTIVE_MAIN_WORKFLOWS.length, 5);
-  assert.deepEqual(OPTIONAL_MAIN_WORKFLOWS, ['CodeQL - Code Quality']);
+  assert.deepEqual(OPTIONAL_MAIN_WORKFLOWS, [
+    'CodeQL - Code Quality',
+    'Factory automode Merge Queue gatekeeper'
+  ]);
   assert.deepEqual(PATH_FILTERED_DOTNET_PULL_CHECKS, ['linux-dotnet-agents', 'windows-dotnet-agents']);
   assert.equal(DOTNET_AGENTS_PULL_PATH_FILTERS.length, 7);
   assert.equal(recordedEvidence.auditedHead, 'b0924c3807f797e6090e1dc3e1e65fc9caa07550');
@@ -400,6 +403,25 @@ test('verifies healthy protected main alone and full protected main + candidate 
   altNames.main.workflowRuns[5].runName = 'CodeQL - Code Quality';
   altNames.main.workflowRuns[6].conclusion = 'success';
   altNames.main.workflowRuns[6].jobs[0].conclusion = 'success';
+  altNames.main.workflowRuns.push({
+    workflow: 'Factory automode Merge Queue gatekeeper',
+    runName: 'Factory automode Merge Queue gatekeeper',
+    runId: 208,
+    event: 'dynamic',
+    headSha: MAIN_SHA,
+    status: 'completed',
+    conclusion: 'success',
+    jobs: [
+      {
+        name: 'evaluate',
+        jobId: 1099,
+        appId: GITHUB_ACTIONS_APP_ID,
+        headSha: MAIN_SHA,
+        status: 'completed',
+        conclusion: 'success'
+      }
+    ]
+  });
   assert.equal(auditProtectedMainAndCandidateGates(altNames).mainHealthy, true);
 
   const full = auditProtectedMainAndCandidateGates(makeFullHealthyInput());

@@ -19,9 +19,10 @@ export const ACTIVE_MAIN_WORKFLOWS = Object.freeze([
 ]);
 
 // Duplicate CodeQL - Code Quality is disabled in repository settings while security
-// CodeQL remains mandatory; historical receipts including it are still validated.
+// CodeQL remains mandatory; historical receipts and optional main gatekeepers are still validated.
 export const OPTIONAL_MAIN_WORKFLOWS = Object.freeze([
-  'CodeQL - Code Quality'
+  'CodeQL - Code Quality',
+  'Factory automode Merge Queue gatekeeper'
 ]);
 
 export const DEFAULT_OFF_MAIN_WORKFLOWS = Object.freeze([

@@ -1,0 +1,448 @@
+name: Factory automode Merge Queue gatekeeper
+
+on:
+  pull_request_target:
+    branches: [main]
+    types: [opened, ready_for_review, synchronize, reopened]
+  workflow_run:
+    workflows:
+      - "Factory validation"
+      - "Windows Aspire runtime"
+      - ".NET MAF specialist agents"
+    types: [completed]
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: factory-automode-enqueue
+  cancel-in-progress: false
+
+jobs:
+  evaluate:
+    name: evaluate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+      checks: read
+    if: >-
+      github.repository == 'Jamula/SoftwareFactory' &&
+      github.repository_id == '1471342715' &&
+      github.ref == 'refs/heads/main' &&
+      github.ref_protected == true &&
+      vars.FACTORY_KILL_SWITCH != 'true' &&
+      vars.FACTORY_AUTOMODE_ENABLED != 'false' &&
+      (github.event_name != 'workflow_run' || github.event.workflow_run.head_repository.id == 1471342715) &&
+      (github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.id == 1471342715)
+    outputs:
+      has_actions: ${{ steps.evaluate.outputs.has_actions }}
+      actions_json: ${{ steps.evaluate.outputs.actions_json }}
+    steps:
+      - name: Checkout trusted main evaluator
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/heads/main
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '26.13.1'
+          package-manager-cache: false
+
+      - name: Evaluate open pull requests for Merge Queue admission
+        id: evaluate
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO_SLUG: ${{ github.repository }}
+          REPO_ID: ${{ github.repository_id }}
+          KILL_SWITCH: ${{ vars.FACTORY_KILL_SWITCH }}
+          AUTOMODE_ENABLED: ${{ vars.FACTORY_AUTOMODE_ENABLED }}
+        run: |
+          node --input-type=module <<'EOF'
+          import {execFileSync} from 'node:child_process';
+          import {appendFileSync} from 'node:fs';
+          import {evaluateAutomodePullRequests} from './tools/engineering-factory/automode-enqueuer.mjs';
+
+          function ghJson(args) {
+            const out = execFileSync('gh', args, {
+              encoding: 'utf8',
+              maxBuffer: 16 * 1024 * 1024
+            });
+            return JSON.parse(out);
+          }
+
+          const OPEN_PRS_QUERY = `
+            query($owner: String!, $name: String!, $cursor: String) {
+              repository(owner: $owner, name: $name) {
+                databaseId
+                pullRequests(
+                  states: [OPEN],
+                  baseRefName: "main",
+                  first: 50,
+                  after: $cursor,
+                  orderBy: {field: CREATED_AT, direction: ASC}
+                ) {
+                  pageInfo { hasNextPage endCursor }
+                  nodes {
+                    id
+                    number
+                    state
+                    isDraft
+                    baseRefName
+                    headRefOid
+                    mergeable
+                    mergeStateStatus
+                    mergeQueueEntry { id }
+                    author { __typename login }
+                    headRepository { databaseId }
+                    commits(last: 1) {
+                      nodes {
+                        commit {
+                          oid
+                          statusCheckRollup { state }
+                        }
+                      }
+                    }
+                    reviewThreads(first: 100) {
+                      pageInfo { hasNextPage endCursor }
+                      nodes { isResolved }
+                    }
+                    reviews(first: 100) {
+                      pageInfo { hasNextPage endCursor }
+                      nodes {
+                        databaseId
+                        state
+                        body
+                        commit { oid }
+                        author { __typename login }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          `;
+
+          const THREADS_PAGE_QUERY = `
+            query($id: ID!, $cursor: String!) {
+              node(id: $id) {
+                ... on PullRequest {
+                  reviewThreads(first: 100, after: $cursor) {
+                    pageInfo { hasNextPage endCursor }
+                    nodes { isResolved }
+                  }
+                }
+              }
+            }
+          `;
+
+          const REVIEWS_PAGE_QUERY = `
+            query($id: ID!, $cursor: String!) {
+              node(id: $id) {
+                ... on PullRequest {
+                  reviews(first: 100, after: $cursor) {
+                    pageInfo { hasNextPage endCursor }
+                    nodes {
+                      databaseId
+                      state
+                      body
+                      commit { oid }
+                      author { __typename login }
+                    }
+                  }
+                }
+              }
+            }
+          `;
+
+          const repoSlug = String(process.env.REPO_SLUG ?? '');
+          const repoId = Number.parseInt(String(process.env.REPO_ID ?? '0'), 10);
+          const killSwitchActive = String(process.env.KILL_SWITCH ?? '').toLowerCase() === 'true';
+          const automodeEnabled = String(process.env.AUTOMODE_ENABLED ?? 'true').toLowerCase() !== 'false';
+          const [owner, name] = repoSlug.split('/');
+
+          const rawPrs = [];
+          let prCursor = null;
+          for (let page = 0; page < 2; page++) {
+            const args = ['api', 'graphql', '-f', `query=${OPEN_PRS_QUERY}`, '-f', `owner=${owner}`, '-f', `name=${name}`];
+            if (prCursor !== null) args.push('-f', `cursor=${prCursor}`);
+            const res = ghJson(args);
+            const conn = res?.data?.repository?.pullRequests;
+            for (const node of conn?.nodes ?? []) {
+              if (node) rawPrs.push(node);
+            }
+            if (!conn?.pageInfo?.hasNextPage) break;
+            prCursor = conn.pageInfo.endCursor;
+          }
+
+          const pullRequests = [];
+          for (const pr of rawPrs.slice(0, 100)) {
+            const prNum = Number(pr.number);
+            const headOid = String(pr.headRefOid ?? '');
+
+            let threadNodes = [...(pr.reviewThreads?.nodes ?? [])];
+            let threadsHasNext = Boolean(pr.reviewThreads?.pageInfo?.hasNextPage);
+            let threadCursor = pr.reviewThreads?.pageInfo?.endCursor ?? null;
+            for (let tp = 0; tp < 4 && threadsHasNext && threadCursor; tp++) {
+              const tRes = ghJson(['api', 'graphql', '-f', `query=${THREADS_PAGE_QUERY}`, '-f', `id=${pr.id}`, '-f', `cursor=${threadCursor}`]);
+              const tConn = tRes?.data?.node?.reviewThreads;
+              threadNodes.push(...(tConn?.nodes ?? []));
+              threadsHasNext = Boolean(tConn?.pageInfo?.hasNextPage);
+              threadCursor = tConn?.pageInfo?.endCursor ?? null;
+            }
+            const reviewThreadsComplete = !threadsHasNext;
+            const unresolvedThreadCount = threadNodes.filter(t => t?.isResolved !== true).length;
+
+            let reviewNodes = [...(pr.reviews?.nodes ?? [])];
+            let reviewsHasNext = Boolean(pr.reviews?.pageInfo?.hasNextPage);
+            let reviewCursor = pr.reviews?.pageInfo?.endCursor ?? null;
+            for (let rp = 0; rp < 1 && reviewsHasNext && reviewCursor; rp++) {
+              const rRes = ghJson(['api', 'graphql', '-f', `query=${REVIEWS_PAGE_QUERY}`, '-f', `id=${pr.id}`, '-f', `cursor=${reviewCursor}`]);
+              const rConn = rRes?.data?.node?.reviews;
+              reviewNodes.push(...(rConn?.nodes ?? []));
+              reviewsHasNext = Boolean(rConn?.pageInfo?.hasNextPage);
+              reviewCursor = rConn?.pageInfo?.endCursor ?? null;
+            }
+            let reviewsComplete = !reviewsHasNext && reviewNodes.length <= 200;
+            const reviews = [];
+            for (const rv of reviewNodes.slice(0, 200)) {
+              const login = rv?.author?.login;
+              const dbId = rv?.databaseId;
+              if (typeof login !== 'string' || login.length === 0 || !Number.isSafeInteger(dbId) || dbId <= 0) {
+                reviewsComplete = false;
+                continue;
+              }
+              reviews.push({
+                id: dbId,
+                reviewerLogin: login,
+                reviewerIsBot: rv?.author?.__typename !== 'User',
+                state: String(rv.state ?? 'COMMENTED'),
+                commitOid: typeof rv?.commit?.oid === 'string' ? rv.commit.oid : null,
+                body: String(rv.body ?? '').replaceAll('\u0000', '').slice(0, 65536)
+              });
+            }
+
+            const fileSet = new Set();
+            let changedFilesComplete = true;
+            for (let fp = 1; fp <= 5; fp++) {
+              const batch = ghJson(['api', `repos/Jamula/SoftwareFactory/pulls/${prNum}/files?per_page=100&page=${fp}`]);
+              if (!Array.isArray(batch)) {
+                changedFilesComplete = false;
+                break;
+              }
+              for (const f of batch) {
+                if (typeof f?.filename === 'string' && f.filename.length > 0) fileSet.add(f.filename);
+                if (typeof f?.previous_filename === 'string' && f.previous_filename.length > 0) {
+                  fileSet.add(f.previous_filename);
+                }
+              }
+              if (batch.length < 100) break;
+              if (fp === 5) {
+                const overflow = ghJson(['api', `repos/Jamula/SoftwareFactory/pulls/${prNum}/files?per_page=1&page=6`]);
+                if (!Array.isArray(overflow) || overflow.length > 0) changedFilesComplete = false;
+              }
+            }
+            const allFiles = [...fileSet];
+            if (allFiles.length > 500) changedFilesComplete = false;
+
+            const checkRuns = [];
+            let checkRunsComplete = false;
+            if (/^[0-9a-f]{40}$/.test(headOid)) {
+              let rawCount = 0;
+              let totalExpected = 0;
+              checkRunsComplete = true;
+              for (let cp = 1; cp <= 2; cp++) {
+                const crRes = ghJson(['api', `repos/Jamula/SoftwareFactory/commits/${headOid}/check-runs?per_page=100&page=${cp}`]);
+                const list = Array.isArray(crRes?.check_runs) ? crRes.check_runs : [];
+                totalExpected = typeof crRes?.total_count === 'number' ? crRes.total_count : 0;
+                rawCount += list.length;
+                for (const cr of list) {
+                  if (checkRuns.length >= 200) {
+                    checkRunsComplete = false;
+                    break;
+                  }
+                  const status = String(cr?.status ?? '').toLowerCase();
+                  const conclusion = status === 'completed' ? String(cr?.conclusion ?? '').toLowerCase() : null;
+                  const crSha = String(cr?.head_sha ?? '');
+                  const crName = String(cr?.name ?? '');
+                  if (!crName || crName.length > 160 || !/^[0-9a-f]{40}$/.test(crSha)) {
+                    checkRunsComplete = false;
+                    continue;
+                  }
+                  checkRuns.push({
+                    name: crName,
+                    status,
+                    conclusion,
+                    appId: Number.isSafeInteger(cr?.app?.id) && cr.app.id >= 0 ? cr.app.id : 0,
+                    headSha: crSha
+                  });
+                }
+                if (list.length < 100 || rawCount >= totalExpected) break;
+              }
+              if (rawCount < totalExpected || totalExpected > 200) checkRunsComplete = false;
+            }
+
+            const lastCommit = pr.commits?.nodes?.[0]?.commit;
+            const statusCheckRollupState =
+              lastCommit?.oid === headOid && typeof lastCommit?.statusCheckRollup?.state === 'string'
+                ? lastCommit.statusCheckRollup.state
+                : null;
+
+            pullRequests.push({
+              id: String(pr.id ?? ''),
+              number: prNum,
+              state: String(pr.state ?? ''),
+              isDraft: Boolean(pr.isDraft),
+              baseRefName: String(pr.baseRefName ?? ''),
+              headRepositoryId: Number.isSafeInteger(pr?.headRepository?.databaseId)
+                ? pr.headRepository.databaseId
+                : null,
+              headRefOid: headOid,
+              mergeQueueEntry: pr.mergeQueueEntry === null || pr.mergeQueueEntry === undefined
+                ? null
+                : {id: String(pr.mergeQueueEntry.id ?? '')},
+              mergeable: String(pr.mergeable ?? 'UNKNOWN'),
+              mergeStateStatus: String(pr.mergeStateStatus ?? 'UNKNOWN'),
+              authorLogin: typeof pr?.author?.login === 'string' && pr.author.login.length > 0
+                ? pr.author.login
+                : 'unknown-actor',
+              authorIsBot: pr?.author?.__typename !== 'User',
+              changedFilesComplete,
+              files: allFiles.slice(0, 500),
+              reviewThreadsComplete,
+              unresolvedThreadCount,
+              reviewsComplete,
+              reviews,
+              checkRunsComplete,
+              statusCheckRollupState,
+              checkRuns
+            });
+          }
+
+          const verdict = evaluateAutomodePullRequests({
+            repository: repoSlug,
+            repositoryId: repoId,
+            killSwitchActive,
+            automodeEnabled,
+            pullRequests
+          });
+
+          console.log(JSON.stringify({
+            active: verdict.active,
+            reason: verdict.reason,
+            enqueueCount: verdict.enqueue.length,
+            updateBranchCount: verdict.updateBranch.length,
+            decisions: verdict.decisions
+          }));
+
+          const actionsPayload = JSON.stringify({
+            enqueue: verdict.enqueue,
+            updateBranch: verdict.updateBranch
+          });
+          if (actionsPayload.length > 4096 || /[\r\n]/.test(actionsPayload)) {
+            throw new Error('Actions payload exceeded safe single-line bound');
+          }
+          const hasActions = verdict.active && (verdict.enqueue.length > 0 || verdict.updateBranch.length > 0);
+          appendFileSync(
+            process.env.GITHUB_OUTPUT,
+            `has_actions=${hasActions ? 'true' : 'false'}\nactions_json=${actionsPayload}\n`
+          );
+          EOF
+
+  apply-queue-actions:
+    name: apply-queue-actions
+    needs: [evaluate]
+    if: needs.evaluate.result == 'success' && needs.evaluate.outputs.has_actions == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Apply validated branch-update or Merge Queue enqueue actions
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACTIONS_JSON: ${{ needs.evaluate.outputs.actions_json }}
+          REPO_SLUG: ${{ github.repository }}
+          REPO_ID: ${{ github.repository_id }}
+          KILL_SWITCH: ${{ vars.FACTORY_KILL_SWITCH }}
+          AUTOMODE_ENABLED: ${{ vars.FACTORY_AUTOMODE_ENABLED }}
+        run: |
+          node -e '
+            const {execFileSync} = require("node:child_process");
+
+            if (process.env.REPO_SLUG !== "Jamula/SoftwareFactory" ||
+                process.env.REPO_ID !== "1471342715" ||
+                String(process.env.KILL_SWITCH || "").toLowerCase() === "true" ||
+                String(process.env.AUTOMODE_ENABLED || "true").toLowerCase() === "false") {
+              throw new Error("Automode apply-queue-actions blocked by scope or kill-switch guard");
+            }
+
+            const raw = String(process.env.ACTIONS_JSON || "");
+            if (raw.length === 0 || raw.length > 4096) {
+              throw new Error("Invalid ACTIONS_JSON payload length");
+            }
+
+            const parsed = JSON.parse(raw);
+            const isPlain = v => v !== null && typeof v === "object" && !Array.isArray(v) && Object.getPrototypeOf(v) === Object.prototype;
+            if (!isPlain(parsed) ||
+                Object.keys(parsed).sort().join(",") !== "enqueue,updateBranch" ||
+                !Array.isArray(parsed.enqueue) ||
+                !Array.isArray(parsed.updateBranch) ||
+                parsed.enqueue.length > 5 ||
+                parsed.updateBranch.length > 1 ||
+                (parsed.enqueue.length > 0 && parsed.updateBranch.length > 0) ||
+                parsed.enqueue.length + parsed.updateBranch.length === 0) {
+              throw new Error("Malformed ACTIONS_JSON envelope");
+            }
+
+            const NUM_RE = /^[1-9]\d{0,9}$/;
+            const PR_ID_RE = /^PR_[A-Za-z0-9_-]{10,64}$/;
+            const SHA_RE = /^[0-9a-f]{40}$/;
+
+            for (const item of parsed.updateBranch) {
+              if (!isPlain(item) ||
+                  Object.keys(item).sort().join(",") !== "expectedHeadOid,number" ||
+                  !Number.isSafeInteger(item.number) ||
+                  !NUM_RE.test(String(item.number)) ||
+                  typeof item.expectedHeadOid !== "string" ||
+                  !SHA_RE.test(item.expectedHeadOid)) {
+                throw new Error("Invalid updateBranch action item");
+              }
+              execFileSync("gh", [
+                "api",
+                "-X", "PUT",
+                `repos/Jamula/SoftwareFactory/pulls/${item.number}/update-branch`,
+                "-f", `expected_head_sha=${item.expectedHeadOid}`
+              ], {stdio: "inherit"});
+            }
+
+            const ENQUEUE_MUTATION = "mutation($pullRequestId:ID!,$expectedHeadOid:GitObjectID!){enqueuePullRequest(input:{pullRequestId:$pullRequestId,expectedHeadOid:$expectedHeadOid,jump:false}){mergeQueueEntry{id position state}}}";
+            for (const item of parsed.enqueue) {
+              if (!isPlain(item) ||
+                  Object.keys(item).sort().join(",") !== "expectedHeadOid,number,pullRequestId" ||
+                  !Number.isSafeInteger(item.number) ||
+                  !NUM_RE.test(String(item.number)) ||
+                  typeof item.pullRequestId !== "string" ||
+                  !PR_ID_RE.test(item.pullRequestId) ||
+                  typeof item.expectedHeadOid !== "string" ||
+                  !SHA_RE.test(item.expectedHeadOid)) {
+                throw new Error("Invalid enqueue action item");
+              }
+              execFileSync("gh", [
+                "api",
+                "graphql",
+                "-f", `query=${ENQUEUE_MUTATION}`,
+                "-f", `pullRequestId=${item.pullRequestId}`,
+                "-f", `expectedHeadOid=${item.expectedHeadOid}`
+              ], {stdio: "inherit"});
+            }
+          '
