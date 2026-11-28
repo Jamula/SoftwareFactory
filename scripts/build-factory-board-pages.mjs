@@ -8,11 +8,11 @@ import {
 
 const outputDir = resolve(process.argv[2] || "dist/pages");
 const repo = process.env.FACTORY_BOARD_REPO || DEFAULT_REPO;
-const fetched = await fetchFactoryBoardSnapshot({ repo });
+const snapshot = await fetchFactoryBoardSnapshot({ repo });
 const result = buildStaticBoardPagesBundle({
   outputDir,
   repo,
-  snapshot: fetched.snapshot,
+  snapshot,
   intervalSeconds: 60,
 });
 process.stderr.write(`Built static SoftwareFactory Live Board at ${result.outputDir}\n`);

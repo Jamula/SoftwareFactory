@@ -2437,6 +2437,7 @@ export function createStaticPagesHost(win, { defaultIntervalSeconds = 60 } = {})
   let snapshot = null;
   let blockedUntilMs = 0;
   let timer = null;
+  let inFlightRefresh = null;
 
   const statusText = () => (paused ? "Paused" : `Auto-refreshing (${intervalSeconds}s)`);
   const currentEnvelope = () => ({
@@ -2457,7 +2458,57 @@ export function createStaticPagesHost(win, { defaultIntervalSeconds = 60 } = {})
     emit("state", { data: JSON.stringify(currentEnvelope()) });
   }
 
-  function mapStaticRestSnapshot(milestonesRaw, issuesOnlyRaw, openPullsRaw, closedPullsRaw, partial) {
+  function markDegradedSnapshot(code, message) {
+    if (snapshot && snapshot.verified) {
+      snapshot = {
+        ...snapshot,
+        ok: false,
+        stale: true,
+        error: { code, message },
+        lastAttemptAt: new Date(nowFn()).toISOString(),
+      };
+      pushState();
+    }
+    emit("error", {});
+  }
+
+  function inferRestMilestoneId(nativeTitle, labels, title, codeRe) {
+    if (nativeTitle && !/^historical\b/i.test(nativeTitle.trim())) {
+      const m = codeRe.exec(nativeTitle);
+      if (m) return m[1].toUpperCase();
+    }
+    for (const label of labels) {
+      const m = codeRe.exec(label);
+      if (m) return m[1].toUpperCase();
+    }
+    const tm = codeRe.exec(title);
+    return tm ? tm[1].toUpperCase() : null;
+  }
+
+  function summarizeRestChecks(runs) {
+    if (!runs) {
+      return { state: "UNKNOWN", passed: 0, failed: 0, pending: 0, total: 0 };
+    }
+    if (runs.length === 0) {
+      return { state: "PENDING", passed: 0, failed: 0, pending: 0, total: 0 };
+    }
+    let passed = 0;
+    let failed = 0;
+    let pending = 0;
+    for (const run of runs) {
+      if (run.status !== "completed") {
+        pending += 1;
+      } else if (run.conclusion === "success" || run.conclusion === "neutral" || run.conclusion === "skipped") {
+        passed += 1;
+      } else {
+        failed += 1;
+      }
+    }
+    const state = failed > 0 ? "FAIL" : pending > 0 ? "PENDING" : "PASS";
+    return { state, passed, failed, pending, total: runs.length };
+  }
+
+  function mapStaticRestSnapshot(milestonesRaw, issuesOnlyRaw, openPullsRaw, closedPullsRaw, checkRunsBySha, partial) {
     const canonicalIds = [
       ["M01", "M01 - Autonomous SoftwareFactory"],
       ["M02", "M02 - Fast SoftwareFactory"],
@@ -2505,10 +2556,8 @@ export function createStaticPagesHost(win, { defaultIntervalSeconds = 60 } = {})
       if (state === "CLOSED") issuesClosed += 1;
       else issuesOpen += 1;
       const labels = it.labels.map((l) => (typeof l === "string" ? l : l.name));
-      const mText = `${it.milestone ? it.milestone.title : ""} ${it.title} ${labels.join(" ")}`;
-      const mMatch = codeRe.exec(mText);
+      const milestoneId = inferRestMilestoneId(it.milestone ? it.milestone.title : "", labels, it.title, codeRe);
       const prioMatch = labels.find((l) => /^P[0-2]$/i.test(l));
-      const milestoneId = mMatch ? mMatch[1].toUpperCase() : null;
       const row = {
         number: it.number,
         title: it.title,
@@ -2533,22 +2582,29 @@ export function createStaticPagesHost(win, { defaultIntervalSeconds = 60 } = {})
     }
     const openPulls = [];
     for (const pr of openPullsRaw) {
-      const prCode = codeRe.exec(`${pr.milestone ? pr.milestone.title : ""} ${pr.title}`);
+      const prNativeMs = pr.milestone ? pr.milestone.title : "";
       const linkedNums = [...pr.title.matchAll(/#(\d+)\b/g)].map((m) => Number.parseInt(m[1], 10));
-      const milestoneId = prCode ? prCode[1].toUpperCase() : linkedNums.map((n) => issueMilestoneMap.get(n)).find(Boolean) || null;
+      const directMs = inferRestMilestoneId(prNativeMs, [], pr.title, codeRe);
+      const milestoneId = directMs || linkedNums.map((n) => issueMilestoneMap.get(n)).find(Boolean) || null;
+      const headSha = pr.head.sha || "";
+      const ci = summarizeRestChecks(headSha ? checkRunsBySha.get(headSha) : null);
       if (milestoneId) {
-        byId.get(milestoneId).activePulls += 1;
+        const slot = byId.get(milestoneId);
+        slot.activePulls += 1;
+        if (ci.state === "PASS") slot.ciPassingPulls += 1;
+        else if (ci.state === "PENDING") slot.ciPendingPulls += 1;
+        else if (ci.state === "FAIL") slot.ciFailingPulls += 1;
       }
       openPulls.push({
         number: pr.number,
         title: pr.title,
         url: pr.html_url,
         headRefName: pr.head.ref,
-        headSha: pr.head.sha || "",
+        headSha,
         isDraft: Boolean(pr.draft),
         linkedIssueNumbers: linkedNums,
         milestoneId,
-        ci: { state: "UNKNOWN", passed: 0, failed: 0, pending: 0, total: 0 },
+        ci,
         reviewStatus: "UNKNOWN",
         mergeStateStatus: "UNKNOWN",
         autoMerge: Boolean(pr.auto_merge),
@@ -2559,13 +2615,13 @@ export function createStaticPagesHost(win, { defaultIntervalSeconds = 60 } = {})
     const mergedPulls = [];
     for (const pr of closedPullsRaw) {
       if (pr.merged_at) {
-        const prCode = codeRe.exec(`${pr.milestone ? pr.milestone.title : ""} ${pr.title}`);
+        const milestoneId = inferRestMilestoneId(pr.milestone ? pr.milestone.title : "", [], pr.title, codeRe);
         mergedPulls.push({
           number: pr.number,
           title: pr.title,
           url: pr.html_url,
           headRefName: pr.head.ref,
-          milestoneId: prCode ? prCode[1].toUpperCase() : null,
+          milestoneId,
           mergedAt: pr.merged_at,
         });
       }
@@ -2602,10 +2658,10 @@ export function createStaticPagesHost(win, { defaultIntervalSeconds = 60 } = {})
             : 0,
         openPulls: openPulls.length,
         draftPulls: openPulls.filter((pr) => pr.isDraft).length,
-        ciPassingPulls: 0,
-        ciPendingPulls: 0,
-        ciFailingPulls: 0,
-        ciUnknownPulls: openPulls.length,
+        ciPassingPulls: openPulls.filter((pr) => pr.ci.state === "PASS").length,
+        ciPendingPulls: openPulls.filter((pr) => pr.ci.state === "PENDING").length,
+        ciFailingPulls: openPulls.filter((pr) => pr.ci.state === "FAIL").length,
+        ciUnknownPulls: openPulls.filter((pr) => pr.ci.state === "UNKNOWN").length,
         approvedPulls: null,
         queuedPulls: null,
         mergedRecentPulls: mergedPulls.length,
@@ -2617,8 +2673,24 @@ export function createStaticPagesHost(win, { defaultIntervalSeconds = 60 } = {})
     };
   }
 
-  async function refreshFromGitHubRest() {
+  function applyRateLimitDeadline(r) {
+    const retryAfter = Number.parseInt(r.headers.get("retry-after") || "", 10);
+    if (Number.isFinite(retryAfter) && retryAfter > 0) {
+      blockedUntilMs = Math.max(blockedUntilMs, nowFn() + retryAfter * 1000);
+    }
+    const rem = r.headers.get("x-ratelimit-remaining");
+    const rst = Number.parseInt(r.headers.get("x-ratelimit-reset") || "", 10);
+    if (rem === "0") {
+      const target = Number.isFinite(rst) ? rst * 1000 : nowFn() + 60_000;
+      blockedUntilMs = Math.max(blockedUntilMs, target);
+    } else if (r.status === 403 || r.status === 429) {
+      blockedUntilMs = Math.max(blockedUntilMs, nowFn() + 60_000);
+    }
+  }
+
+  async function doRefreshFromGitHubRest() {
     if (nowFn() < blockedUntilMs) {
+      markDegradedSnapshot("RATE_LIMITED", "Cooling down after GitHub API rate limit.");
       return;
     }
     const base = `https://api.github.com/repos/${repo}`;
@@ -2626,35 +2698,74 @@ export function createStaticPagesHost(win, { defaultIntervalSeconds = 60 } = {})
     try {
       const [mRes, iRes, opRes, cpRes] = await Promise.all([
         realFetch(`${base}/milestones?state=all&per_page=100`, { headers }),
-        realFetch(`${base}/issues?state=all&per_page=100`, { headers }),
+        realFetch(`${base}/issues?state=all&per_page=100&page=1`, { headers }),
         realFetch(`${base}/pulls?state=open&sort=updated&direction=desc&per_page=100`, { headers }),
         realFetch(`${base}/pulls?state=closed&sort=updated&direction=desc&per_page=50`, { headers }),
       ]);
       const responses = [mRes, iRes, opRes, cpRes];
       let hasNextPage = false;
+      let issuesHasNext = false;
       for (const r of responses) {
-        const rem = r.headers.get("x-ratelimit-remaining");
-        const rst = Number.parseInt(r.headers.get("x-ratelimit-reset") || "", 10);
-        if (rem === "0" && Number.isFinite(rst)) {
-          blockedUntilMs = rst * 1000;
-        }
+        applyRateLimitDeadline(r);
         const linkHeader = r.headers.get("link") || "";
         if (/\brel="next"/i.test(linkHeader)) {
-          hasNextPage = true;
+          if (r === iRes) issuesHasNext = true;
+          else hasNextPage = true;
         }
       }
       if (responses.some((r) => !r.ok)) {
-        emit("error", {});
+        markDegradedSnapshot("HTTP_ERROR", "GitHub REST refresh returned a non-OK response.");
         return;
       }
-      const [mJson, iJson, opJson, cpJson] = await Promise.all(responses.map((r) => r.json()));
-      const issuesOnly = iJson.filter((item) => !item.pull_request);
-      snapshot = mapStaticRestSnapshot(mJson, issuesOnly, opJson, cpJson, hasNextPage);
+      const [mJson, iPage1, opJson, cpJson] = await Promise.all(responses.map((r) => r.json()));
+      let allIssuesRaw = iPage1;
+      if (issuesHasNext) {
+        const iRes2 = await realFetch(`${base}/issues?state=all&per_page=100&page=2`, { headers });
+        applyRateLimitDeadline(iRes2);
+        if (!iRes2.ok) {
+          markDegradedSnapshot("HTTP_ERROR", "GitHub REST page 2 refresh failed.");
+          return;
+        }
+        if (/\brel="next"/i.test(iRes2.headers.get("link") || "")) {
+          hasNextPage = true;
+        }
+        const iPage2 = await iRes2.json();
+        allIssuesRaw = [...iPage1, ...iPage2];
+      }
+      const checkRunsBySha = new Map();
+      const headShas = opJson
+        .map((pr) => pr.head.sha)
+        .filter(Boolean)
+        .slice(0, 8);
+      if (headShas.length > 0) {
+        const checkResponses = await Promise.all(
+          headShas.map((sha) => realFetch(`${base}/commits/${sha}/check-runs?per_page=100`, { headers })),
+        );
+        for (let idx = 0; idx < headShas.length; idx += 1) {
+          const cr = checkResponses[idx];
+          applyRateLimitDeadline(cr);
+          if (cr.ok) {
+            const cj = await cr.json();
+            checkRunsBySha.set(headShas[idx], cj.check_runs);
+          }
+        }
+      }
+      const issuesOnly = allIssuesRaw.filter((item) => !item.pull_request);
+      snapshot = mapStaticRestSnapshot(mJson, issuesOnly, opJson, cpJson, checkRunsBySha, hasNextPage);
       emit("open", {});
       pushState();
     } catch {
-      emit("error", {});
+      markDegradedSnapshot("NETWORK_ERROR", "Live GitHub REST refresh failed.");
     }
+  }
+
+  function refreshFromGitHubRest() {
+    if (!inFlightRefresh) {
+      inFlightRefresh = doRefreshFromGitHubRest().finally(() => {
+        inFlightRefresh = null;
+      });
+    }
+    return inFlightRefresh;
   }
 
   function reschedule() {
