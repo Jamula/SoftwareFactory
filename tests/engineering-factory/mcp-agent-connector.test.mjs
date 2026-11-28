@@ -617,6 +617,25 @@ test('stdio times out noncooperative board reads and resumes ordered requests wi
   resolveRequest(new Response('[]'));
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(calls, 1);
+
+  let abortedOnDisconnect = false;
+  const discIn = new PassThrough();
+  const discOut = new PassThrough();
+  const discServer = startMcpStdioServer({ input: discIn, output: discOut, context: {
+    ...authorizedContext(),
+    boardTransport: {
+      request: (_url, options) => new Promise(() => {
+        options.signal.addEventListener('abort', () => { abortedOnDisconnect = true; }, { once: true });
+        setImmediate(() => discOut.destroy());
+      })
+    }
+  } });
+  discIn.write(`${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: {
+    name: 'get_factory_board_snapshot', arguments: { repositoryId: FACTORY_REPO_ID }
+  } })}\n`);
+  await assert.rejects(discServer, /OUTPUT_CLOSED/);
+  assert.equal(abortedOnDisconnect, true);
+  discIn.end();
 });
 
 test('stdio honors output backpressure and rejects closed output', async () => {

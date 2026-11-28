@@ -1876,7 +1876,7 @@ export async function startMcpStdioServer({ input = process.stdin, output = proc
         let timer;
         let active = true;
         try {
-          const snapshot = await Promise.race([
+          const snapshot = await untilSettledOrFailed(Promise.race([
             fetchFactoryBoardSnapshot({
               repo: entry.repository,
               rateLimitState,
@@ -1889,7 +1889,7 @@ export async function startMcpStdioServer({ input = process.stdin, output = proc
             new Promise((_, reject) => {
               timer = setTimeout(() => reject(new Error('BOARD_READ_TIMEOUT')), 5000);
             })
-          ]);
+          ]));
           const inspected = inspectBoundedPlainTree(snapshot);
           response = snapshot.ok !== true
             ? jsonRpcResult(envelope.id, wrapperDenied('BOARD_READ_FAILED'))
@@ -1898,6 +1898,7 @@ export async function startMcpStdioServer({ input = process.stdin, output = proc
             ? jsonRpcResult(envelope.id, toolCallOutcome(snapshot, false))
             : jsonRpcResult(envelope.id, wrapperDenied('BOARD_RESULT_UNSAFE'));
         } catch {
+          if (streamFailure !== null) throw streamFailure;
           response = jsonRpcResult(envelope.id, wrapperDenied('BOARD_READ_FAILED'));
         } finally {
           active = false;
