@@ -1,0 +1,3802 @@
+{
+  "schemaVersion": "1.0.0",
+  "receiptId": "m01-05-wave-3-squash-merge-queue-receipt",
+  "issue": 8,
+  "milestone": "M01.05",
+  "generatedAtIso": "2026-11-28T03:15:00.000Z",
+  "scope": {
+    "repositoryId": 1471342715,
+    "repository": "Jamula/SoftwareFactory",
+    "defaultBranch": "main"
+  },
+  "consumerScopes": [
+    {
+      "repositoryId": 1467877692,
+      "repository": "Jamula/FamilyTree",
+      "defaultBranch": "main"
+    },
+    {
+      "repositoryId": 1448979947,
+      "repository": "Jamula/Spellbook",
+      "defaultBranch": "main"
+    },
+    {
+      "repositoryId": 1431589772,
+      "repository": "Jamula/FamilyHub",
+      "defaultBranch": "main"
+    }
+  ],
+  "mainIntegrationRange": {
+    "baseMainOid": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
+    "tipMainOid": "b0924c3807f797e6090e1dc3e1e65fc9caa07550",
+    "mergeMethod": "squash",
+    "nativeMergeQueue": true,
+    "mergedPullRequestNumbers": [
+      145,
+      146,
+      147,
+      148,
+      149,
+      150,
+      151,
+      152,
+      153,
+      154,
+      155,
+      156,
+      157,
+      158,
+      159,
+      160,
+      161,
+      162,
+      163,
+      164,
+      165
+    ],
+    "linearMainMergeOrder": [
+      152,
+      154,
+      158,
+      156,
+      153,
+      159,
+      165,
+      163,
+      145,
+      146,
+      147,
+      148,
+      149,
+      150,
+      151,
+      155,
+      160,
+      162,
+      164,
+      161,
+      157
+    ]
+  },
+  "cohortProvenance": {
+    "cohort": "wave-3-supervised-merge-queue",
+    "provenance": "github-timeline",
+    "windowStartIso": "2026-11-27T10:00:00.000Z",
+    "windowEndIso": "2026-11-28T03:15:00.000Z",
+    "sourceComplete": true,
+    "supervisionModel": "supervised-coordinator-and-agent-merge",
+    "unattendedIssue10Claimed": false,
+    "unattendedIssue10Status": "pending-future-unattended-cloud-agent-cohort",
+    "closesIssue8": false,
+    "disclosure": "Wave 3 PRs #145-#165 were merged into protected main via GitHub Native Squash Merge Queue under supervised Wave 3 coordinator/Agent-Merge sessions authenticated via user-scoped GitHub CLI. Routine coordinator touches are explicitly recorded (routineHumanTouchesCount=21, unattendedMergedCount=0, sloMet=false). This receipt proves serialized native Squash Merge Queue execution, merge_group check enforcement, parameterized queue-reread scope isolation, and deterministic latency/stage attribution, and explicitly does NOT claim unattended Issue #10 Cloud Agent completion or velocity-SLO attainment."
+  },
+  "sloOptions": {
+    "repositoryId": 1471342715,
+    "provenance": "github-timeline",
+    "cohort": "wave-3-supervised-merge-queue",
+    "fromMs": 1795773600000,
+    "toMs": 1795835700000,
+    "observedAt": 1795835700000,
+    "nowMs": 1795835700000,
+    "maxAgeMs": 86400000,
+    "sourceComplete": true
+  },
+  "sloEvaluationSummary": {
+    "valid": true,
+    "known": true,
+    "status": "complete",
+    "reason": "SLO_MISSED",
+    "sampleCount": 21,
+    "sloMet": false,
+    "stretchMet": false,
+    "zeroRoutineHumanTouchesMet": false,
+    "routineHumanTouchesCount": 21,
+    "counts": {
+      "total": 21,
+      "createdReadyCount": 21,
+      "createdDraftCount": 0,
+      "mergedCount": 21,
+      "openCensoredCount": 0,
+      "closedUnmergedCount": 0,
+      "mainVerifiedCount": 21,
+      "verificationPendingCount": 0,
+      "unattendedMergedCount": 0,
+      "unknownUnattendedMergedCount": 0,
+      "unknownHumanTouchesCount": 0
+    },
+    "rework": {
+      "headChangesCount": 92,
+      "redraftCount": 0,
+      "republishCount": 0,
+      "reeligibilityCount": 0,
+      "retryCount": 1,
+      "prsWithHeadChangesCount": 21,
+      "prsWithRedraftCount": 0,
+      "clockResetsApplied": 0
+    },
+    "metrics": {
+      "draftToPublishMs": {
+        "metric": "draftToPublishMs",
+        "targetMs": 180000,
+        "stretchMs": 60000,
+        "primaryQuantile": "p50",
+        "sampleCount": 21,
+        "censoredCount": 0,
+        "closedUnmergedCount": 0,
+        "unknownCount": 0,
+        "unreachedCount": 0,
+        "p50Ms": 0,
+        "p95Ms": 0,
+        "targetMissCount": 0,
+        "stretchMissCount": 0,
+        "missRate": 0,
+        "stretchMissRate": 0,
+        "overdueOpenCount": 0,
+        "stretchOverdueOpenCount": 0,
+        "p50MeetsTarget": true,
+        "p95MeetsTarget": true,
+        "p50MeetsStretch": true,
+        "p95MeetsStretch": true,
+        "meetsTarget": true,
+        "meetsStretch": true
+      },
+      "publishToMergeMs": {
+        "metric": "publishToMergeMs",
+        "targetMs": 420000,
+        "stretchMs": 180000,
+        "primaryQuantile": "p50",
+        "sampleCount": 21,
+        "censoredCount": 0,
+        "closedUnmergedCount": 0,
+        "unknownCount": 0,
+        "unreachedCount": 0,
+        "p50Ms": 56940000,
+        "p95Ms": 58395000,
+        "targetMissCount": 21,
+        "stretchMissCount": 21,
+        "missRate": 1,
+        "stretchMissRate": 1,
+        "overdueOpenCount": 0,
+        "stretchOverdueOpenCount": 0,
+        "p50MeetsTarget": false,
+        "p95MeetsTarget": false,
+        "p50MeetsStretch": false,
+        "p95MeetsStretch": false,
+        "meetsTarget": false,
+        "meetsStretch": false
+      },
+      "creationToMergeMs": {
+        "metric": "creationToMergeMs",
+        "targetMs": 600000,
+        "stretchMs": 240000,
+        "primaryQuantile": "p50",
+        "sampleCount": 21,
+        "censoredCount": 0,
+        "closedUnmergedCount": 0,
+        "unknownCount": 0,
+        "unreachedCount": 0,
+        "p50Ms": 56940000,
+        "p95Ms": 58395000,
+        "targetMissCount": 21,
+        "stretchMissCount": 21,
+        "missRate": 1,
+        "stretchMissRate": 1,
+        "overdueOpenCount": 0,
+        "stretchOverdueOpenCount": 0,
+        "p50MeetsTarget": false,
+        "p95MeetsTarget": false,
+        "p50MeetsStretch": false,
+        "p95MeetsStretch": false,
+        "meetsTarget": false,
+        "meetsStretch": false
+      },
+      "eligibleToMergeMs": {
+        "metric": "eligibleToMergeMs",
+        "targetMs": 120000,
+        "stretchMs": 30000,
+        "primaryQuantile": "p95",
+        "sampleCount": 21,
+        "censoredCount": 0,
+        "closedUnmergedCount": 0,
+        "unknownCount": 0,
+        "unreachedCount": 0,
+        "p50Ms": 16503000,
+        "p95Ms": 21249000,
+        "targetMissCount": 21,
+        "stretchMissCount": 21,
+        "missRate": 1,
+        "stretchMissRate": 1,
+        "overdueOpenCount": 0,
+        "stretchOverdueOpenCount": 0,
+        "p50MeetsTarget": false,
+        "p95MeetsTarget": false,
+        "p50MeetsStretch": false,
+        "p95MeetsStretch": false,
+        "meetsTarget": false,
+        "meetsStretch": false
+      },
+      "mergeToVerifiedMainMs": {
+        "metric": "mergeToVerifiedMainMs",
+        "targetMs": 120000,
+        "stretchMs": 60000,
+        "primaryQuantile": "p50",
+        "sampleCount": 21,
+        "censoredCount": 0,
+        "closedUnmergedCount": 0,
+        "unknownCount": 0,
+        "unreachedCount": 0,
+        "p50Ms": 191000,
+        "p95Ms": 387000,
+        "targetMissCount": 21,
+        "stretchMissCount": 21,
+        "missRate": 1,
+        "stretchMissRate": 1,
+        "overdueOpenCount": 0,
+        "stretchOverdueOpenCount": 0,
+        "p50MeetsTarget": false,
+        "p95MeetsTarget": false,
+        "p50MeetsStretch": false,
+        "p95MeetsStretch": false,
+        "meetsTarget": false,
+        "meetsStretch": false
+      }
+    },
+    "stageAttribution": {
+      "additiveWallClock": false,
+      "parallelStagesOverlap": true,
+      "summedWallClockMs": null,
+      "parallelStageKeys": [
+        "ciQueueWaitMs",
+        "linuxRuntimeMs",
+        "windowsRuntimeMs",
+        "securityScanMs",
+        "reviewReworkMs"
+      ],
+      "stages": {
+        "ciQueueWaitMs": {
+          "stage": "ciQueueWaitMs",
+          "parallel": true,
+          "sampleCount": 21,
+          "unknownCount": 0,
+          "p50Ms": 46000,
+          "p95Ms": 92000,
+          "maxMs": 98000
+        },
+        "linuxRuntimeMs": {
+          "stage": "linuxRuntimeMs",
+          "parallel": true,
+          "sampleCount": 21,
+          "unknownCount": 0,
+          "p50Ms": 59000,
+          "p95Ms": 112000,
+          "maxMs": 303000
+        },
+        "windowsRuntimeMs": {
+          "stage": "windowsRuntimeMs",
+          "parallel": true,
+          "sampleCount": 21,
+          "unknownCount": 0,
+          "p50Ms": 147000,
+          "p95Ms": 192000,
+          "maxMs": 263000
+        },
+        "securityScanMs": {
+          "stage": "securityScanMs",
+          "parallel": true,
+          "sampleCount": 21,
+          "unknownCount": 0,
+          "p50Ms": 93000,
+          "p95Ms": 118000,
+          "maxMs": 120000
+        },
+        "reviewReworkMs": {
+          "stage": "reviewReworkMs",
+          "parallel": true,
+          "sampleCount": 21,
+          "unknownCount": 0,
+          "p50Ms": 2993000,
+          "p95Ms": 58130000,
+          "maxMs": 59742000
+        },
+        "publicationIdleMs": {
+          "stage": "publicationIdleMs",
+          "parallel": false,
+          "sampleCount": 21,
+          "unknownCount": 0,
+          "p50Ms": 0,
+          "p95Ms": 0,
+          "maxMs": 0
+        },
+        "eligibilityToEnqueueMs": {
+          "stage": "eligibilityToEnqueueMs",
+          "parallel": false,
+          "sampleCount": 21,
+          "unknownCount": 0,
+          "p50Ms": 16165000,
+          "p95Ms": 20922000,
+          "maxMs": 20961000
+        },
+        "mergeQueueRevalidationMs": {
+          "stage": "mergeQueueRevalidationMs",
+          "parallel": false,
+          "sampleCount": 21,
+          "unknownCount": 0,
+          "p50Ms": 200000,
+          "p95Ms": 1177000,
+          "maxMs": 1331000
+        },
+        "mainVerificationMs": {
+          "stage": "mainVerificationMs",
+          "parallel": false,
+          "sampleCount": 21,
+          "unknownCount": 0,
+          "p50Ms": 191000,
+          "p95Ms": 387000,
+          "maxMs": 387000
+        }
+      }
+    }
+  },
+  "sloSamples": [
+    {
+      "prNumber": 145,
+      "repositoryId": 1471342715,
+      "provenance": "github-timeline",
+      "state": "merged",
+      "historyComplete": true,
+      "creationStateVerified": true,
+      "publicationSource": "creation-state",
+      "createdAsDraft": false,
+      "createdAt": 1795775016000,
+      "observedAt": 1795835700000,
+      "publicationEvents": [],
+      "headCommits": [
+        {
+          "sha": "a7e9ec86c90897975013f2626d938233cefe91bb",
+          "at": 1795775016000
+        },
+        {
+          "sha": "e290b816b5476108ddcf45094e31e2775327f62e",
+          "at": 1795813316000
+        },
+        {
+          "sha": "236e304c3691d96a29a85c591732129f5c1238cf",
+          "at": 1795813731000
+        },
+        {
+          "sha": "d58042895bc44c639fea9c86c62afc98532293c1",
+          "at": 1795813732000
+        },
+        {
+          "sha": "dbacac6541a0bca7981d2d72d1f4db27b4a97e75",
+          "at": 1795813732000
+        },
+        {
+          "sha": "340a580cadb99152bdc24401cd9cc7ac1a96c1c8",
+          "at": 1795813732000
+        },
+        {
+          "sha": "e0095327a66ab7001211ed76418e297f3eebee85",
+          "at": 1795813732000
+        }
+      ],
+      "eligibilityTimestamps": [
+        1795813979000
+      ],
+      "enqueuedAt": 1795832875000,
+      "retryTimestamps": [],
+      "mergedAt": 1795833052000,
+      "mainVerifiedAt": 1795833186000,
+      "humanTouchesComplete": true,
+      "humanTouches": [
+        {
+          "kind": "routine",
+          "at": 1795832875000,
+          "summary": "Supervised Wave 3 coordinator session enqueued PR via user-authenticated GitHub CLI"
+        }
+      ],
+      "stages": {
+        "ciQueueWaitMs": 46000,
+        "linuxRuntimeMs": 59000,
+        "windowsRuntimeMs": 158000,
+        "securityScanMs": 69000,
+        "reviewReworkMs": 38904000,
+        "publicationIdleMs": 0,
+        "eligibilityToEnqueueMs": 18896000,
+        "mergeQueueRevalidationMs": 177000,
+        "mainVerificationMs": 134000
+      }
+    },
+    {
+      "prNumber": 146,
+      "repositoryId": 1471342715,
+      "provenance": "github-timeline",
+      "state": "merged",
+      "historyComplete": true,
+      "creationStateVerified": true,
+      "publicationSource": "creation-state",
+      "createdAsDraft": false,
+      "createdAt": 1795775184000,
+      "observedAt": 1795835700000,
+      "publicationEvents": [],
+      "headCommits": [
+        {
+          "sha": "7d9f178083d58fae74090fa5d78c87526e9ce6d7",
+          "at": 1795775184000
+        },
+        {
+          "sha": "cb86ed2be7fb2ae89a20c3718331b0d29bc570ad",
+          "at": 1795776085000
+        }
+      ],
+      "eligibilityTimestamps": [
+        1795812271000
+      ],
+      "enqueuedAt": 1795832877000,
+      "retryTimestamps": [],
+      "mergedAt": 1795833052000,
+      "mainVerifiedAt": 1795833186000,
+      "humanTouchesComplete": true,
+      "humanTouches": [
+        {
+          "kind": "routine",
+          "at": 1795832877000,
+          "summary": "Supervised Wave 3 coordinator session enqueued PR via user-authenticated GitHub CLI"
+        }
+      ],
+      "stages": {
+        "ciQueueWaitMs": 49000,
+        "linuxRuntimeMs": 51000,
+        "windowsRuntimeMs": 152000,
+        "securityScanMs": 88000,
+        "reviewReworkMs": 1107000,
+        "publicationIdleMs": 0,
+        "eligibilityToEnqueueMs": 20606000,
+        "mergeQueueRevalidationMs": 175000,
+        "mainVerificationMs": 134000
+      }
+    },
+    {
+      "prNumber": 147,
+      "repositoryId": 1471342715,
+      "provenance": "github-timeline",
+      "state": "merged",
+      "historyComplete": true,
+      "creationStateVerified": true,
+      "publicationSource": "creation-state",
+      "createdAsDraft": false,
+      "createdAt": 1795775189000,
+      "observedAt": 1795835700000,
+      "publicationEvents": [],
+      "headCommits": [
+        {
+          "sha": "3c40ba20757dbe66f41c7847d776961b3f70b03e",
+          "at": 1795775189000
+        },
+        {
+          "sha": "fed9f31b8c0624ebe7bd2c86a4fd224ed12a8b5e",
+          "at": 1795775906000
+        },
+        {
+          "sha": "f1ca347a51b17ddd28cb495b37c5c00e0214ac51",
+          "at": 1795776613000
+        },
+        {
+          "sha": "439943ae190b9f8b05bf305c166e8022bec1a9f8",
+          "at": 1795776994000
+        },
+        {
+          "sha": "985b3a42bd500ffff44b62b243a1732314aa82fa",
+          "at": 1795777590000
+        },
+        {
+          "sha": "a8ff9e93f0934ffc91312cab5a832f738c407261",
+          "at": 1795778035000
+        },
+        {
+          "sha": "79e65c16e0cba86924bcc654c42930b576638cc4",
+          "at": 1795778515000
+        },
+        {
+          "sha": "be8f7dbfd16a0ade2a98cbf088cd62ca0184ca0e",
+          "at": 1795779076000
+        },
+        {
+          "sha": "c1cbf3772fab6bef744076b1ca7dd439d531250b",
+          "at": 1795779695000
+        }
+      ],
+      "eligibilityTimestamps": [
+        1795811982000
+      ],
+      "enqueuedAt": 1795832879000,
+      "retryTimestamps": [],
+      "mergedAt": 1795833083000,
+      "mainVerifiedAt": 1795833470000,
+      "humanTouchesComplete": true,
+      "humanTouches": [
+        {
+          "kind": "routine",
+          "at": 1795832879000,
+          "summary": "Supervised Wave 3 coordinator session enqueued PR via user-authenticated GitHub CLI"
+        }
+      ],
+      "stages": {
+        "ciQueueWaitMs": 45000,
+        "linuxRuntimeMs": 53000,
+        "windowsRuntimeMs": 145000,
+        "securityScanMs": 92000,
+        "reviewReworkMs": 4777000,
+        "publicationIdleMs": 0,
+        "eligibilityToEnqueueMs": 20897000,
+        "mergeQueueRevalidationMs": 204000,
+        "mainVerificationMs": 387000
+      }
+    },
+    {
+      "prNumber": 148,
+      "repositoryId": 1471342715,
+      "provenance": "github-timeline",
+      "state": "merged",
+      "historyComplete": true,
+      "creationStateVerified": true,
+      "publicationSource": "creation-state",
+      "createdAsDraft": false,
+      "createdAt": 1795775192000,
+      "observedAt": 1795835700000,
+      "publicationEvents": [],
+      "headCommits": [
+        {
+          "sha": "a4cd629f9a712d97f2968103bb5982166fc1eed5",
+          "at": 1795775192000
+        },
+        {
+          "sha": "39ef89e581b958f96373c3b96b11980387790f3d",
+          "at": 1795776080000
+        },
+        {
+          "sha": "cbbd5cb6e860cfd9947e7e57bfef4336818a5d71",
+          "at": 1795776834000
+        },
+        {
+          "sha": "90ed326aa3497faca1dc7cc3713d853497a064d3",
+          "at": 1795777317000
+        },
+        {
+          "sha": "e463a2a6e0db1fde0c448bda3391804c1ce0421c",
+          "at": 1795777889000
+        }
+      ],
+      "eligibilityTimestamps": [
+        1795811974000
+      ],
+      "enqueuedAt": 1795832882000,
+      "retryTimestamps": [],
+      "mergedAt": 1795833083000,
+      "mainVerifiedAt": 1795833470000,
+      "humanTouchesComplete": true,
+      "humanTouches": [
+        {
+          "kind": "routine",
+          "at": 1795832882000,
+          "summary": "Supervised Wave 3 coordinator session enqueued PR via user-authenticated GitHub CLI"
+        }
+      ],
+      "stages": {
+        "ciQueueWaitMs": 98000,
+        "linuxRuntimeMs": 58000,
+        "windowsRuntimeMs": 149000,
+        "securityScanMs": 99000,
+        "reviewReworkMs": 2993000,
+        "publicationIdleMs": 0,
+        "eligibilityToEnqueueMs": 20908000,
+        "mergeQueueRevalidationMs": 201000,
+        "mainVerificationMs": 387000
+      }
+    },
+    {
+      "prNumber": 149,
+      "repositoryId": 1471342715,
+      "provenance": "github-timeline",
+      "state": "merged",
+      "historyComplete": true,
+      "creationStateVerified": true,
+      "publicationSource": "creation-state",
+      "createdAsDraft": false,
+      "createdAt": 1795775192000,
+      "observedAt": 1795835700000,
+      "publicationEvents": [],
+      "headCommits": [
+        {
+          "sha": "e32cf9c0ae2c3465cf33356861812b229c8ad877",
+          "at": 1795775192000
+        },
+        {
+          "sha": "bc255112a2d5781d35ba3e6569e406de36a755bc",
+          "at": 1795775528000
+        },
+        {
+          "sha": "f3bda3fa0cfc40bac78fa0e63074bfc3a44dad6f",
+          "at": 1795776041000
+        },
+        {
+          "sha": "120e2233fd0d4db8425c8414d00004cc72b706a5",
+          "at": 1795776504000
+        },
+        {
+          "sha": "eaee53f7c025605190150b8b40eaabe975779900",
+          "at": 1795776901000
+        },
+        {
+          "sha": "d3f0b26ce641c0a36a3dd0868eab25cde2542627",
+          "at": 1795777535000
+        },
+        {
+          "sha": "b718b7848a084a1d6116d6f7121bc54673c3a6de",
+          "at": 1795778351000
+        },
+        {
+          "sha": "eba97b15f33f7ba3f5f411eb2707c571f647ef37",
+          "at": 1795779185000
+        },
+        {
+          "sha": "db4de2ba814e92c7db9789676f7de445b2edea14",
+          "at": 1795779771000
+        },
+        {
+          "sha": "6151d779e5e8a393080436c4acaa0b8632b2cbfe",
+          "at": 1795780404000
+        },
+        {
+          "sha": "64fa066050b30adcc1fbc1a19032a31bc01e8ccc",
+          "at": 1795780883000
+        }
+      ],
+      "eligibilityTimestamps": [
+        1795812565000
+      ],
+      "enqueuedAt": 1795832883000,
+      "retryTimestamps": [],
+      "mergedAt": 1795833083000,
+      "mainVerifiedAt": 1795833470000,
+      "humanTouchesComplete": true,
+      "humanTouches": [
+        {
+          "kind": "routine",
+          "at": 1795832883000,
+          "summary": "Supervised Wave 3 coordinator session enqueued PR via user-authenticated GitHub CLI"
+        }
+      ],
+      "stages": {
+        "ciQueueWaitMs": 46000,
+        "linuxRuntimeMs": 75000,
+        "windowsRuntimeMs": 144000,
+        "securityScanMs": 85000,
+        "reviewReworkMs": 5935000,
+        "publicationIdleMs": 0,
+        "eligibilityToEnqueueMs": 20318000,
+        "mergeQueueRevalidationMs": 200000,
+        "mainVerificationMs": 387000
+      }
+    },
+    {
+      "prNumber": 150,
+      "repositoryId": 1471342715,
+      "provenance": "github-timeline",
+      "state": "merged",
+      "historyComplete": true,
+      "creationStateVerified": true,
+      "publicationSource": "creation-state",
+      "createdAsDraft": false,
+      "createdAt": 1795775193000,
+      "observedAt": 1795835700000,
+      "publicationEvents": [],
+      "headCommits": [
+        {
+          "sha": "744f284472e574c162682c62acd035fe658c0fbe",
+          "at": 1795775193000
+        },
+        {
+          "sha": "c8feb7f51f48c706d80631fcd512c2dec7a540b5",
+          "at": 1795775527000
+        },
+        {
+          "sha": "9bffe21d3769ca5a0c9fe955dc931179b0a90a9f",
+          "at": 1795776036000
+        }
+      ],
+      "eligibilityTimestamps": [
+        1795811964000
+      ],
+      "enqueuedAt": 1795832886000,
+      "retryTimestamps": [],
+      "mergedAt": 1795833173000,
+      "mainVerifiedAt": 1795833470000,
+      "humanTouchesComplete": true,
+      "humanTouches": [
+        {
+          "kind": "routine",
+          "at": 1795832886000,
+          "summary": "Supervised Wave 3 coordinator session enqueued PR via user-authenticated GitHub CLI"
+        }
+      ],
+      "stages": {
+        "ciQueueWaitMs": 58000,
+        "linuxRuntimeMs": 61000,
+        "windowsRuntimeMs": 135000,
+        "securityScanMs": 98000,
+        "reviewReworkMs": 1092000,
+        "publicationIdleMs": 0,
+        "eligibilityToEnqueueMs": 20922000,
+        "mergeQueueRevalidationMs": 287000,
+        "mainVerificationMs": 297000
+      }
+    },
+    {
+      "prNumber": 151,
+      "repositoryId": 1471342715,
+      "provenance": "github-timeline",
+      "state": "merged",
+      "historyComplete": true,
+      "creationStateVerified": true,
+      "publicationSource": "creation-state",
+      "createdAsDraft": false,
+      "createdAt": 1795775196000,
+      "observedAt": 1795835700000,
+      "publicationEvents": [],
+      "headCommits": [
+        {
+          "sha": "386af948c53036db204019541ffea4d52213f209",
+          "at": 1795775196000
+        },
+        {
+          "sha": "ddb69a5fcae30cfdbb5045e5c8336a6a25a71874",
+          "at": 1795775655000
+        },
+        {
+          "sha": "c3253c190b02fb7e5d616729c18a007fae782e28",
+          "at": 1795776143000
+        },
+        {
+          "sha": "036f43c0b458c3014a14d3ce74c7188caa3dfadd",
+          "at": 1795776565000
+        },
+        {
+          "sha": "62fbd97219e56c3424cdf1d09b618be674fc0572",
+          "at": 1795777201000
+        },
+        {
+          "sha": "013731c1c97a6972367e57a39a51b67ed2668879",
+          "at": 1795777640000
+        }
+      ],
+      "eligibilityTimestamps": [
+        1795812310000
+      ],
+      "enqueuedAt": 1795832888000,
+      "retryTimestamps": [],
+      "mergedAt": 1795833200000,
+      "mainVerifiedAt": 1795833470000,
+      "humanTouchesComplete": true,
+      "humanTouches": [
+        {
+          "kind": "routine",
+          "at": 1795832888000,
+          "summary": "Supervised Wave 3 coordinator session enqueued PR via user-authenticated GitHub CLI"
+        }
+      ],
+      "stages": {
+        "ciQueueWaitMs": 46000,
+        "linuxRuntimeMs": 85000,
+        "windowsRuntimeMs": 125000,
+        "securityScanMs": 95000,
+        "reviewReworkMs": 2983000,
+        "publicationIdleMs": 0,
+        "eligibilityToEnqueueMs": 20578000,
+        "mergeQueueRevalidationMs": 312000,
+        "mainVerificationMs": 270000
+      }
+    },
+    {
+      "prNumber": 152,
+      "repositoryId": 1471342715,
+      "provenance": "github-timeline",
+      "state": "merged",
+      "historyComplete": true,
+      "creationStateVerified": true,
+      "publicationSource": "creation-state",
+      "createdAsDraft": false,
+      "createdAt": 1795775200000,
+      "observedAt": 1795835700000,
+      "publicationEvents": [],
+      "headCommits": [
+        {
+          "sha": "8df93f8b1fb2ca06c76f2a8ad8558c5d1bd6110c",
+          "at": 1795775200000
+        },
+        {
+          "sha": "14766150c7afb050de6563befdd7eeb12e915cc3",
+          "at": 1795775659000
+        },
+        {
+          "sha": "fc87936e48725e47efb4732e78a2976c6947fa77",
+          "at": 1795776281000
+        }
+      ],
+      "eligibilityTimestamps": [
+        1795812160000
+      ],
+      "enqueuedAt": 1795812542000,
+      "retryTimestamps": [],
+      "mergedAt": 1795812727000,
+      "mainVerifiedAt": 1795812881000,
+      "humanTouchesComplete": true,
+      "humanTouches": [
+        {
+          "kind": "routine",
+          "at": 1795812542000,
+          "summary": "Supervised Wave 3 coordinator session enqueued PR via user-authenticated GitHub CLI"
+        }
+      ],
+      "stages": {
+        "ciQueueWaitMs": 86000,
+        "linuxRuntimeMs": 76000,
+        "windowsRuntimeMs": 112000,
+        "securityScanMs": 80000,
+        "reviewReworkMs": 1417000,
+        "publicationIdleMs": 0,
+        "eligibilityToEnqueueMs": 382000,
+        "mergeQueueRevalidationMs": 185000,
+        "mainVerificationMs": 154000
+      }
+    },
+    {
+      "prNumber": 153,
+      "repositoryId": 1471342715,
+      "provenance": "github-timeline",
+      "state": "merged",
+      "historyComplete": true,
+      "creationStateVerified": true,
+      "publicationSource": "creation-state",
+      "createdAsDraft": false,
+      "createdAt": 1795775210000,
+      "observedAt": 1795835700000,
+      "publicationEvents": [],
+      "headCommits": [
+        {
+          "sha": "19fcd049fcfb23a57b6febf7e846471f7a7c737a",
+          "at": 1795775210000
+        },
+        {
+          "sha": "7acdb5e9b1e7872b32eb0bc92ed6ce4440985283",
+          "at": 1795776262000
+        },
+        {
+          "sha": "51bdd926a0ce898ff7437c645d5ad1f9a400ece1",
+          "at": 1795776820000
+        }
+      ],
+      "eligibilityTimestamps": [
+        1795812470000
+      ],
+      "enqueuedAt": 1795813326000,
+      "retryTimestamps": [],
+      "mergedAt": 1795813500000,
+      "mainVerifiedAt": 1795813691000,
+      "humanTouchesComplete": true,
+      "humanTouches": [
+        {
+          "kind": "routine",
+          "at": 1795813326000,
+          "summary": "Supervised Wave 3 coordinator session enqueued PR via user-authenticated GitHub CLI"
+        }
+      ],
+      "stages": {
+        "ciQueueWaitMs": 46000,
+        "linuxRuntimeMs": 59000,
+        "windowsRuntimeMs": 112000,
+        "securityScanMs": 87000,
+        "reviewReworkMs": 1848000,
+        "publicationIdleMs": 0,
+        "eligibilityToEnqueueMs": 856000,
+        "mergeQueueRevalidationMs": 174000,
+        "mainVerificationMs": 191000
+      }
+    },
+    {
+      "prNumber": 154,
+      "repositoryId": 1471342715,
+      "provenance": "github-timeline",
+      "state": "merged",
+      "historyComplete": true,
+      "creationStateVerified": true,
+      "publicationSource": "creation-state",
+      "createdAsDraft": false,
+      "createdAt": 1795775221000,
+      "observedAt": 1795835700000,
+      "publicationEvents": [],
+      "headCommits": [
+        {
+          "sha": "cf817a34d7a7e8cd2eae3e76f2450cd6f0d1f1b3",
+          "at": 1795775221000
+        },
+        {
+          "sha": "4a7b37ebd2cb0380adea784f278b905bf20c8d07",
+          "at": 1795775737000
+        },
+        {
+          "sha": "5504ca0dbbf60bc9f598da3935fee61272117a51",
+          "at": 1795776359000
+        },
+        {
+          "sha": "8b183e8a97741d16063335fa4029e1ff0eb5bad0",
+          "at": 1795776748000
+        }
+      ],
+      "eligibilityTimestamps": [
+        1795812167000
+      ],
+      "enqueuedAt": 1795812557000,
+      "retryTimestamps": [],
+      "mergedAt": 1795812727000,
+      "mainVerifiedAt": 1795812881000,
+      "humanTouchesComplete": true,
+      "humanTouches": [
+        {
+          "kind": "routine",
+          "at": 1795812557000,
+          "summary": "Supervised Wave 3 coordinator session enqueued PR via user-authenticated GitHub CLI"
+        }
+      ],
+      "stages": {
+        "ciQueueWaitMs": 48000,
+        "linuxRuntimeMs": 53000,
+        "windowsRuntimeMs": 170000,
+        "securityScanMs": 76000,
+        "reviewReworkMs": 1759000,
+        "publicationIdleMs": 0,
+        "eligibilityToEnqueueMs": 390000,
+        "mergeQueueRevalidationMs": 170000,
+        "mainVerificationMs": 154000
+      }
+    },
+    {
+      "prNumber": 155,
+      "repositoryId": 1471342715,
+      "provenance": "github-timeline",
+      "state": "merged",
+      "historyComplete": true,
+      "creationStateVerified": true,
+      "publicationSource": "creation-state",
+      "createdAsDraft": false,
+      "createdAt": 1795775250000,
+      "observedAt": 1795835700000,
+      "publicationEvents": [],
+      "headCommits": [
+        {
+          "sha": "ee203e95ea5b994f8f55eed6e66a8d9a5d75443c",
+          "at": 1795775250000
+        },
+        {
+          "sha": "9e7da1aad5f87b8cc55e5784357b890bc5224de0",
+          "at": 1795776755000
+        },
+        {
+          "sha": "35786a4647efec8333054116f363ff302c0f54fd",
+          "at": 1795778349000
+        },
+        {
+          "sha": "d1829b9a5e5ade76ce9828c62a90a607b73a037f",
+          "at": 1795785036000
+        },
+        {
+          "sha": "6f916c92ecbc38d3ba4f131f8ba115ecf46419ac",
+          "at": 1795785476000
+        }
+      ],
+      "eligibilityTimestamps": [
+        1795812073000
+      ],
+      "enqueuedAt": 1795832890000,
+      "retryTimestamps": [],
+      "mergedAt": 1795833217000,
+      "mainVerifiedAt": 1795833470000,
+      "humanTouchesComplete": true,
+      "humanTouches": [
+        {
+          "kind": "routine",
+          "at": 1795832890000,
+          "summary": "Supervised Wave 3 coordinator session enqueued PR via user-authenticated GitHub CLI"
+        }
+      ],
+      "stages": {
+        "ciQueueWaitMs": 45000,
+        "linuxRuntimeMs": 56000,
+        "windowsRuntimeMs": 138000,
+        "securityScanMs": 120000,
+        "reviewReworkMs": 10677000,
+        "publicationIdleMs": 0,
+        "eligibilityToEnqueueMs": 20817000,
+        "mergeQueueRevalidationMs": 327000,
+        "mainVerificationMs": 253000
+      }
+    },
+    {
+      "prNumber": 156,
+      "repositoryId": 1471342715,
+      "provenance": "github-timeline",
+      "state": "merged",
+      "historyComplete": true,
+      "creationStateVerified": true,
+      "publicationSource": "creation-state",
+      "createdAsDraft": false,
+      "createdAt": 1795775265000,
+      "observedAt": 1795835700000,
+      "publicationEvents": [],
+      "headCommits": [
+        {
+          "sha": "ee02f8dba1d48aa8d6850f15b1827693034479ce",
+          "at": 1795775265000
+        },
+        {
+          "sha": "d2768fc0812ec922a9776615aa146ee52def92ba",
+          "at": 1795775998000
+        },
+        {
+          "sha": "d9920599ba918d42d856ffef3d28954a74162b81",
+          "at": 1795776966000
+        },
+        {
+          "sha": "b13562a881f3037b282e429faf677924ce19dfe2",
+          "at": 1795777828000
+        },
+        {
+          "sha": "f404f62740efb66cede4a56030b3e08a3acca487",
+          "at": 1795778281000
+        },
+        {
+          "sha": "ec124fba333707c382fa463d0562c46f92a9a64d",
+          "at": 1795778873000
+        },
+        {
+          "sha": "def480d32c6f9f6545a043f794d9c6319b9321e7",
+          "at": 1795779281000
+        },
+        {
+          "sha": "2931da893f73cccac1ab16fd6428d8d57126ecab",
+          "at": 1795779876000
+        },
+        {
+          "sha": "8c9cb3c6f57a262604807c2ce28b5be3938b80b6",
+          "at": 1795780504000
+        }
+      ],
+      "eligibilityTimestamps": [
+        1795812281000
+      ],
+      "enqueuedAt": 1795813312000,
+      "retryTimestamps": [],
+      "mergedAt": 1795813500000,
+      "mainVerifiedAt": 1795813691000,
+      "humanTouchesComplete": true,
+      "humanTouches": [
+        {
+          "kind": "routine",
+          "at": 1795813312000,
+          "summary": "Supervised Wave 3 coordinator session enqueued PR via user-authenticated GitHub CLI"
+        }
+      ],
+      "stages": {
+        "ciQueueWaitMs": 92000,
+        "linuxRuntimeMs": 73000,
+        "windowsRuntimeMs": 263000,
+        "securityScanMs": 93000,
+        "reviewReworkMs": 5557000,
+        "publicationIdleMs": 0,
+        "eligibilityToEnqueueMs": 1031000,
+        "mergeQueueRevalidationMs": 188000,
+        "mainVerificationMs": 191000
+      }
+    },
+    {
+      "prNumber": 157,
+      "repositoryId": 1471342715,
+      "provenance": "github-timeline",
+      "state": "merged",
+      "historyComplete": true,
+      "creationStateVerified": true,
+      "publicationSource": "creation-state",
+      "createdAsDraft": false,
+      "createdAt": 1795775396000,
+      "observedAt": 1795835700000,
+      "publicationEvents": [],
+      "headCommits": [
+        {
+          "sha": "f61fa562bb8758ae9cade7d4057fb3d732db5bf3",
+          "at": 1795775396000
+        },
+        {
+          "sha": "5d9666a9f3875cba3afbeabc94d08959aaa9381d",
+          "at": 1795832973000
+        },
+        {
+          "sha": "b0de2ca9bf919ab496e3cf0b08853b2a81857244",
+          "at": 1795833888000
+        },
+        {
+          "sha": "6a272c5c45f36fd7aea011b83aa37b39579d6b52",
+          "at": 1795833888000
+        },
+        {
+          "sha": "eb189d36444b3061e5bf0099432b3574478466d4",
+          "at": 1795833996000
+        },
+        {
+          "sha": "137fcf712d8f80fc20696120255f8780460aa317",
+          "at": 1795834546000
+        },
+        {
+          "sha": "69a128165e57e1d4a74c0dd7b29fd482d66688d8",
+          "at": 1795834963000
+        }
+      ],
+      "eligibilityTimestamps": [
+        1795835210000
+      ],
+      "enqueuedAt": 1795835283000,
+      "retryTimestamps": [],
+      "mergedAt": 1795835459000,
+      "mainVerifiedAt": 1795835580000,
+      "humanTouchesComplete": true,
+      "humanTouches": [
+        {
+          "kind": "routine",
+          "at": 1795835283000,
+          "summary": "Supervised Wave 3 coordinator session enqueued PR via user-authenticated GitHub CLI"
+        }
+      ],
+      "stages": {
+        "ciQueueWaitMs": 48000,
+        "linuxRuntimeMs": 51000,
+        "windowsRuntimeMs": 145000,
+        "securityScanMs": 118000,
+        "reviewReworkMs": 59742000,
+        "publicationIdleMs": 0,
+        "eligibilityToEnqueueMs": 73000,
+        "mergeQueueRevalidationMs": 176000,
+        "mainVerificationMs": 121000
+      }
+    },
+    {
+      "prNumber": 158,
+      "repositoryId": 1471342715,
+      "provenance": "github-timeline",
+      "state": "merged",
+      "historyComplete": true,
+      "creationStateVerified": true,
+      "publicationSource": "creation-state",
+      "createdAsDraft": false,
+      "createdAt": 1795776054000,
+      "observedAt": 1795835700000,
+      "publicationEvents": [],
+      "headCommits": [
+        {
+          "sha": "dba4429c4d0892645218715c4413875a28eacb35",
+          "at": 1795776054000
+        },
+        {
+          "sha": "613d890bf1fe875712efd365825a983f536212e5",
+          "at": 1795776695000
+        }
+      ],
+      "eligibilityTimestamps": [
+        1795812437000
+      ],
+      "enqueuedAt": 1795812940000,
+      "retryTimestamps": [],
+      "mergedAt": 1795813119000,
+      "mainVerifiedAt": 1795813307000,
+      "humanTouchesComplete": true,
+      "humanTouches": [
+        {
+          "kind": "routine",
+          "at": 1795812940000,
+          "summary": "Supervised Wave 3 coordinator session enqueued PR via user-authenticated GitHub CLI"
+        }
+      ],
+      "stages": {
+        "ciQueueWaitMs": 46000,
+        "linuxRuntimeMs": 54000,
+        "windowsRuntimeMs": 169000,
+        "securityScanMs": 86000,
+        "reviewReworkMs": 905000,
+        "publicationIdleMs": 0,
+        "eligibilityToEnqueueMs": 503000,
+        "mergeQueueRevalidationMs": 179000,
+        "mainVerificationMs": 188000
+      }
+    },
+    {
+      "prNumber": 159,
+      "repositoryId": 1471342715,
+      "provenance": "github-timeline",
+      "state": "merged",
+      "historyComplete": true,
+      "creationStateVerified": true,
+      "publicationSource": "creation-state",
+      "createdAsDraft": false,
+      "createdAt": 1795776247000,
+      "observedAt": 1795835700000,
+      "publicationEvents": [],
+      "headCommits": [
+        {
+          "sha": "6411865ff2c40f6f36bac2a4b83b25b5d705f202",
+          "at": 1795776247000
+        },
+        {
+          "sha": "e65275a23391b598612fa4f2304034de25b82c5e",
+          "at": 1795776639000
+        },
+        {
+          "sha": "1f0dee4f09633249dd686389b25b516588d35500",
+          "at": 1795777112000
+        },
+        {
+          "sha": "95e1435a7d8762bb197fcd12ee1de05f5d6497f9",
+          "at": 1795777604000
+        },
+        {
+          "sha": "ede5535f6ea55e8036e6d90801d103aeda48cd22",
+          "at": 1795778089000
+        }
+      ],
+      "eligibilityTimestamps": [
+        1795812533000
+      ],
+      "enqueuedAt": 1795813448000,
+      "retryTimestamps": [],
+      "mergedAt": 1795813605000,
+      "mainVerifiedAt": 1795813832000,
+      "humanTouchesComplete": true,
+      "humanTouches": [
+        {
+          "kind": "routine",
+          "at": 1795813448000,
+          "summary": "Supervised Wave 3 coordinator session enqueued PR via user-authenticated GitHub CLI"
+        }
+      ],
+      "stages": {
+        "ciQueueWaitMs": 47000,
+        "linuxRuntimeMs": 303000,
+        "windowsRuntimeMs": 187000,
+        "securityScanMs": 104000,
+        "reviewReworkMs": 2176000,
+        "publicationIdleMs": 0,
+        "eligibilityToEnqueueMs": 915000,
+        "mergeQueueRevalidationMs": 157000,
+        "mainVerificationMs": 227000
+      }
+    },
+    {
+      "prNumber": 160,
+      "repositoryId": 1471342715,
+      "provenance": "github-timeline",
+      "state": "merged",
+      "historyComplete": true,
+      "creationStateVerified": true,
+      "publicationSource": "creation-state",
+      "createdAsDraft": false,
+      "createdAt": 1795776277000,
+      "observedAt": 1795835700000,
+      "publicationEvents": [],
+      "headCommits": [
+        {
+          "sha": "bc2ebdef031a02e04f3f9b9524fc5ca984d64369",
+          "at": 1795776277000
+        },
+        {
+          "sha": "b06fbf7aa0174f51aeea4068dbbe55a3f5b20db6",
+          "at": 1795776754000
+        },
+        {
+          "sha": "dc27934bb6f83362075ffe84f29ca6295d2175f8",
+          "at": 1795777960000
+        },
+        {
+          "sha": "13e5ccdf48e63df6477183ee9df5be39ca5c6eb1",
+          "at": 1795778392000
+        },
+        {
+          "sha": "012b086cd06c6ee920667f0d841dfd84414b9039",
+          "at": 1795778909000
+        }
+      ],
+      "eligibilityTimestamps": [
+        1795811931000
+      ],
+      "enqueuedAt": 1795832892000,
+      "retryTimestamps": [],
+      "mergedAt": 1795833217000,
+      "mainVerifiedAt": 1795833470000,
+      "humanTouchesComplete": true,
+      "humanTouches": [
+        {
+          "kind": "routine",
+          "at": 1795832892000,
+          "summary": "Supervised Wave 3 coordinator session enqueued PR via user-authenticated GitHub CLI"
+        }
+      ],
+      "stages": {
+        "ciQueueWaitMs": 47000,
+        "linuxRuntimeMs": 61000,
+        "windowsRuntimeMs": 147000,
+        "securityScanMs": 93000,
+        "reviewReworkMs": 2853000,
+        "publicationIdleMs": 0,
+        "eligibilityToEnqueueMs": 20961000,
+        "mergeQueueRevalidationMs": 325000,
+        "mainVerificationMs": 253000
+      }
+    },
+    {
+      "prNumber": 161,
+      "repositoryId": 1471342715,
+      "provenance": "github-timeline",
+      "state": "merged",
+      "historyComplete": true,
+      "creationStateVerified": true,
+      "publicationSource": "creation-state",
+      "createdAsDraft": false,
+      "createdAt": 1795777064000,
+      "observedAt": 1795835700000,
+      "publicationEvents": [],
+      "headCommits": [
+        {
+          "sha": "129f9dc710b858eddb2c9808cb980df7d708b3a1",
+          "at": 1795777064000
+        },
+        {
+          "sha": "4ab176fc30deb1b3d3f3104c250fd1e88d9d826a",
+          "at": 1795833158000
+        },
+        {
+          "sha": "a50c8f7e88de3d75ba0315cd1d4a25910aae3968",
+          "at": 1795833764000
+        },
+        {
+          "sha": "038b8b173b94c6aaf4059b507c3ad85b2e3b18bc",
+          "at": 1795834239000
+        },
+        {
+          "sha": "82c2052c4f98b54d752fb083d03ad74e8ce9efcc",
+          "at": 1795834760000
+        }
+      ],
+      "eligibilityTimestamps": [
+        1795835194000
+      ],
+      "enqueuedAt": 1795835279000,
+      "retryTimestamps": [],
+      "mergedAt": 1795835459000,
+      "mainVerifiedAt": 1795835580000,
+      "humanTouchesComplete": true,
+      "humanTouches": [
+        {
+          "kind": "routine",
+          "at": 1795835279000,
+          "summary": "Supervised Wave 3 coordinator session enqueued PR via user-authenticated GitHub CLI"
+        }
+      ],
+      "stages": {
+        "ciQueueWaitMs": 48000,
+        "linuxRuntimeMs": 61000,
+        "windowsRuntimeMs": 136000,
+        "securityScanMs": 104000,
+        "reviewReworkMs": 58130000,
+        "publicationIdleMs": 0,
+        "eligibilityToEnqueueMs": 85000,
+        "mergeQueueRevalidationMs": 180000,
+        "mainVerificationMs": 121000
+      }
+    },
+    {
+      "prNumber": 162,
+      "repositoryId": 1471342715,
+      "provenance": "github-timeline",
+      "state": "merged",
+      "historyComplete": true,
+      "creationStateVerified": true,
+      "publicationSource": "creation-state",
+      "createdAsDraft": false,
+      "createdAt": 1795777518000,
+      "observedAt": 1795835700000,
+      "publicationEvents": [],
+      "headCommits": [
+        {
+          "sha": "e818fb6258f453bd9d4296843aaa7ace717a575a",
+          "at": 1795777518000
+        },
+        {
+          "sha": "60cccf05d4fb99ef298552c2f8c37dba477b6d21",
+          "at": 1795814870000
+        },
+        {
+          "sha": "240688e52c2c96321057c61ef6e0b50bacd6811c",
+          "at": 1795814870000
+        },
+        {
+          "sha": "9b2062ef43d1e80d790a432c2b25d148c111c597",
+          "at": 1795814870000
+        },
+        {
+          "sha": "0af6855d50c7cb302ca3ba08a0f94d730eaf100c",
+          "at": 1795814870000
+        },
+        {
+          "sha": "d138861c9fa9adfdec678dafeb0937502b17bce4",
+          "at": 1795814871000
+        },
+        {
+          "sha": "68892cdebda6d7a7c89b8f2396aa47bd195f9f18",
+          "at": 1795815581000
+        },
+        {
+          "sha": "226f5f5765875fe08cebf384f4d61cef7bcd426c",
+          "at": 1795816303000
+        }
+      ],
+      "eligibilityTimestamps": [
+        1795816731000
+      ],
+      "enqueuedAt": 1795832896000,
+      "retryTimestamps": [],
+      "mergedAt": 1795833234000,
+      "mainVerifiedAt": 1795833470000,
+      "humanTouchesComplete": true,
+      "humanTouches": [
+        {
+          "kind": "routine",
+          "at": 1795832896000,
+          "summary": "Supervised Wave 3 coordinator session enqueued PR via user-authenticated GitHub CLI"
+        }
+      ],
+      "stages": {
+        "ciQueueWaitMs": 46000,
+        "linuxRuntimeMs": 112000,
+        "windowsRuntimeMs": 136000,
+        "securityScanMs": 79000,
+        "reviewReworkMs": 39213000,
+        "publicationIdleMs": 0,
+        "eligibilityToEnqueueMs": 16165000,
+        "mergeQueueRevalidationMs": 338000,
+        "mainVerificationMs": 236000
+      }
+    },
+    {
+      "prNumber": 163,
+      "repositoryId": 1471342715,
+      "provenance": "github-timeline",
+      "state": "merged",
+      "historyComplete": true,
+      "creationStateVerified": true,
+      "publicationSource": "creation-state",
+      "createdAsDraft": false,
+      "createdAt": 1795778093000,
+      "observedAt": 1795835700000,
+      "publicationEvents": [],
+      "headCommits": [
+        {
+          "sha": "dbb2a4e15595c9e54095b5eec9ded502f771e2e3",
+          "at": 1795778093000
+        },
+        {
+          "sha": "5fc48fdb68f939750ff2c15541e9bc4bb8cea7b0",
+          "at": 1795780458000
+        },
+        {
+          "sha": "8c0dbffa76a1675abb9b66483207132dc6613201",
+          "at": 1795781335000
+        },
+        {
+          "sha": "d01b35b3276b7d38378b7a25b6ae76629ae87019",
+          "at": 1795782166000
+        }
+      ],
+      "eligibilityTimestamps": [
+        1795812213000
+      ],
+      "enqueuedAt": 1795813491000,
+      "retryTimestamps": [
+        1795814602000
+      ],
+      "mergedAt": 1795814822000,
+      "mainVerifiedAt": 1795814984000,
+      "humanTouchesComplete": true,
+      "humanTouches": [
+        {
+          "kind": "routine",
+          "at": 1795813491000,
+          "summary": "Supervised Wave 3 coordinator session enqueued PR via user-authenticated GitHub CLI"
+        }
+      ],
+      "stages": {
+        "ciQueueWaitMs": 46000,
+        "linuxRuntimeMs": 57000,
+        "windowsRuntimeMs": 192000,
+        "securityScanMs": 109000,
+        "reviewReworkMs": 4397000,
+        "publicationIdleMs": 0,
+        "eligibilityToEnqueueMs": 1278000,
+        "mergeQueueRevalidationMs": 1331000,
+        "mainVerificationMs": 162000
+      }
+    },
+    {
+      "prNumber": 164,
+      "repositoryId": 1471342715,
+      "provenance": "github-timeline",
+      "state": "merged",
+      "historyComplete": true,
+      "creationStateVerified": true,
+      "publicationSource": "creation-state",
+      "createdAsDraft": false,
+      "createdAt": 1795779184000,
+      "observedAt": 1795835700000,
+      "publicationEvents": [],
+      "headCommits": [
+        {
+          "sha": "865c5df1cdd31cee7538feb14e09d4234de4cc1d",
+          "at": 1795779184000
+        },
+        {
+          "sha": "23db9aa8006fb2a13ef91a1d9b5d8688be6f5f3a",
+          "at": 1795780707000
+        },
+        {
+          "sha": "382546e4a2f483a9b9a7b46737d15c300cf23b0a",
+          "at": 1795781844000
+        },
+        {
+          "sha": "520bc7898cb9135fbb02fc7a3f1cba72799e4c32",
+          "at": 1795782903000
+        },
+        {
+          "sha": "882518da091dd415fccd2098c326f0652cecdd5b",
+          "at": 1795783760000
+        },
+        {
+          "sha": "9242000a655c6f8be2feb0d93a95b4a6346606eb",
+          "at": 1795784367000
+        },
+        {
+          "sha": "bcc2a4e50634f92b283545ca08758aebfff55b2b",
+          "at": 1795785080000
+        },
+        {
+          "sha": "24b40b486c48807ff622c8278baacb21d47802c4",
+          "at": 1795785788000
+        }
+      ],
+      "eligibilityTimestamps": [
+        1795812087000
+      ],
+      "enqueuedAt": 1795832898000,
+      "retryTimestamps": [],
+      "mergedAt": 1795833336000,
+      "mainVerifiedAt": 1795833599000,
+      "humanTouchesComplete": true,
+      "humanTouches": [
+        {
+          "kind": "routine",
+          "at": 1795832898000,
+          "summary": "Supervised Wave 3 coordinator session enqueued PR via user-authenticated GitHub CLI"
+        }
+      ],
+      "stages": {
+        "ciQueueWaitMs": 45000,
+        "linuxRuntimeMs": 76000,
+        "windowsRuntimeMs": 192000,
+        "securityScanMs": 85000,
+        "reviewReworkMs": 7311000,
+        "publicationIdleMs": 0,
+        "eligibilityToEnqueueMs": 20811000,
+        "mergeQueueRevalidationMs": 438000,
+        "mainVerificationMs": 263000
+      }
+    },
+    {
+      "prNumber": 165,
+      "repositoryId": 1471342715,
+      "provenance": "github-timeline",
+      "state": "merged",
+      "historyComplete": true,
+      "creationStateVerified": true,
+      "publicationSource": "creation-state",
+      "createdAsDraft": false,
+      "createdAt": 1795780204000,
+      "observedAt": 1795835700000,
+      "publicationEvents": [],
+      "headCommits": [
+        {
+          "sha": "eb7ee38ddda3ed20abcd0c449feb4049f3519d64",
+          "at": 1795780204000
+        },
+        {
+          "sha": "5f397eacfdafae41511c5b47820aa252013ca335",
+          "at": 1795782316000
+        }
+      ],
+      "eligibilityTimestamps": [
+        1795812517000
+      ],
+      "enqueuedAt": 1795813532000,
+      "retryTimestamps": [],
+      "mergedAt": 1795814709000,
+      "mainVerifiedAt": 1795814852000,
+      "humanTouchesComplete": true,
+      "humanTouches": [
+        {
+          "kind": "routine",
+          "at": 1795813532000,
+          "summary": "Supervised Wave 3 coordinator session enqueued PR via user-authenticated GitHub CLI"
+        }
+      ],
+      "stages": {
+        "ciQueueWaitMs": 46000,
+        "linuxRuntimeMs": 51000,
+        "windowsRuntimeMs": 165000,
+        "securityScanMs": 102000,
+        "reviewReworkMs": 2335000,
+        "publicationIdleMs": 0,
+        "eligibilityToEnqueueMs": 1015000,
+        "mergeQueueRevalidationMs": 1177000,
+        "mainVerificationMs": 143000
+      }
+    }
+  ],
+  "requiredMergeGroupWorkflows": [
+    "Factory validation",
+    "Windows Aspire runtime",
+    ".NET MAF specialist agents",
+    "Reusable replay smoke"
+  ],
+  "mergeGroupCheckReceipts": [
+    {
+      "prNumber": 145,
+      "headRefOid": "e0095327a66ab7001211ed76418e297f3eebee85",
+      "pullBaseOid": "9748cca11df54f4d5d5bec32bb59294420b194d2",
+      "queueBaseOid": "f73f6f61cc15ac08b0cfbf0687153aa2f5c6f6d1",
+      "mergeCommitOid": "f9d3b369f34d4845d64bab681635bfbbf461046b",
+      "queueBranch": "gh-readonly-queue/main/pr-145-f73f6f61cc15ac08b0cfbf0687153aa2f5c6f6d1",
+      "enqueuedAtIso": "2026-11-28T02:27:55Z",
+      "mergedAtIso": "2026-11-28T02:30:52Z",
+      "queueRemovalReasons": [
+        "merged"
+      ],
+      "workflows": [
+        {
+          "runId": 46098218905,
+          "name": "Factory validation",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-28T02:28:13Z",
+          "completedAtIso": "2026-11-28T02:29:27Z",
+          "durationMs": 74000
+        },
+        {
+          "runId": 46098218842,
+          "name": "Windows Aspire runtime",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-28T02:28:13Z",
+          "completedAtIso": "2026-11-28T02:30:28Z",
+          "durationMs": 135000
+        },
+        {
+          "runId": 46098218850,
+          "name": ".NET MAF specialist agents",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-28T02:28:13Z",
+          "completedAtIso": "2026-11-28T02:29:37Z",
+          "durationMs": 84000
+        },
+        {
+          "runId": 46098218883,
+          "name": "Reusable replay smoke",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-28T02:28:13Z",
+          "completedAtIso": "2026-11-28T02:28:27Z",
+          "durationMs": 14000
+        }
+      ],
+      "mainVerification": {
+        "mode": "descendant-batch-tip",
+        "verifiedByPrNumber": 146,
+        "verifiedCommitOid": "3ea73763e8dfd66b479438f9f717544885005830",
+        "completedAtMs": 1795833186000,
+        "completedAtIso": "2026-11-28T02:33:06.000Z",
+        "workflowRunIds": {
+          "Factory validation": 46098448692,
+          "Windows Aspire runtime": 46098448689,
+          ".NET MAF specialist agents": 46098448726,
+          "Reusable replay smoke": 46098448722
+        }
+      }
+    },
+    {
+      "prNumber": 146,
+      "headRefOid": "cb86ed2be7fb2ae89a20c3718331b0d29bc570ad",
+      "pullBaseOid": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
+      "queueBaseOid": "f9d3b369f34d4845d64bab681635bfbbf461046b",
+      "mergeCommitOid": "3ea73763e8dfd66b479438f9f717544885005830",
+      "queueBranch": "gh-readonly-queue/main/pr-146-f9d3b369f34d4845d64bab681635bfbbf461046b",
+      "enqueuedAtIso": "2026-11-28T02:27:57Z",
+      "mergedAtIso": "2026-11-28T02:30:52Z",
+      "queueRemovalReasons": [
+        "merged"
+      ],
+      "workflows": [
+        {
+          "runId": 46098219740,
+          "name": "Factory validation",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-28T02:28:14Z",
+          "completedAtIso": "2026-11-28T02:29:09Z",
+          "durationMs": 55000
+        },
+        {
+          "runId": 46098219762,
+          "name": "Windows Aspire runtime",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-28T02:28:14Z",
+          "completedAtIso": "2026-11-28T02:30:24Z",
+          "durationMs": 130000
+        },
+        {
+          "runId": 46098219802,
+          "name": ".NET MAF specialist agents",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-28T02:28:14Z",
+          "completedAtIso": "2026-11-28T02:29:52Z",
+          "durationMs": 98000
+        },
+        {
+          "runId": 46098219891,
+          "name": "Reusable replay smoke",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-28T02:28:14Z",
+          "completedAtIso": "2026-11-28T02:28:25Z",
+          "durationMs": 11000
+        }
+      ],
+      "mainVerification": {
+        "mode": "exact-commit",
+        "verifiedByPrNumber": 146,
+        "verifiedCommitOid": "3ea73763e8dfd66b479438f9f717544885005830",
+        "completedAtMs": 1795833186000,
+        "completedAtIso": "2026-11-28T02:33:06.000Z",
+        "workflowRunIds": {
+          "Factory validation": 46098448692,
+          "Windows Aspire runtime": 46098448689,
+          ".NET MAF specialist agents": 46098448726,
+          "Reusable replay smoke": 46098448722
+        }
+      }
+    },
+    {
+      "prNumber": 147,
+      "headRefOid": "c1cbf3772fab6bef744076b1ca7dd439d531250b",
+      "pullBaseOid": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
+      "queueBaseOid": "3ea73763e8dfd66b479438f9f717544885005830",
+      "mergeCommitOid": "809553f0bc3a56571b05ce25c0534b1069e02979",
+      "queueBranch": "gh-readonly-queue/main/pr-147-3ea73763e8dfd66b479438f9f717544885005830",
+      "enqueuedAtIso": "2026-11-28T02:27:59Z",
+      "mergedAtIso": "2026-11-28T02:31:23Z",
+      "queueRemovalReasons": [
+        "merged"
+      ],
+      "workflows": [
+        {
+          "runId": 46098221532,
+          "name": "Factory validation",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-28T02:28:15Z",
+          "completedAtIso": "2026-11-28T02:29:13Z",
+          "durationMs": 58000
+        },
+        {
+          "runId": 46098221511,
+          "name": "Windows Aspire runtime",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-28T02:28:15Z",
+          "completedAtIso": "2026-11-28T02:30:50Z",
+          "durationMs": 155000
+        },
+        {
+          "runId": 46098221854,
+          "name": ".NET MAF specialist agents",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-28T02:28:15Z",
+          "completedAtIso": "2026-11-28T02:29:30Z",
+          "durationMs": 75000
+        },
+        {
+          "runId": 46098221733,
+          "name": "Reusable replay smoke",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-28T02:28:15Z",
+          "completedAtIso": "2026-11-28T02:28:26Z",
+          "durationMs": 11000
+        }
+      ],
+      "mainVerification": {
+        "mode": "descendant-batch-tip",
+        "verifiedByPrNumber": 162,
+        "verifiedCommitOid": "e883cb90081cb6a288c4755f11b26243a8208767",
+        "completedAtMs": 1795833470000,
+        "completedAtIso": "2026-11-28T02:37:50.000Z",
+        "workflowRunIds": {
+          "Factory validation": 46098701544,
+          "Windows Aspire runtime": 46098701570,
+          ".NET MAF specialist agents": 46098701542,
+          "Reusable replay smoke": 46098701674
+        }
+      }
+    },
+    {
+      "prNumber": 148,
+      "headRefOid": "e463a2a6e0db1fde0c448bda3391804c1ce0421c",
+      "pullBaseOid": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
+      "queueBaseOid": "809553f0bc3a56571b05ce25c0534b1069e02979",
+      "mergeCommitOid": "bf44cb321c6b96b48cbebcb59bdf94541cce4268",
+      "queueBranch": "gh-readonly-queue/main/pr-148-809553f0bc3a56571b05ce25c0534b1069e02979",
+      "enqueuedAtIso": "2026-11-28T02:28:02Z",
+      "mergedAtIso": "2026-11-28T02:31:23Z",
+      "queueRemovalReasons": [
+        "merged"
+      ],
+      "workflows": [
+        {
+          "runId": 46098222630,
+          "name": "Factory validation",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-28T02:28:16Z",
+          "completedAtIso": "2026-11-28T02:29:15Z",
+          "durationMs": 59000
+        },
+        {
+          "runId": 46098222566,
+          "name": "Windows Aspire runtime",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-28T02:28:16Z",
+          "completedAtIso": "2026-11-28T02:30:19Z",
+          "durationMs": 123000
+        },
+        {
+          "runId": 46098222640,
+          "name": ".NET MAF specialist agents",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-28T02:28:16Z",
+          "completedAtIso": "2026-11-28T02:29:34Z",
+          "durationMs": 78000
+        },
+        {
+          "runId": 46098222683,
+          "name": "Reusable replay smoke",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-28T02:28:16Z",
+          "completedAtIso": "2026-11-28T02:28:28Z",
+          "durationMs": 12000
+        }
+      ],
+      "mainVerification": {
+        "mode": "descendant-batch-tip",
+        "verifiedByPrNumber": 162,
+        "verifiedCommitOid": "e883cb90081cb6a288c4755f11b26243a8208767",
+        "completedAtMs": 1795833470000,
+        "completedAtIso": "2026-11-28T02:37:50.000Z",
+        "workflowRunIds": {
+          "Factory validation": 46098701544,
+          "Windows Aspire runtime": 46098701570,
+          ".NET MAF specialist agents": 46098701542,
+          "Reusable replay smoke": 46098701674
+        }
+      }
+    },
+    {
+      "prNumber": 149,
+      "headRefOid": "64fa066050b30adcc1fbc1a19032a31bc01e8ccc",
+      "pullBaseOid": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
+      "queueBaseOid": "bf44cb321c6b96b48cbebcb59bdf94541cce4268",
+      "mergeCommitOid": "446f408302722ceb011bf4dd976d8179ecd0c320",
+      "queueBranch": "gh-readonly-queue/main/pr-149-bf44cb321c6b96b48cbebcb59bdf94541cce4268",
+      "enqueuedAtIso": "2026-11-28T02:28:03Z",
+      "mergedAtIso": "2026-11-28T02:31:23Z",
+      "queueRemovalReasons": [
+        "merged"
+      ],
+      "workflows": [
+        {
+          "runId": 46098223910,
+          "name": "Factory validation",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-28T02:28:17Z",
+          "completedAtIso": "2026-11-28T02:29:06Z",
+          "durationMs": 49000
+        },
+        {
+          "runId": 46098223852,
+          "name": "Windows Aspire runtime",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-28T02:28:17Z",
+          "completedAtIso": "2026-11-28T02:30:30Z",
+          "durationMs": 133000
+        },
+        {
+          "runId": 46098223963,
+          "name": ".NET MAF specialist agents",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-28T02:28:17Z",
+          "completedAtIso": "2026-11-28T02:29:38Z",
+          "durationMs": 81000
+        },
+        {
+          "runId": 46098223991,
+          "name": "Reusable replay smoke",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-28T02:28:17Z",
+          "completedAtIso": "2026-11-28T02:28:26Z",
+          "durationMs": 9000
+        }
+      ],
+      "mainVerification": {
+        "mode": "descendant-batch-tip",
+        "verifiedByPrNumber": 162,
+        "verifiedCommitOid": "e883cb90081cb6a288c4755f11b26243a8208767",
+        "completedAtMs": 1795833470000,
+        "completedAtIso": "2026-11-28T02:37:50.000Z",
+        "workflowRunIds": {
+          "Factory validation": 46098701544,
+          "Windows Aspire runtime": 46098701570,
+          ".NET MAF specialist agents": 46098701542,
+          "Reusable replay smoke": 46098701674
+        }
+      }
+    },
+    {
+      "prNumber": 150,
+      "headRefOid": "9bffe21d3769ca5a0c9fe955dc931179b0a90a9f",
+      "pullBaseOid": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
+      "queueBaseOid": "446f408302722ceb011bf4dd976d8179ecd0c320",
+      "mergeCommitOid": "3d3b0c0c1d28b1df13a401d9caaaaeb9dcb357cb",
+      "queueBranch": "gh-readonly-queue/main/pr-150-446f408302722ceb011bf4dd976d8179ecd0c320",
+      "enqueuedAtIso": "2026-11-28T02:28:06Z",
+      "mergedAtIso": "2026-11-28T02:32:53Z",
+      "queueRemovalReasons": [
+        "merged"
+      ],
+      "workflows": [
+        {
+          "runId": 46098402074,
+          "name": "Factory validation",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-28T02:30:24Z",
+          "completedAtIso": "2026-11-28T02:31:21Z",
+          "durationMs": 57000
+        },
+        {
+          "runId": 46098402085,
+          "name": "Windows Aspire runtime",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-28T02:30:24Z",
+          "completedAtIso": "2026-11-28T02:32:35Z",
+          "durationMs": 131000
+        },
+        {
+          "runId": 46098402090,
+          "name": ".NET MAF specialist agents",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-28T02:30:24Z",
+          "completedAtIso": "2026-11-28T02:32:02Z",
+          "durationMs": 98000
+        },
+        {
+          "runId": 46098402335,
+          "name": "Reusable replay smoke",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-28T02:30:25Z",
+          "completedAtIso": "2026-11-28T02:30:33Z",
+          "durationMs": 8000
+        }
+      ],
+      "mainVerification": {
+        "mode": "descendant-batch-tip",
+        "verifiedByPrNumber": 162,
+        "verifiedCommitOid": "e883cb90081cb6a288c4755f11b26243a8208767",
+        "completedAtMs": 1795833470000,
+        "completedAtIso": "2026-11-28T02:37:50.000Z",
+        "workflowRunIds": {
+          "Factory validation": 46098701544,
+          "Windows Aspire runtime": 46098701570,
+          ".NET MAF specialist agents": 46098701542,
+          "Reusable replay smoke": 46098701674
+        }
+      }
+    },
+    {
+      "prNumber": 151,
+      "headRefOid": "013731c1c97a6972367e57a39a51b67ed2668879",
+      "pullBaseOid": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
+      "queueBaseOid": "3d3b0c0c1d28b1df13a401d9caaaaeb9dcb357cb",
+      "mergeCommitOid": "d826ba230ea7448ed5344a705114cafcf27949dc",
+      "queueBranch": "gh-readonly-queue/main/pr-151-3d3b0c0c1d28b1df13a401d9caaaaeb9dcb357cb",
+      "enqueuedAtIso": "2026-11-28T02:28:08Z",
+      "mergedAtIso": "2026-11-28T02:33:20Z",
+      "queueRemovalReasons": [
+        "merged"
+      ],
+      "workflows": [
+        {
+          "runId": 46098450749,
+          "name": "Factory validation",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-28T02:30:55Z",
+          "completedAtIso": "2026-11-28T02:31:57Z",
+          "durationMs": 62000
+        },
+        {
+          "runId": 46098450759,
+          "name": "Windows Aspire runtime",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-28T02:30:55Z",
+          "completedAtIso": "2026-11-28T02:33:01Z",
+          "durationMs": 126000
+        },
+        {
+          "runId": 46098450855,
+          "name": ".NET MAF specialist agents",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-28T02:30:55Z",
+          "completedAtIso": "2026-11-28T02:32:21Z",
+          "durationMs": 86000
+        },
+        {
+          "runId": 46098450956,
+          "name": "Reusable replay smoke",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-28T02:30:55Z",
+          "completedAtIso": "2026-11-28T02:31:08Z",
+          "durationMs": 13000
+        }
+      ],
+      "mainVerification": {
+        "mode": "descendant-batch-tip",
+        "verifiedByPrNumber": 162,
+        "verifiedCommitOid": "e883cb90081cb6a288c4755f11b26243a8208767",
+        "completedAtMs": 1795833470000,
+        "completedAtIso": "2026-11-28T02:37:50.000Z",
+        "workflowRunIds": {
+          "Factory validation": 46098701544,
+          "Windows Aspire runtime": 46098701570,
+          ".NET MAF specialist agents": 46098701542,
+          "Reusable replay smoke": 46098701674
+        }
+      }
+    },
+    {
+      "prNumber": 152,
+      "headRefOid": "fc87936e48725e47efb4732e78a2976c6947fa77",
+      "pullBaseOid": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
+      "queueBaseOid": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
+      "mergeCommitOid": "be08c4dfe3288d9e84c791ad319ebdaf168e1224",
+      "queueBranch": "gh-readonly-queue/main/pr-152-cec2745b7b8a21e77ad9f2839d4255d42305d419",
+      "enqueuedAtIso": "2026-11-27T20:49:02Z",
+      "mergedAtIso": "2026-11-27T20:52:07Z",
+      "queueRemovalReasons": [
+        "merged"
+      ],
+      "workflows": [
+        {
+          "runId": 46066213473,
+          "name": "Factory validation",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-27T20:49:20Z",
+          "completedAtIso": "2026-11-27T20:50:24Z",
+          "durationMs": 64000
+        },
+        {
+          "runId": 46066213335,
+          "name": "Windows Aspire runtime",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-27T20:49:20Z",
+          "completedAtIso": "2026-11-27T20:51:41Z",
+          "durationMs": 141000
+        },
+        {
+          "runId": 46066213347,
+          "name": ".NET MAF specialist agents",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-27T20:49:20Z",
+          "completedAtIso": "2026-11-27T20:51:09Z",
+          "durationMs": 109000
+        },
+        {
+          "runId": 46066213507,
+          "name": "Reusable replay smoke",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-27T20:49:20Z",
+          "completedAtIso": "2026-11-27T20:49:32Z",
+          "durationMs": 12000
+        }
+      ],
+      "mainVerification": {
+        "mode": "descendant-batch-tip",
+        "verifiedByPrNumber": 154,
+        "verifiedCommitOid": "470b383cd8ec923151f8c80e35944c3756519848",
+        "completedAtMs": 1795812881000,
+        "completedAtIso": "2026-11-27T20:54:41.000Z",
+        "workflowRunIds": {
+          "Factory validation": 46066517174,
+          "Windows Aspire runtime": 46066516977,
+          ".NET MAF specialist agents": 46066517195,
+          "Reusable replay smoke": 46066517350
+        }
+      }
+    },
+    {
+      "prNumber": 153,
+      "headRefOid": "51bdd926a0ce898ff7437c645d5ad1f9a400ece1",
+      "pullBaseOid": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
+      "queueBaseOid": "ada6ca1f399ad146e4fc28e253e52270e964559a",
+      "mergeCommitOid": "753328f27120e55b11eea249b9bee8a1df979994",
+      "queueBranch": "gh-readonly-queue/main/pr-153-ada6ca1f399ad146e4fc28e253e52270e964559a",
+      "enqueuedAtIso": "2026-11-27T21:02:06Z",
+      "mergedAtIso": "2026-11-27T21:05:00Z",
+      "queueRemovalReasons": [
+        "merged"
+      ],
+      "workflows": [
+        {
+          "runId": 46067606020,
+          "name": "Factory validation",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-27T21:02:12Z",
+          "completedAtIso": "2026-11-27T21:03:03Z",
+          "durationMs": 51000
+        },
+        {
+          "runId": 46067605930,
+          "name": "Windows Aspire runtime",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-27T21:02:12Z",
+          "completedAtIso": "2026-11-27T21:04:56Z",
+          "durationMs": 164000
+        },
+        {
+          "runId": 46067605811,
+          "name": ".NET MAF specialist agents",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-27T21:02:11Z",
+          "completedAtIso": "2026-11-27T21:03:30Z",
+          "durationMs": 79000
+        },
+        {
+          "runId": 46067605952,
+          "name": "Reusable replay smoke",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-27T21:02:12Z",
+          "completedAtIso": "2026-11-27T21:02:23Z",
+          "durationMs": 11000
+        }
+      ],
+      "mainVerification": {
+        "mode": "exact-commit",
+        "verifiedByPrNumber": 153,
+        "verifiedCommitOid": "753328f27120e55b11eea249b9bee8a1df979994",
+        "completedAtMs": 1795813691000,
+        "completedAtIso": "2026-11-27T21:08:11.000Z",
+        "workflowRunIds": {
+          "Factory validation": 46067924225,
+          "Windows Aspire runtime": 46067924355,
+          ".NET MAF specialist agents": 46067924348,
+          "Reusable replay smoke": 46067924584
+        }
+      }
+    },
+    {
+      "prNumber": 154,
+      "headRefOid": "8b183e8a97741d16063335fa4029e1ff0eb5bad0",
+      "pullBaseOid": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
+      "queueBaseOid": "be08c4dfe3288d9e84c791ad319ebdaf168e1224",
+      "mergeCommitOid": "470b383cd8ec923151f8c80e35944c3756519848",
+      "queueBranch": "gh-readonly-queue/main/pr-154-be08c4dfe3288d9e84c791ad319ebdaf168e1224",
+      "enqueuedAtIso": "2026-11-27T20:49:17Z",
+      "mergedAtIso": "2026-11-27T20:52:07Z",
+      "queueRemovalReasons": [
+        "merged"
+      ],
+      "workflows": [
+        {
+          "runId": 46066214725,
+          "name": "Factory validation",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-27T20:49:21Z",
+          "completedAtIso": "2026-11-27T20:50:19Z",
+          "durationMs": 58000
+        },
+        {
+          "runId": 46066214715,
+          "name": "Windows Aspire runtime",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-27T20:49:21Z",
+          "completedAtIso": "2026-11-27T20:51:34Z",
+          "durationMs": 133000
+        },
+        {
+          "runId": 46066214756,
+          "name": ".NET MAF specialist agents",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-27T20:49:21Z",
+          "completedAtIso": "2026-11-27T20:50:28Z",
+          "durationMs": 67000
+        },
+        {
+          "runId": 46066214902,
+          "name": "Reusable replay smoke",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-27T20:49:21Z",
+          "completedAtIso": "2026-11-27T20:49:40Z",
+          "durationMs": 19000
+        }
+      ],
+      "mainVerification": {
+        "mode": "exact-commit",
+        "verifiedByPrNumber": 154,
+        "verifiedCommitOid": "470b383cd8ec923151f8c80e35944c3756519848",
+        "completedAtMs": 1795812881000,
+        "completedAtIso": "2026-11-27T20:54:41.000Z",
+        "workflowRunIds": {
+          "Factory validation": 46066517174,
+          "Windows Aspire runtime": 46066516977,
+          ".NET MAF specialist agents": 46066517195,
+          "Reusable replay smoke": 46066517350
+        }
+      }
+    },
+    {
+      "prNumber": 155,
+      "headRefOid": "6f916c92ecbc38d3ba4f131f8ba115ecf46419ac",
+      "pullBaseOid": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
+      "queueBaseOid": "d826ba230ea7448ed5344a705114cafcf27949dc",
+      "mergeCommitOid": "e658a51de8f0dea0b6b348f844202d5111da7119",
+      "queueBranch": "gh-readonly-queue/main/pr-155-d826ba230ea7448ed5344a705114cafcf27949dc",
+      "enqueuedAtIso": "2026-11-28T02:28:10Z",
+      "mergedAtIso": "2026-11-28T02:33:37Z",
+      "queueRemovalReasons": [
+        "merged"
+      ],
+      "workflows": [
+        {
+          "runId": 46098453011,
+          "name": "Factory validation",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-28T02:30:56Z",
+          "completedAtIso": "2026-11-28T02:31:52Z",
+          "durationMs": 56000
+        },
+        {
+          "runId": 46098452971,
+          "name": "Windows Aspire runtime",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-28T02:30:56Z",
+          "completedAtIso": "2026-11-28T02:33:22Z",
+          "durationMs": 146000
+        },
+        {
+          "runId": 46098452938,
+          "name": ".NET MAF specialist agents",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-28T02:30:56Z",
+          "completedAtIso": "2026-11-28T02:32:27Z",
+          "durationMs": 91000
+        },
+        {
+          "runId": 46098453097,
+          "name": "Reusable replay smoke",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-28T02:30:56Z",
+          "completedAtIso": "2026-11-28T02:31:09Z",
+          "durationMs": 13000
+        }
+      ],
+      "mainVerification": {
+        "mode": "descendant-batch-tip",
+        "verifiedByPrNumber": 162,
+        "verifiedCommitOid": "e883cb90081cb6a288c4755f11b26243a8208767",
+        "completedAtMs": 1795833470000,
+        "completedAtIso": "2026-11-28T02:37:50.000Z",
+        "workflowRunIds": {
+          "Factory validation": 46098701544,
+          "Windows Aspire runtime": 46098701570,
+          ".NET MAF specialist agents": 46098701542,
+          "Reusable replay smoke": 46098701674
+        }
+      }
+    },
+    {
+      "prNumber": 156,
+      "headRefOid": "8c9cb3c6f57a262604807c2ce28b5be3938b80b6",
+      "pullBaseOid": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
+      "queueBaseOid": "6255168da54d4e6a89efb626f2345ab066c9cc02",
+      "mergeCommitOid": "ada6ca1f399ad146e4fc28e253e52270e964559a",
+      "queueBranch": "gh-readonly-queue/main/pr-156-6255168da54d4e6a89efb626f2345ab066c9cc02",
+      "enqueuedAtIso": "2026-11-27T21:01:52Z",
+      "mergedAtIso": "2026-11-27T21:05:00Z",
+      "queueRemovalReasons": [
+        "merged"
+      ],
+      "workflows": [
+        {
+          "runId": 46067604148,
+          "name": "Factory validation",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-27T21:02:10Z",
+          "completedAtIso": "2026-11-27T21:03:09Z",
+          "durationMs": 59000
+        },
+        {
+          "runId": 46067604179,
+          "name": "Windows Aspire runtime",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-27T21:02:10Z",
+          "completedAtIso": "2026-11-27T21:04:35Z",
+          "durationMs": 145000
+        },
+        {
+          "runId": 46067604146,
+          "name": ".NET MAF specialist agents",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-27T21:02:10Z",
+          "completedAtIso": "2026-11-27T21:03:27Z",
+          "durationMs": 77000
+        },
+        {
+          "runId": 46067604365,
+          "name": "Reusable replay smoke",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-27T21:02:11Z",
+          "completedAtIso": "2026-11-27T21:02:20Z",
+          "durationMs": 9000
+        }
+      ],
+      "mainVerification": {
+        "mode": "descendant-batch-tip",
+        "verifiedByPrNumber": 153,
+        "verifiedCommitOid": "753328f27120e55b11eea249b9bee8a1df979994",
+        "completedAtMs": 1795813691000,
+        "completedAtIso": "2026-11-27T21:08:11.000Z",
+        "workflowRunIds": {
+          "Factory validation": 46067924225,
+          "Windows Aspire runtime": 46067924355,
+          ".NET MAF specialist agents": 46067924348,
+          "Reusable replay smoke": 46067924584
+        }
+      }
+    },
+    {
+      "prNumber": 157,
+      "headRefOid": "69a128165e57e1d4a74c0dd7b29fd482d66688d8",
+      "pullBaseOid": "1be6dc1efb991d02637c334e6b6d3dda1530d6aa",
+      "queueBaseOid": "1f63648f991325ac6e8c5d33121b53f907f9e079",
+      "mergeCommitOid": "b0924c3807f797e6090e1dc3e1e65fc9caa07550",
+      "queueBranch": "gh-readonly-queue/main/pr-157-1f63648f991325ac6e8c5d33121b53f907f9e079",
+      "enqueuedAtIso": "2026-11-28T03:08:03Z",
+      "mergedAtIso": "2026-11-28T03:10:59Z",
+      "queueRemovalReasons": [
+        "merged"
+      ],
+      "workflows": [
+        {
+          "runId": 46101395492,
+          "name": "Factory validation",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-28T03:08:18Z",
+          "completedAtIso": "2026-11-28T03:09:14Z",
+          "durationMs": 56000
+        },
+        {
+          "runId": 46101395514,
+          "name": "Windows Aspire runtime",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-28T03:08:18Z",
+          "completedAtIso": "2026-11-28T03:10:46Z",
+          "durationMs": 148000
+        },
+        {
+          "runId": 46101395401,
+          "name": ".NET MAF specialist agents",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-28T03:08:18Z",
+          "completedAtIso": "2026-11-28T03:09:35Z",
+          "durationMs": 77000
+        },
+        {
+          "runId": 46101395610,
+          "name": "Reusable replay smoke",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-28T03:08:18Z",
+          "completedAtIso": "2026-11-28T03:08:31Z",
+          "durationMs": 13000
+        }
+      ],
+      "mainVerification": {
+        "mode": "exact-commit",
+        "verifiedByPrNumber": 157,
+        "verifiedCommitOid": "b0924c3807f797e6090e1dc3e1e65fc9caa07550",
+        "completedAtMs": 1795835580000,
+        "completedAtIso": "2026-11-28T03:13:00.000Z",
+        "workflowRunIds": {
+          "Factory validation": 46101609302,
+          "Windows Aspire runtime": 46101609338,
+          ".NET MAF specialist agents": 46101609310,
+          "Reusable replay smoke": 46101609462
+        }
+      }
+    },
+    {
+      "prNumber": 158,
+      "headRefOid": "613d890bf1fe875712efd365825a983f536212e5",
+      "pullBaseOid": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
+      "queueBaseOid": "470b383cd8ec923151f8c80e35944c3756519848",
+      "mergeCommitOid": "6255168da54d4e6a89efb626f2345ab066c9cc02",
+      "queueBranch": "gh-readonly-queue/main/pr-158-470b383cd8ec923151f8c80e35944c3756519848",
+      "enqueuedAtIso": "2026-11-27T20:55:40Z",
+      "mergedAtIso": "2026-11-27T20:58:39Z",
+      "queueRemovalReasons": [
+        "merged"
+      ],
+      "workflows": [
+        {
+          "runId": 46066933084,
+          "name": "Factory validation",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-27T20:55:58Z",
+          "completedAtIso": "2026-11-27T20:56:51Z",
+          "durationMs": 53000
+        },
+        {
+          "runId": 46066933117,
+          "name": "Windows Aspire runtime",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-27T20:55:58Z",
+          "completedAtIso": "2026-11-27T20:58:07Z",
+          "durationMs": 129000
+        },
+        {
+          "runId": 46066933274,
+          "name": ".NET MAF specialist agents",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-27T20:55:59Z",
+          "completedAtIso": "2026-11-27T20:58:14Z",
+          "durationMs": 135000
+        },
+        {
+          "runId": 46066933216,
+          "name": "Reusable replay smoke",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-27T20:55:59Z",
+          "completedAtIso": "2026-11-27T20:56:07Z",
+          "durationMs": 8000
+        }
+      ],
+      "mainVerification": {
+        "mode": "exact-commit",
+        "verifiedByPrNumber": 158,
+        "verifiedCommitOid": "6255168da54d4e6a89efb626f2345ab066c9cc02",
+        "completedAtMs": 1795813307000,
+        "completedAtIso": "2026-11-27T21:01:47.000Z",
+        "workflowRunIds": {
+          "Factory validation": 46067211804,
+          "Windows Aspire runtime": 46067211851,
+          ".NET MAF specialist agents": 46067211817,
+          "Reusable replay smoke": 46067211945
+        }
+      }
+    },
+    {
+      "prNumber": 159,
+      "headRefOid": "ede5535f6ea55e8036e6d90801d103aeda48cd22",
+      "pullBaseOid": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
+      "queueBaseOid": "753328f27120e55b11eea249b9bee8a1df979994",
+      "mergeCommitOid": "9748cca11df54f4d5d5bec32bb59294420b194d2",
+      "queueBranch": "gh-readonly-queue/main/pr-159-753328f27120e55b11eea249b9bee8a1df979994",
+      "enqueuedAtIso": "2026-11-27T21:04:08Z",
+      "mergedAtIso": "2026-11-27T21:06:45Z",
+      "queueRemovalReasons": [
+        "merged"
+      ],
+      "workflows": [
+        {
+          "runId": 46067856203,
+          "name": "Factory validation",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-27T21:04:26Z",
+          "completedAtIso": "2026-11-27T21:05:17Z",
+          "durationMs": 51000
+        },
+        {
+          "runId": 46067856170,
+          "name": "Windows Aspire runtime",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-27T21:04:26Z",
+          "completedAtIso": "2026-11-27T21:06:40Z",
+          "durationMs": 134000
+        },
+        {
+          "runId": 46067856204,
+          "name": ".NET MAF specialist agents",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-27T21:04:26Z",
+          "completedAtIso": "2026-11-27T21:05:51Z",
+          "durationMs": 85000
+        },
+        {
+          "runId": 46067856273,
+          "name": "Reusable replay smoke",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-27T21:04:26Z",
+          "completedAtIso": "2026-11-27T21:04:36Z",
+          "durationMs": 10000
+        }
+      ],
+      "mainVerification": {
+        "mode": "exact-commit",
+        "verifiedByPrNumber": 159,
+        "verifiedCommitOid": "9748cca11df54f4d5d5bec32bb59294420b194d2",
+        "completedAtMs": 1795813832000,
+        "completedAtIso": "2026-11-27T21:10:32.000Z",
+        "workflowRunIds": {
+          "Factory validation": 46068126365,
+          "Windows Aspire runtime": 46068126445,
+          ".NET MAF specialist agents": 46068126348,
+          "Reusable replay smoke": 46068126605
+        }
+      }
+    },
+    {
+      "prNumber": 160,
+      "headRefOid": "012b086cd06c6ee920667f0d841dfd84414b9039",
+      "pullBaseOid": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
+      "queueBaseOid": "e658a51de8f0dea0b6b348f844202d5111da7119",
+      "mergeCommitOid": "6fe90f88637c16b2ae1b0ef4cbfa03b673bd758f",
+      "queueBranch": "gh-readonly-queue/main/pr-160-e658a51de8f0dea0b6b348f844202d5111da7119",
+      "enqueuedAtIso": "2026-11-28T02:28:12Z",
+      "mergedAtIso": "2026-11-28T02:33:37Z",
+      "queueRemovalReasons": [
+        "merged"
+      ],
+      "workflows": [
+        {
+          "runId": 46098454239,
+          "name": "Factory validation",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-28T02:30:57Z",
+          "completedAtIso": "2026-11-28T02:31:59Z",
+          "durationMs": 62000
+        },
+        {
+          "runId": 46098454218,
+          "name": "Windows Aspire runtime",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-28T02:30:57Z",
+          "completedAtIso": "2026-11-28T02:33:07Z",
+          "durationMs": 130000
+        },
+        {
+          "runId": 46098454187,
+          "name": ".NET MAF specialist agents",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-28T02:30:57Z",
+          "completedAtIso": "2026-11-28T02:32:49Z",
+          "durationMs": 112000
+        },
+        {
+          "runId": 46098454349,
+          "name": "Reusable replay smoke",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-28T02:30:57Z",
+          "completedAtIso": "2026-11-28T02:31:05Z",
+          "durationMs": 8000
+        }
+      ],
+      "mainVerification": {
+        "mode": "descendant-batch-tip",
+        "verifiedByPrNumber": 162,
+        "verifiedCommitOid": "e883cb90081cb6a288c4755f11b26243a8208767",
+        "completedAtMs": 1795833470000,
+        "completedAtIso": "2026-11-28T02:37:50.000Z",
+        "workflowRunIds": {
+          "Factory validation": 46098701544,
+          "Windows Aspire runtime": 46098701570,
+          ".NET MAF specialist agents": 46098701542,
+          "Reusable replay smoke": 46098701674
+        }
+      }
+    },
+    {
+      "prNumber": 161,
+      "headRefOid": "82c2052c4f98b54d752fb083d03ad74e8ce9efcc",
+      "pullBaseOid": "1be6dc1efb991d02637c334e6b6d3dda1530d6aa",
+      "queueBaseOid": "1be6dc1efb991d02637c334e6b6d3dda1530d6aa",
+      "mergeCommitOid": "1f63648f991325ac6e8c5d33121b53f907f9e079",
+      "queueBranch": "gh-readonly-queue/main/pr-161-1be6dc1efb991d02637c334e6b6d3dda1530d6aa",
+      "enqueuedAtIso": "2026-11-28T03:07:59Z",
+      "mergedAtIso": "2026-11-28T03:10:59Z",
+      "queueRemovalReasons": [
+        "merged"
+      ],
+      "workflows": [
+        {
+          "runId": 46101393942,
+          "name": "Factory validation",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-28T03:08:17Z",
+          "completedAtIso": "2026-11-28T03:09:18Z",
+          "durationMs": 61000
+        },
+        {
+          "runId": 46101393851,
+          "name": "Windows Aspire runtime",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-28T03:08:17Z",
+          "completedAtIso": "2026-11-28T03:10:26Z",
+          "durationMs": 129000
+        },
+        {
+          "runId": 46101393917,
+          "name": ".NET MAF specialist agents",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-28T03:08:17Z",
+          "completedAtIso": "2026-11-28T03:09:37Z",
+          "durationMs": 80000
+        },
+        {
+          "runId": 46101393940,
+          "name": "Reusable replay smoke",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-28T03:08:17Z",
+          "completedAtIso": "2026-11-28T03:08:26Z",
+          "durationMs": 9000
+        }
+      ],
+      "mainVerification": {
+        "mode": "descendant-batch-tip",
+        "verifiedByPrNumber": 157,
+        "verifiedCommitOid": "b0924c3807f797e6090e1dc3e1e65fc9caa07550",
+        "completedAtMs": 1795835580000,
+        "completedAtIso": "2026-11-28T03:13:00.000Z",
+        "workflowRunIds": {
+          "Factory validation": 46101609302,
+          "Windows Aspire runtime": 46101609338,
+          ".NET MAF specialist agents": 46101609310,
+          "Reusable replay smoke": 46101609462
+        }
+      }
+    },
+    {
+      "prNumber": 162,
+      "headRefOid": "226f5f5765875fe08cebf384f4d61cef7bcd426c",
+      "pullBaseOid": "f73f6f61cc15ac08b0cfbf0687153aa2f5c6f6d1",
+      "queueBaseOid": "6fe90f88637c16b2ae1b0ef4cbfa03b673bd758f",
+      "mergeCommitOid": "e883cb90081cb6a288c4755f11b26243a8208767",
+      "queueBranch": "gh-readonly-queue/main/pr-162-6fe90f88637c16b2ae1b0ef4cbfa03b673bd758f",
+      "enqueuedAtIso": "2026-11-28T02:28:16Z",
+      "mergedAtIso": "2026-11-28T02:33:54Z",
+      "queueRemovalReasons": [
+        "merged"
+      ],
+      "workflows": [
+        {
+          "runId": 46098492360,
+          "name": "Factory validation",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-28T02:31:26Z",
+          "completedAtIso": "2026-11-28T02:32:18Z",
+          "durationMs": 52000
+        },
+        {
+          "runId": 46098492349,
+          "name": "Windows Aspire runtime",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-28T02:31:26Z",
+          "completedAtIso": "2026-11-28T02:33:46Z",
+          "durationMs": 140000
+        },
+        {
+          "runId": 46098492390,
+          "name": ".NET MAF specialist agents",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-28T02:31:26Z",
+          "completedAtIso": "2026-11-28T02:32:48Z",
+          "durationMs": 82000
+        },
+        {
+          "runId": 46098492528,
+          "name": "Reusable replay smoke",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-28T02:31:26Z",
+          "completedAtIso": "2026-11-28T02:31:40Z",
+          "durationMs": 14000
+        }
+      ],
+      "mainVerification": {
+        "mode": "exact-commit",
+        "verifiedByPrNumber": 162,
+        "verifiedCommitOid": "e883cb90081cb6a288c4755f11b26243a8208767",
+        "completedAtMs": 1795833470000,
+        "completedAtIso": "2026-11-28T02:37:50.000Z",
+        "workflowRunIds": {
+          "Factory validation": 46098701544,
+          "Windows Aspire runtime": 46098701570,
+          ".NET MAF specialist agents": 46098701542,
+          "Reusable replay smoke": 46098701674
+        }
+      }
+    },
+    {
+      "prNumber": 163,
+      "headRefOid": "d01b35b3276b7d38378b7a25b6ae76629ae87019",
+      "pullBaseOid": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
+      "queueBaseOid": "d9c87b0ee9e40b4058dfb2e2954d07cef4cc6910",
+      "mergeCommitOid": "f73f6f61cc15ac08b0cfbf0687153aa2f5c6f6d1",
+      "queueBranch": "gh-readonly-queue/main/pr-163-d9c87b0ee9e40b4058dfb2e2954d07cef4cc6910",
+      "enqueuedAtIso": "2026-11-27T21:23:22Z",
+      "mergedAtIso": "2026-11-27T21:27:02Z",
+      "queueRemovalReasons": [
+        "failed_checks",
+        "merged"
+      ],
+      "workflows": [
+        {
+          "runId": 46070011944,
+          "name": "Factory validation",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-27T21:23:40Z",
+          "completedAtIso": "2026-11-27T21:24:40Z",
+          "durationMs": 60000
+        },
+        {
+          "runId": 46070011963,
+          "name": "Windows Aspire runtime",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-27T21:23:40Z",
+          "completedAtIso": "2026-11-27T21:26:30Z",
+          "durationMs": 170000
+        },
+        {
+          "runId": 46070011978,
+          "name": ".NET MAF specialist agents",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-27T21:23:40Z",
+          "completedAtIso": "2026-11-27T21:24:51Z",
+          "durationMs": 71000
+        },
+        {
+          "runId": 46070012074,
+          "name": "Reusable replay smoke",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-27T21:23:40Z",
+          "completedAtIso": "2026-11-27T21:23:52Z",
+          "durationMs": 12000
+        }
+      ],
+      "mainVerification": {
+        "mode": "exact-commit",
+        "verifiedByPrNumber": 163,
+        "verifiedCommitOid": "f73f6f61cc15ac08b0cfbf0687153aa2f5c6f6d1",
+        "completedAtMs": 1795814984000,
+        "completedAtIso": "2026-11-27T21:29:44.000Z",
+        "workflowRunIds": {
+          "Factory validation": 46070384309,
+          "Windows Aspire runtime": 46070384335,
+          ".NET MAF specialist agents": 46070384265,
+          "Reusable replay smoke": 46070384631
+        }
+      },
+      "priorAttemptRuns": [
+        {
+          "runId": 46067927623,
+          "name": "Reusable replay smoke",
+          "headBranch": "gh-readonly-queue/main/pr-163-9748cca11df54f4d5d5bec32bb59294420b194d2",
+          "headSha": "081f996aae666e38784570dd82efaff88a806928",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-27T21:05:03Z",
+          "completedAtIso": "2026-11-27T21:05:24Z"
+        },
+        {
+          "runId": 46067927402,
+          "name": "Factory validation",
+          "headBranch": "gh-readonly-queue/main/pr-163-9748cca11df54f4d5d5bec32bb59294420b194d2",
+          "headSha": "081f996aae666e38784570dd82efaff88a806928",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-27T21:05:03Z",
+          "completedAtIso": "2026-11-27T21:06:00Z"
+        },
+        {
+          "runId": 46067927444,
+          "name": ".NET MAF specialist agents",
+          "headBranch": "gh-readonly-queue/main/pr-163-9748cca11df54f4d5d5bec32bb59294420b194d2",
+          "headSha": "081f996aae666e38784570dd82efaff88a806928",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-27T21:05:03Z",
+          "completedAtIso": "2026-11-27T21:06:50Z"
+        },
+        {
+          "runId": 46067927371,
+          "name": "Windows Aspire runtime",
+          "headBranch": "gh-readonly-queue/main/pr-163-9748cca11df54f4d5d5bec32bb59294420b194d2",
+          "headSha": "081f996aae666e38784570dd82efaff88a806928",
+          "status": "completed",
+          "conclusion": "cancelled",
+          "startedAtIso": "2026-11-27T21:05:03Z",
+          "completedAtIso": "2026-11-27T21:22:07Z"
+        }
+      ]
+    },
+    {
+      "prNumber": 164,
+      "headRefOid": "24b40b486c48807ff622c8278baacb21d47802c4",
+      "pullBaseOid": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
+      "queueBaseOid": "e883cb90081cb6a288c4755f11b26243a8208767",
+      "mergeCommitOid": "1be6dc1efb991d02637c334e6b6d3dda1530d6aa",
+      "queueBranch": "gh-readonly-queue/main/pr-164-e883cb90081cb6a288c4755f11b26243a8208767",
+      "enqueuedAtIso": "2026-11-28T02:28:18Z",
+      "mergedAtIso": "2026-11-28T02:35:36Z",
+      "queueRemovalReasons": [
+        "merged"
+      ],
+      "workflows": [
+        {
+          "runId": 46098619635,
+          "name": "Factory validation",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-28T02:32:56Z",
+          "completedAtIso": "2026-11-28T02:33:56Z",
+          "durationMs": 60000
+        },
+        {
+          "runId": 46098619614,
+          "name": "Windows Aspire runtime",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-28T02:32:56Z",
+          "completedAtIso": "2026-11-28T02:35:03Z",
+          "durationMs": 127000
+        },
+        {
+          "runId": 46098619660,
+          "name": ".NET MAF specialist agents",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-28T02:32:56Z",
+          "completedAtIso": "2026-11-28T02:34:18Z",
+          "durationMs": 82000
+        },
+        {
+          "runId": 46098619793,
+          "name": "Reusable replay smoke",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-28T02:32:56Z",
+          "completedAtIso": "2026-11-28T02:33:10Z",
+          "durationMs": 14000
+        }
+      ],
+      "mainVerification": {
+        "mode": "exact-commit",
+        "verifiedByPrNumber": 164,
+        "verifiedCommitOid": "1be6dc1efb991d02637c334e6b6d3dda1530d6aa",
+        "completedAtMs": 1795833599000,
+        "completedAtIso": "2026-11-28T02:39:59.000Z",
+        "workflowRunIds": {
+          "Factory validation": 46098841625,
+          "Windows Aspire runtime": 46098841534,
+          ".NET MAF specialist agents": 46098841572,
+          "Reusable replay smoke": 46098841687
+        }
+      }
+    },
+    {
+      "prNumber": 165,
+      "headRefOid": "5f397eacfdafae41511c5b47820aa252013ca335",
+      "pullBaseOid": "cec2745b7b8a21e77ad9f2839d4255d42305d419",
+      "queueBaseOid": "9748cca11df54f4d5d5bec32bb59294420b194d2",
+      "mergeCommitOid": "d9c87b0ee9e40b4058dfb2e2954d07cef4cc6910",
+      "queueBranch": "gh-readonly-queue/main/pr-165-9748cca11df54f4d5d5bec32bb59294420b194d2",
+      "enqueuedAtIso": "2026-11-27T21:05:32Z",
+      "mergedAtIso": "2026-11-27T21:25:09Z",
+      "queueRemovalReasons": [
+        "merged"
+      ],
+      "workflows": [
+        {
+          "runId": 46069902963,
+          "name": "Factory validation",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-27T21:22:41Z",
+          "completedAtIso": "2026-11-27T21:23:40Z",
+          "durationMs": 59000
+        },
+        {
+          "runId": 46069902975,
+          "name": "Windows Aspire runtime",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-27T21:22:41Z",
+          "completedAtIso": "2026-11-27T21:24:49Z",
+          "durationMs": 128000
+        },
+        {
+          "runId": 46069902969,
+          "name": ".NET MAF specialist agents",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-27T21:22:41Z",
+          "completedAtIso": "2026-11-27T21:24:08Z",
+          "durationMs": 87000
+        },
+        {
+          "runId": 46069903142,
+          "name": "Reusable replay smoke",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-27T21:22:41Z",
+          "completedAtIso": "2026-11-27T21:22:54Z",
+          "durationMs": 13000
+        }
+      ],
+      "mainVerification": {
+        "mode": "exact-commit",
+        "verifiedByPrNumber": 165,
+        "verifiedCommitOid": "d9c87b0ee9e40b4058dfb2e2954d07cef4cc6910",
+        "completedAtMs": 1795814852000,
+        "completedAtIso": "2026-11-27T21:27:32.000Z",
+        "workflowRunIds": {
+          "Factory validation": 46070181322,
+          "Windows Aspire runtime": 46070181361,
+          ".NET MAF specialist agents": 46070181340,
+          "Reusable replay smoke": 46070181420
+        }
+      },
+      "priorAttemptRuns": [
+        {
+          "runId": 46067996558,
+          "name": "Reusable replay smoke",
+          "headBranch": "gh-readonly-queue/main/pr-165-081f996aae666e38784570dd82efaff88a806928",
+          "headSha": "1cbae3366f939299b7043a414c8666ddbf31f7c3",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-27T21:05:36Z",
+          "completedAtIso": "2026-11-27T21:05:45Z"
+        },
+        {
+          "runId": 46067996317,
+          "name": ".NET MAF specialist agents",
+          "headBranch": "gh-readonly-queue/main/pr-165-081f996aae666e38784570dd82efaff88a806928",
+          "headSha": "1cbae3366f939299b7043a414c8666ddbf31f7c3",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-27T21:05:36Z",
+          "completedAtIso": "2026-11-27T21:06:57Z"
+        },
+        {
+          "runId": 46067996403,
+          "name": "Factory validation",
+          "headBranch": "gh-readonly-queue/main/pr-165-081f996aae666e38784570dd82efaff88a806928",
+          "headSha": "1cbae3366f939299b7043a414c8666ddbf31f7c3",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-27T21:05:36Z",
+          "completedAtIso": "2026-11-27T21:06:40Z"
+        },
+        {
+          "runId": 46067996408,
+          "name": "Windows Aspire runtime",
+          "headBranch": "gh-readonly-queue/main/pr-165-081f996aae666e38784570dd82efaff88a806928",
+          "headSha": "1cbae3366f939299b7043a414c8666ddbf31f7c3",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAtIso": "2026-11-27T21:05:36Z",
+          "completedAtIso": "2026-11-27T21:09:07Z"
+        }
+      ]
+    }
+  ],
+  "queueRereadSnapshots": [
+    {
+      "id": "sf-pr-161-merge-group-position-1",
+      "note": "Replay snapshot bound to real PR #161 head/base during merge_group run 46101393942 (transient MergeQueueEntry ID normalized for offline replay after merge)",
+      "scope": {
+        "repositoryId": 1471342715,
+        "repository": "Jamula/SoftwareFactory",
+        "defaultBranch": "main"
+      },
+      "intent": {
+        "repositoryId": 1471342715,
+        "repository": "Jamula/SoftwareFactory",
+        "branch": "main",
+        "number": 161,
+        "expectedHead": "82c2052c4f98b54d752fb083d03ad74e8ce9efcc",
+        "expectedBase": "1be6dc1efb991d02637c334e6b6d3dda1530d6aa"
+      },
+      "reread": {
+        "repositoryId": 1471342715,
+        "repository": "Jamula/SoftwareFactory",
+        "branch": "main",
+        "stop": false,
+        "pull": {
+          "repositoryId": 1471342715,
+          "repository": "Jamula/SoftwareFactory",
+          "number": 161,
+          "baseBranch": "main",
+          "base": "1be6dc1efb991d02637c334e6b6d3dda1530d6aa",
+          "head": "82c2052c4f98b54d752fb083d03ad74e8ce9efcc",
+          "state": "OPEN",
+          "draft": false,
+          "mergeQueueEntryId": "PRME_replay_sf_161_46101393942"
+        },
+        "entry": {
+          "repositoryId": 1471342715,
+          "repository": "Jamula/SoftwareFactory",
+          "branch": "main",
+          "id": "PRME_replay_sf_161_46101393942",
+          "pullRequestNumber": 161,
+          "head": "82c2052c4f98b54d752fb083d03ad74e8ce9efcc",
+          "base": "1be6dc1efb991d02637c334e6b6d3dda1530d6aa",
+          "state": "LOCKED",
+          "position": 1,
+          "jump": false
+        }
+      },
+      "expected": {
+        "shadow": true,
+        "evidenceComplete": false,
+        "queueObserved": true,
+        "mergeEligible": false,
+        "liveQueueWrite": false,
+        "liveMerge": false,
+        "dependentWorkAllowed": false,
+        "reason": "QUEUE_ENTRY_OBSERVED",
+        "repository": "Jamula/SoftwareFactory",
+        "repositoryId": 1471342715,
+        "branch": "main",
+        "number": 161,
+        "head": "82c2052c4f98b54d752fb083d03ad74e8ce9efcc",
+        "base": "1be6dc1efb991d02637c334e6b6d3dda1530d6aa",
+        "queueEntryId": "PRME_replay_sf_161_46101393942",
+        "queueState": "LOCKED",
+        "position": 1
+      }
+    },
+    {
+      "id": "sf-pr-157-merge-group-bound-base",
+      "note": "Replay snapshot bound to real PR #157 head and merge_group base 1f63648f991325ac6e8c5d33121b53f907f9e079 during run 46101395492 (transient MergeQueueEntry ID normalized for offline replay after merge)",
+      "scope": {
+        "repositoryId": 1471342715,
+        "repository": "Jamula/SoftwareFactory",
+        "defaultBranch": "main"
+      },
+      "intent": {
+        "repositoryId": 1471342715,
+        "repository": "Jamula/SoftwareFactory",
+        "branch": "main",
+        "number": 157,
+        "expectedHead": "69a128165e57e1d4a74c0dd7b29fd482d66688d8",
+        "expectedBase": "1f63648f991325ac6e8c5d33121b53f907f9e079"
+      },
+      "reread": {
+        "repositoryId": 1471342715,
+        "repository": "Jamula/SoftwareFactory",
+        "branch": "main",
+        "stop": false,
+        "pull": {
+          "repositoryId": 1471342715,
+          "repository": "Jamula/SoftwareFactory",
+          "number": 157,
+          "baseBranch": "main",
+          "base": "1f63648f991325ac6e8c5d33121b53f907f9e079",
+          "head": "69a128165e57e1d4a74c0dd7b29fd482d66688d8",
+          "state": "OPEN",
+          "draft": false,
+          "mergeQueueEntryId": "PRME_replay_sf_157_46101395492"
+        },
+        "entry": {
+          "repositoryId": 1471342715,
+          "repository": "Jamula/SoftwareFactory",
+          "branch": "main",
+          "id": "PRME_replay_sf_157_46101395492",
+          "pullRequestNumber": 157,
+          "head": "69a128165e57e1d4a74c0dd7b29fd482d66688d8",
+          "base": "1f63648f991325ac6e8c5d33121b53f907f9e079",
+          "state": "LOCKED",
+          "position": 1,
+          "jump": false
+        }
+      },
+      "expected": {
+        "shadow": true,
+        "evidenceComplete": false,
+        "queueObserved": true,
+        "mergeEligible": false,
+        "liveQueueWrite": false,
+        "liveMerge": false,
+        "dependentWorkAllowed": false,
+        "reason": "QUEUE_ENTRY_OBSERVED",
+        "repository": "Jamula/SoftwareFactory",
+        "repositoryId": 1471342715,
+        "branch": "main",
+        "number": 157,
+        "head": "69a128165e57e1d4a74c0dd7b29fd482d66688d8",
+        "base": "1f63648f991325ac6e8c5d33121b53f907f9e079",
+        "queueEntryId": "PRME_replay_sf_157_46101395492",
+        "queueState": "LOCKED",
+        "position": 1
+      }
+    },
+    {
+      "id": "consumer-familytree-parameterized-scope",
+      "note": "Synthetic shadow queue-reread fixture proving parameterized scope binding for Jamula/FamilyTree (repositoryId 1467877692)",
+      "scope": {
+        "repositoryId": 1467877692,
+        "repository": "Jamula/FamilyTree",
+        "defaultBranch": "main"
+      },
+      "intent": {
+        "repositoryId": 1467877692,
+        "repository": "Jamula/FamilyTree",
+        "branch": "main",
+        "number": 11,
+        "expectedHead": "1111111111111111111111111111111111111111",
+        "expectedBase": "2222222222222222222222222222222222222222"
+      },
+      "reread": {
+        "repositoryId": 1467877692,
+        "repository": "Jamula/FamilyTree",
+        "branch": "main",
+        "stop": false,
+        "pull": {
+          "repositoryId": 1467877692,
+          "repository": "Jamula/FamilyTree",
+          "number": 11,
+          "baseBranch": "main",
+          "base": "2222222222222222222222222222222222222222",
+          "head": "1111111111111111111111111111111111111111",
+          "state": "OPEN",
+          "draft": false,
+          "mergeQueueEntryId": "PRME_synthetic_familytree_11"
+        },
+        "entry": {
+          "repositoryId": 1467877692,
+          "repository": "Jamula/FamilyTree",
+          "branch": "main",
+          "id": "PRME_synthetic_familytree_11",
+          "pullRequestNumber": 11,
+          "head": "1111111111111111111111111111111111111111",
+          "base": "2222222222222222222222222222222222222222",
+          "state": "AWAITING_CHECKS",
+          "position": 1,
+          "jump": false
+        }
+      },
+      "expected": {
+        "shadow": true,
+        "evidenceComplete": false,
+        "queueObserved": true,
+        "mergeEligible": false,
+        "liveQueueWrite": false,
+        "liveMerge": false,
+        "dependentWorkAllowed": false,
+        "reason": "QUEUE_ENTRY_OBSERVED",
+        "repository": "Jamula/FamilyTree",
+        "repositoryId": 1467877692,
+        "branch": "main",
+        "number": 11,
+        "head": "1111111111111111111111111111111111111111",
+        "base": "2222222222222222222222222222222222222222",
+        "queueEntryId": "PRME_synthetic_familytree_11",
+        "queueState": "AWAITING_CHECKS",
+        "position": 1
+      }
+    },
+    {
+      "id": "consumer-spellbook-parameterized-scope",
+      "note": "Synthetic shadow queue-reread fixture proving parameterized scope binding for Jamula/Spellbook (repositoryId 1448979947)",
+      "scope": {
+        "repositoryId": 1448979947,
+        "repository": "Jamula/Spellbook",
+        "defaultBranch": "main"
+      },
+      "intent": {
+        "repositoryId": 1448979947,
+        "repository": "Jamula/Spellbook",
+        "branch": "main",
+        "number": 14,
+        "expectedHead": "3333333333333333333333333333333333333333",
+        "expectedBase": "4444444444444444444444444444444444444444"
+      },
+      "reread": {
+        "repositoryId": 1448979947,
+        "repository": "Jamula/Spellbook",
+        "branch": "main",
+        "stop": false,
+        "pull": {
+          "repositoryId": 1448979947,
+          "repository": "Jamula/Spellbook",
+          "number": 14,
+          "baseBranch": "main",
+          "base": "4444444444444444444444444444444444444444",
+          "head": "3333333333333333333333333333333333333333",
+          "state": "OPEN",
+          "draft": false,
+          "mergeQueueEntryId": "PRME_synthetic_spellbook_14"
+        },
+        "entry": {
+          "repositoryId": 1448979947,
+          "repository": "Jamula/Spellbook",
+          "branch": "main",
+          "id": "PRME_synthetic_spellbook_14",
+          "pullRequestNumber": 14,
+          "head": "3333333333333333333333333333333333333333",
+          "base": "4444444444444444444444444444444444444444",
+          "state": "MERGEABLE",
+          "position": 1,
+          "jump": false
+        }
+      },
+      "expected": {
+        "shadow": true,
+        "evidenceComplete": false,
+        "queueObserved": true,
+        "mergeEligible": false,
+        "liveQueueWrite": false,
+        "liveMerge": false,
+        "dependentWorkAllowed": false,
+        "reason": "QUEUE_ENTRY_OBSERVED",
+        "repository": "Jamula/Spellbook",
+        "repositoryId": 1448979947,
+        "branch": "main",
+        "number": 14,
+        "head": "3333333333333333333333333333333333333333",
+        "base": "4444444444444444444444444444444444444444",
+        "queueEntryId": "PRME_synthetic_spellbook_14",
+        "queueState": "MERGEABLE",
+        "position": 1
+      }
+    }
+  ],
+  "negativeCaseVerification": {
+    "allPassedFailClosed": true,
+    "cases": [
+      {
+        "id": "stale-head-on-pull-reread",
+        "category": "stale-head",
+        "evaluator": "reconcileQueueSnapshot",
+        "scope": {
+          "repositoryId": 1471342715,
+          "repository": "Jamula/SoftwareFactory",
+          "defaultBranch": "main"
+        },
+        "intent": {
+          "repositoryId": 1471342715,
+          "repository": "Jamula/SoftwareFactory",
+          "branch": "main",
+          "number": 157,
+          "expectedHead": "69a128165e57e1d4a74c0dd7b29fd482d66688d8",
+          "expectedBase": "1f63648f991325ac6e8c5d33121b53f907f9e079"
+        },
+        "reread": {
+          "repositoryId": 1471342715,
+          "repository": "Jamula/SoftwareFactory",
+          "branch": "main",
+          "stop": false,
+          "pull": {
+            "repositoryId": 1471342715,
+            "repository": "Jamula/SoftwareFactory",
+            "number": 157,
+            "baseBranch": "main",
+            "base": "1f63648f991325ac6e8c5d33121b53f907f9e079",
+            "head": "ffffffffffffffffffffffffffffffffffffffff",
+            "state": "OPEN",
+            "draft": false,
+            "mergeQueueEntryId": "PRME_replay_sf_157_46101395492"
+          },
+          "entry": {
+            "repositoryId": 1471342715,
+            "repository": "Jamula/SoftwareFactory",
+            "branch": "main",
+            "id": "PRME_replay_sf_157_46101395492",
+            "pullRequestNumber": 157,
+            "head": "69a128165e57e1d4a74c0dd7b29fd482d66688d8",
+            "base": "1f63648f991325ac6e8c5d33121b53f907f9e079",
+            "state": "LOCKED",
+            "position": 1,
+            "jump": false
+          }
+        },
+        "expectedReason": "HEAD_CHANGED",
+        "expectedQueueObserved": false,
+        "expectedMergeEligible": false
+      },
+      {
+        "id": "stale-head-on-queue-entry",
+        "category": "stale-head",
+        "evaluator": "reconcileQueueSnapshot",
+        "scope": {
+          "repositoryId": 1471342715,
+          "repository": "Jamula/SoftwareFactory",
+          "defaultBranch": "main"
+        },
+        "intent": {
+          "repositoryId": 1471342715,
+          "repository": "Jamula/SoftwareFactory",
+          "branch": "main",
+          "number": 157,
+          "expectedHead": "69a128165e57e1d4a74c0dd7b29fd482d66688d8",
+          "expectedBase": "1f63648f991325ac6e8c5d33121b53f907f9e079"
+        },
+        "reread": {
+          "repositoryId": 1471342715,
+          "repository": "Jamula/SoftwareFactory",
+          "branch": "main",
+          "stop": false,
+          "pull": {
+            "repositoryId": 1471342715,
+            "repository": "Jamula/SoftwareFactory",
+            "number": 157,
+            "baseBranch": "main",
+            "base": "1f63648f991325ac6e8c5d33121b53f907f9e079",
+            "head": "69a128165e57e1d4a74c0dd7b29fd482d66688d8",
+            "state": "OPEN",
+            "draft": false,
+            "mergeQueueEntryId": "PRME_replay_sf_157_46101395492"
+          },
+          "entry": {
+            "repositoryId": 1471342715,
+            "repository": "Jamula/SoftwareFactory",
+            "branch": "main",
+            "id": "PRME_replay_sf_157_46101395492",
+            "pullRequestNumber": 157,
+            "head": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "base": "1f63648f991325ac6e8c5d33121b53f907f9e079",
+            "state": "LOCKED",
+            "position": 1,
+            "jump": false
+          }
+        },
+        "expectedReason": "QUEUE_HEAD_MISMATCH",
+        "expectedQueueObserved": false,
+        "expectedMergeEligible": false
+      },
+      {
+        "id": "speculative-train-base-drift-reread",
+        "category": "stale-base",
+        "evaluator": "reconcileQueueSnapshot",
+        "scope": {
+          "repositoryId": 1471342715,
+          "repository": "Jamula/SoftwareFactory",
+          "defaultBranch": "main"
+        },
+        "intent": {
+          "repositoryId": 1471342715,
+          "repository": "Jamula/SoftwareFactory",
+          "branch": "main",
+          "number": 157,
+          "expectedHead": "69a128165e57e1d4a74c0dd7b29fd482d66688d8",
+          "expectedBase": "1be6dc1efb991d02637c334e6b6d3dda1530d6aa"
+        },
+        "reread": {
+          "repositoryId": 1471342715,
+          "repository": "Jamula/SoftwareFactory",
+          "branch": "main",
+          "stop": false,
+          "pull": {
+            "repositoryId": 1471342715,
+            "repository": "Jamula/SoftwareFactory",
+            "number": 157,
+            "baseBranch": "main",
+            "base": "1be6dc1efb991d02637c334e6b6d3dda1530d6aa",
+            "head": "69a128165e57e1d4a74c0dd7b29fd482d66688d8",
+            "state": "OPEN",
+            "draft": false,
+            "mergeQueueEntryId": "PRME_replay_sf_157_46101395492"
+          },
+          "entry": {
+            "repositoryId": 1471342715,
+            "repository": "Jamula/SoftwareFactory",
+            "branch": "main",
+            "id": "PRME_replay_sf_157_46101395492",
+            "pullRequestNumber": 157,
+            "head": "69a128165e57e1d4a74c0dd7b29fd482d66688d8",
+            "base": "1f63648f991325ac6e8c5d33121b53f907f9e079",
+            "state": "LOCKED",
+            "position": 2,
+            "jump": false
+          }
+        },
+        "expectedReason": "QUEUE_BASE_MISMATCH",
+        "expectedQueueObserved": false,
+        "expectedMergeEligible": false
+      },
+      {
+        "id": "dismissed-review-blocks-favorable-evidence",
+        "category": "dismissed-review",
+        "evaluator": "buildCandidateReviewEvidence",
+        "head": "69a128165e57e1d4a74c0dd7b29fd482d66688d8",
+        "history": [
+          {
+            "sequence": 1,
+            "reviewer": "copilot-pull-request-reviewer[bot]",
+            "head": "69a128165e57e1d4a74c0dd7b29fd482d66688d8",
+            "state": "COMMENTED",
+            "summaryDisposition": "clear"
+          },
+          {
+            "sequence": 2,
+            "reviewer": "independent-reviewer",
+            "head": "69a128165e57e1d4a74c0dd7b29fd482d66688d8",
+            "state": "DISMISSED"
+          }
+        ],
+        "options": {
+          "repository": "Jamula/SoftwareFactory",
+          "reviewers": [
+            "copilot-pull-request-reviewer[bot]",
+            "independent-reviewer"
+          ],
+          "author": "pr-author",
+          "agent": "coding-agent"
+        },
+        "expectedIndependentFavorable": false,
+        "expectedSummaryDisposition": "clear"
+      },
+      {
+        "id": "summary-only-actionable-finding-blocks-with-zero-inline-threads",
+        "category": "summary-only-review-finding",
+        "evaluator": "buildCandidateReviewEvidence",
+        "head": "69a128165e57e1d4a74c0dd7b29fd482d66688d8",
+        "history": [
+          {
+            "sequence": 1,
+            "reviewer": "copilot-pull-request-reviewer[bot]",
+            "head": "69a128165e57e1d4a74c0dd7b29fd482d66688d8",
+            "state": "COMMENTED",
+            "summaryDisposition": "actionable",
+            "summaryFindings": [
+              {
+                "id": "summary-closer-look-1",
+                "state": "actionable",
+                "source": "summary"
+              }
+            ]
+          }
+        ],
+        "options": {
+          "repository": "Jamula/SoftwareFactory",
+          "reviewers": [
+            "copilot-pull-request-reviewer[bot]"
+          ],
+          "author": "pr-author",
+          "agent": "coding-agent"
+        },
+        "expectedIndependentFavorable": false,
+        "expectedBatchState": "repair",
+        "expectedBatchReason": "BATCH_ALL_CURRENT_FINDINGS"
+      },
+      {
+        "id": "unmergeable-queue-entry-rejected",
+        "category": "unmergeable-queue-entry",
+        "evaluator": "reconcileQueueSnapshot",
+        "historicalReference": {
+          "prNumber": 163,
+          "cancelledRunId": 46067927371,
+          "removedAtIso": "2026-11-27T21:22:38Z",
+          "removalReason": "failed_checks"
+        },
+        "scope": {
+          "repositoryId": 1471342715,
+          "repository": "Jamula/SoftwareFactory",
+          "defaultBranch": "main"
+        },
+        "intent": {
+          "repositoryId": 1471342715,
+          "repository": "Jamula/SoftwareFactory",
+          "branch": "main",
+          "number": 157,
+          "expectedHead": "69a128165e57e1d4a74c0dd7b29fd482d66688d8",
+          "expectedBase": "1f63648f991325ac6e8c5d33121b53f907f9e079"
+        },
+        "reread": {
+          "repositoryId": 1471342715,
+          "repository": "Jamula/SoftwareFactory",
+          "branch": "main",
+          "stop": false,
+          "pull": {
+            "repositoryId": 1471342715,
+            "repository": "Jamula/SoftwareFactory",
+            "number": 157,
+            "baseBranch": "main",
+            "base": "1f63648f991325ac6e8c5d33121b53f907f9e079",
+            "head": "69a128165e57e1d4a74c0dd7b29fd482d66688d8",
+            "state": "OPEN",
+            "draft": false,
+            "mergeQueueEntryId": "PRME_replay_sf_157_46101395492"
+          },
+          "entry": {
+            "repositoryId": 1471342715,
+            "repository": "Jamula/SoftwareFactory",
+            "branch": "main",
+            "id": "PRME_replay_sf_157_46101395492",
+            "pullRequestNumber": 157,
+            "head": "69a128165e57e1d4a74c0dd7b29fd482d66688d8",
+            "base": "1f63648f991325ac6e8c5d33121b53f907f9e079",
+            "state": "UNMERGEABLE",
+            "position": 1,
+            "jump": false
+          }
+        },
+        "expectedReason": "QUEUE_ENTRY_UNMERGEABLE",
+        "expectedQueueObserved": false,
+        "expectedMergeEligible": false
+      },
+      {
+        "id": "jump-queue-bypass-attempt-rejected",
+        "category": "jump-queue-attempt",
+        "evaluator": "reconcileQueueSnapshot",
+        "scope": {
+          "repositoryId": 1471342715,
+          "repository": "Jamula/SoftwareFactory",
+          "defaultBranch": "main"
+        },
+        "intent": {
+          "repositoryId": 1471342715,
+          "repository": "Jamula/SoftwareFactory",
+          "branch": "main",
+          "number": 157,
+          "expectedHead": "69a128165e57e1d4a74c0dd7b29fd482d66688d8",
+          "expectedBase": "1f63648f991325ac6e8c5d33121b53f907f9e079"
+        },
+        "reread": {
+          "repositoryId": 1471342715,
+          "repository": "Jamula/SoftwareFactory",
+          "branch": "main",
+          "stop": false,
+          "pull": {
+            "repositoryId": 1471342715,
+            "repository": "Jamula/SoftwareFactory",
+            "number": 157,
+            "baseBranch": "main",
+            "base": "1f63648f991325ac6e8c5d33121b53f907f9e079",
+            "head": "69a128165e57e1d4a74c0dd7b29fd482d66688d8",
+            "state": "OPEN",
+            "draft": false,
+            "mergeQueueEntryId": "PRME_replay_sf_157_46101395492"
+          },
+          "entry": {
+            "repositoryId": 1471342715,
+            "repository": "Jamula/SoftwareFactory",
+            "branch": "main",
+            "id": "PRME_replay_sf_157_46101395492",
+            "pullRequestNumber": 157,
+            "head": "69a128165e57e1d4a74c0dd7b29fd482d66688d8",
+            "base": "1f63648f991325ac6e8c5d33121b53f907f9e079",
+            "state": "LOCKED",
+            "position": 1,
+            "jump": true
+          }
+        },
+        "expectedReason": "QUEUE_STATE_UNKNOWN",
+        "expectedQueueObserved": false,
+        "expectedMergeEligible": false
+      },
+      {
+        "id": "consumer-scope-cross-repo-reread-rejected",
+        "category": "consumer-repository-scope-isolation",
+        "evaluator": "reconcileQueueSnapshot",
+        "scope": {
+          "repositoryId": 1467877692,
+          "repository": "Jamula/FamilyTree",
+          "defaultBranch": "main"
+        },
+        "intent": {
+          "repositoryId": 1467877692,
+          "repository": "Jamula/FamilyTree",
+          "branch": "main",
+          "number": 11,
+          "expectedHead": "1111111111111111111111111111111111111111",
+          "expectedBase": "2222222222222222222222222222222222222222"
+        },
+        "reread": {
+          "repositoryId": 1448979947,
+          "repository": "Jamula/Spellbook",
+          "branch": "main",
+          "stop": false,
+          "pull": {
+            "repositoryId": 1467877692,
+            "repository": "Jamula/FamilyTree",
+            "number": 11,
+            "baseBranch": "main",
+            "base": "2222222222222222222222222222222222222222",
+            "head": "1111111111111111111111111111111111111111",
+            "state": "OPEN",
+            "draft": false,
+            "mergeQueueEntryId": "PRME_synthetic_familytree_11"
+          },
+          "entry": {
+            "repositoryId": 1467877692,
+            "repository": "Jamula/FamilyTree",
+            "branch": "main",
+            "id": "PRME_synthetic_familytree_11",
+            "pullRequestNumber": 11,
+            "head": "1111111111111111111111111111111111111111",
+            "base": "2222222222222222222222222222222222222222",
+            "state": "AWAITING_CHECKS",
+            "position": 1,
+            "jump": false
+          }
+        },
+        "expectedReason": "QUEUE_SCOPE_MISMATCH",
+        "expectedQueueObserved": false,
+        "expectedMergeEligible": false
+      },
+      {
+        "id": "spoofed-factory-repository-id-scope-rejected",
+        "category": "consumer-repository-scope-isolation",
+        "evaluator": "reconcileQueueSnapshot",
+        "scope": {
+          "repositoryId": 1471342715,
+          "repository": "Jamula/FamilyTree",
+          "defaultBranch": "main"
+        },
+        "intent": {
+          "repositoryId": 1467877692,
+          "repository": "Jamula/FamilyTree",
+          "branch": "main",
+          "number": 11,
+          "expectedHead": "1111111111111111111111111111111111111111",
+          "expectedBase": "2222222222222222222222222222222222222222"
+        },
+        "reread": {
+          "repositoryId": 1467877692,
+          "repository": "Jamula/FamilyTree",
+          "branch": "main",
+          "stop": false,
+          "pull": {
+            "repositoryId": 1467877692,
+            "repository": "Jamula/FamilyTree",
+            "number": 11,
+            "baseBranch": "main",
+            "base": "2222222222222222222222222222222222222222",
+            "head": "1111111111111111111111111111111111111111",
+            "state": "OPEN",
+            "draft": false,
+            "mergeQueueEntryId": "PRME_synthetic_familytree_11"
+          },
+          "entry": {
+            "repositoryId": 1467877692,
+            "repository": "Jamula/FamilyTree",
+            "branch": "main",
+            "id": "PRME_synthetic_familytree_11",
+            "pullRequestNumber": 11,
+            "head": "1111111111111111111111111111111111111111",
+            "base": "2222222222222222222222222222222222222222",
+            "state": "AWAITING_CHECKS",
+            "position": 1,
+            "jump": false
+          }
+        },
+        "expectedReason": "QUEUE_SCOPE_UNKNOWN",
+        "expectedQueueObserved": false,
+        "expectedMergeEligible": false
+      }
+    ]
+  }
+}
