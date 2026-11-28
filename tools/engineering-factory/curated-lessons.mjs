@@ -187,10 +187,13 @@ const CANONICAL_RAW_GITHUB_PATTERN =
 const VERIFIED_GITHUB_URL_SPAN_PATTERN =
   /(?<![A-Za-z0-9_./:-])(?:https?:\/\/)?(?:github\.com|raw\.githubusercontent\.com)\/[A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_./-]*)?(?:#[A-Za-z0-9_.-]*)?/gi;
 
-const TOKEN_SPLIT_PATTERN = /[\s,;()[\]{}<>'"`*|“”‘’«»\u2012-\u2015]+/;
+const OUTER_WRAPPER_TRIM_PATTERN =
+  /^[`'"([<{*_~“”‘’«»\u2012-\u2015]+|[`'")\]>},;.!?*_~“”‘’«»\u2012-\u2015]+$/g;
 const IDNA_DOT_PATTERN = /[\u3002\uFF0E\uFF61]/g;
-const PERCENT_HEX_PATTERN = /%([0-9a-fA-F]{2})/g;
-const KEY_VALUE_PREFIX_PATTERN = /^[A-Za-z0-9_-]+=(.+)$/;
+const PERCENT_RUN_PATTERN = /(?:%[0-9a-fA-F]{2})+/g;
+const UTF8_DECODER = new TextDecoder('utf-8', {fatal: false});
+const PREFIX_WRAPPER_PATTERN =
+  /^(?:[A-Za-z0-9_-]+=|#[0-9]+[\u2012-\u2015]+|\[[^\]/:\\.]+\]\()(.+)$/;
 
 const REPO_QUALIFIER_PATTERN =
   /(?:(?<![A-Za-z0-9])repo[:=]|--repo\s+)([A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+)/gi;
@@ -227,22 +230,22 @@ const PROHIBITED_SEGMENT_PATTERN =
 
 const PROHIBITED_CONNECTOR_SPLIT = /(?:,\s*(?:or|nor)\s+|\s+(?:or|nor)\s+|,\s+)/i;
 
-const UPPER_BOUND_OP_PATTERN = /^(?:<=?|(?:under|below|at\s+most|up\s+to|max|maximum))$/i;
+const UPPER_BOUND_OP_PATTERN = /^(?:<=?|(?:under|below|at[\s_-]+most|up[\s_-]+to|max|maximum))$/i;
 
 const COVERAGE_PAIR_PATTERN =
-  /(?:([<>]=?|\b(?:under|below|at\s+most|up\s+to|max|maximum)\b)\s*)?(\d+(?:\.\d+)?)\s*%\s*\/\s*(\d+(?:\.\d+)?)\s*%/gi;
+  /(?:([<>]=?|\b(?:under|below|at[\s_-]+most|up[\s_-]+to|max|maximum)\b)\s*)?(\d+(?:\.\d+)?)\s*%\s*\/\s*(\d+(?:\.\d+)?)\s*%/gi;
 const LINE_PCT_BEFORE_PATTERN =
-  /(?:([<>]=?|\b(?:under|below|at\s+most|up\s+to|max|maximum)\b)\s*)?(\d+(?:\.\d+)?)\s*%\s*(?:(?:minimum|min|source)\s+)*(?:lines?(?:[\s_-]+coverage)?|overall[\s_-]+coverage)\b/gi;
+  /(?:([<>]=?|\b(?:under|below|at[\s_-]+most|up[\s_-]+to|max|maximum)\b)\s*)?(\d+(?:\.\d+)?)\s*%\s*(?:(?:minimum|min|source)[\s_-]+)*(?:lines?(?:[\s_-]+coverage)?|overall[\s_-]+coverage)(?:[\s_-]+(?:threshold|floor|gate|target)s?)*\b/gi;
 const LINE_PCT_AFTER_PATTERN =
-  /\b(?:lines?|overall)[\s_-]+coverage(?:\s+(?:threshold|floor|gate|target|min|minimum|of|to|is|at))*(?:\s*([<>]=?|==?|:|\b(?:under|below|at\s+most|up\s+to|max|maximum)\b))?\s*(\d+(?:\.\d+)?)\s*%/gi;
+  /\b(?:lines?|overall)[\s_-]+coverage(?:[\s_-]+(?:threshold|floor|gate|target|min|minimum|of|to|is|at))*(?:\s*([<>]=?|==?|:|\b(?:under|below|at[\s_-]+most|up[\s_-]+to|max|maximum)\b))?\s*(\d+(?:\.\d+)?)\s*%/gi;
 const BRANCH_PCT_BEFORE_PATTERN =
-  /(?:([<>]=?|\b(?:under|below|at\s+most|up\s+to|max|maximum)\b)\s*)?(\d+(?:\.\d+)?)\s*%\s*(?:minimum\s+|min\s+)?branch(?:es)?(?:[\s_-]+coverage)?\b/gi;
+  /(?:([<>]=?|\b(?:under|below|at[\s_-]+most|up[\s_-]+to|max|maximum)\b)\s*)?(\d+(?:\.\d+)?)\s*%\s*(?:(?:minimum|min)[\s_-]+)*branch(?:es)?(?:[\s_-]+coverage)?(?:[\s_-]+(?:threshold|floor|gate|target)s?)*\b/gi;
 const BRANCH_PCT_AFTER_PATTERN =
-  /\bbranch(?:es)?[\s_-]+coverage(?:\s+(?:threshold|floor|gate|target|min|minimum|of|to|is|at))*(?:\s*([<>]=?|==?|:|\b(?:under|below|at\s+most|up\s+to|max|maximum)\b))?\s*(\d+(?:\.\d+)?)\s*%/gi;
+  /\bbranch(?:es)?[\s_-]+coverage(?:[\s_-]+(?:threshold|floor|gate|target|min|minimum|of|to|is|at))*(?:\s*([<>]=?|==?|:|\b(?:under|below|at[\s_-]+most|up[\s_-]+to|max|maximum)\b))?\s*(\d+(?:\.\d+)?)\s*%/gi;
 const GENERAL_COVERAGE_BEFORE_PATTERN =
-  /(?:([<>]=?|\b(?:under|below|at\s+most|up\s+to|max|maximum)\b)\s*)?(\d+(?:\.\d+)?)\s*%\s*(?:minimum\s+|min\s+)?coverage\b/gi;
+  /(?:([<>]=?|\b(?:under|below|at[\s_-]+most|up[\s_-]+to|max|maximum)\b)\s*)?(\d+(?:\.\d+)?)\s*%\s*(?:(?:minimum|min)[\s_-]+)*coverage(?:[\s_-]+(?:threshold|floor|gate|target)s?)*\b/gi;
 const GENERAL_COVERAGE_AFTER_PATTERN =
-  /\bcoverage(?:\s+(?:threshold|floor|gate|target|min|minimum|of|to|is|at))*(?:\s*([<>]=?|==?|:|\b(?:under|below|at\s+most|up\s+to|max|maximum)\b))?\s*(\d+(?:\.\d+)?)\s*%/gi;
+  /\bcoverage(?:[\s_-]+(?:threshold|floor|gate|target|min|minimum|of|to|is|at))*(?:\s*([<>]=?|==?|:|\b(?:under|below|at[\s_-]+most|up[\s_-]+to|max|maximum)\b))?\s*(\d+(?:\.\d+)?)\s*%/gi;
 
 function isPlainObject(value) {
   return value !== null && typeof value === 'object' && !types.isProxy(value) &&
@@ -504,40 +507,50 @@ function hasGithubDomainLabels(host) {
 }
 
 function decodeAuthorityText(value) {
-  return value
-    .replace(IDNA_DOT_PATTERN, '.')
-    .replace(PERCENT_HEX_PATTERN, (_, hex) => String.fromCharCode(Number.parseInt(hex, 16)));
+  const percentDecoded = value.replace(PERCENT_RUN_PATTERN, run => {
+    const bytes = new Uint8Array(run.length / 3);
+    for (let i = 0; i < bytes.length; i++) {
+      bytes[i] = Number.parseInt(run.slice(i * 3 + 1, i * 3 + 3), 16);
+    }
+    return UTF8_DECODER.decode(bytes);
+  });
+  return percentDecoded.normalize('NFKC').replace(IDNA_DOT_PATTERN, '.');
 }
 
 function mentionsGithubAuthority(token) {
+  if (URL.canParse(token) && hasGithubDomainLabels(new URL(token).hostname)) {
+    return true;
+  }
   const segments = decodeAuthorityText(token).split(/[^A-Za-z0-9.-]+/);
   return segments.some(seg => seg.length > 0 && hasGithubDomainLabels(seg));
 }
 
-function isDisallowedSingleGithubCandidate(token, expectedSlugLower) {
-  if (token.includes('\\') || token.includes('%') || token.includes('..')) {
+function isDisallowedRawOrUnwrappedCandidate(rawToken, candidate, expectedSlugLower) {
+  if (rawToken.includes('\\') || rawToken.includes('%') || rawToken.includes('..') ||
+      /(?:^|\/)\.[`'")\]>},;.!?*_~“”‘’«»\u2012-\u2015]*$/.test(rawToken)) {
     return true;
   }
   const parsed =
-    CANONICAL_GITHUB_HTTPS_PATTERN.exec(token) ??
-    CANONICAL_GITHUB_SSH_PATTERN.exec(token) ??
-    CANONICAL_RAW_GITHUB_PATTERN.exec(token);
+    CANONICAL_GITHUB_HTTPS_PATTERN.exec(candidate) ??
+    CANONICAL_GITHUB_SSH_PATTERN.exec(candidate) ??
+    CANONICAL_RAW_GITHUB_PATTERN.exec(candidate);
   return parsed === null || parsed[1].toLowerCase() !== expectedSlugLower;
 }
 
-function unwrapKeyValueCandidate(token) {
-  const kvMatch = KEY_VALUE_PREFIX_PATTERN.exec(token);
-  if (kvMatch === null) return token;
-  return kvMatch[1].replace(/^[_~]+|[_~.!?]+$/g, '');
+function unwrapOuterCandidate(rawToken) {
+  const prefixMatch = PREFIX_WRAPPER_PATTERN.exec(rawToken);
+  if (prefixMatch !== null) {
+    return prefixMatch[1].replace(OUTER_WRAPPER_TRIM_PATTERN, '');
+  }
+  return rawToken.replace(OUTER_WRAPPER_TRIM_PATTERN, '');
 }
 
 function hasDisallowedGithubHostToken(text, expectedSlugLower) {
-  for (const rawPart of text.split(TOKEN_SPLIT_PATTERN)) {
-    const outer = rawPart.replace(/^[_~]+|[_~.!?]+$/g, '');
-    if (outer.length === 0) continue;
-    const candidate = unwrapKeyValueCandidate(outer);
-    if (mentionsGithubAuthority(candidate) &&
-        isDisallowedSingleGithubCandidate(candidate, expectedSlugLower)) {
+  for (const rawPart of text.split(/\s+/)) {
+    if (rawPart.length === 0) continue;
+    const candidate = unwrapOuterCandidate(rawPart);
+    if ((mentionsGithubAuthority(rawPart) || mentionsGithubAuthority(candidate)) &&
+        isDisallowedRawOrUnwrappedCandidate(rawPart, candidate, expectedSlugLower)) {
       return true;
     }
   }
