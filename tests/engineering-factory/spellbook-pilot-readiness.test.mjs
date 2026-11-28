@@ -1183,13 +1183,92 @@ test('rejects live and revoked proxies, getters, non-enumerable properties, symb
       reviews: [{ reviewer: 'r', head, state: 'COMMENTED', summaryDisposition: 123 }]
     },
     { ...baseInput.candidate, author: '' },
-    { ...baseInput.candidate, agent: '   ' }
+    { ...baseInput.candidate, agent: '   ' },
+    { ...baseInput.candidate, issue: 0 },
+    { ...baseInput.candidate, head: 'bad' },
+    { ...baseInput.candidate, rateLimited: 'false' },
+    { ...baseInput.candidate, remainingCredits: '40' },
+    { ...baseInput.candidate, activeCount: -1 },
+    { ...baseInput.candidate, priority: 1.5 },
+    { ...baseInput.candidate, paths: [''] },
+    { ...baseInput.candidate, dependencies: [{ issue: 0, accepted: true }] },
+    { ...baseInput.candidate, dependencies: [{ issue: 1, accepted: 'yes' }] },
+    {
+      ...baseInput.candidate,
+      coverage: { ...baseInput.candidate.coverage, head: 'bad' }
+    },
+    {
+      ...baseInput.candidate,
+      coverage: { ...baseInput.candidate.coverage, line: 101 }
+    },
+    {
+      ...baseInput.candidate,
+      coverage: { ...baseInput.candidate.coverage, branch: -1 }
+    },
+    {
+      ...baseInput.candidate,
+      coverage: { ...baseInput.candidate.coverage, complete: 'true' }
+    },
+    {
+      ...baseInput.candidate,
+      reviews: [{ reviewer: 'r', head, state: 'INVALID_STATE' }]
+    }
   ]) {
     assert.equal(
       evaluateSpellbookShadowReadiness({ ...baseInput, candidate: badCandidate }).reason,
       'CANDIDATE_SNAPSHOT_INVALID'
     );
   }
+
+  // Callable Proxy scalars in onboardingPackage.replaySuite and rollback.peerPackages fail closed without invoking traps
+  const callableScalarProxy = new Proxy(() => {}, {
+    apply: trap,
+    get: trap,
+    getOwnPropertyDescriptor: trap,
+    getPrototypeOf: trap,
+    ownKeys: trap
+  });
+  const injectCallableReplayRepo = targetPkg => {
+    const mutated = structuredClone(targetPkg);
+    for (const key of [
+      'eligibleCandidate',
+      'staleReview',
+      'dismissedReview',
+      'commentedBotReview',
+      'missingQuota'
+    ]) {
+      mutated.replaySuite[key].repository = callableScalarProxy;
+    }
+    return mutated;
+  };
+
+  const callablePrimaryInput = readyInput();
+  callablePrimaryInput.onboardingPackage = injectCallableReplayRepo(
+    callablePrimaryInput.onboardingPackage
+  );
+  const primaryCallableRes = evaluateSpellbookShadowReadiness(callablePrimaryInput);
+  assert.equal(primaryCallableRes.ready, false);
+  assert.equal(primaryCallableRes.reason, 'SHADOW_REPLAY_INCOMPLETE');
+
+  const callablePeerInput = readyInput();
+  callablePeerInput.rollback.peerPackages = [
+    injectCallableReplayRepo(callablePeerInput.rollback.peerPackages[0])
+  ];
+  const peerCallableRes = evaluateSpellbookShadowReadiness(callablePeerInput);
+  assert.equal(peerCallableRes.ready, false);
+  assert.equal(peerCallableRes.reason, 'SINGLE_PR_ROLLBACK_INVALID');
+
+  // Non-plain onboardingPackage / peerPackages pass through sanitizeOnboardingPackage cleanly without traps
+  assert.equal(
+    evaluateSpellbookShadowReadiness({ ...baseInput, onboardingPackage: null }).reason,
+    'PACKAGE_INVALID'
+  );
+  const getterPkg = { ...baseInput.onboardingPackage };
+  Object.defineProperty(getterPkg, 'replaySuite', { enumerable: true, get: trap });
+  assert.equal(
+    evaluateSpellbookShadowReadiness({ ...baseInput, onboardingPackage: getterPkg }).reason,
+    'PACKAGE_INVALID'
+  );
 
   assert.equal(traps, 0);
 });

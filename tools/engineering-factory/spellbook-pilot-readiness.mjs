@@ -110,6 +110,8 @@ const text = (value, max = 200) =>
   typeof value === 'string' && value.length > 0 && value.length <= max && value.trim() === value;
 
 const posInt = value => Number.isSafeInteger(value) && value > 0;
+const nonNegInt = value => Number.isSafeInteger(value) && value >= 0;
+const pct = value => Number.isFinite(value) && value >= 0 && value <= 100;
 const sha40 = value => typeof value === 'string' && /^[0-9a-f]{40}$/.test(value);
 
 const VALID_CHECK_STATUSES = new Set(['queued', 'in_progress', 'completed']);
@@ -123,6 +125,16 @@ const VALID_COMPLETED_CONCLUSIONS = new Set([
   'skipped',
   'stale'
 ]);
+const VALID_REVIEW_STATES = new Set(['APPROVED', 'CHANGES_REQUESTED', 'COMMENTED', 'DISMISSED']);
+const REPLAY_SUITE_SNAPSHOT_KEYS = Object.freeze([
+  'eligibleCandidate',
+  'staleReview',
+  'dismissedReview',
+  'commentedBotReview',
+  'wrongRepository',
+  'missingQuota'
+]);
+const REPLAY_SUITE_KEYS = Object.freeze([...REPLAY_SUITE_SNAPSHOT_KEYS, 'killSwitchPolicy']);
 
 const validCheckItem = c =>
   exact(c, ['name', 'head', 'appId', 'status', 'conclusion']) &&
@@ -135,10 +147,13 @@ const validCheckItem = c =>
     : c.conclusion === null);
 
 const validSnapshotReview = r =>
-  exact(r, ['reviewer', 'head', 'state']) ||
-  (exact(r, ['reviewer', 'head', 'state', 'summaryDisposition']) &&
-    r.state === 'COMMENTED' &&
-    typeof r.summaryDisposition === 'string');
+  (exact(r, ['reviewer', 'head', 'state']) ||
+    (exact(r, ['reviewer', 'head', 'state', 'summaryDisposition']) &&
+      r.state === 'COMMENTED' &&
+      text(r.summaryDisposition, 80))) &&
+  text(r.reviewer, 120) &&
+  sha40(r.head) &&
+  VALID_REVIEW_STATES.has(r.state);
 
 const strictSnapshotShape = s =>
   exact(s, [
@@ -149,16 +164,53 @@ const strictSnapshotShape = s =>
     'threadsResolved', 'securityClear', 'coverage', 'checks', 'author',
     'agent', 'reviews'
   ]) &&
-  exact(s.coverage, ['head', 'line', 'branch', 'complete']) &&
+  [s.policySource, s.repository, s.baseBranch, s.risk, s.author, s.agent].every(v => text(v, 120)) &&
+  [s.issue, s.pr].every(posInt) &&
+  [s.head, s.observedHead, s.base, s.observedBase].every(sha40) &&
+  [
+    s.rateLimited,
+    s.providerReady,
+    s.acceptanceComplete,
+    s.baseCompatible,
+    s.mainHealthy,
+    s.threadsResolved,
+    s.securityClear
+  ].every(v => typeof v === 'boolean') &&
+  (s.remainingCredits === null || Number.isFinite(s.remainingCredits)) &&
+  nonNegInt(s.activeCount) &&
+  Number.isSafeInteger(s.priority) &&
   dense(s.paths) &&
+  s.paths.every(p => text(p, 240)) &&
   dense(s.dependencies) &&
-  s.dependencies.every(d => exact(d, ['issue', 'accepted'])) &&
+  s.dependencies.every(
+    d => exact(d, ['issue', 'accepted']) && posInt(d.issue) && typeof d.accepted === 'boolean'
+  ) &&
+  exact(s.coverage, ['head', 'line', 'branch', 'complete']) &&
+  sha40(s.coverage.head) &&
+  pct(s.coverage.line) &&
+  pct(s.coverage.branch) &&
+  typeof s.coverage.complete === 'boolean' &&
   dense(s.checks) &&
   s.checks.every(validCheckItem) &&
   dense(s.reviews) &&
-  s.reviews.every(validSnapshotReview) &&
-  text(s.author, 120) &&
-  text(s.agent, 120);
+  s.reviews.every(validSnapshotReview);
+
+const validReplaySuiteScalars = replaySuite =>
+  exact(replaySuite, REPLAY_SUITE_KEYS) &&
+  isPlainObject(replaySuite.killSwitchPolicy) &&
+  REPLAY_SUITE_SNAPSHOT_KEYS.every(key => strictSnapshotShape(replaySuite[key]));
+
+function sanitizeOnboardingPackage(pkg) {
+  if (
+    !isPlainObject(pkg) ||
+    Reflect.ownKeys(pkg).length > 64 ||
+    !Reflect.ownKeys(pkg).every(key => typeof key === 'string' && ownData(pkg, key)) ||
+    !Object.hasOwn(pkg, 'replaySuite')
+  ) {
+    return pkg;
+  }
+  return validReplaySuiteScalars(pkg.replaySuite) ? pkg : { ...pkg, replaySuite: null };
+}
 
 function sameData(candidateVal, expectedVal) {
   if (!expectedVal || typeof expectedVal !== 'object') {
@@ -187,11 +239,7 @@ const singleMutation = (baseSnap, candidate, field) => {
 };
 
 function singleCheckMutation(baseSnap, scenario, targetCheckName) {
-  if (
-    !singleMutation(baseSnap, scenario, 'checks') ||
-    !dense(scenario.checks) ||
-    !scenario.checks.every(validCheckItem)
-  ) {
+  if (!singleMutation(baseSnap, scenario, 'checks')) {
     return false;
   }
   const expectedOthers = baseSnap.checks.filter(c => c.name !== targetCheckName);
@@ -275,49 +323,45 @@ function verifyRequiredCheckRoles(roles, localGates) {
   return true;
 }
 
+const SPELLBOOK_DENIAL_KEYS = Object.freeze([
+  'staleHead',
+  'lowered95LineCoverage',
+  'loweredBranchCoverage',
+  'webkitCheckFailed',
+  'iosCheckFailed',
+  'releaseCheckFailed',
+  'concurrencyCapReached'
+]);
+
 function verifySpellbookShadowDenials(denials, baseSnap, shadowPolicy, roles) {
   if (
-    !exact(denials, [
-      'staleHead',
-      'lowered95LineCoverage',
-      'loweredBranchCoverage',
-      'webkitCheckFailed',
-      'iosCheckFailed',
-      'releaseCheckFailed',
-      'concurrencyCapReached'
-    ])
+    !exact(denials, SPELLBOOK_DENIAL_KEYS) ||
+    !SPELLBOOK_DENIAL_KEYS.every(key => strictSnapshotShape(denials[key]))
   ) {
     return false;
   }
 
   const validStaleHead =
     singleMutation(baseSnap, denials.staleHead, 'observedHead') &&
-    sha40(denials.staleHead.observedHead) &&
     denials.staleHead.observedHead !== baseSnap.head;
 
   const validLowered95 =
     singleMutation(baseSnap, denials.lowered95LineCoverage, 'coverage') &&
-    exact(denials.lowered95LineCoverage.coverage, ['head', 'line', 'branch', 'complete']) &&
     denials.lowered95LineCoverage.coverage.head === baseSnap.head &&
     denials.lowered95LineCoverage.coverage.complete === true &&
     denials.lowered95LineCoverage.coverage.branch === baseSnap.coverage.branch &&
-    Number.isFinite(denials.lowered95LineCoverage.coverage.line) &&
     denials.lowered95LineCoverage.coverage.line >= 95 &&
     denials.lowered95LineCoverage.coverage.line < SPELLBOOK_MIN_LINE_COVERAGE;
 
   const validLoweredBranch =
     singleMutation(baseSnap, denials.loweredBranchCoverage, 'coverage') &&
-    exact(denials.loweredBranchCoverage.coverage, ['head', 'line', 'branch', 'complete']) &&
     denials.loweredBranchCoverage.coverage.head === baseSnap.head &&
     denials.loweredBranchCoverage.coverage.complete === true &&
     denials.loweredBranchCoverage.coverage.line === baseSnap.coverage.line &&
-    Number.isFinite(denials.loweredBranchCoverage.coverage.branch) &&
-    denials.loweredBranchCoverage.coverage.branch >= 0 &&
     denials.loweredBranchCoverage.coverage.branch < SPELLBOOK_MIN_BRANCH_COVERAGE;
 
   const validConcurrencyCap =
     singleMutation(baseSnap, denials.concurrencyCapReached, 'activeCount') &&
-    Number.isSafeInteger(denials.concurrencyCapReached.activeCount) &&
     denials.concurrencyCapReached.activeCount === shadowPolicy.maxActive;
 
   if (
@@ -393,7 +437,8 @@ export function evaluateSpellbookShadowReadiness(input) {
 
   const peerRegistry = Object.hasOwn(input, 'peerRegistry') ? input.peerRegistry : [];
   const pkg = input.onboardingPackage;
-  const onboarding = verifyConsumerOnboardingPackage(pkg, peerRegistry);
+  const sanitizedPkg = sanitizeOnboardingPackage(pkg);
+  const onboarding = verifyConsumerOnboardingPackage(sanitizedPkg, peerRegistry);
   if (!onboarding.valid) {
     if (onboarding.reason === 'BASELINE_COVERAGE_BELOW_MINIMUM') {
       return shadowDeny('SPELLBOOK_COVERAGE_FLOOR_VIOLATION');
@@ -587,10 +632,11 @@ export function evaluateSpellbookShadowReadiness(input) {
     return shadowDeny('SINGLE_PR_ROLLBACK_INVALID');
   }
 
+  const sanitizedPeers = input.rollback.peerPackages.map(sanitizeOnboardingPackage);
   const rbResult = verifyIndependentRollback(
     pkg.policy.repository,
     input.rollback.receipt,
-    [pkg, ...input.rollback.peerPackages]
+    [sanitizedPkg, ...sanitizedPeers]
   );
   if (!rbResult.valid) {
     return shadowDeny('SINGLE_PR_ROLLBACK_INVALID');
