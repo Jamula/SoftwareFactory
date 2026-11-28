@@ -112,7 +112,37 @@ function cloneEntry(entry) {
   };
   if (entry.traceparent !== undefined) copy.traceparent = entry.traceparent;
   if (entry.lockSha256 !== undefined) copy.lockSha256 = entry.lockSha256;
+  if (entry.priorRuns !== undefined) {
+    copy.priorRuns = Object.freeze(entry.priorRuns.map(item => Object.freeze({
+      runId: item.runId,
+      runAttempt: item.runAttempt
+    })));
+  }
   return Object.freeze(copy);
+}
+
+function copyEntryWith(entry, overrides) {
+  const next = {...entry, ownedPaths: [...entry.ownedPaths], ...overrides};
+  if (entry.priorRuns !== undefined) {
+    next.priorRuns = entry.priorRuns.map(item => ({runId: item.runId, runAttempt: item.runAttempt}));
+  }
+  return next;
+}
+
+function isValidPriorRuns(priorRuns, entry) {
+  if (!isDenseArray(priorRuns, 4) || priorRuns.length === 0 || priorRuns.length >= entry.attempts) {
+    return false;
+  }
+  const seen = new Set([`${entry.runId}:${entry.runAttempt}`]);
+  for (const item of priorRuns) {
+    if (!isPlainRecord(item, ['runId', 'runAttempt']) || !positive(item.runId) || !positive(item.runAttempt)) {
+      return false;
+    }
+    const key = `${item.runId}:${item.runAttempt}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+  }
+  return true;
 }
 
 function cloneReceipt(receipt) {
@@ -145,7 +175,7 @@ function isValidQueueEntry(entry) {
     'lane', 'ownedPaths', 'status', 'generation', 'attempts', 'maxAttempts', 'workerId', 'runId', 'runAttempt',
     'claimedAtMs', 'leaseTtlMs', 'leaseExpiresAtMs', 'maxExecutionMs', 'executionDeadlineMs'
   ];
-  if (!isPlainRecord(entry, required, ['traceparent', 'lockSha256'])) return false;
+  if (!isPlainRecord(entry, required, ['traceparent', 'lockSha256', 'priorRuns'])) return false;
   if (!isRepoName(entry.repository) || !positive(entry.repositoryId) ||
       !isLaneId(entry.lane) || !isValidPathSet(entry.ownedPaths) ||
       !VALID_ENTRY_STATUSES.has(entry.status) || !positive(entry.generation) ||
@@ -169,6 +199,7 @@ function isValidQueueEntry(entry) {
   if (entry.workId !== expectedWorkId(entry)) return false;
   if (entry.traceparent !== undefined && !isTraceparent(entry.traceparent)) return false;
   if (entry.lockSha256 !== undefined && !isHex64(entry.lockSha256)) return false;
+  if (entry.priorRuns !== undefined && !isValidPriorRuns(entry.priorRuns, entry)) return false;
   return true;
 }
 
@@ -249,14 +280,14 @@ function computeStateOid(previousOid, state) {
     .slice(0, 40);
 }
 
-export function createInMemoryWorkQueueRefStore(initialState = null) {
+function createSeededWorkQueueRefStore(initialState, initialOid) {
   let currentOid = ZERO_GIT_OID;
   let currentState = null;
   if (initialState !== null) {
     const validated = freezeValidatedState(initialState);
     if (validated === null) throw new TypeError('INVALID_INITIAL_WORK_QUEUE_STATE');
     currentState = validated;
-    currentOid = computeStateOid(ZERO_GIT_OID, validated);
+    currentOid = initialOid === null ? computeStateOid(ZERO_GIT_OID, validated) : initialOid;
   }
 
   return Object.freeze({
@@ -307,6 +338,10 @@ export function createInMemoryWorkQueueRefStore(initialState = null) {
       });
     }
   });
+}
+
+export function createInMemoryWorkQueueRefStore(initialState = null) {
+  return createSeededWorkQueueRefStore(initialState, null);
 }
 
 function isLeaseActive(entry, nowMs) {
@@ -372,7 +407,7 @@ export function planUnifiedWorkQueue(input) {
   if (!isDenseArray(shadow.tasks, MAX_ENTRIES)) return denyPlan('INVALID_TASKS');
 
   const rawLeases = input.activeLeases === undefined ? [] : input.activeLeases;
-  if (!isDenseArray(rawLeases, 32)) return denyPlan('INVALID_ACTIVE_LEASES');
+  if (!isDenseArray(rawLeases, MAX_ENTRIES)) return denyPlan('INVALID_ACTIVE_LEASES');
 
   const activeReservations = [];
   for (let i = 0; i < rawLeases.length; i++) {
@@ -385,6 +420,7 @@ export function planUnifiedWorkQueue(input) {
       lane: lease.lane,
       paths: [...lease.ownedPaths]
     });
+    if (activeReservations.length > 32) return denyPlan('INVALID_ACTIVE_LEASES');
   }
 
   const normalizedTasks = [];
@@ -668,6 +704,9 @@ export async function claimWorkQueueLease(options) {
   });
 
   return executeCasTransition(refStore, maxCasAttempts, state => {
+    if (state.entries.some(item => claimNowMs < item.claimedAtMs)) {
+      return {abort: true, result: denyMutation('CLOCK_SKEW_REJECTED')};
+    }
     const archivedList = state.archivedTerminal ?? [];
     const existingIndex = state.entries.findIndex(item => item.workId === snapCandidate.workId);
     const existing = existingIndex >= 0 ? state.entries[existingIndex] : null;
@@ -678,6 +717,13 @@ export async function claimWorkQueueLease(options) {
       if (isLeaseActive(existing, claimNowMs)) return {abort: true, result: denyMutation('DUPLICATE_ACTIVE_CLAIM')};
       if (existing.status === 'completed') return {abort: true, result: denyMutation('WORK_ALREADY_COMPLETED')};
       if (existing.status === 'cancelled') return {abort: true, result: denyMutation('WORK_CANCELLED')};
+      const matchesUsedRun = (existing.runId === snapCandidate.runId && existing.runAttempt === snapCandidate.runAttempt) ||
+        (existing.priorRuns !== undefined && existing.priorRuns.some(
+          prior => prior.runId === snapCandidate.runId && prior.runAttempt === snapCandidate.runAttempt
+        ));
+      if (matchesUsedRun) {
+        return {abort: true, result: denyMutation('DUPLICATE_RUN_ATTEMPT')};
+      }
       if (existing.status === 'exhausted' || existing.attempts >= effectiveMaxAttempts) {
         return {abort: true, result: denyMutation('RETRY_CEILING_EXHAUSTED')};
       }
@@ -720,14 +766,12 @@ export async function claimWorkQueueLease(options) {
           outcome: fencedOutcome,
           reclaimedAtMs: claimNowMs
         });
-        return {
-          ...item,
-          ownedPaths: [...item.ownedPaths],
+        return copyEntryWith(item, {
           status: fencedOutcome,
           generation: fencedGeneration,
           maxAttempts: boundedMaxAttempts,
           leaseExpiresAtMs: Math.min(item.leaseExpiresAtMs, claimNowMs)
-        };
+        });
       }
       return item;
     });
@@ -789,6 +833,14 @@ export async function claimWorkQueueLease(options) {
     };
     if (snapCandidate.traceparent !== undefined) nextEntry.traceparent = snapCandidate.traceparent;
     if (snapCandidate.lockSha256 !== undefined) nextEntry.lockSha256 = snapCandidate.lockSha256;
+    if (existing !== null) {
+      nextEntry.priorRuns = [
+        ...(existing.priorRuns === undefined
+          ? []
+          : existing.priorRuns.map(prior => ({runId: prior.runId, runAttempt: prior.runAttempt}))),
+        {runId: existing.runId, runAttempt: existing.runAttempt}
+      ];
+    }
 
     if (existingIndex >= 0) {
       const targetIdx = workingEntries.findIndex(item => item.workId === snapCandidate.workId);
@@ -881,12 +933,10 @@ export async function renewWorkQueueLease(options) {
     }
 
     const clampedExpiry = Math.min(entry.executionDeadlineMs, renewNowMs + leaseTtlMs);
-    const updated = {
-      ...entry,
-      ownedPaths: [...entry.ownedPaths],
+    const updated = copyEntryWith(entry, {
       leaseTtlMs: Math.min(leaseTtlMs, entry.maxExecutionMs),
       leaseExpiresAtMs: Math.max(entry.leaseExpiresAtMs, clampedExpiry)
-    };
+    });
     const nextEntries = [...state.entries];
     nextEntries[index] = updated;
     return {
@@ -952,12 +1002,10 @@ export async function settleWorkQueueLease(options) {
     const finalStatus = outcome === 'requeued' && entry.attempts >= entry.maxAttempts
       ? 'exhausted'
       : outcome;
-    const updated = {
-      ...entry,
-      ownedPaths: [...entry.ownedPaths],
+    const updated = copyEntryWith(entry, {
       status: finalStatus,
       leaseExpiresAtMs: Math.min(entry.leaseExpiresAtMs, settleNowMs)
-    };
+    });
     const nextEntries = [...state.entries];
     nextEntries[index] = updated;
     return {
@@ -1075,14 +1123,12 @@ export async function reconcileWorkQueueRunStates(options) {
             const outcome = (leaseStillActive && terminalSuccess)
               ? 'completed'
               : (entry.attempts >= retryLimit ? 'exhausted' : 'requeued');
-            nextEntries.push({
-              ...entry,
-              ownedPaths: [...entry.ownedPaths],
+            nextEntries.push(copyEntryWith(entry, {
               maxAttempts: persistedMaxAttempts,
               status: outcome,
               generation: reclaimedGeneration,
               leaseExpiresAtMs: Math.min(entry.leaseExpiresAtMs, reconcileNowMs)
-            });
+            }));
             newReceipts.push({
               workId: entry.workId,
               repositoryId: entry.repositoryId,
@@ -1107,14 +1153,12 @@ export async function reconcileWorkQueueRunStates(options) {
           (reconcileNowMs >= entry.leaseExpiresAtMs || reconcileNowMs >= entry.executionDeadlineMs)) {
         const reclaimedGeneration = nextGeneration++;
         const outcome = entry.attempts >= retryLimit ? 'exhausted' : 'requeued';
-        nextEntries.push({
-          ...entry,
-          ownedPaths: [...entry.ownedPaths],
+        nextEntries.push(copyEntryWith(entry, {
           maxAttempts: persistedMaxAttempts,
           status: outcome,
           generation: reclaimedGeneration,
           leaseExpiresAtMs: Math.min(entry.leaseExpiresAtMs, reconcileNowMs)
-        });
+        }));
         newReceipts.push({
           workId: entry.workId,
           repositoryId: entry.repositoryId,
@@ -1133,7 +1177,7 @@ export async function reconcileWorkQueueRunStates(options) {
         continue;
       }
 
-      nextEntries.push({...entry, ownedPaths: [...entry.ownedPaths]});
+      nextEntries.push(copyEntryWith(entry, {}));
     }
 
     for (const [workId, obs] of observationsByWorkId.entries()) {
@@ -1188,5 +1232,702 @@ export async function reconcileWorkQueueRunStates(options) {
         skipped: Object.freeze(skipped)
       })
     };
+  });
+}
+
+const DUPLICATE_REJECTION_REASONS = new Set([
+  'DUPLICATE_ACTIVE_CLAIM',
+  'DUPLICATE_RUN_ATTEMPT',
+  'WORK_ALREADY_COMPLETED',
+  'WORK_CANCELLED',
+  'RETRY_CEILING_EXHAUSTED'
+]);
+
+const isOptionalBoolean = value => value === undefined || typeof value === 'boolean';
+
+function clonePlainJson(value, depth) {
+  if (depth > 12 || types.isProxy(value)) return undefined;
+  if (value === null || typeof value === 'boolean' || typeof value === 'string') return value;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : undefined;
+  if (typeof value !== 'object') return undefined;
+  if (Array.isArray(value)) {
+    if (!isDenseArray(value, MAX_ARCHIVED_TERMINAL)) return undefined;
+    const out = [];
+    for (let i = 0; i < value.length; i++) {
+      const item = clonePlainJson(value[i], depth + 1);
+      if (item === undefined) return undefined;
+      out.push(item);
+    }
+    return out;
+  }
+  if (Object.getPrototypeOf(value) !== Object.prototype) return undefined;
+  const keys = Reflect.ownKeys(value);
+  const out = {};
+  for (let i = 0; i < keys.length; i++) {
+    const key = keys[i];
+    if (typeof key !== 'string' || key === '__proto__' || !isOwnEnumerableData(value, key)) {
+      return undefined;
+    }
+    const item = clonePlainJson(value[key], depth + 1);
+    if (item === undefined) return undefined;
+    out[key] = item;
+  }
+  return out;
+}
+
+function validateSimulationStep(step, prevNowMs) {
+  if (step === null || typeof step !== 'object' || Array.isArray(step) ||
+      typeof step.kind !== 'string' || !nonnegative(step.nowMs)) {
+    return {ok: false, reason: 'INVALID_SIMULATION_SCENARIO'};
+  }
+  if (step.nowMs < prevNowMs) {
+    return {ok: false, reason: 'NON_MONOTONIC_SCENARIO_CLOCK'};
+  }
+  if (step.kind === 'plan') {
+    return isPlainRecord(step, ['kind', 'nowMs', 'shadowInput'], ['policy'])
+      ? {ok: true}
+      : {ok: false, reason: 'INVALID_SIMULATION_SCENARIO'};
+  }
+  if (step.kind === 'concurrent_claims') {
+    if (!isPlainRecord(step, ['kind', 'nowMs', 'claims'], ['stop', 'force', 'targetRef', 'mainHealthy', 'maxCasAttempts']) ||
+        !Array.isArray(step.claims) || step.claims.length < 1 || step.claims.length > 16 ||
+        !isOptionalBoolean(step.stop) || !isOptionalBoolean(step.force) || !isOptionalBoolean(step.mainHealthy) ||
+        (step.targetRef !== undefined && (typeof step.targetRef !== 'string' || step.targetRef.length === 0)) ||
+        resolveCasAttempts(step.maxCasAttempts) === null) {
+      return {ok: false, reason: 'INVALID_SIMULATION_SCENARIO'};
+    }
+    for (let i = 0; i < step.claims.length; i++) {
+      const item = step.claims[i];
+      if (!isPlainRecord(item, ['candidate'], ['readyAtMs']) ||
+          (item.readyAtMs !== undefined && (!nonnegative(item.readyAtMs) || item.readyAtMs > step.nowMs))) {
+        return {ok: false, reason: 'INVALID_SIMULATION_SCENARIO'};
+      }
+    }
+    return {ok: true};
+  }
+  if (step.kind === 'replay_events') {
+    if (!isPlainRecord(step, ['kind', 'nowMs', 'events'], ['stop', 'mainHealthy', 'maxCasAttempts']) ||
+        !Array.isArray(step.events) || step.events.length < 1 || step.events.length > 32 ||
+        !isOptionalBoolean(step.stop) || !isOptionalBoolean(step.mainHealthy) ||
+        resolveCasAttempts(step.maxCasAttempts) === null) {
+      return {ok: false, reason: 'INVALID_SIMULATION_SCENARIO'};
+    }
+    for (let i = 0; i < step.events.length; i++) {
+      const ev = step.events[i];
+      if (!isPlainRecord(ev, ['deliveryId', 'eventSequence', 'candidate'], ['authoritativeHeadSha', 'readyAtMs']) ||
+          !isWorkerId(ev.deliveryId) || !positive(ev.eventSequence) ||
+          (ev.readyAtMs !== undefined && (!nonnegative(ev.readyAtMs) || ev.readyAtMs > step.nowMs)) ||
+          (ev.authoritativeHeadSha !== undefined &&
+            (!isHex40(ev.authoritativeHeadSha) || ev.candidate === null ||
+             typeof ev.candidate !== 'object' || ev.candidate.targetType !== 'pull_request'))) {
+        return {ok: false, reason: 'INVALID_SIMULATION_SCENARIO'};
+      }
+    }
+    return {ok: true};
+  }
+  if (step.kind === 'worker_action') {
+    const validRenew = step.action === 'renew' &&
+      isPlainRecord(step, ['kind', 'action', 'workId', 'workerId', 'generation', 'leaseTtlMs', 'nowMs'], ['stop', 'force', 'maxCasAttempts']);
+    const validSettle = step.action === 'settle' &&
+      isPlainRecord(step, ['kind', 'action', 'workId', 'workerId', 'generation', 'outcome', 'nowMs'], ['stop', 'force', 'maxCasAttempts']);
+    if ((!validRenew && !validSettle) || !isOptionalBoolean(step.stop) ||
+        !isOptionalBoolean(step.force) || resolveCasAttempts(step.maxCasAttempts) === null) {
+      return {ok: false, reason: 'INVALID_SIMULATION_SCENARIO'};
+    }
+    return {ok: true};
+  }
+  if (step.kind === 'reconcile_runs') {
+    return (isPlainRecord(step, ['kind', 'nowMs', 'observedRuns'], ['stop', 'force', 'maxCasAttempts']) &&
+      isOptionalBoolean(step.stop) && isOptionalBoolean(step.force) &&
+      resolveCasAttempts(step.maxCasAttempts) !== null)
+      ? {ok: true}
+      : {ok: false, reason: 'INVALID_SIMULATION_SCENARIO'};
+  }
+  if (step.kind === 'runner_restart') {
+    return (isPlainRecord(step, ['kind', 'nowMs'], ['stop']) && isOptionalBoolean(step.stop))
+      ? {ok: true}
+      : {ok: false, reason: 'INVALID_SIMULATION_SCENARIO'};
+  }
+  if (step.kind === 'emergency_stop') {
+    return (isPlainRecord(step, ['kind', 'nowMs', 'stop']) && typeof step.stop === 'boolean')
+      ? {ok: true}
+      : {ok: false, reason: 'INVALID_SIMULATION_SCENARIO'};
+  }
+  return {ok: false, reason: 'INVALID_SIMULATION_SCENARIO'};
+}
+
+export async function simulateDurableCasLifecycle(scenario) {
+  const cloned = clonePlainJson(scenario, 0);
+  if (cloned === undefined || !isPlainRecord(cloned, ['config', 'steps'], ['initialState'])) {
+    return denyMutation('INVALID_SIMULATION_SCENARIO');
+  }
+  if (!validateProjectConfig(cloned.config)) {
+    return denyMutation('INVALID_PROJECT_CONFIG');
+  }
+  let seededState = null;
+  if (cloned.initialState !== undefined && cloned.initialState !== null) {
+    seededState = freezeValidatedState(cloned.initialState);
+    if (seededState === null) return denyMutation('INVALID_QUEUE_STATE');
+  }
+  if (!Array.isArray(cloned.steps) || cloned.steps.length === 0 || cloned.steps.length > 128) {
+    return denyMutation('INVALID_SIMULATION_SCENARIO');
+  }
+  let prevNowMs = 0;
+  if (seededState !== null) {
+    for (const entry of seededState.entries) {
+      if (entry.claimedAtMs > prevNowMs) prevNowMs = entry.claimedAtMs;
+    }
+    for (const receipt of seededState.recoveryReceipts) {
+      if (receipt.reclaimedAtMs > prevNowMs) prevNowMs = receipt.reclaimedAtMs;
+    }
+  }
+  for (let i = 0; i < cloned.steps.length; i++) {
+    const stepCheck = validateSimulationStep(cloned.steps[i], prevNowMs);
+    if (!stepCheck.ok) return denyMutation(stepCheck.reason);
+    prevNowMs = cloned.steps[i].nowMs;
+  }
+
+  const baseConfig = cloned.config;
+  const configStopped = baseConfig.execution.stop !== false || baseConfig.execution.enabled !== true;
+  let runtimeStop = false;
+  const isStopped = stepStop => configStopped || runtimeStop || stepStop === true;
+  let backingStore = createSeededWorkQueueRefStore(seededState, null);
+  let runnerEpoch = 1;
+  const seenDeliveries = new Map();
+  const latestSequenceByTarget = new Map();
+
+  let casReads = 0;
+  let forceRejected = 0;
+  let claimsGranted = 0;
+  let duplicateClaimsRejected = 0;
+  let staleHeadRejected = 0;
+  let outOfOrderRejected = 0;
+  let deliveryConflictsRejected = 0;
+  let staleWorkerRejections = 0;
+  let staleRunObservationsSkipped = 0;
+  let stopBlocks = 0;
+  let mainUnhealthyBlocks = 0;
+  let occupiedDurationMs = 0;
+  const readyLatenciesMs = [];
+  const casCounters = {
+    CAS_APPLIED: 0,
+    CAS_CONFLICT: 0,
+    FORCE_UPDATE_FORBIDDEN: 0,
+    UNPROTECTED_WORK_QUEUE_REF: 0
+  };
+  const reclaimedCounts = {
+    launch_failed: 0,
+    worker_terminated: 0,
+    run_terminal: 0,
+    run_missing: 0,
+    lease_expired: 0
+  };
+  let lastCountedReceiptGen = 0;
+  if (seededState !== null) {
+    for (const receipt of seededState.recoveryReceipts) {
+      if (receipt.reclaimedGeneration > lastCountedReceiptGen) {
+        lastCountedReceiptGen = receipt.reclaimedGeneration;
+      }
+    }
+  }
+
+  const instrumentedStore = Object.freeze({
+    readRef(ref) {
+      casReads += 1;
+      return backingStore.readRef(ref);
+    },
+    compareAndSwapRef(req) {
+      const res = backingStore.compareAndSwapRef(req);
+      casCounters[res.reason] += 1;
+      return res;
+    }
+  });
+
+  function buildStepConfig(stepStop) {
+    return {
+      ...baseConfig,
+      execution: {
+        ...baseConfig.execution,
+        stop: stepStop
+      }
+    };
+  }
+
+  function currentRawEntries() {
+    const snap = backingStore.readRef(PROTECTED_WORK_QUEUE_REF);
+    return snap.state === null ? [] : snap.state.entries;
+  }
+
+  function recordStateAdvance(beforeEntries, nowMs) {
+    const afterSnap = backingStore.readRef(PROTECTED_WORK_QUEUE_REF);
+    const afterState = afterSnap.state;
+    const afterEntries = afterState === null ? [] : afterState.entries;
+    const afterByWorkId = new Map(afterEntries.map(entry => [entry.workId, entry]));
+    for (const prev of beforeEntries) {
+      if (prev.status !== 'leased') continue;
+      const curr = afterByWorkId.get(prev.workId);
+      if (curr === undefined || curr.status !== 'leased' || curr.generation !== prev.generation) {
+        const effectiveEndMs = Math.min(nowMs, prev.leaseExpiresAtMs, prev.executionDeadlineMs);
+        occupiedDurationMs += Math.max(0, effectiveEndMs - prev.claimedAtMs);
+      }
+    }
+    if (afterState !== null) {
+      for (const receipt of afterState.recoveryReceipts) {
+        if (receipt.reclaimedGeneration > lastCountedReceiptGen) {
+          reclaimedCounts[receipt.runState] += 1;
+          lastCountedReceiptGen = receipt.reclaimedGeneration;
+        }
+      }
+    }
+    return afterSnap;
+  }
+
+  const stepResults = [];
+  for (let index = 0; index < cloned.steps.length; index++) {
+    const step = cloned.steps[index];
+    if (step.kind === 'emergency_stop') {
+      runtimeStop = step.stop;
+      const effectiveStop = isStopped(false);
+      const snap = backingStore.readRef(PROTECTED_WORK_QUEUE_REF);
+      stepResults.push(Object.freeze({
+        index,
+        kind: 'emergency_stop',
+        runnerEpoch,
+        nowMs: step.nowMs,
+        stop: effectiveStop,
+        reason: effectiveStop ? 'EMERGENCY_STOP_ENGAGED' : 'EMERGENCY_STOP_CLEARED',
+        oid: snap.oid
+      }));
+      continue;
+    }
+
+    if (step.kind === 'runner_restart') {
+      if (step.stop !== undefined) runtimeStop = step.stop;
+      const persisted = backingStore.readRef(PROTECTED_WORK_QUEUE_REF);
+      seenDeliveries.clear();
+      latestSequenceByTarget.clear();
+      const rehydrated = persisted.state === null
+        ? null
+        : JSON.parse(JSON.stringify(persisted.state));
+      backingStore = createSeededWorkQueueRefStore(
+        rehydrated,
+        persisted.state === null ? null : persisted.oid
+      );
+      runnerEpoch += 1;
+      const afterRestart = backingStore.readRef(PROTECTED_WORK_QUEUE_REF);
+      stepResults.push(Object.freeze({
+        index,
+        kind: 'runner_restart',
+        runnerEpoch,
+        nowMs: step.nowMs,
+        reason: 'RUNNER_RESTARTED',
+        oid: afterRestart.oid,
+        preservedEntries: afterRestart.state === null ? 0 : afterRestart.state.entries.length
+      }));
+      continue;
+    }
+
+    if (step.kind === 'plan') {
+      const snap = instrumentedStore.readRef(PROTECTED_WORK_QUEUE_REF);
+      const activeLeases = snap.state === null ? [] : snap.state.entries;
+      const planOptions = {
+        config: buildStepConfig(isStopped(false)),
+        shadowInput: step.shadowInput,
+        activeLeases,
+        nowMs: step.nowMs
+      };
+      if (step.policy !== undefined) planOptions.policy = step.policy;
+      const planned = planUnifiedWorkQueue(planOptions);
+      if (planned.reason === 'STOPPED') stopBlocks += 1;
+      let maxBlockedWaitMs = 0;
+      if (step.policy !== undefined && planned.blockedTasks !== undefined && Array.isArray(step.policy.ready)) {
+        const readySinceMap = new Map(step.policy.ready.map(item => [item.id, item.readySince]));
+        for (const blocked of planned.blockedTasks) {
+          const readySince = readySinceMap.get(blocked.id);
+          if (typeof readySince === 'number' && readySince <= step.nowMs) {
+            maxBlockedWaitMs = Math.max(maxBlockedWaitMs, step.nowMs - readySince);
+          }
+        }
+      }
+      stepResults.push(Object.freeze({
+        index,
+        kind: 'plan',
+        runnerEpoch,
+        nowMs: step.nowMs,
+        reason: planned.reason,
+        readyIds: planned.readyIds ?? Object.freeze([]),
+        blockedCount: planned.blockedTasks === undefined ? 0 : planned.blockedTasks.length,
+        maxBlockedWaitMs,
+        oid: snap.oid
+      }));
+      continue;
+    }
+
+    if (step.kind === 'concurrent_claims') {
+      const beforeSnap = backingStore.readRef(PROTECTED_WORK_QUEUE_REF);
+      const beforeEntries = beforeSnap.state === null ? [] : beforeSnap.state.entries;
+      const stepStop = isStopped(step.stop);
+      const stepConfig = buildStepConfig(stepStop);
+      const maxCasAttempts = step.maxCasAttempts ?? 5;
+      let outcomes;
+
+      if (step.targetRef !== undefined && step.targetRef !== PROTECTED_WORK_QUEUE_REF) {
+        const refRes = instrumentedStore.compareAndSwapRef({
+          ref: step.targetRef,
+          expectedOid: beforeSnap.oid,
+          nextState: beforeSnap.state === null ? createEmptyQueueState() : beforeSnap.state,
+          force: step.force === true
+        });
+        outcomes = step.claims.map(item => Object.freeze({
+          ok: false,
+          reason: refRes.reason,
+          workerId: typeof item.candidate?.workerId === 'string' ? item.candidate.workerId : null
+        }));
+      } else if (step.mainHealthy === false && step.force !== true && !stepStop) {
+        mainUnhealthyBlocks += step.claims.length;
+        outcomes = step.claims.map(item => Object.freeze({
+          ok: false,
+          reason: 'MAIN_UNHEALTHY',
+          workerId: typeof item.candidate?.workerId === 'string' ? item.candidate.workerId : null
+        }));
+      } else {
+        const readersCount = (stepStop || step.force === true)
+          ? 0
+          : step.claims.filter(item => validateCandidate(item.candidate, stepConfig, step.nowMs).ok).length;
+        let pendingInitialReads = readersCount;
+        let releaseBarrier;
+        const barrierPromise = new Promise(resolve => {
+          releaseBarrier = resolve;
+        });
+
+        outcomes = await Promise.all(step.claims.map(async item => {
+          let firstRead = readersCount >= 2;
+          const workerStore = Object.freeze({
+            async readRef(ref) {
+              const snap = instrumentedStore.readRef(ref);
+              if (firstRead) {
+                firstRead = false;
+                pendingInitialReads -= 1;
+                if (pendingInitialReads === 0) releaseBarrier();
+                await barrierPromise;
+              }
+              return snap;
+            },
+            compareAndSwapRef(req) {
+              return instrumentedStore.compareAndSwapRef(req);
+            }
+          });
+
+          const claimOpts = {
+            refStore: workerStore,
+            config: stepConfig,
+            candidate: item.candidate,
+            nowMs: step.nowMs,
+            maxCasAttempts
+          };
+          if (step.stop !== undefined) claimOpts.stop = step.stop;
+          if (step.force !== undefined) claimOpts.force = step.force;
+          const res = await claimWorkQueueLease(claimOpts);
+          if (res.ok) {
+            claimsGranted += 1;
+            if (item.readyAtMs !== undefined) readyLatenciesMs.push(step.nowMs - item.readyAtMs);
+            return Object.freeze({
+              ok: true,
+              reason: res.reason,
+              workId: res.lease.workId,
+              workerId: res.lease.workerId,
+              generation: res.lease.generation,
+              casAttempts: res.casAttempts
+            });
+          }
+          if (res.reason === 'STOPPED') stopBlocks += 1;
+          else if (res.reason === 'FORCE_UPDATE_FORBIDDEN') forceRejected += 1;
+          else if (DUPLICATE_REJECTION_REASONS.has(res.reason)) duplicateClaimsRejected += 1;
+          return Object.freeze({
+            ok: false,
+            reason: res.reason,
+            workerId: typeof item.candidate?.workerId === 'string' ? item.candidate.workerId : null
+          });
+        }));
+      }
+
+      const afterSnap = recordStateAdvance(beforeEntries, step.nowMs);
+      stepResults.push(Object.freeze({
+        index,
+        kind: 'concurrent_claims',
+        runnerEpoch,
+        nowMs: step.nowMs,
+        outcomes: Object.freeze(outcomes),
+        oid: afterSnap.oid
+      }));
+      continue;
+    }
+
+    if (step.kind === 'replay_events') {
+      const beforeEntries = currentRawEntries();
+      const stepStop = isStopped(step.stop);
+      const stepConfig = buildStepConfig(stepStop);
+      const maxCasAttempts = step.maxCasAttempts ?? 3;
+      const outcomes = [];
+
+      for (const ev of step.events) {
+        if (stepStop) {
+          stopBlocks += 1;
+          outcomes.push(Object.freeze({deliveryId: ev.deliveryId, ok: false, reason: 'STOPPED'}));
+          continue;
+        }
+        if (step.mainHealthy === false) {
+          mainUnhealthyBlocks += 1;
+          outcomes.push(Object.freeze({deliveryId: ev.deliveryId, ok: false, reason: 'MAIN_UNHEALTHY'}));
+          continue;
+        }
+        const checked = validateCandidate(ev.candidate, stepConfig, step.nowMs);
+        if (!checked.ok) {
+          outcomes.push(Object.freeze({deliveryId: ev.deliveryId, ok: false, reason: checked.reason}));
+          continue;
+        }
+        const deliveryKey = `${ev.candidate.repositoryId}:${ev.deliveryId}`;
+        const deliveryFingerprint = JSON.stringify([
+          checked.workId,
+          ev.eventSequence,
+          ev.candidate.lane,
+          ev.candidate.ownedPaths,
+          ev.candidate.workerId,
+          ev.candidate.runId,
+          checked.runAttempt,
+          ev.candidate.leaseTtlMs,
+          checked.maxExecutionMs,
+          checked.maxAttempts,
+          ev.candidate.traceparent ?? null,
+          ev.candidate.lockSha256 ?? null,
+          ev.authoritativeHeadSha ?? null,
+          ev.readyAtMs ?? null
+        ]);
+        const previousDelivery = seenDeliveries.get(deliveryKey);
+        if (previousDelivery !== undefined && previousDelivery.fingerprint !== deliveryFingerprint) {
+          deliveryConflictsRejected += 1;
+          outcomes.push(Object.freeze({
+            deliveryId: ev.deliveryId,
+            workId: checked.workId,
+            ok: false,
+            reason: 'DELIVERY_CONFLICT'
+          }));
+          continue;
+        }
+        if (previousDelivery !== undefined && previousDelivery.consumed) {
+          duplicateClaimsRejected += 1;
+          outcomes.push(Object.freeze({
+            deliveryId: ev.deliveryId,
+            workId: checked.workId,
+            ok: false,
+            reason: 'DUPLICATE_DELIVERY'
+          }));
+          continue;
+        }
+        seenDeliveries.set(deliveryKey, {fingerprint: deliveryFingerprint, consumed: false});
+        if (ev.authoritativeHeadSha !== undefined && ev.candidate.headSha !== ev.authoritativeHeadSha) {
+          seenDeliveries.set(deliveryKey, {fingerprint: deliveryFingerprint, consumed: true});
+          staleHeadRejected += 1;
+          outcomes.push(Object.freeze({
+            deliveryId: ev.deliveryId,
+            workId: checked.workId,
+            ok: false,
+            reason: 'STALE_HEAD_SUPERSEDED'
+          }));
+          continue;
+        }
+        const targetKey = ev.candidate.targetType === 'issue'
+          ? `${ev.candidate.repositoryId}:issue:${ev.candidate.issueNumber}`
+          : `${ev.candidate.repositoryId}:pr:${ev.candidate.pullNumber}`;
+        const prevSeq = latestSequenceByTarget.get(targetKey);
+        if (prevSeq !== undefined && ev.eventSequence < prevSeq) {
+          seenDeliveries.set(deliveryKey, {fingerprint: deliveryFingerprint, consumed: true});
+          outOfOrderRejected += 1;
+          outcomes.push(Object.freeze({
+            deliveryId: ev.deliveryId,
+            workId: checked.workId,
+            ok: false,
+            reason: 'OUT_OF_ORDER_EVENT'
+          }));
+          continue;
+        }
+        latestSequenceByTarget.set(targetKey, ev.eventSequence);
+
+        const claimRes = await claimWorkQueueLease({
+          refStore: instrumentedStore,
+          config: stepConfig,
+          candidate: ev.candidate,
+          nowMs: step.nowMs,
+          maxCasAttempts
+        });
+        if (claimRes.ok) {
+          seenDeliveries.set(deliveryKey, {fingerprint: deliveryFingerprint, consumed: true});
+          claimsGranted += 1;
+          if (ev.readyAtMs !== undefined) readyLatenciesMs.push(step.nowMs - ev.readyAtMs);
+          outcomes.push(Object.freeze({
+            deliveryId: ev.deliveryId,
+            workId: claimRes.lease.workId,
+            ok: true,
+            reason: claimRes.reason,
+            generation: claimRes.lease.generation
+          }));
+        } else {
+          if (DUPLICATE_REJECTION_REASONS.has(claimRes.reason)) {
+            seenDeliveries.set(deliveryKey, {fingerprint: deliveryFingerprint, consumed: true});
+            duplicateClaimsRejected += 1;
+          }
+          outcomes.push(Object.freeze({
+            deliveryId: ev.deliveryId,
+            workId: checked.workId,
+            ok: false,
+            reason: claimRes.reason
+          }));
+        }
+      }
+
+      const afterSnap = recordStateAdvance(beforeEntries, step.nowMs);
+      stepResults.push(Object.freeze({
+        index,
+        kind: 'replay_events',
+        runnerEpoch,
+        nowMs: step.nowMs,
+        outcomes: Object.freeze(outcomes),
+        oid: afterSnap.oid
+      }));
+      continue;
+    }
+
+    if (step.kind === 'worker_action') {
+      const beforeEntries = currentRawEntries();
+      const stepStop = isStopped(step.stop);
+      let res;
+      if (step.action === 'renew') {
+        const renewOpts = {
+          refStore: instrumentedStore,
+          config: buildStepConfig(stepStop),
+          workId: step.workId,
+          workerId: step.workerId,
+          generation: step.generation,
+          leaseTtlMs: step.leaseTtlMs,
+          nowMs: step.nowMs
+        };
+        if (step.stop !== undefined) renewOpts.stop = step.stop;
+        if (step.force !== undefined) renewOpts.force = step.force;
+        if (step.maxCasAttempts !== undefined) renewOpts.maxCasAttempts = step.maxCasAttempts;
+        res = await renewWorkQueueLease(renewOpts);
+      } else {
+        const settleOpts = {
+          refStore: instrumentedStore,
+          workId: step.workId,
+          workerId: step.workerId,
+          generation: step.generation,
+          outcome: step.outcome,
+          nowMs: step.nowMs,
+          stop: stepStop
+        };
+        if (step.force !== undefined) settleOpts.force = step.force;
+        if (step.maxCasAttempts !== undefined) settleOpts.maxCasAttempts = step.maxCasAttempts;
+        res = await settleWorkQueueLease(settleOpts);
+      }
+      if (res.reason === 'STOPPED') stopBlocks += 1;
+      else if (res.reason === 'FORCE_UPDATE_FORBIDDEN') forceRejected += 1;
+      else if (res.reason === 'STALE_GENERATION' || res.reason === 'LEASE_NOT_HELD') staleWorkerRejections += 1;
+
+      const afterSnap = recordStateAdvance(beforeEntries, step.nowMs);
+      stepResults.push(Object.freeze({
+        index,
+        kind: 'worker_action',
+        action: step.action,
+        runnerEpoch,
+        nowMs: step.nowMs,
+        ok: res.ok,
+        reason: res.reason,
+        lease: res.lease ?? null,
+        oid: afterSnap.oid
+      }));
+      continue;
+    }
+
+    // step.kind === 'reconcile_runs'
+    const beforeEntries = currentRawEntries();
+    const stepStop = isStopped(step.stop);
+    const reconcileOpts = {
+      refStore: instrumentedStore,
+      config: buildStepConfig(stepStop),
+      observedRuns: step.observedRuns,
+      nowMs: step.nowMs
+    };
+    if (step.stop !== undefined) reconcileOpts.stop = step.stop;
+    if (step.force !== undefined) reconcileOpts.force = step.force;
+    if (step.maxCasAttempts !== undefined) reconcileOpts.maxCasAttempts = step.maxCasAttempts;
+    const recRes = await reconcileWorkQueueRunStates(reconcileOpts);
+    if (recRes.reason === 'STOPPED') stopBlocks += 1;
+    else if (recRes.reason === 'FORCE_UPDATE_FORBIDDEN') forceRejected += 1;
+    if (recRes.skipped !== undefined) {
+      for (const skippedItem of recRes.skipped) {
+        if (skippedItem.reason === 'STALE_OR_INACTIVE_RUN') staleRunObservationsSkipped += 1;
+      }
+    }
+
+    const afterSnap = recordStateAdvance(beforeEntries, step.nowMs);
+    stepResults.push(Object.freeze({
+      index,
+      kind: 'reconcile_runs',
+      runnerEpoch,
+      nowMs: step.nowMs,
+      ok: recRes.ok,
+      reason: recRes.reason,
+      reclaimed: recRes.reclaimed ?? Object.freeze([]),
+      receiptCount: recRes.receipts === undefined ? 0 : recRes.receipts.length,
+      oid: afterSnap.oid
+    }));
+  }
+
+  const finalSnap = backingStore.readRef(PROTECTED_WORK_QUEUE_REF);
+  const finalState = finalSnap.state === null ? createEmptyQueueState() : finalSnap.state;
+  for (const entry of finalState.entries) {
+    if (entry.status === 'leased') {
+      const effectiveEndMs = Math.min(prevNowMs, entry.leaseExpiresAtMs, entry.executionDeadlineMs);
+      occupiedDurationMs += Math.max(0, effectiveEndMs - entry.claimedAtMs);
+    }
+  }
+
+  readyLatenciesMs.sort((a, b) => a - b);
+  const sampleCount = readyLatenciesMs.length;
+  const p50ReadyLatencyMs = sampleCount === 0 ? null : readyLatenciesMs[Math.ceil(sampleCount * 0.5) - 1];
+  const p95ReadyLatencyMs = sampleCount === 0 ? null : readyLatenciesMs[Math.ceil(sampleCount * 0.95) - 1];
+
+  return Object.freeze({
+    shadow: true,
+    ok: true,
+    liveDispatch: false,
+    liveMerge: false,
+    reason: 'LIFECYCLE_VERIFIED',
+    ref: PROTECTED_WORK_QUEUE_REF,
+    finalOid: finalSnap.oid,
+    finalState,
+    runnerEpochs: runnerEpoch,
+    steps: Object.freeze(stepResults),
+    metrics: Object.freeze({
+      casReads,
+      casApplied: casCounters.CAS_APPLIED,
+      casConflicts: casCounters.CAS_CONFLICT,
+      forceRejected: forceRejected + casCounters.FORCE_UPDATE_FORBIDDEN,
+      unprotectedRefRejected: casCounters.UNPROTECTED_WORK_QUEUE_REF,
+      claimsGranted,
+      duplicateClaimsRejected,
+      staleHeadRejected,
+      outOfOrderRejected,
+      deliveryConflictsRejected,
+      staleWorkerRejections,
+      staleRunObservationsSkipped,
+      stopBlocks,
+      mainUnhealthyBlocks,
+      reclaimedByRunState: Object.freeze({...reclaimedCounts}),
+      occupiedDurationMs,
+      readySampleCount: sampleCount,
+      p50ReadyLatencyMs,
+      p95ReadyLatencyMs
+    })
   });
 }
