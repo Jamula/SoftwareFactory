@@ -1425,7 +1425,7 @@ function handleAdditionalTool(name, args, context) {
           schemaVersion: 1,
           project: { key: 'enrolled-consumer', repository: entry.repository, defaultBranch: entry.defaultBranch },
           execution: { enabled: false, mode: 'shadow', stop: false },
-          limits: { maxConcurrentLanes: entry.lanes.length, leaseMs: 1000, maxAttempts: 1, baseDelayMs: 1, maxDelayMs: 1 },
+          limits: { maxConcurrentLanes: Math.min(8, entry.lanes.length), leaseMs: 1000, maxAttempts: 1, baseDelayMs: 1, maxDelayMs: 1 },
           adapters: { workTracker: 'mock', engineeringAgent: 'mock', state: 'sqlite' },
           lanes: entry.lanes.map(lane => ({ id: lane.id, specialist: lane.specialist, owners: [...lane.owners], prompt: 'docs/ENGINEERING-STANDARDS.md' }))
         };
@@ -1802,18 +1802,26 @@ export async function startMcpStdioServer({ input = process.stdin, output = proc
     hasAllowedKeys(transport, ['request']) && typeof transport.request === 'function';
   let streamFailure = input.errored ?? output.errored ??
     (output.destroyed || !output.writable ? new Error('OUTPUT_CLOSED') : null);
-  let rejectLifetime;
-  const lifetimeFailure = new Promise((_, reject) => { rejectLifetime = reject; });
-  lifetimeFailure.catch(() => {});
+  const failureWaiters = new Set();
   const failStream = error => {
     streamFailure ??= error;
-    rejectLifetime(streamFailure);
+    for (const rejectWaiter of failureWaiters) rejectWaiter(streamFailure);
+    failureWaiters.clear();
+  };
+  const untilSettledOrFailed = promise => {
+    if (streamFailure !== null) return Promise.reject(streamFailure);
+    let rejectWaiter;
+    const race = new Promise((resolve, reject) => {
+      rejectWaiter = reject;
+      failureWaiters.add(rejectWaiter);
+      promise.then(resolve, reject);
+    });
+    return race.finally(() => { failureWaiters.delete(rejectWaiter); });
   };
   const onError = error => failStream(error);
   const onClose = () => failStream(new Error('OUTPUT_CLOSED'));
   output.on('error', onError);
   output.on('close', onClose);
-  if (streamFailure !== null) failStream(streamFailure);
   let pending = Buffer.alloc(0);
   let oversized = false;
   let activeWrite = Promise.resolve();
@@ -1838,7 +1846,7 @@ export async function startMcpStdioServer({ input = process.stdin, output = proc
         () => {},
         () => new Promise(resolve => process.nextTick(resolve))
       );
-      await Promise.race([lifetimeFailure, Promise.all([writeDone, drainDone])]);
+      await untilSettledOrFailed(Promise.all([writeDone, drainDone]));
     } finally {
       if (onDrain !== undefined) output.off('drain', onDrain);
     }
@@ -1932,13 +1940,10 @@ export async function startMcpStdioServer({ input = process.stdin, output = proc
     while (true) {
       if (chunks.length === 0 && !inputEnded) {
         input.resume();
-        await Promise.race([
-          lifetimeFailure,
-          new Promise(resolve => { notifyPump = resolve; })
-        ]);
+        await untilSettledOrFailed(new Promise(resolve => { notifyPump = resolve; }));
         continue;
       }
-      await Promise.race([lifetimeFailure, Promise.resolve()]);
+      if (streamFailure !== null) throw streamFailure;
       if (chunks.length === 0) break;
       const bytes = chunks.shift();
       let start = 0;

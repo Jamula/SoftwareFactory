@@ -89,6 +89,23 @@ test('new read-only tools enforce enrollment, trusted lanes, identities and stri
     }]
   };
   assert.equal(mcpCall('plan_disjoint_lanes', { repositoryId: CONSUMER_REPO_ID, tasks: [task] }, laneOnlyPlanCtx).structuredContent.reason, 'SHADOW_PLAN');
+  const nineLaneCtx = {
+    authorizedRepositories: [{
+      repositoryId: CONSUMER_REPO_ID,
+      repository: 'Synthetic/Spellbook',
+      lanes: Array.from({ length: 9 }, (_, idx) => ({
+        id: `lane-${idx + 1}`,
+        specialist: 'api',
+        owners: [`src/l${idx + 1}`]
+      })),
+      trustedFiles: ['src/l9/item.mjs']
+    }]
+  };
+  assert.equal(validateMcpConnectorEnrollment(nineLaneCtx.authorizedRepositories), true);
+  assert.equal(mcpCall('plan_disjoint_lanes', {
+    repositoryId: CONSUMER_REPO_ID,
+    tasks: [{ id: 1, lane: 'lane-9', state: 'approved', priority: 1, dependencies: [], paths: ['src/l9/item.mjs'] }]
+  }, nineLaneCtx).structuredContent.reason, 'SHADOW_PLAN');
   assert.equal(mcpCall('plan_disjoint_lanes', {
     repositoryId: CONSUMER_REPO_ID,
     tasks: [{ ...task, lane: 'docs', paths: ['docs/guide.md'] }]
