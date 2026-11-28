@@ -1,0 +1,1059 @@
+name: Factory automode Merge Queue gatekeeper
+
+on:
+  pull_request_target:
+    branches: [main]
+    types: [opened, ready_for_review, synchronize, reopened]
+  workflow_run:
+    workflows:
+      - "Factory validation"
+      - "Windows Aspire runtime"
+      - ".NET MAF specialist agents"
+    types: [completed]
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: factory-automode-enqueue
+  cancel-in-progress: false
+
+jobs:
+  evaluate:
+    name: evaluate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+      checks: read
+    if: >-
+      github.repository == 'Jamula/SoftwareFactory' &&
+      github.repository_id == '1471342715' &&
+      github.ref == 'refs/heads/main' &&
+      github.ref_protected == true &&
+      vars.FACTORY_KILL_SWITCH != 'true' &&
+      vars.FACTORY_AUTOMODE_ENABLED != 'false' &&
+      (github.event_name != 'workflow_run' || github.event.workflow_run.head_repository.id == 1471342715) &&
+      (github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.id == 1471342715)
+    outputs:
+      has_actions: ${{ steps.evaluate.outputs.has_actions }}
+      actions_json: ${{ steps.evaluate.outputs.actions_json }}
+    steps:
+      - name: Checkout trusted main evaluator
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/heads/main
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '26.13.1'
+          package-manager-cache: false
+
+      - name: Evaluate open pull requests for Merge Queue admission
+        id: evaluate
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO_SLUG: ${{ github.repository }}
+          REPO_ID: ${{ github.repository_id }}
+          RUN_ID: ${{ github.run_id }}
+          KILL_SWITCH: ${{ vars.FACTORY_KILL_SWITCH }}
+          AUTOMODE_ENABLED: ${{ vars.FACTORY_AUTOMODE_ENABLED }}
+          BRANCH_UPDATE_SUPPORTED: ${{ vars.FACTORY_AUTOMODE_BRANCH_UPDATE }}
+        run: |
+          node --input-type=module <<'EOF'
+          import {execFileSync} from 'node:child_process';
+          import {appendFileSync} from 'node:fs';
+          import {evaluateAutomodePullRequests} from './tools/engineering-factory/automode-enqueuer.mjs';
+
+          function ghJson(args) {
+            const out = execFileSync('gh', args, {
+              encoding: 'utf8',
+              maxBuffer: 16 * 1024 * 1024
+            });
+            return JSON.parse(out);
+          }
+
+          const REQUIRED_MAIN_ACTIONS_CHECKS = [
+            'build-test',
+            'upload-coverage-javascript',
+            'windows-aspire-runtime',
+            'linux-aspire-runtime',
+            'test-coverage',
+            'pinned-synthetic-replay / replay',
+            'linux-dotnet-agents',
+            'windows-dotnet-agents'
+          ];
+          const MAIN_CODEQL_SUCCESS_CHECKS = new Set([
+            'CodeQL',
+            'Analyze (javascript-typescript)'
+          ]);
+          const ALL_CODEQL_CHECKS = new Set([
+            'CodeQL',
+            'Analyze (javascript-typescript)',
+            'Analyze (actions)',
+            'Analyze (csharp)'
+          ]);
+          const ALLOWED_MAIN_CONCLUSIONS = new Set(['success', 'skipped', 'neutral']);
+
+          const MAIN_HEALTH_QUERY = `
+            query($owner: String!, $name: String!) {
+              repository(owner: $owner, name: $name) {
+                databaseId
+                mainRef: ref(qualifiedName: "refs/heads/main") {
+                  target { oid }
+                }
+                defaultBranchRef {
+                  name
+                  refUpdateRule {
+                    allowsDeletions
+                    allowsForcePushes
+                  }
+                  target {
+                    oid
+                    ... on Commit {
+                      oid
+                      statusCheckRollup { state }
+                    }
+                  }
+                }
+                rulesets(first: 20, includeParents: true) {
+                  nodes {
+                    enforcement
+                    target
+                  }
+                }
+              }
+            }
+          `;
+
+          const OPEN_PRS_QUERY = `
+            query($owner: String!, $name: String!, $cursor: String) {
+              repository(owner: $owner, name: $name) {
+                databaseId
+                pullRequests(
+                  states: [OPEN],
+                  baseRefName: "main",
+                  first: 50,
+                  after: $cursor,
+                  orderBy: {field: CREATED_AT, direction: ASC}
+                ) {
+                  pageInfo { hasNextPage endCursor }
+                  nodes {
+                    id
+                    number
+                    state
+                    isDraft
+                    baseRefName
+                    headRefOid
+                    mergeable
+                    mergeStateStatus
+                    mergeQueueEntry { id }
+                    author { __typename login }
+                    headRepository { databaseId }
+                    commits(last: 1) {
+                      nodes {
+                        commit {
+                          oid
+                          statusCheckRollup { state }
+                        }
+                      }
+                    }
+                    reviewThreads(first: 100) {
+                      pageInfo { hasNextPage endCursor }
+                      nodes { isResolved }
+                    }
+                    reviews(first: 100) {
+                      pageInfo { hasNextPage endCursor }
+                      nodes {
+                        databaseId
+                        state
+                        body
+                        commit { oid }
+                        author { __typename login }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          `;
+
+          const THREADS_PAGE_QUERY = `
+            query($id: ID!, $cursor: String!) {
+              node(id: $id) {
+                ... on PullRequest {
+                  reviewThreads(first: 100, after: $cursor) {
+                    pageInfo { hasNextPage endCursor }
+                    nodes { isResolved }
+                  }
+                }
+              }
+            }
+          `;
+
+          const REVIEWS_PAGE_QUERY = `
+            query($id: ID!, $cursor: String!) {
+              node(id: $id) {
+                ... on PullRequest {
+                  reviews(first: 100, after: $cursor) {
+                    pageInfo { hasNextPage endCursor }
+                    nodes {
+                      databaseId
+                      state
+                      body
+                      commit { oid }
+                      author { __typename login }
+                    }
+                  }
+                }
+              }
+            }
+          `;
+
+          function inspectProtectedMainHealth(owner, name, currentRunId) {
+            try {
+              if (owner !== 'Jamula' || name !== 'SoftwareFactory') return false;
+              const mRes = ghJson([
+                'api', 'graphql',
+                '-f', `query=${MAIN_HEALTH_QUERY}`,
+                '-f', `owner=${owner}`,
+                '-f', `name=${name}`
+              ]);
+              const repoNode = mRes?.data?.repository;
+              if (repoNode?.databaseId !== 1471342715) return false;
+              const defBranch = repoNode?.defaultBranchRef;
+              if (defBranch?.name !== 'main') return false;
+              const hasRefRule =
+                defBranch?.refUpdateRule !== null &&
+                defBranch?.refUpdateRule !== undefined &&
+                defBranch.refUpdateRule.allowsDeletions === false &&
+                defBranch.refUpdateRule.allowsForcePushes === false;
+              const hasRuleset =
+                Array.isArray(repoNode?.rulesets?.nodes) &&
+                repoNode.rulesets.nodes.some(r => r?.enforcement === 'ACTIVE' && r?.target === 'BRANCH');
+              if (!hasRefRule && !hasRuleset) return false;
+              const mainOid = String(defBranch?.target?.oid ?? '');
+              const refOid = String(repoNode?.mainRef?.target?.oid ?? '');
+              if (!/^[0-9a-f]{40}$/.test(mainOid) || refOid !== mainOid) return false;
+              if (defBranch?.target?.statusCheckRollup?.state !== 'SUCCESS') return false;
+
+              const selfRunPrefix = /^[1-9]\d{0,19}$/.test(currentRunId)
+                ? `https://github.com/Jamula/SoftwareFactory/actions/runs/${currentRunId}/job/`
+                : null;
+              let rawCount = 0;
+              let totalExpected = -1;
+              const passedActions = new Set();
+              let hasCodeqlSuccess = false;
+              for (let cp = 1; cp <= 10; cp++) {
+                const crRes = ghJson([
+                  'api',
+                  `repos/Jamula/SoftwareFactory/commits/${mainOid}/check-runs?per_page=100&page=${cp}`
+                ]);
+                if (crRes?.incomplete_results === true ||
+                    !Array.isArray(crRes?.check_runs) ||
+                    typeof crRes?.total_count !== 'number') {
+                  return false;
+                }
+                totalExpected = crRes.total_count;
+                const list = crRes.check_runs;
+                rawCount += list.length;
+                for (const cr of list) {
+                  const crName = String(cr?.name ?? '');
+                  const crSha = String(cr?.head_sha ?? '');
+                  const crStatus = String(cr?.status ?? '').toLowerCase();
+                  const crConclusion = crStatus === 'completed' ? String(cr?.conclusion ?? '').toLowerCase() : '';
+                  const crAppId = Number.isSafeInteger(cr?.app?.id) ? cr.app.id : 0;
+                  const detailsUrl = String(cr?.details_url ?? '');
+                  if (!crName || crName.length > 160 || crSha !== mainOid) return false;
+                  if (selfRunPrefix !== null &&
+                      detailsUrl.startsWith(selfRunPrefix) &&
+                      crAppId === 15368 &&
+                      (crName === 'evaluate' || crName === 'apply-queue-actions')) {
+                    continue;
+                  }
+                  if (crStatus !== 'completed' || !ALLOWED_MAIN_CONCLUSIONS.has(crConclusion)) {
+                    return false;
+                  }
+                  if (REQUIRED_MAIN_ACTIONS_CHECKS.includes(crName)) {
+                    if (crAppId !== 15368 || crConclusion !== 'success') return false;
+                    passedActions.add(crName);
+                  } else if (ALL_CODEQL_CHECKS.has(crName)) {
+                    if ((crAppId !== 15368 && crAppId !== 57789) || crConclusion !== 'success') {
+                      return false;
+                    }
+                    if (MAIN_CODEQL_SUCCESS_CHECKS.has(crName)) {
+                      hasCodeqlSuccess = true;
+                    }
+                  }
+                }
+                if (list.length < 100 || rawCount >= totalExpected) break;
+              }
+              if (totalExpected <= 0 || rawCount < totalExpected || totalExpected > 1000) return false;
+              if (REQUIRED_MAIN_ACTIONS_CHECKS.some(req => !passedActions.has(req))) return false;
+              return hasCodeqlSuccess;
+            } catch {
+              return false;
+            }
+          }
+
+          const repoSlug = String(process.env.REPO_SLUG ?? '');
+          const repoId = Number.parseInt(String(process.env.REPO_ID ?? '0'), 10);
+          const currentRunId = String(process.env.RUN_ID ?? '');
+          const killSwitchActive = String(process.env.KILL_SWITCH ?? '').toLowerCase() === 'true';
+          const automodeEnabled = String(process.env.AUTOMODE_ENABLED ?? 'true').toLowerCase() !== 'false';
+          const branchUpdateSupported = String(process.env.BRANCH_UPDATE_SUPPORTED ?? '').toLowerCase() === 'true';
+          const [owner, name] = repoSlug.split('/');
+          const mainHealthy = inspectProtectedMainHealth(owner, name, currentRunId);
+
+          const rawPrs = [];
+          let prCursor = null;
+          for (let page = 0; page < 2; page++) {
+            const args = ['api', 'graphql', '-f', `query=${OPEN_PRS_QUERY}`, '-f', `owner=${owner}`, '-f', `name=${name}`];
+            if (prCursor !== null) args.push('-f', `cursor=${prCursor}`);
+            const res = ghJson(args);
+            const conn = res?.data?.repository?.pullRequests;
+            for (const node of conn?.nodes ?? []) {
+              if (node) rawPrs.push(node);
+            }
+            if (!conn?.pageInfo?.hasNextPage) break;
+            prCursor = conn.pageInfo.endCursor;
+          }
+
+          const pullRequests = [];
+          for (const pr of rawPrs.slice(0, 100)) {
+            const prNum = Number(pr.number);
+            const headOid = String(pr.headRefOid ?? '');
+
+            let threadNodes = [...(pr.reviewThreads?.nodes ?? [])];
+            let threadsHasNext = Boolean(pr.reviewThreads?.pageInfo?.hasNextPage);
+            let threadCursor = pr.reviewThreads?.pageInfo?.endCursor ?? null;
+            for (let tp = 0; tp < 4 && threadsHasNext && threadCursor; tp++) {
+              const tRes = ghJson(['api', 'graphql', '-f', `query=${THREADS_PAGE_QUERY}`, '-f', `id=${pr.id}`, '-f', `cursor=${threadCursor}`]);
+              const tConn = tRes?.data?.node?.reviewThreads;
+              threadNodes.push(...(tConn?.nodes ?? []));
+              threadsHasNext = Boolean(tConn?.pageInfo?.hasNextPage);
+              threadCursor = tConn?.pageInfo?.endCursor ?? null;
+            }
+            const reviewThreadsComplete = !threadsHasNext;
+            const unresolvedThreadCount = threadNodes.filter(t => t?.isResolved !== true).length;
+
+            let reviewNodes = [...(pr.reviews?.nodes ?? [])];
+            let reviewsHasNext = Boolean(pr.reviews?.pageInfo?.hasNextPage);
+            let reviewCursor = pr.reviews?.pageInfo?.endCursor ?? null;
+            for (let rp = 0; rp < 1 && reviewsHasNext && reviewCursor; rp++) {
+              const rRes = ghJson(['api', 'graphql', '-f', `query=${REVIEWS_PAGE_QUERY}`, '-f', `id=${pr.id}`, '-f', `cursor=${reviewCursor}`]);
+              const rConn = rRes?.data?.node?.reviews;
+              reviewNodes.push(...(rConn?.nodes ?? []));
+              reviewsHasNext = Boolean(rConn?.pageInfo?.hasNextPage);
+              reviewCursor = rConn?.pageInfo?.endCursor ?? null;
+            }
+            let reviewsComplete = !reviewsHasNext && reviewNodes.length <= 200;
+            const reviews = [];
+            for (const rv of reviewNodes.slice(0, 200)) {
+              const login = rv?.author?.login;
+              const dbId = rv?.databaseId;
+              if (typeof login !== 'string' || login.length === 0 || !Number.isSafeInteger(dbId) || dbId <= 0) {
+                reviewsComplete = false;
+                continue;
+              }
+              reviews.push({
+                id: dbId,
+                reviewerLogin: login,
+                reviewerIsBot: rv?.author?.__typename !== 'User',
+                state: String(rv.state ?? 'COMMENTED'),
+                commitOid: typeof rv?.commit?.oid === 'string' ? rv.commit.oid : null,
+                body: String(rv.body ?? '').replaceAll('\u0000', '').slice(0, 65536)
+              });
+            }
+
+            const fileSet = new Set();
+            let changedFilesComplete = true;
+            for (let fp = 1; fp <= 5; fp++) {
+              const batch = ghJson(['api', `repos/Jamula/SoftwareFactory/pulls/${prNum}/files?per_page=100&page=${fp}`]);
+              if (!Array.isArray(batch)) {
+                changedFilesComplete = false;
+                break;
+              }
+              for (const f of batch) {
+                if (typeof f?.filename === 'string' && f.filename.length > 0) fileSet.add(f.filename);
+                if (typeof f?.previous_filename === 'string' && f.previous_filename.length > 0) {
+                  fileSet.add(f.previous_filename);
+                }
+              }
+              if (batch.length < 100) break;
+              if (fp === 5) {
+                const overflow = ghJson(['api', `repos/Jamula/SoftwareFactory/pulls/${prNum}/files?per_page=1&page=6`]);
+                if (!Array.isArray(overflow) || overflow.length > 0) changedFilesComplete = false;
+              }
+            }
+            const allFiles = [...fileSet];
+            if (allFiles.length > 500) changedFilesComplete = false;
+
+            const checkRuns = [];
+            let checkRunsComplete = false;
+            if (/^[0-9a-f]{40}$/.test(headOid)) {
+              let rawCount = 0;
+              let totalExpected = 0;
+              checkRunsComplete = true;
+              for (let cp = 1; cp <= 2; cp++) {
+                const crRes = ghJson(['api', `repos/Jamula/SoftwareFactory/commits/${headOid}/check-runs?per_page=100&page=${cp}`]);
+                const list = Array.isArray(crRes?.check_runs) ? crRes.check_runs : [];
+                totalExpected = typeof crRes?.total_count === 'number' ? crRes.total_count : 0;
+                rawCount += list.length;
+                for (const cr of list) {
+                  if (checkRuns.length >= 200) {
+                    checkRunsComplete = false;
+                    break;
+                  }
+                  const status = String(cr?.status ?? '').toLowerCase();
+                  const conclusion = status === 'completed' ? String(cr?.conclusion ?? '').toLowerCase() : null;
+                  const crSha = String(cr?.head_sha ?? '');
+                  const crName = String(cr?.name ?? '');
+                  if (!crName || crName.length > 160 || !/^[0-9a-f]{40}$/.test(crSha)) {
+                    checkRunsComplete = false;
+                    continue;
+                  }
+                  checkRuns.push({
+                    name: crName,
+                    status,
+                    conclusion,
+                    appId: Number.isSafeInteger(cr?.app?.id) && cr.app.id >= 0 ? cr.app.id : 0,
+                    headSha: crSha
+                  });
+                }
+                if (list.length < 100 || rawCount >= totalExpected) break;
+              }
+              if (rawCount < totalExpected || totalExpected > 200) checkRunsComplete = false;
+            }
+
+            const lastCommit = pr.commits?.nodes?.[0]?.commit;
+            const statusCheckRollupState =
+              lastCommit?.oid === headOid && typeof lastCommit?.statusCheckRollup?.state === 'string'
+                ? lastCommit.statusCheckRollup.state
+                : null;
+
+            pullRequests.push({
+              id: String(pr.id ?? ''),
+              number: prNum,
+              state: String(pr.state ?? ''),
+              isDraft: Boolean(pr.isDraft),
+              baseRefName: String(pr.baseRefName ?? ''),
+              headRepositoryId: Number.isSafeInteger(pr?.headRepository?.databaseId)
+                ? pr.headRepository.databaseId
+                : null,
+              headRefOid: headOid,
+              mergeQueueEntry: pr.mergeQueueEntry === null || pr.mergeQueueEntry === undefined
+                ? null
+                : {id: String(pr.mergeQueueEntry.id ?? '')},
+              mergeable: String(pr.mergeable ?? 'UNKNOWN'),
+              mergeStateStatus: String(pr.mergeStateStatus ?? 'UNKNOWN'),
+              authorLogin: typeof pr?.author?.login === 'string' && pr.author.login.length > 0
+                ? pr.author.login
+                : 'unknown-actor',
+              authorIsBot: pr?.author?.__typename !== 'User',
+              changedFilesComplete,
+              files: allFiles.slice(0, 500),
+              reviewThreadsComplete,
+              unresolvedThreadCount,
+              reviewsComplete,
+              reviews,
+              checkRunsComplete,
+              statusCheckRollupState,
+              checkRuns
+            });
+          }
+
+          const verdict = evaluateAutomodePullRequests({
+            repository: repoSlug,
+            repositoryId: repoId,
+            killSwitchActive,
+            automodeEnabled,
+            mainHealthy,
+            branchUpdateSupported,
+            pullRequests
+          });
+
+          const safeEnqueue = mainHealthy ? verdict.enqueue : [];
+          const safeUpdateBranch = mainHealthy && branchUpdateSupported ? verdict.updateBranch : [];
+
+          console.log(JSON.stringify({
+            active: verdict.active,
+            reason: verdict.reason,
+            mainHealthy,
+            branchUpdateSupported,
+            enqueueCount: safeEnqueue.length,
+            updateBranchCount: safeUpdateBranch.length,
+            decisions: verdict.decisions
+          }));
+
+          const actionsPayload = JSON.stringify({
+            enqueue: safeEnqueue,
+            updateBranch: safeUpdateBranch
+          });
+          if (actionsPayload.length > 4096 || /[\r\n]/.test(actionsPayload)) {
+            throw new Error('Actions payload exceeded safe single-line bound');
+          }
+          const hasActions = mainHealthy && verdict.active && (safeEnqueue.length > 0 || safeUpdateBranch.length > 0);
+          appendFileSync(
+            process.env.GITHUB_OUTPUT,
+            `has_actions=${hasActions ? 'true' : 'false'}\nactions_json=${actionsPayload}\n`
+          );
+          EOF
+
+  apply-queue-actions:
+    name: apply-queue-actions
+    needs: [evaluate]
+    if: needs.evaluate.result == 'success' && needs.evaluate.outputs.has_actions == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      pull-requests: write
+      checks: read
+    steps:
+      - name: Apply validated branch-update or Merge Queue enqueue actions
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACTIONS_JSON: ${{ needs.evaluate.outputs.actions_json }}
+          REPO_SLUG: ${{ github.repository }}
+          REPO_ID: ${{ github.repository_id }}
+          RUN_ID: ${{ github.run_id }}
+          KILL_SWITCH: ${{ vars.FACTORY_KILL_SWITCH }}
+          AUTOMODE_ENABLED: ${{ vars.FACTORY_AUTOMODE_ENABLED }}
+          BRANCH_UPDATE_SUPPORTED: ${{ vars.FACTORY_AUTOMODE_BRANCH_UPDATE }}
+        run: |
+          node -e '
+            const {execFileSync} = require("node:child_process");
+
+            if (process.env.REPO_SLUG !== "Jamula/SoftwareFactory" ||
+                process.env.REPO_ID !== "1471342715" ||
+                String(process.env.KILL_SWITCH || "").toLowerCase() === "true" ||
+                String(process.env.AUTOMODE_ENABLED || "true").toLowerCase() === "false") {
+              throw new Error("Automode apply-queue-actions blocked by scope or kill-switch guard");
+            }
+
+            const branchUpdateSupported = String(process.env.BRANCH_UPDATE_SUPPORTED || "").toLowerCase() === "true";
+            const currentRunId = String(process.env.RUN_ID || "");
+
+            const raw = String(process.env.ACTIONS_JSON || "");
+            if (raw.length === 0 || raw.length > 4096) {
+              throw new Error("Invalid ACTIONS_JSON payload length");
+            }
+
+            const parsed = JSON.parse(raw);
+            const isPlain = v => v !== null && typeof v === "object" && !Array.isArray(v) && Object.getPrototypeOf(v) === Object.prototype;
+            if (!isPlain(parsed) ||
+                Object.keys(parsed).sort().join(",") !== "enqueue,updateBranch" ||
+                !Array.isArray(parsed.enqueue) ||
+                !Array.isArray(parsed.updateBranch) ||
+                parsed.enqueue.length > 5 ||
+                parsed.updateBranch.length > 1 ||
+                (parsed.enqueue.length > 0 && parsed.updateBranch.length > 0) ||
+                parsed.enqueue.length + parsed.updateBranch.length === 0) {
+              throw new Error("Malformed ACTIONS_JSON envelope");
+            }
+
+            if (parsed.updateBranch.length > 0 && !branchUpdateSupported) {
+              throw new Error("Automode branch update blocked unless FACTORY_AUTOMODE_BRANCH_UPDATE is true");
+            }
+
+            const NUM_RE = /^[1-9]\d{0,9}$/;
+            const PR_ID_RE = /^PR_[A-Za-z0-9_-]{10,64}$/;
+            const SHA_RE = /^[0-9a-f]{40}$/;
+            const LOGIN_RE = /^[A-Za-z0-9][A-Za-z0-9._[\]-]{0,79}$/;
+            const BOT_LOGIN_RE = /\[bot\]$|^(?:copilot-swe-agent|copilot-pull-request-reviewer|anthropic-code-agent|openai-code-agent|github-actions)$/i;
+
+            const PROTECTED_PREFIXES = [".github/workflows/", "config/"];
+            const PROTECTED_EXACT = new Set([
+              "security.md",
+              "docs/policy.md",
+              "docs/engineering-standards.md",
+              "tools/engineering-factory/core.mjs",
+              "tools/engineering-factory/protected-squash.mjs",
+              "tools/engineering-factory/platform-merge-gates.mjs",
+              "tools/engineering-factory/coverage-evidence.mjs",
+              "tools/engineering-factory/budget.mjs",
+              "tools/engineering-factory/anti-rogue-audit.mjs",
+              "tools/engineering-factory/cloud-agent-admission.mjs",
+              "tools/engineering-factory/gh-aw-lock-verifier.mjs",
+              "tools/engineering-factory/review-batch.mjs",
+              "tools/engineering-factory/automode-enqueuer.mjs",
+              "tools/engineering-factory/main-health-audit.mjs"
+            ]);
+            const REQUIRED_MAIN_ACTIONS_CHECKS = [
+              "build-test",
+              "upload-coverage-javascript",
+              "windows-aspire-runtime",
+              "linux-aspire-runtime",
+              "test-coverage",
+              "pinned-synthetic-replay / replay",
+              "linux-dotnet-agents",
+              "windows-dotnet-agents"
+            ];
+            const MAIN_CODEQL_SUCCESS_CHECKS = new Set(["CodeQL", "Analyze (javascript-typescript)"]);
+            const ALL_CODEQL_CHECKS = new Set([
+              "CodeQL",
+              "Analyze (javascript-typescript)",
+              "Analyze (actions)",
+              "Analyze (csharp)"
+            ]);
+            const ALLOWED_MAIN_CONCLUSIONS = new Set(["success", "skipped", "neutral"]);
+            const REQUIRED_PR_ACTIONS_CHECKS = [
+              "build-test",
+              "upload-coverage-javascript",
+              "windows-aspire-runtime"
+            ];
+            const COPILOT_REVIEW_CHECKS = new Set([
+              "copilot-pull-request-reviewer",
+              "running copilot code review",
+              "copilot code review"
+            ]);
+            const REVIEW_STATES = new Set(["APPROVED", "COMMENTED", "CHANGES_REQUESTED", "DISMISSED", "PENDING"]);
+            const DECISION_REVIEW_STATES = new Set(["APPROVED", "CHANGES_REQUESTED", "DISMISSED"]);
+            const ENQUEUE_MERGE_STATES = new Set(["CLEAN", "BLOCKED", "HAS_HOOKS", "UNSTABLE"]);
+
+            function ghJson(args) {
+              const out = execFileSync("gh", args, {
+                encoding: "utf8",
+                maxBuffer: 16 * 1024 * 1024
+              });
+              return JSON.parse(out);
+            }
+
+            function isSafePath(v) {
+              return typeof v === "string" &&
+                v.length > 0 &&
+                v.length <= 512 &&
+                !/[\u0000-\u001f\u007f\\]/.test(v) &&
+                !v.split("/").some(seg => seg === "" || seg === "." || seg === "..");
+            }
+
+            function isProtectedPath(f) {
+              const lower = f.toLowerCase();
+              return PROTECTED_EXACT.has(lower) ||
+                PROTECTED_PREFIXES.some(p => lower.startsWith(p)) ||
+                lower.endsWith(".lock.yml") ||
+                /(^|\/)(rulesets?|kill-switch|kill_switch)(\/|\.|$)/i.test(f);
+            }
+
+            function isCopilotReviewer(login, isBot) {
+              return isBot === true && /^copilot-pull-request-reviewer(?:\[bot\])?$/i.test(login);
+            }
+
+            function isClearCopilotSummary(reviewId, body) {
+              if (!Number.isSafeInteger(reviewId) || reviewId <= 0 || typeof body !== "string" || body.length === 0 || body.length > 65536 || body.includes("\u0000")) {
+                return false;
+              }
+              const detailsIdx = body.search(/<details>\s*<summary><strong>What changed in this PR<\/strong><\/summary>/);
+              const overview = (detailsIdx >= 0 ? body.slice(0, detailsIdx) : body).trimStart();
+              if (!overview.startsWith("<!-- ccr-overview-v2 -->")) return false;
+              const clearHeading = /^<!-- ccr-overview-v2 -->\r?\n+### (?:\u{1F7E2} )?Approval recommended\r?\n/u.test(overview);
+              const noOpenIssues = /^\*\*No open issues\*\*(?: \u{1F389})?\s*$/mu.test(overview);
+              const forbidden = /(?<!\bno\s)open issues?|previously missed issues?|Changes recommended|Changes requested|Needs a closer look/i.test(overview);
+              return clearHeading && noOpenIssues && !forbidden && !overview.includes("<details");
+            }
+
+            const MAIN_HEALTH_QUERY = "query($owner:String!,$name:String!){repository(owner:$owner,name:$name){databaseId mainRef:ref(qualifiedName:\"refs/heads/main\"){target{oid}} defaultBranchRef{name refUpdateRule{allowsDeletions allowsForcePushes} target{oid ... on Commit{oid statusCheckRollup{state}}}} rulesets(first:20,includeParents:true){nodes{enforcement target}}}}";
+
+            const CANDIDATE_PR_QUERY = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){databaseId pullRequest(number:$number){id number state isDraft baseRefName headRefOid mergeable mergeStateStatus mergeQueueEntry{id} author{__typename login} headRepository{databaseId} commits(last:1){nodes{commit{oid statusCheckRollup{state}}}} reviewThreads(first:100){pageInfo{hasNextPage endCursor} nodes{isResolved}} reviews(first:100){pageInfo{hasNextPage endCursor} nodes{databaseId state body commit{oid} author{__typename login}}}}}}";
+
+            const THREADS_PAGE_QUERY = "query($id:ID!,$cursor:String!){node(id:$id){... on PullRequest{reviewThreads(first:100,after:$cursor){pageInfo{hasNextPage endCursor} nodes{isResolved}}}}}";
+
+            const REVIEWS_PAGE_QUERY = "query($id:ID!,$cursor:String!){node(id:$id){... on PullRequest{reviews(first:100,after:$cursor){pageInfo{hasNextPage endCursor} nodes{databaseId state body commit{oid} author{__typename login}}}}}}";
+
+            function assertProtectedMainHealthy() {
+              const mRes = ghJson([
+                "api", "graphql",
+                "-f", `query=${MAIN_HEALTH_QUERY}`,
+                "-f", "owner=Jamula",
+                "-f", "name=SoftwareFactory"
+              ]);
+              const repoNode = mRes?.data?.repository;
+              if (repoNode?.databaseId !== 1471342715) {
+                throw new Error("Main health failed: UNTRUSTED_REPOSITORY");
+              }
+              const defBranch = repoNode?.defaultBranchRef;
+              if (defBranch?.name !== "main") {
+                throw new Error("Main health failed: DEFAULT_BRANCH_NOT_MAIN");
+              }
+              const hasRefRule =
+                defBranch?.refUpdateRule !== null &&
+                defBranch?.refUpdateRule !== undefined &&
+                defBranch.refUpdateRule.allowsDeletions === false &&
+                defBranch.refUpdateRule.allowsForcePushes === false;
+              const hasRuleset =
+                Array.isArray(repoNode?.rulesets?.nodes) &&
+                repoNode.rulesets.nodes.some(r => r && r.enforcement === "ACTIVE" && r.target === "BRANCH");
+              if (!hasRefRule && !hasRuleset) {
+                throw new Error("Main health failed: MAIN_NOT_PROTECTED");
+              }
+              const mainOid = String(defBranch?.target?.oid || "");
+              const refOid = String(repoNode?.mainRef?.target?.oid || "");
+              if (!SHA_RE.test(mainOid) || refOid !== mainOid) {
+                throw new Error("Main health failed: MAIN_OID_INVALID");
+              }
+              if (defBranch?.target?.statusCheckRollup?.state !== "SUCCESS") {
+                throw new Error("Main health failed: MAIN_ROLLUP_NOT_SUCCESS");
+              }
+
+              const selfRunPrefix = /^[1-9]\d{0,19}$/.test(currentRunId)
+                ? `https://github.com/Jamula/SoftwareFactory/actions/runs/${currentRunId}/job/`
+                : null;
+              let rawCount = 0;
+              let totalExpected = -1;
+              const passedActions = new Set();
+              let hasCodeqlSuccess = false;
+              for (let cp = 1; cp <= 10; cp++) {
+                const crRes = ghJson([
+                  "api",
+                  `repos/Jamula/SoftwareFactory/commits/${mainOid}/check-runs?per_page=100&page=${cp}`
+                ]);
+                if (crRes?.incomplete_results === true ||
+                    !Array.isArray(crRes?.check_runs) ||
+                    typeof crRes?.total_count !== "number") {
+                  throw new Error("Main health failed: MAIN_CHECKS_INCOMPLETE");
+                }
+                totalExpected = crRes.total_count;
+                const list = crRes.check_runs;
+                rawCount += list.length;
+                for (const cr of list) {
+                  const crName = String(cr?.name || "");
+                  const crSha = String(cr?.head_sha || "");
+                  const crStatus = String(cr?.status || "").toLowerCase();
+                  const crConclusion = crStatus === "completed" ? String(cr?.conclusion || "").toLowerCase() : "";
+                  const crAppId = Number.isSafeInteger(cr?.app?.id) ? cr.app.id : 0;
+                  const detailsUrl = String(cr?.details_url || "");
+                  if (!crName || crName.length > 160 || crSha !== mainOid) {
+                    throw new Error("Main health failed: MAIN_CHECK_METADATA_INVALID");
+                  }
+                  if (selfRunPrefix !== null &&
+                      detailsUrl.startsWith(selfRunPrefix) &&
+                      crAppId === 15368 &&
+                      (crName === "evaluate" || crName === "apply-queue-actions")) {
+                    continue;
+                  }
+                  if (crStatus !== "completed" || !ALLOWED_MAIN_CONCLUSIONS.has(crConclusion)) {
+                    throw new Error("Main health failed: MAIN_CHECK_NOT_GREEN");
+                  }
+                  if (REQUIRED_MAIN_ACTIONS_CHECKS.includes(crName)) {
+                    if (crAppId !== 15368 || crConclusion !== "success") {
+                      throw new Error("Main health failed: MAIN_REQUIRED_CHECK_FAILED");
+                    }
+                    passedActions.add(crName);
+                  } else if (ALL_CODEQL_CHECKS.has(crName)) {
+                    if ((crAppId !== 15368 && crAppId !== 57789) || crConclusion !== "success") {
+                      throw new Error("Main health failed: MAIN_CODEQL_CHECK_FAILED");
+                    }
+                    if (MAIN_CODEQL_SUCCESS_CHECKS.has(crName)) {
+                      hasCodeqlSuccess = true;
+                    }
+                  }
+                }
+                if (list.length < 100 || rawCount >= totalExpected) break;
+              }
+              if (totalExpected <= 0 || rawCount < totalExpected || totalExpected > 1000) {
+                throw new Error("Main health failed: MAIN_CHECKS_INCOMPLETE");
+              }
+              if (REQUIRED_MAIN_ACTIONS_CHECKS.some(req => !passedActions.has(req))) {
+                throw new Error("Main health failed: MAIN_REQUIRED_CHECK_MISSING");
+              }
+              if (!hasCodeqlSuccess) {
+                throw new Error("Main health failed: MAIN_CODEQL_CHECK_MISSING");
+              }
+            }
+
+            function verifyCandidateItem(item, actionKind) {
+              try {
+                const pRes = ghJson([
+                  "api", "graphql",
+                  "-f", `query=${CANDIDATE_PR_QUERY}`,
+                  "-f", "owner=Jamula",
+                  "-f", "name=SoftwareFactory",
+                  "-F", `number=${item.number}`
+                ]);
+                if (pRes?.data?.repository?.databaseId !== 1471342715) {
+                  return {ok: false, reason: "UNTRUSTED_REPOSITORY"};
+                }
+                const pr = pRes?.data?.repository?.pullRequest;
+                if (!pr || Number(pr.number) !== item.number || !PR_ID_RE.test(String(pr.id || ""))) {
+                  return {ok: false, reason: "INVALID_PR_IDENTITY"};
+                }
+                if (actionKind === "ENQUEUE" && pr.id !== item.pullRequestId) {
+                  return {ok: false, reason: "PR_ID_MISMATCH"};
+                }
+                if (pr.state !== "OPEN") return {ok: false, reason: "NOT_OPEN"};
+                if (pr.isDraft !== false || pr.mergeStateStatus === "DRAFT") return {ok: false, reason: "DRAFT_PR"};
+                if (pr.baseRefName !== "main") return {ok: false, reason: "NON_MAIN_BASE"};
+                if (pr.headRepository?.databaseId !== 1471342715) return {ok: false, reason: "UNTRUSTED_HEAD_REPOSITORY"};
+                if (pr.headRefOid !== item.expectedHeadOid) return {ok: false, reason: "HEAD_SHA_CHANGED"};
+                if (pr.mergeQueueEntry !== null) return {ok: false, reason: "ALREADY_IN_MERGE_QUEUE"};
+                if (pr.mergeable !== "MERGEABLE") {
+                  return {ok: false, reason: pr.mergeable === "CONFLICTING" ? "CONFLICTING" : "MERGE_STATE_UNKNOWN"};
+                }
+                if (actionKind === "UPDATE_BRANCH") {
+                  if (pr.mergeStateStatus !== "BEHIND") return {ok: false, reason: "NOT_BEHIND"};
+                } else if (!ENQUEUE_MERGE_STATES.has(pr.mergeStateStatus)) {
+                  return {ok: false, reason: "INVALID_MERGE_STATE_STATUS"};
+                }
+
+                const authorLogin = typeof pr.author?.login === "string" ? pr.author.login : "";
+                if (!LOGIN_RE.test(authorLogin)) return {ok: false, reason: "INVALID_AUTHOR"};
+                const authorLower = authorLogin.toLowerCase();
+                const authorIsBot = pr.author?.__typename !== "User" || BOT_LOGIN_RE.test(authorLogin);
+
+                const fileSet = new Set();
+                let changedFilesComplete = true;
+                for (let fp = 1; fp <= 5; fp++) {
+                  const batch = ghJson(["api", `repos/Jamula/SoftwareFactory/pulls/${item.number}/files?per_page=100&page=${fp}`]);
+                  if (!Array.isArray(batch)) {
+                    changedFilesComplete = false;
+                    break;
+                  }
+                  for (const f of batch) {
+                    if (typeof f?.filename === "string" && f.filename.length > 0) fileSet.add(f.filename);
+                    if (typeof f?.previous_filename === "string" && f.previous_filename.length > 0) {
+                      fileSet.add(f.previous_filename);
+                    }
+                  }
+                  if (batch.length < 100) break;
+                  if (fp === 5) {
+                    const overflow = ghJson(["api", `repos/Jamula/SoftwareFactory/pulls/${item.number}/files?per_page=1&page=6`]);
+                    if (!Array.isArray(overflow) || overflow.length > 0) changedFilesComplete = false;
+                  }
+                }
+                const allFiles = [...fileSet];
+                if (!changedFilesComplete || allFiles.length === 0 || allFiles.length > 500 || !allFiles.every(isSafePath)) {
+                  return {ok: false, reason: "CHANGED_FILES_INCOMPLETE"};
+                }
+                const touchesProtected = allFiles.some(isProtectedPath);
+
+                const threadNodes = [...(pr.reviewThreads?.nodes || [])];
+                let threadsHasNext = Boolean(pr.reviewThreads?.pageInfo?.hasNextPage);
+                let threadCursor = pr.reviewThreads?.pageInfo?.endCursor || null;
+                for (let tp = 0; tp < 4 && threadsHasNext && threadCursor; tp++) {
+                  const tRes = ghJson(["api", "graphql", "-f", `query=${THREADS_PAGE_QUERY}`, "-f", `id=${pr.id}`, "-f", `cursor=${threadCursor}`]);
+                  const tConn = tRes?.data?.node?.reviewThreads;
+                  threadNodes.push(...(tConn?.nodes || []));
+                  threadsHasNext = Boolean(tConn?.pageInfo?.hasNextPage);
+                  threadCursor = tConn?.pageInfo?.endCursor || null;
+                }
+                if (threadsHasNext) return {ok: false, reason: "REVIEW_THREADS_INCOMPLETE"};
+                if (threadNodes.some(t => !t || t.isResolved !== true)) {
+                  return {ok: false, reason: "UNRESOLVED_REVIEW_THREADS"};
+                }
+
+                const reviewNodes = [...(pr.reviews?.nodes || [])];
+                let reviewsHasNext = Boolean(pr.reviews?.pageInfo?.hasNextPage);
+                let reviewCursor = pr.reviews?.pageInfo?.endCursor || null;
+                for (let rp = 0; rp < 1 && reviewsHasNext && reviewCursor; rp++) {
+                  const rRes = ghJson(["api", "graphql", "-f", `query=${REVIEWS_PAGE_QUERY}`, "-f", `id=${pr.id}`, "-f", `cursor=${reviewCursor}`]);
+                  const rConn = rRes?.data?.node?.reviews;
+                  reviewNodes.push(...(rConn?.nodes || []));
+                  reviewsHasNext = Boolean(rConn?.pageInfo?.hasNextPage);
+                  reviewCursor = rConn?.pageInfo?.endCursor || null;
+                }
+                if (reviewsHasNext || reviewNodes.length > 200) {
+                  return {ok: false, reason: "REVIEWS_INCOMPLETE"};
+                }
+
+                const latestStateByReviewer = new Map();
+                let hasPendingReview = false;
+                let latestCopilotReview = null;
+                let latestCopilotExact = null;
+
+                for (const rv of reviewNodes) {
+                  const login = rv?.author?.login;
+                  const dbId = rv?.databaseId;
+                  const state = String(rv?.state || "");
+                  const commitOid = typeof rv?.commit?.oid === "string" ? rv.commit.oid : null;
+                  const rawBody = rv?.body === null || rv?.body === undefined ? "" : rv.body;
+                  if (!LOGIN_RE.test(String(login || "")) ||
+                      !Number.isSafeInteger(dbId) ||
+                      dbId <= 0 ||
+                      !REVIEW_STATES.has(state) ||
+                      (commitOid !== null && !SHA_RE.test(commitOid)) ||
+                      typeof rawBody !== "string" ||
+                      rawBody.length > 65536 ||
+                      rawBody.includes("\u0000")) {
+                    return {ok: false, reason: "REVIEWS_INCOMPLETE"};
+                  }
+                  const revIsBotFlag = rv?.author?.__typename !== "User";
+                  if (state === "PENDING") hasPendingReview = true;
+                  const revLower = login.toLowerCase();
+                  const independent = revLower !== authorLower;
+                  const revIsBot = revIsBotFlag || BOT_LOGIN_RE.test(login);
+                  if (DECISION_REVIEW_STATES.has(state)) {
+                    latestStateByReviewer.set(revLower, {state, commitOid, independent, revIsBot});
+                  }
+                  if (independent && (state === "APPROVED" || state === "COMMENTED") &&
+                      isCopilotReviewer(login, revIsBotFlag)) {
+                    latestCopilotReview = {id: dbId, body: rawBody};
+                    if (commitOid === item.expectedHeadOid) {
+                      latestCopilotExact = {id: dbId, body: rawBody};
+                    }
+                  }
+                }
+
+                let humanApprovedExactHead = false;
+                let hasChangesRequested = false;
+                for (const entry of latestStateByReviewer.values()) {
+                  if (entry.state === "CHANGES_REQUESTED") hasChangesRequested = true;
+                  if (entry.state === "APPROVED" &&
+                      entry.commitOid === item.expectedHeadOid &&
+                      entry.independent &&
+                      !entry.revIsBot) {
+                    humanApprovedExactHead = true;
+                  }
+                }
+
+                if (touchesProtected && authorIsBot && !humanApprovedExactHead) {
+                  return {ok: false, reason: "PROTECTED_CONTROL_PLANE_REQUIRES_HUMAN_APPROVAL"};
+                }
+                if (hasPendingReview || hasChangesRequested) {
+                  return {ok: false, reason: "CHANGES_REQUESTED"};
+                }
+
+                const checkRuns = [];
+                let rawCheckCount = 0;
+                let totalExpectedChecks = -1;
+                for (let cp = 1; cp <= 2; cp++) {
+                  const crRes = ghJson([
+                    "api",
+                    `repos/Jamula/SoftwareFactory/commits/${item.expectedHeadOid}/check-runs?per_page=100&page=${cp}`
+                  ]);
+                  if (crRes?.incomplete_results === true ||
+                      !Array.isArray(crRes?.check_runs) ||
+                      typeof crRes?.total_count !== "number") {
+                    return {ok: false, reason: "CHECK_RUNS_INCOMPLETE"};
+                  }
+                  totalExpectedChecks = crRes.total_count;
+                  const list = crRes.check_runs;
+                  rawCheckCount += list.length;
+                  for (const cr of list) {
+                    if (checkRuns.length >= 200) return {ok: false, reason: "CHECK_RUNS_INCOMPLETE"};
+                    const crName = String(cr?.name || "");
+                    const crSha = String(cr?.head_sha || "");
+                    const crStatus = String(cr?.status || "").toLowerCase();
+                    const crConclusion = crStatus === "completed" ? String(cr?.conclusion || "").toLowerCase() : null;
+                    const crAppId = Number.isSafeInteger(cr?.app?.id) && cr.app.id >= 0 ? cr.app.id : 0;
+                    if (!crName || crName.length > 160 || !SHA_RE.test(crSha)) {
+                      return {ok: false, reason: "CHECK_RUNS_INCOMPLETE"};
+                    }
+                    checkRuns.push({name: crName, status: crStatus, conclusion: crConclusion, appId: crAppId, headSha: crSha});
+                  }
+                  if (list.length < 100 || rawCheckCount >= totalExpectedChecks) break;
+                }
+                const checkRunsComplete = totalExpectedChecks >= 0 && rawCheckCount >= totalExpectedChecks && totalExpectedChecks <= 200;
+
+                if (checkRuns.some(c => COPILOT_REVIEW_CHECKS.has(c.name.toLowerCase()) && c.status !== "completed")) {
+                  return {ok: false, reason: "COPILOT_REVIEW_IN_PROGRESS"};
+                }
+                if (latestCopilotExact !== null && !isClearCopilotSummary(latestCopilotExact.id, latestCopilotExact.body)) {
+                  return {ok: false, reason: "COPILOT_SUMMARY_NOT_CLEAR"};
+                }
+                const copilotCarryForwardClear =
+                  latestCopilotExact !== null ||
+                  (latestCopilotReview !== null && isClearCopilotSummary(latestCopilotReview.id, latestCopilotReview.body));
+                if (!humanApprovedExactHead && !copilotCarryForwardClear) {
+                  return {
+                    ok: false,
+                    reason: latestCopilotReview !== null ? "COPILOT_SUMMARY_NOT_CLEAR" : "INDEPENDENT_REVIEW_REQUIRED"
+                  };
+                }
+
+                if (actionKind === "UPDATE_BRANCH") {
+                  return {ok: true, reason: "ELIGIBLE_BEHIND"};
+                }
+
+                if (!checkRunsComplete) return {ok: false, reason: "CHECK_RUNS_INCOMPLETE"};
+                const lastCommit = pr.commits?.nodes?.[0]?.commit;
+                if (lastCommit?.oid !== item.expectedHeadOid || lastCommit?.statusCheckRollup?.state !== "SUCCESS") {
+                  return {ok: false, reason: "STATUS_ROLLUP_NOT_SUCCESS"};
+                }
+
+                const passedChecks = new Set();
+                for (const cr of checkRuns) {
+                  if (cr.headSha !== item.expectedHeadOid) continue;
+                  const isReqActions = REQUIRED_PR_ACTIONS_CHECKS.includes(cr.name);
+                  const isCodeql = ALL_CODEQL_CHECKS.has(cr.name);
+                  if (!isReqActions && !isCodeql) continue;
+                  const trusted = isReqActions
+                    ? cr.appId === 15368
+                    : (cr.appId === 15368 || cr.appId === 57789);
+                  if (!trusted) return {ok: false, reason: "UNTRUSTED_CHECK_APP"};
+                  if (cr.status !== "completed" || cr.conclusion !== "success") {
+                    return {ok: false, reason: isReqActions ? "REQUIRED_CHECKS_INCOMPLETE" : "CODEQL_CHECKS_INCOMPLETE"};
+                  }
+                  passedChecks.add(cr.name);
+                }
+                if (REQUIRED_PR_ACTIONS_CHECKS.some(req => !passedChecks.has(req))) {
+                  return {ok: false, reason: "REQUIRED_CHECKS_INCOMPLETE"};
+                }
+                const codeqlOk = passedChecks.has("CodeQL") ||
+                  (passedChecks.has("Analyze (javascript-typescript)") && passedChecks.has("Analyze (actions)"));
+                if (!codeqlOk) return {ok: false, reason: "CODEQL_CHECKS_INCOMPLETE"};
+
+                return {ok: true, reason: "ELIGIBLE"};
+              } catch {
+                return {ok: false, reason: "REFETCH_FAILED"};
+              }
+            }
+
+            for (const item of parsed.updateBranch) {
+              if (!isPlain(item) ||
+                  Object.keys(item).sort().join(",") !== "expectedHeadOid,number" ||
+                  !Number.isSafeInteger(item.number) ||
+                  !NUM_RE.test(String(item.number)) ||
+                  typeof item.expectedHeadOid !== "string" ||
+                  !SHA_RE.test(item.expectedHeadOid)) {
+                throw new Error("Invalid updateBranch action item");
+              }
+              assertProtectedMainHealthy();
+              const gate = verifyCandidateItem(item, "UPDATE_BRANCH");
+              if (!gate.ok) {
+                console.log(JSON.stringify({action: "SKIP", number: item.number, reason: gate.reason}));
+                continue;
+              }
+              execFileSync("gh", [
+                "api",
+                "-X", "PUT",
+                `repos/Jamula/SoftwareFactory/pulls/${item.number}/update-branch`,
+                "-f", `expected_head_sha=${item.expectedHeadOid}`
+              ], {stdio: "inherit"});
+            }
+
+            const ENQUEUE_MUTATION = "mutation($pullRequestId:ID!,$expectedHeadOid:GitObjectID!){enqueuePullRequest(input:{pullRequestId:$pullRequestId,expectedHeadOid:$expectedHeadOid,jump:false}){mergeQueueEntry{id position state}}}";
+            for (const item of parsed.enqueue) {
+              if (!isPlain(item) ||
+                  Object.keys(item).sort().join(",") !== "expectedHeadOid,number,pullRequestId" ||
+                  !Number.isSafeInteger(item.number) ||
+                  !NUM_RE.test(String(item.number)) ||
+                  typeof item.pullRequestId !== "string" ||
+                  !PR_ID_RE.test(item.pullRequestId) ||
+                  typeof item.expectedHeadOid !== "string" ||
+                  !SHA_RE.test(item.expectedHeadOid)) {
+                throw new Error("Invalid enqueue action item");
+              }
+              assertProtectedMainHealthy();
+              const gate = verifyCandidateItem(item, "ENQUEUE");
+              if (!gate.ok) {
+                console.log(JSON.stringify({action: "SKIP", number: item.number, reason: gate.reason}));
+                continue;
+              }
+              execFileSync("gh", [
+                "api",
+                "graphql",
+                "-f", `query=${ENQUEUE_MUTATION}`,
+                "-f", `pullRequestId=${item.pullRequestId}`,
+                "-f", `expectedHeadOid=${item.expectedHeadOid}`
+              ], {stdio: "inherit"});
+            }
+          '

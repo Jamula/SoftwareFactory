@@ -261,7 +261,8 @@ test('Customer One readiness audit JSON matches deterministic dossier and consol
    .filter(f=>f.endsWith('.mjs'))
    .map(f=>`${pkg}.${f.slice(0,-4)}`)
  ).sort();
- assert.equal(trackedComponents.length,70);
+ assert.ok(trackedComponents.length>=71);
+ assert.equal(audit.dossierInput.expectedComponents.length,trackedComponents.length);
  assert.deepEqual(audit.dossierInput.expectedComponents,trackedComponents);
  assert.deepEqual(audit.consolidatedExitInput.expectedComponents,trackedComponents);
  const actual=evaluateDossier(audit.dossierInput);
