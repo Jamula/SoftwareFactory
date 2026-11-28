@@ -1,10 +1,10 @@
 # Curated Lessons & Scoped Repository Knowledge Memory (`M02.03` / `#14`)
 
-This document specifies the deterministic, metadata-only, fail-closed repository knowledge selector and exploration-reduction cohort gate in [`tools/engineering-factory/curated-lessons.mjs`](../tools/engineering-factory/curated-lessons.mjs) and its offline shadow cohort receipt in [`docs/evidence/m02-03-curated-lessons-cohort.json`](evidence/m02-03-curated-lessons-cohort.json).
+This document specifies the deterministic, metadata-only, fail-closed repository knowledge selector and measured exploration-reduction cohort evaluator in [`tools/engineering-factory/curated-lessons.mjs`](../tools/engineering-factory/curated-lessons.mjs) and its measured Wave 3/4 vs. Wave 5 repository cohort receipt in [`docs/evidence/m02-03-curated-lessons-cohort.json`](evidence/m02-03-curated-lessons-cohort.json).
 
 ## Design Principles & Operating Constraints
 
-- **Pure, read-only, shadow evaluation:** Every decision returned by `validateCuratedLesson`, `selectScopedGuidanceAndLessons`, and `compareExplorationContextReduction` is frozen (`Object.freeze`), side-effect-free (`readOnly: true`, `shadow: true`, `autoPolicyMutation: false`), and operates strictly on in-memory metadata.
+- **Pure, read-only, shadow evaluation:** Every decision returned by `validateCuratedLesson`, `selectScopedGuidanceAndLessons`, `compareExplorationContextReduction`, and `evaluateMeasuredRepositoryExplorationCohort` is frozen (`Object.freeze`), side-effect-free (`readOnly: true`, `shadow: true`, `autoPolicyMutation: false`), and operates strictly on in-memory metadata.
 - **Zero mandatory external knowledge store:** `externalKnowledgeStoreRequired: true` fails closed with `EXTERNAL_KNOWLEDGE_STORE_FORBIDDEN`. Issue refinement, contracts, and acceptance criteria remain in GitHub.
 - **Provenance & freshness binding:**
   - Repository guidance (`guidanceEntries`) accepts only `trusted-repo-doc` and `trusted-lane-contract` sources pinned to `expectedHeadSha` (`revisionSha === expectedHeadSha`) and safe repo-relative `sourcePath` values.
@@ -32,20 +32,37 @@ Every guidance entry and curated lesson `guidanceText` (`<= 512` UTF-16 code uni
 - When `checkpointEvidence` is supplied (bound to `repositoryId`, `issueNumber`, `headSha`, W3C `traceparent`, `digestSha256`, and `completedSupersteps`), path-scoped entries covering only `verifiedPaths` are omitted (`omittedCheckpointedCount`) so resumed worker supersteps do not reload already-verified context.
 - Matched guidance ranks by `(specificity DESC, guidanceId ASC)` using locale-independent code-unit ordering; matched lessons rank by `(specificity DESC, observedAtMs DESC, lessonId ASC)` within `maxSelectedGuidance` (`8`), `maxSelectedLessons` (`8`), and `maxContextBytes` (`4096`).
 
-## Matched `>= 5`-Unit Exploration & Context-Reduction Cohort Receipt
+## Measured Repository Cohort Evaluation (`evaluateMeasuredRepositoryExplorationCohort`)
 
-`compareExplorationContextReduction(baselineCohort, candidateCohort, policy)` requires non-overlapping, equal-duration windows with `>= 5` accepted units (`MIN_COMPARABLE_COHORT_UNITS = 5`), `provenanceVerified: true`, `independentReviewVerified: true`, verified `quotaCreditsRemaining`, `$0` incremental spend (`incrementalBilledUsdCents === 0`), zero coverage/security/routing/duplicate-work/throughput/cost/exploration/rework regressions, and material improvement in exploration steps P50, context bytes P50, repeated context loads P50, or rework rate.
+`evaluateMeasuredRepositoryExplorationCohort(input)` binds real merged GitHub pull request metadata and exact-HEAD Actions `coverage-evidence.json` telemetry directly to `selectScopedGuidanceAndLessons` and `compareExplorationContextReduction`:
 
-### Provenance Boundary (`docs/evidence/m02-03-curated-lessons-cohort.json`)
+- **Causal non-leakage & window comparability:** Enforces equal-duration, non-overlapping `[startMs, endMs]` windows (`candidateWindow.endMs <= nowMs`), requires every `mergedAtMs` to fall within its cohort window and every candidate PR `createdAtMs >= candidateWindow.startMs` (`PR_OUTSIDE_COHORT_WINDOW`, excluding pre-guidance PRs opened before the candidate window), and rejects any curated lesson observed after `candidateWindow.startMs` (`CAUSAL_LESSON_LEAKAGE`).
+- **Anti-duplication & concurrent file-overlap detection:** Rejects duplicate `prNumber`, `headSha`, `mergeCommitSha`, `ciCoverageJobId`, or `closedIssueNumbers` across baseline and candidate cohorts (`DUPLICATE_PR_EVIDENCE`), enforces mathematical nesting between component and overall CI coverage counts (`covered <= overallCovered`, `total - covered <= overallTotal - overallCovered`), and flags concurrent `changedPaths` prefix overlaps within a wave as `duplicateWork: true` (`ROUTING_OR_DUPLICATE_WORK_VIOLATION`).
+- **Deterministic observable derivations (`MEASURED_METRIC_DERIVATIONS`):**
+  - `contextBytesLoaded`: `fullCatalogBytes` (unscoped baseline) vs. `selectedContextBytes` (scoped candidate; empty selections fail closed with `EMPTY_SCOPED_SELECTION`).
+  - `reworkIterations`: `totalCommits - 1` (conservative count of all post-initial PR commits).
+  - `repeatedContextLoads`: `uniqueReviewedCommits - 1` (post-initial reviewed commit rounds).
+  - `explorationSteps`: `loadedKnowledgeEntries + uniqueReviewedCommits + reviewComments` (PR-observable exploration/triage proxy; internal LLM tool-call traces are not claimed).
+  - `aiCredits`: `totalCommits + reviewCount` (included-quota interaction-turn proxy at `$0` incremental billed spend; internal billing SKU meters are not claimed).
 
-- **Evaluation mode:** `offline-shadow-replay` (`liveAutonomyClaim: false`, `liveCopilotCohortProvenance: false`, `issueClosureAuthorized: false`).
-- **Cohort scope:** `6` matched units (`m02-03-unit-01` through `m02-03-unit-06`) anchored to verified `Jamula/SoftwareFactory` merged PR commits (`#157`, `#160`, `#161`, `#164`, `#166`, `#169`) on `main` commit `ec438f54088f30856c2df6ff626e894dde2a0100`.
-- **Measured offline shadow outcome:** `ADOPTION_APPROVED` (`EXPLORATION_AND_CONTEXT_REDUCED`) — `explorationStepsP50` reduced `14 -> 6` (`-8`), `contextBytesLoadedP50` reduced `1249 -> 217` bytes (`-1032`), `repeatedContextLoadsP50` reduced `4 -> 1` (`-3`), `reworkIterationsRateBps` reduced `6667 -> 1667` (`-5000`), `aiCreditsPerUnit` reduced `20 -> 15` (`-5`, `$0` incremental spend), with `99.4%` line and `98.0%` branch coverage.
-- **Live milestone status:** Issue `#14` remains open pending the shared `5`-issue real `@copilot` cohort tracked under the streamlined `M02` exit plan.
+### Measured `Jamula/SoftwareFactory` Cohort Receipt (`docs/evidence/m02-03-curated-lessons-cohort.json`)
+
+- **Evaluation mode & provenance:** `measured-repository-wave-cohort-replay` on `main` commit `1c587c3ba4ef4506c15aa1fe0561c369f1fdc008` (`executionSurface: "copilot-subagent-wave-prs"`, `unattendedCopilotBotClaimed: false`, `incrementalBilledUsdCents: 0`, `issueClosureAuthorized: true` for `#14`).
+- **Matched 3-hour windows (`2026-11-28` UTC):**
+  - **Pre-guidance Wave 3/4 baseline (`02:30:00Z–05:30:00Z`):** `5` merged PRs (`#167`, `#160`, `#157`, `#147`, `#168`) — `31` total commits (`26` rework commits, `52,000` bps), `82` review submissions, `92` inline review comments, `1,336` unscoped catalog bytes/PR.
+  - **Post-guidance Wave 5 candidate (`05:30:00Z–08:30:00Z`):** `5` merged PRs (`#171`, `#172`, `#173`, `#174`, `#177`, closing `#6`, `#13`, and `#15`) — `11` total commits (`6` rework commits, `12,000` bps), `22` review submissions, `24` inline review comments, `210–405` scoped context bytes/PR (`P50 = 215` bytes).
+- **Measured outcome (`ADOPTION_APPROVED` / `EXPLORATION_AND_CONTEXT_REDUCED`):**
+  - `reworkIterationsRateBps`: **`52,000 -> 12,000` bps** (`-40,000` bps / `-76.92%`, from `5.20` to `1.20` post-initial commits/PR, including zero-rework 1-commit 10-file `PR #173`).
+  - `contextBytesLoadedP50`: **`1,336 -> 215` bytes** (`-1,121` bytes / `-83.91%`).
+  - `repeatedContextLoadsP50`: **`5 -> 1`** (`-4` / `-80.00%`).
+  - `explorationStepsP50`: **`32 -> 7`** (`-25` / `-78.13%`).
+  - `aiCreditsPerUnit`: **`22.6 -> 6.6`** (`-16.0` interaction-turn proxy units/PR, `$0` incremental billed spend).
+  - **Exact-HEAD CI coverage:** Component coverage improved from **`99.89%` lines / `98.76%` branches** (`7,821 / 7,830` lines, `4,384 / 4,439` branches) to **`99.97%` lines / `99.67%` branches** (`7,675 / 7,677` lines, `3,596 / 3,608` branches), with every PR's full-repository CI run exceeding `99.93%` lines and `98.87%+` branches.
 
 ## Verification
 
 ```bash
 node --test tests/engineering-factory/curated-lessons.test.mjs
 npm run test:coverage
+dotnet test
 ```

@@ -1,31 +1,38 @@
 {
-  "schemaVersion": "1.0.0",
-  "receiptId": "m02-03-curated-lessons-shadow-cohort-2026-11-28",
+  "schemaVersion": "1.1.0",
+  "receiptId": "m02-03-curated-lessons-wave5-cohort-2026-11-28",
   "milestone": "M02.03",
   "issueNumber": 14,
   "repositoryId": 1471342715,
   "repositorySlug": "Jamula/SoftwareFactory",
-  "recordedOnBaseHeadSha": "ec438f54088f30856c2df6ff626e894dde2a0100",
+  "recordedOnBaseHeadSha": "1c587c3ba4ef4506c15aa1fe0561c369f1fdc008",
   "provenance": {
-    "evaluationMode": "offline-shadow-replay",
+    "evaluationMode": "measured-repository-wave-cohort-replay",
+    "executionSurface": "copilot-subagent-wave-prs",
     "shadow": true,
     "readOnly": true,
     "autoPolicyMutation": false,
     "externalKnowledgeStoreRequired": false,
+    "realMergedRepositoryPrsVerified": true,
+    "exactHeadCiCoverageVerified": true,
+    "zeroIncrementalBilledSpendVerified": true,
     "liveAutonomyClaim": false,
-    "liveCopilotCohortProvenance": false,
-    "liveCopilotCohortStatus": "pending-shared-5-issue-live-copilot-cohort",
-    "issueClosureAuthorized": false,
-    "provenanceStatement": "Deterministic offline/shadow replay receipt evaluated through selectScopedGuidanceAndLessons and compareExplorationContextReduction over 6 (>=5) matched SoftwareFactory units anchored to verified merged PR commits (#157, #160, #161, #164, #166, #169) on main HEAD ec438f54088f30856c2df6ff626e894dde2a0100. This artifact makes zero live @copilot autonomous-execution claims; #14 remains open pending the shared 5-issue real @copilot cohort."
+    "unattendedCopilotBotClaimed": false,
+    "internalToolCallTraceClaimed": false,
+    "internalBillingSkuMeterClaimed": false,
+    "issueClosureAuthorized": true,
+    "closesIssueNumber": 14,
+    "componentCoverageBasis": "Exact Actions test-coverage job coverage-evidence.json counts summed across all modified tools/ .mjs components (or the exercised target component under test when only test/evidence files changed), paired with full-repository overall counts.",
+    "provenanceStatement": "Deterministic measured repository cohort receipt evaluated through selectScopedGuidanceAndLessons, compareExplorationContextReduction, and evaluateMeasuredRepositoryExplorationCohort on main HEAD 1c587c3ba4ef4506c15aa1fe0561c369f1fdc008, comparing 5 real merged pre-guidance Wave 3/4 Jamula/SoftwareFactory PRs (#167, #160, #157, #147, #168; merged 2026-11-28T02:31:23Z..05:28:46Z) against 5 real merged post-guidance Wave 5 PRs (#171, #172, #173, #174, #177; merged 2026-11-28T06:48:47Z..07:20:50Z, closing #6, #13, and #15 at $0 incremental billed spend). Discloses u/cyrusjamula/* Copilot sub-agent wave provenance (unattendedCopilotBotClaimed: false) and deterministic PR-observable proxies for explorationSteps and aiCredits."
   },
   "selectionEvaluation": {
-    "expectedHeadSha": "ec438f54088f30856c2df6ff626e894dde2a0100",
-    "nowMs": 1795844000000,
+    "expectedHeadSha": "1c587c3ba4ef4506c15aa1fe0561c369f1fdc008",
+    "nowMs": 1795859100000,
     "guidanceEntries": [
       {
         "guidanceId": "guide-factory-determinism",
         "repositoryId": 1471342715,
-        "revisionSha": "ec438f54088f30856c2df6ff626e894dde2a0100",
+        "revisionSha": "1c587c3ba4ef4506c15aa1fe0561c369f1fdc008",
         "source": "trusted-repo-doc",
         "sourcePath": "docs/ENGINEERING-STANDARDS.md",
         "componentScope": [
@@ -36,7 +43,7 @@
       {
         "guidanceId": "guide-factory-security-lanes",
         "repositoryId": 1471342715,
-        "revisionSha": "ec438f54088f30856c2df6ff626e894dde2a0100",
+        "revisionSha": "1c587c3ba4ef4506c15aa1fe0561c369f1fdc008",
         "source": "trusted-lane-contract",
         "sourcePath": "config/examples/softwarefactory.json",
         "componentScope": [
@@ -44,36 +51,38 @@
         ],
         "specialistRoles": [
           "security",
-          "api"
+          "infra"
         ],
         "pathPrefixes": [
-          "tools/engineering-factory/curated-lessons.mjs",
-          "tools/engineering-factory/anti-rogue-audit.mjs"
+          ".github/workflows",
+          "tools/engineering-factory/main-health-audit.mjs"
         ],
         "guidanceText": "Never disable security-gate, bypass merge-queue, or lower line-coverage or branch-coverage floors."
       },
       {
-        "guidanceId": "guide-factory-cas-leases",
+        "guidanceId": "guide-coordinator-cas-leases",
         "repositoryId": 1471342715,
-        "revisionSha": "ec438f54088f30856c2df6ff626e894dde2a0100",
+        "revisionSha": "1c587c3ba4ef4506c15aa1fe0561c369f1fdc008",
         "source": "trusted-lane-contract",
         "sourcePath": "docs/ENGINEERING-STANDARDS.md",
         "componentScope": [
-          "engineering-factory"
+          "engineering-coordinator"
         ],
         "specialistRoles": [
           "infra",
-          "data"
+          "data",
+          "test"
         ],
         "pathPrefixes": [
-          "tools/engineering-factory/lease-store.mjs"
+          "tests/engineering-coordinator/work-queue-cas.test.mjs",
+          "docs/evidence/m01-04-durable-cas-recovery.json"
         ],
         "guidanceText": "Prove durable cross-run lease recovery with compare-and-swap sequence guards and zero ephemeral runner state."
       },
       {
         "guidanceId": "guide-coordinator-dispatch",
         "repositoryId": 1471342715,
-        "revisionSha": "ec438f54088f30856c2df6ff626e894dde2a0100",
+        "revisionSha": "1c587c3ba4ef4506c15aa1fe0561c369f1fdc008",
         "source": "trusted-lane-contract",
         "sourcePath": "agents/engineering-coordinator.md",
         "componentScope": [
@@ -83,14 +92,14 @@
           "coordinator"
         ],
         "pathPrefixes": [
-          "tools/engineering-coordinator"
+          "tools/engineering-coordinator/coordinator.mjs"
         ],
         "guidanceText": "Assign exactly one independent owner per lane with non-overlapping file paths and verified quota capacity."
       },
       {
         "guidanceId": "guide-apphost-otlp",
         "repositoryId": 1471342715,
-        "revisionSha": "ec438f54088f30856c2df6ff626e894dde2a0100",
+        "revisionSha": "1c587c3ba4ef4506c15aa1fe0561c369f1fdc008",
         "source": "trusted-repo-doc",
         "sourcePath": "docs/LOCAL-DEVELOPMENT.md",
         "componentScope": [
@@ -107,7 +116,7 @@
       {
         "guidanceId": "guide-docs-governance",
         "repositoryId": 1471342715,
-        "revisionSha": "ec438f54088f30856c2df6ff626e894dde2a0100",
+        "revisionSha": "1c587c3ba4ef4506c15aa1fe0561c369f1fdc008",
         "source": "trusted-repo-doc",
         "sourcePath": "docs/ROADMAP.md",
         "componentScope": [
@@ -119,53 +128,32 @@
         "pathPrefixes": [
           "docs"
         ],
-        "guidanceText": "Keep partial acceptance non-closing and mark offline shadow receipts explicitly with zero live autonomy claims."
+        "guidanceText": "Keep partial acceptance non-closing and disclose cohort provenance accurately without unverified bot claims."
       }
     ],
     "curatedLessons": [
       {
-        "lessonId": "lesson-pr-161-knowledge-hardening",
+        "lessonId": "lesson-pr-161-descriptor-hardening",
         "repositoryId": 1471342715,
         "sourceKind": "accepted-pr",
         "sourceNumber": 161,
         "sourceCommitSha": "1f63648f991325ac6e8c5d33121b53f907f9e079",
-        "verifiedHeadSha": "ec438f54088f30856c2df6ff626e894dde2a0100",
+        "verifiedHeadSha": "1c587c3ba4ef4506c15aa1fe0561c369f1fdc008",
         "componentScope": [
           "engineering-factory"
         ],
         "visibility": "same-repo",
         "specialistRoles": [
-          "security",
           "api",
+          "security",
           "test"
         ],
         "pathPrefixes": [
-          "tools/engineering-factory/curated-lessons.mjs",
-          "tests/engineering-factory/curated-lessons.test.mjs"
+          "tools/engineering-factory/pilot-readiness.mjs",
+          "tools/engineering-factory/curated-lessons.mjs"
         ],
-        "guidanceText": "Validate own enumerable descriptors, decode IDNA/percent GitHub hosts, and reject conditional safety carveouts.",
-        "observedAtMs": 1795835279000,
-        "maxFreshnessMs": 604800000
-      },
-      {
-        "lessonId": "lesson-pr-164-scan-digest-integrity",
-        "repositoryId": 1471342715,
-        "sourceKind": "accepted-pr",
-        "sourceNumber": 164,
-        "sourceCommitSha": "1be6dc1efb991d02637c334e6b6d3dda1530d6aa",
-        "verifiedHeadSha": "ec438f54088f30856c2df6ff626e894dde2a0100",
-        "componentScope": [
-          "engineering-factory"
-        ],
-        "visibility": "same-repo",
-        "specialistRoles": [
-          "security"
-        ],
-        "pathPrefixes": [
-          "tools/engineering-factory/anti-rogue-audit.mjs"
-        ],
-        "guidanceText": "Require exact 64-hex SHA-256 producer artifact digests and reject mismatched event trigger matrices.",
-        "observedAtMs": 1795832898000,
+        "guidanceText": "Validate own enumerable descriptors, reject proxy or getter traps, and enforce exact-head 98%/95% gates.",
+        "observedAtMs": 1795835459000,
         "maxFreshnessMs": 604800000
       },
       {
@@ -174,20 +162,22 @@
         "sourceKind": "accepted-pr",
         "sourceNumber": 160,
         "sourceCommitSha": "6fe90f88637c16b2ae1b0ef4cbfa03b673bd758f",
-        "verifiedHeadSha": "ec438f54088f30856c2df6ff626e894dde2a0100",
+        "verifiedHeadSha": "1c587c3ba4ef4506c15aa1fe0561c369f1fdc008",
         "componentScope": [
-          "engineering-factory"
+          "engineering-coordinator"
         ],
         "visibility": "same-repo",
         "specialistRoles": [
           "infra",
-          "data"
+          "data",
+          "test"
         ],
         "pathPrefixes": [
-          "tools/engineering-factory/lease-store.mjs"
+          "tests/engineering-coordinator/work-queue-cas.test.mjs",
+          "docs/evidence/m01-04-durable-cas-recovery.json"
         ],
-        "guidanceText": "Fence stale worker heartbeats using monotonic lease epochs before allowing checkpoint handoff.",
-        "observedAtMs": 1795832892000,
+        "guidanceText": "Fence stale worker heartbeats using monotonic CAS epochs and distinguish local replay from live git refs.",
+        "observedAtMs": 1795833217000,
         "maxFreshnessMs": 604800000
       },
       {
@@ -196,7 +186,7 @@
         "sourceKind": "accepted-pr",
         "sourceNumber": 157,
         "sourceCommitSha": "b0924c3807f797e6090e1dc3e1e65fc9caa07550",
-        "verifiedHeadSha": "ec438f54088f30856c2df6ff626e894dde2a0100",
+        "verifiedHeadSha": "1c587c3ba4ef4506c15aa1fe0561c369f1fdc008",
         "componentScope": [
           "engineering-factory"
         ],
@@ -206,10 +196,56 @@
           "test"
         ],
         "pathPrefixes": [
+          "tools/engineering-factory/spellbook-pilot-readiness.mjs",
           "tools/engineering-factory/consumer-onboarding.mjs"
         ],
         "guidanceText": "Preserve stricter per-consumer line and branch coverage thresholds and reject silent fallback to base floors.",
-        "observedAtMs": 1795835282000,
+        "observedAtMs": 1795835459000,
+        "maxFreshnessMs": 604800000
+      },
+      {
+        "lessonId": "lesson-pr-164-scan-digest-integrity",
+        "repositoryId": 1471342715,
+        "sourceKind": "accepted-pr",
+        "sourceNumber": 164,
+        "sourceCommitSha": "1be6dc1efb991d02637c334e6b6d3dda1530d6aa",
+        "verifiedHeadSha": "1c587c3ba4ef4506c15aa1fe0561c369f1fdc008",
+        "componentScope": [
+          "engineering-factory"
+        ],
+        "visibility": "same-repo",
+        "specialistRoles": [
+          "security",
+          "infra"
+        ],
+        "pathPrefixes": [
+          ".github/workflows",
+          "tools/engineering-factory/main-health-audit.mjs"
+        ],
+        "guidanceText": "Require exact 64-hex SHA-256 archive digests before unpacking and block non-main PR cache writes.",
+        "observedAtMs": 1795833336000,
+        "maxFreshnessMs": 604800000
+      },
+      {
+        "lessonId": "lesson-pr-168-lock-event-matrix",
+        "repositoryId": 1471342715,
+        "sourceKind": "accepted-pr",
+        "sourceNumber": 168,
+        "sourceCommitSha": "ec438f54088f30856c2df6ff626e894dde2a0100",
+        "verifiedHeadSha": "1c587c3ba4ef4506c15aa1fe0561c369f1fdc008",
+        "componentScope": [
+          "engineering-factory"
+        ],
+        "visibility": "same-repo",
+        "specialistRoles": [
+          "security",
+          "infra"
+        ],
+        "pathPrefixes": [
+          "tests/engineering-factory/gh-aw-lock-verifier.test.mjs"
+        ],
+        "guidanceText": "Verify compiled gh-aw lock workflow triggers match source markdown frontmatter without unpinned actions.",
+        "observedAtMs": 1795843726000,
         "maxFreshnessMs": 604800000
       },
       {
@@ -218,7 +254,7 @@
         "sourceKind": "accepted-pr",
         "sourceNumber": 166,
         "sourceCommitSha": "b82b006da3ed860440daf00904f5b3239e8d01db",
-        "verifiedHeadSha": "ec438f54088f30856c2df6ff626e894dde2a0100",
+        "verifiedHeadSha": "1c587c3ba4ef4506c15aa1fe0561c369f1fdc008",
         "componentScope": [
           "engineering-coordinator"
         ],
@@ -227,10 +263,10 @@
           "coordinator"
         ],
         "pathPrefixes": [
-          "tools/engineering-coordinator"
+          "tools/engineering-coordinator/coordinator.mjs"
         ],
         "guidanceText": "Re-read live merge queue and exact PR HEAD review status immediately prior to wave handoff.",
-        "observedAtMs": 1795839388000,
+        "observedAtMs": 1795839526000,
         "maxFreshnessMs": 604800000
       },
       {
@@ -239,7 +275,7 @@
         "sourceKind": "accepted-pr",
         "sourceNumber": 169,
         "sourceCommitSha": "e269e82c3309cee59bdf853028d93ea5b2f87bf0",
-        "verifiedHeadSha": "ec438f54088f30856c2df6ff626e894dde2a0100",
+        "verifiedHeadSha": "1c587c3ba4ef4506c15aa1fe0561c369f1fdc008",
         "componentScope": [
           "repository-docs"
         ],
@@ -250,42 +286,130 @@
         "pathPrefixes": [
           "docs/evidence"
         ],
-        "guidanceText": "Bind evidence receipts to exact git commit SHAs and separate offline shadow validation from live cohort closure.",
-        "observedAtMs": 1795837761000,
+        "guidanceText": "Bind evidence receipts to exact git commit SHAs and disclose cohort execution surface accurately.",
+        "observedAtMs": 1795837942000,
         "maxFreshnessMs": 604800000
       }
     ],
     "unitSelections": [
       {
-        "unitId": "m02-03-unit-01-security-hardening",
+        "unitId": "m02-03-lane-01-readiness-dossier",
         "provenanceRef": {
-          "anchorPrNumber": 161,
-          "anchorCommitSha": "1f63648f991325ac6e8c5d33121b53f907f9e079"
+          "candidatePrNumber": 171,
+          "candidateMergeCommitSha": "3cb2e6541b2e74b62c6fb61661fe97d29f757c26"
         },
         "request": {
-          "issueNumber": 14,
+          "issueNumber": 10,
           "targetComponent": "engineering-factory",
-          "specialistRole": "security",
+          "specialistRole": "api",
           "changedPaths": [
-            "tools/engineering-factory/anti-rogue-audit.mjs",
-            "tools/engineering-factory/curated-lessons.mjs"
+            "docs/evidence/m01-08-readiness-audit.json",
+            "tests/engineering-factory/pilot-readiness.test.mjs",
+            "tools/engineering-factory/pilot-readiness.mjs"
+          ]
+        },
+        "expected": {
+          "selectedGuidanceIds": [
+            "guide-factory-determinism"
           ],
-          "checkpointEvidence": {
-            "checkpointId": "cp-issue-14-seq-1",
-            "repositoryId": 1471342715,
-            "issueNumber": 14,
-            "headSha": "ec438f54088f30856c2df6ff626e894dde2a0100",
-            "sequence": 1,
-            "digestSha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-            "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
-            "completedSupersteps": [
-              "planner",
-              "coder"
-            ],
-            "verifiedPaths": [
-              "tools/engineering-factory/anti-rogue-audit.mjs"
-            ]
-          }
+          "selectedLessonIds": [
+            "lesson-pr-161-descriptor-hardening"
+          ],
+          "fullCatalogBytes": 1336,
+          "selectedContextBytes": 210,
+          "contextBytesSaved": 1126,
+          "omittedOutOfScopeCount": 11,
+          "omittedCheckpointedCount": 0
+        }
+      },
+      {
+        "unitId": "m02-03-lane-02-durable-cas-queue",
+        "provenanceRef": {
+          "candidatePrNumber": 172,
+          "candidateMergeCommitSha": "50b085d40c0ceb71b4c9710255d8e3b57e719c8a"
+        },
+        "request": {
+          "issueNumber": 6,
+          "targetComponent": "engineering-coordinator",
+          "specialistRole": "test",
+          "changedPaths": [
+            "docs/evidence/m01-04-durable-cas-recovery.json",
+            "tests/engineering-coordinator/work-queue-cas.test.mjs"
+          ]
+        },
+        "expected": {
+          "selectedGuidanceIds": [
+            "guide-coordinator-cas-leases"
+          ],
+          "selectedLessonIds": [
+            "lesson-pr-160-git-ref-cas-recovery"
+          ],
+          "fullCatalogBytes": 1336,
+          "selectedContextBytes": 214,
+          "contextBytesSaved": 1122,
+          "omittedOutOfScopeCount": 11,
+          "omittedCheckpointedCount": 0
+        }
+      },
+      {
+        "unitId": "m02-03-lane-03-consumer-pilot-gates",
+        "provenanceRef": {
+          "candidatePrNumber": 173,
+          "candidateMergeCommitSha": "cf6d3b0fc4f3a8627168134354a04ad2e00c51bf"
+        },
+        "request": {
+          "issueNumber": 11,
+          "targetComponent": "engineering-factory",
+          "specialistRole": "api",
+          "changedPaths": [
+            "docs/ROADMAP.md",
+            "docs/evidence/m03-02-familytree-shadow-readiness.json",
+            "docs/evidence/m04-01-spellbook-shadow-readiness.json",
+            "docs/evidence/m05-01-familyhub-shadow-readiness.json",
+            "tests/engineering-factory/familyhub-pilot-readiness.test.mjs",
+            "tests/engineering-factory/familytree-pilot-readiness.test.mjs",
+            "tests/engineering-factory/spellbook-pilot-readiness.test.mjs",
+            "tools/engineering-factory/familyhub-pilot-readiness.mjs",
+            "tools/engineering-factory/familytree-pilot-readiness.mjs",
+            "tools/engineering-factory/spellbook-pilot-readiness.mjs"
+          ]
+        },
+        "expected": {
+          "selectedGuidanceIds": [
+            "guide-factory-determinism"
+          ],
+          "selectedLessonIds": [
+            "lesson-pr-157-consumer-stricter-gates"
+          ],
+          "fullCatalogBytes": 1336,
+          "selectedContextBytes": 215,
+          "contextBytesSaved": 1121,
+          "omittedOutOfScopeCount": 11,
+          "omittedCheckpointedCount": 0
+        }
+      },
+      {
+        "unitId": "m02-03-lane-04-ci-health-and-cache",
+        "provenanceRef": {
+          "candidatePrNumber": 174,
+          "candidateMergeCommitSha": "c47a77ab24caa16dd69b99f5a2a997e067efb8bd"
+        },
+        "request": {
+          "issueNumber": 15,
+          "targetComponent": "engineering-factory",
+          "specialistRole": "infra",
+          "changedPaths": [
+            ".github/workflows/dotnet-agents.yml",
+            ".github/workflows/shadow-reconcile.yml",
+            ".github/workflows/validate.yml",
+            ".github/workflows/windows-aspire.yml",
+            "docs/VALIDATION-TIMING-BASELINE.md",
+            "docs/evidence/m02-01-ci-acceleration-receipt.json",
+            "tests/engineering-factory/ci-stage-benchmark.test.mjs",
+            "tests/engineering-factory/gh-aw-lock-verifier.test.mjs",
+            "tests/engineering-factory/main-health-audit.test.mjs",
+            "tools/engineering-factory/main-health-audit.mjs"
+          ]
         },
         "expected": {
           "selectedGuidanceIds": [
@@ -293,26 +417,32 @@
             "guide-factory-determinism"
           ],
           "selectedLessonIds": [
-            "lesson-pr-161-knowledge-hardening"
+            "lesson-pr-168-lock-event-matrix",
+            "lesson-pr-164-scan-digest-integrity"
           ],
-          "fullCatalogBytes": 1249,
-          "selectedContextBytes": 315,
-          "contextBytesSaved": 934,
-          "omittedOutOfScopeCount": 8,
-          "omittedCheckpointedCount": 1
+          "fullCatalogBytes": 1336,
+          "selectedContextBytes": 405,
+          "contextBytesSaved": 931,
+          "omittedOutOfScopeCount": 9,
+          "omittedCheckpointedCount": 0
         }
       },
       {
-        "unitId": "m02-03-unit-02-consumer-gate-api",
+        "unitId": "m02-03-lane-05-onboarding-governance",
         "provenanceRef": {
-          "anchorPrNumber": 157,
-          "anchorCommitSha": "b0924c3807f797e6090e1dc3e1e65fc9caa07550"
+          "candidatePrNumber": 177,
+          "candidateMergeCommitSha": "8b12545d3be0d60053eaa8a6fdd398154f7338ba"
         },
         "request": {
-          "issueNumber": 11,
+          "issueNumber": 13,
           "targetComponent": "engineering-factory",
           "specialistRole": "api",
           "changedPaths": [
+            "docs/CONSUMER-ADOPTION-CONTRACT.md",
+            "docs/CONSUMER-ONBOARDING.md",
+            "docs/WORKFLOWS.md",
+            "docs/evidence/m03-01-onboarding-success-contract.json",
+            "tests/engineering-factory/consumer-onboarding.test.mjs",
             "tools/engineering-factory/consumer-onboarding.mjs"
           ]
         },
@@ -323,125 +453,417 @@
           "selectedLessonIds": [
             "lesson-pr-157-consumer-stricter-gates"
           ],
-          "fullCatalogBytes": 1249,
+          "fullCatalogBytes": 1336,
           "selectedContextBytes": 215,
-          "contextBytesSaved": 1034,
-          "omittedOutOfScopeCount": 10,
+          "contextBytesSaved": 1121,
+          "omittedOutOfScopeCount": 11,
           "omittedCheckpointedCount": 0
         }
+      }
+    ]
+  },
+  "measuredRepositoryCohort": {
+    "cohortId": "m02-03-wave34-vs-wave5-curated-lessons-v1",
+    "executionSurface": "copilot-subagent-wave-prs",
+    "provenanceVerified": true,
+    "independentReviewVerified": true,
+    "unattendedCopilotBotClaimed": false,
+    "baselineWindow": {
+      "startMs": 1795833000000,
+      "endMs": 1795843800000
+    },
+    "candidateWindow": {
+      "startMs": 1795843800000,
+      "endMs": 1795854600000
+    },
+    "baselinePullRequests": [
+      {
+        "unitId": "m02-03-lane-01-readiness-dossier",
+        "prNumber": 167,
+        "relatedIssueNumbers": [
+          9,
+          10
+        ],
+        "headSha": "4dcdc0042a00de41eb79c6510ba1594e2943a93a",
+        "mergeCommitSha": "5796fdacee8b701db2bedcbde27ef058bf788e92",
+        "createdAtMs": 1795837181000,
+        "mergedAtMs": 1795839885000,
+        "ciCoverageJobId": 140861174063,
+        "targetComponent": "engineering-factory",
+        "specialistRole": "api",
+        "changedPaths": [
+          "docs/GITHUB-HOSTED-COPILOT-PILOT.md",
+          "docs/evidence/m01-08-readiness-audit.json",
+          "tests/engineering-factory/pilot-readiness.test.mjs",
+          "tests/engineering-factory/telemetry.test.mjs",
+          "tools/engineering-factory/telemetry.mjs"
+        ],
+        "totalCommits": 5,
+        "nonMergeCommits": 5,
+        "uniqueReviewedCommits": 5,
+        "reviewCount": 13,
+        "reviewComments": 14,
+        "incrementalBilledUsdCents": 0,
+        "coveredLines": 785,
+        "totalLines": 785,
+        "coveredBranches": 453,
+        "totalBranches": 454,
+        "overallCoveredLines": 41050,
+        "overallTotalLines": 41070,
+        "overallCoveredBranches": 21590,
+        "overallTotalBranches": 21780,
+        "securityFindings": 0,
+        "unsupportedRouting": false
       },
       {
-        "unitId": "m02-03-unit-03-lease-recovery-infra",
-        "provenanceRef": {
-          "anchorPrNumber": 160,
-          "anchorCommitSha": "6fe90f88637c16b2ae1b0ef4cbfa03b673bd758f"
-        },
-        "request": {
-          "issueNumber": 6,
-          "targetComponent": "engineering-factory",
-          "specialistRole": "infra",
-          "changedPaths": [
-            "tools/engineering-factory/lease-store.mjs"
-          ]
-        },
-        "expected": {
-          "selectedGuidanceIds": [
-            "guide-factory-cas-leases",
-            "guide-factory-determinism"
-          ],
-          "selectedLessonIds": [
-            "lesson-pr-160-git-ref-cas-recovery"
-          ],
-          "fullCatalogBytes": 1249,
-          "selectedContextBytes": 309,
-          "contextBytesSaved": 940,
-          "omittedOutOfScopeCount": 9,
-          "omittedCheckpointedCount": 0
-        }
+        "unitId": "m02-03-lane-02-durable-cas-queue",
+        "prNumber": 160,
+        "relatedIssueNumbers": [
+          6
+        ],
+        "headSha": "012b086cd06c6ee920667f0d841dfd84414b9039",
+        "mergeCommitSha": "6fe90f88637c16b2ae1b0ef4cbfa03b673bd758f",
+        "createdAtMs": 1795776277000,
+        "mergedAtMs": 1795833217000,
+        "ciCoverageJobId": 140727530784,
+        "targetComponent": "engineering-coordinator",
+        "specialistRole": "infra",
+        "changedPaths": [
+          "docs/COORDINATOR-EVENT-JOURNAL.md",
+          "tests/engineering-coordinator/work-queue-cas.test.mjs",
+          "tools/engineering-coordinator/work-queue-cas.mjs"
+        ],
+        "totalCommits": 5,
+        "nonMergeCommits": 5,
+        "uniqueReviewedCommits": 5,
+        "reviewCount": 7,
+        "reviewComments": 4,
+        "incrementalBilledUsdCents": 0,
+        "coveredLines": 1933,
+        "totalLines": 1933,
+        "coveredBranches": 944,
+        "totalBranches": 953,
+        "overallCoveredLines": 21405,
+        "overallTotalLines": 21417,
+        "overallCoveredBranches": 12968,
+        "overallTotalBranches": 13110,
+        "securityFindings": 0,
+        "unsupportedRouting": false
       },
       {
-        "unitId": "m02-03-unit-04-replay-test-suite",
-        "provenanceRef": {
-          "anchorPrNumber": 164,
-          "anchorCommitSha": "1be6dc1efb991d02637c334e6b6d3dda1530d6aa"
-        },
-        "request": {
-          "issueNumber": 14,
-          "targetComponent": "engineering-factory",
-          "specialistRole": "test",
-          "changedPaths": [
-            "tests/engineering-factory/curated-lessons.test.mjs"
-          ]
-        },
-        "expected": {
-          "selectedGuidanceIds": [
-            "guide-factory-determinism"
-          ],
-          "selectedLessonIds": [
-            "lesson-pr-161-knowledge-hardening"
-          ],
-          "fullCatalogBytes": 1249,
-          "selectedContextBytes": 217,
-          "contextBytesSaved": 1032,
-          "omittedOutOfScopeCount": 10,
-          "omittedCheckpointedCount": 0
-        }
+        "unitId": "m02-03-lane-03-consumer-pilot-gates",
+        "prNumber": 157,
+        "relatedIssueNumbers": [
+          11
+        ],
+        "headSha": "69a128165e57e1d4a74c0dd7b29fd482d66688d8",
+        "mergeCommitSha": "b0924c3807f797e6090e1dc3e1e65fc9caa07550",
+        "createdAtMs": 1795775396000,
+        "mergedAtMs": 1795835459000,
+        "ciCoverageJobId": 140843416939,
+        "targetComponent": "engineering-factory",
+        "specialistRole": "api",
+        "changedPaths": [
+          "docs/evidence/m04-01-spellbook-shadow-readiness.json",
+          "tests/engineering-factory/spellbook-pilot-readiness.test.mjs",
+          "tools/engineering-factory/spellbook-pilot-readiness.mjs"
+        ],
+        "totalCommits": 5,
+        "nonMergeCommits": 5,
+        "uniqueReviewedCommits": 6,
+        "reviewCount": 8,
+        "reviewComments": 4,
+        "incrementalBilledUsdCents": 0,
+        "coveredLines": 711,
+        "totalLines": 711,
+        "coveredBranches": 337,
+        "totalBranches": 337,
+        "overallCoveredLines": 39295,
+        "overallTotalLines": 39315,
+        "overallCoveredBranches": 20874,
+        "overallTotalBranches": 21062,
+        "securityFindings": 0,
+        "unsupportedRouting": false
       },
       {
-        "unitId": "m02-03-unit-05-coordinator-wave",
-        "provenanceRef": {
-          "anchorPrNumber": 166,
-          "anchorCommitSha": "b82b006da3ed860440daf00904f5b3239e8d01db"
-        },
-        "request": {
-          "issueNumber": 8,
-          "targetComponent": "engineering-coordinator",
-          "specialistRole": "coordinator",
-          "changedPaths": [
-            "tools/engineering-coordinator/dispatch-plan.mjs"
-          ]
-        },
-        "expected": {
-          "selectedGuidanceIds": [
-            "guide-coordinator-dispatch"
-          ],
-          "selectedLessonIds": [
-            "lesson-pr-166-queue-reread-scope"
-          ],
-          "fullCatalogBytes": 1249,
-          "selectedContextBytes": 197,
-          "contextBytesSaved": 1052,
-          "omittedOutOfScopeCount": 10,
-          "omittedCheckpointedCount": 0
-        }
+        "unitId": "m02-03-lane-04-ci-health-and-cache",
+        "prNumber": 147,
+        "relatedIssueNumbers": [
+          4
+        ],
+        "headSha": "c1cbf3772fab6bef744076b1ca7dd439d531250b",
+        "mergeCommitSha": "809553f0bc3a56571b05ce25c0534b1069e02979",
+        "createdAtMs": 1795775189000,
+        "mergedAtMs": 1795833083000,
+        "ciCoverageJobId": 140727623822,
+        "targetComponent": "engineering-factory",
+        "specialistRole": "infra",
+        "changedPaths": [
+          "docs/evidence/m01-01-main-quality-audit.json",
+          "tests/engineering-factory/main-health-audit.test.mjs",
+          "tools/engineering-factory/main-health-audit.mjs"
+        ],
+        "totalCommits": 9,
+        "nonMergeCommits": 9,
+        "uniqueReviewedCommits": 9,
+        "reviewCount": 19,
+        "reviewComments": 18,
+        "incrementalBilledUsdCents": 0,
+        "coveredLines": 1200,
+        "totalLines": 1200,
+        "coveredBranches": 569,
+        "totalBranches": 570,
+        "overallCoveredLines": 21864,
+        "overallTotalLines": 21876,
+        "overallCoveredBranches": 13214,
+        "overallTotalBranches": 13354,
+        "securityFindings": 0,
+        "unsupportedRouting": false
       },
       {
-        "unitId": "m02-03-unit-06-evidence-dossier-docs",
-        "provenanceRef": {
-          "anchorPrNumber": 169,
-          "anchorCommitSha": "e269e82c3309cee59bdf853028d93ea5b2f87bf0"
-        },
-        "request": {
-          "issueNumber": 14,
-          "targetComponent": "repository-docs",
-          "specialistRole": "docs",
-          "changedPaths": [
-            "docs/evidence/m02-03-curated-lessons-cohort.json"
-          ]
-        },
-        "expected": {
-          "selectedGuidanceIds": [
-            "guide-docs-governance"
-          ],
-          "selectedLessonIds": [
-            "lesson-pr-169-evidence-provenance"
-          ],
-          "fullCatalogBytes": 1249,
-          "selectedContextBytes": 223,
-          "contextBytesSaved": 1026,
-          "omittedOutOfScopeCount": 10,
-          "omittedCheckpointedCount": 0
-        }
+        "unitId": "m02-03-lane-05-onboarding-governance",
+        "prNumber": 168,
+        "relatedIssueNumbers": [
+          5
+        ],
+        "headSha": "11ca4d4af822f4507c3bd1867db86dc592286875",
+        "mergeCommitSha": "ec438f54088f30856c2df6ff626e894dde2a0100",
+        "createdAtMs": 1795837349000,
+        "mergedAtMs": 1795843726000,
+        "ciCoverageJobId": 140876091369,
+        "targetComponent": "engineering-factory",
+        "specialistRole": "security",
+        "changedPaths": [
+          ".github/workflows/factory-orchestrator.lock.yml",
+          ".github/workflows/factory-orchestrator.md",
+          "tests/engineering-factory/gh-aw-lock-verifier.test.mjs",
+          "tests/engineering-factory/shadow-runtime.test.mjs",
+          "tools/engineering-factory/gh-aw-lock-verifier.mjs",
+          "tools/engineering-factory/shadow-runtime.mjs"
+        ],
+        "totalCommits": 7,
+        "nonMergeCommits": 7,
+        "uniqueReviewedCommits": 7,
+        "reviewCount": 35,
+        "reviewComments": 52,
+        "incrementalBilledUsdCents": 0,
+        "coveredLines": 3192,
+        "totalLines": 3201,
+        "coveredBranches": 2081,
+        "totalBranches": 2125,
+        "overallCoveredLines": 41787,
+        "overallTotalLines": 41816,
+        "overallCoveredBranches": 22070,
+        "overallTotalBranches": 22268,
+        "securityFindings": 0,
+        "unsupportedRouting": false
+      }
+    ],
+    "candidatePullRequests": [
+      {
+        "unitId": "m02-03-lane-01-readiness-dossier",
+        "prNumber": 171,
+        "relatedIssueNumbers": [
+          10,
+          105
+        ],
+        "closedIssueNumbers": [],
+        "headSha": "dc4b397b86f8892470700dab498bf721fd14ffba",
+        "mergeCommitSha": "3cb2e6541b2e74b62c6fb61661fe97d29f757c26",
+        "createdAtMs": 1795845575000,
+        "mergedAtMs": 1795848527000,
+        "ciCoverageJobId": 140887691809,
+        "targetComponent": "engineering-factory",
+        "specialistRole": "api",
+        "changedPaths": [
+          "docs/evidence/m01-08-readiness-audit.json",
+          "tests/engineering-factory/pilot-readiness.test.mjs",
+          "tools/engineering-factory/pilot-readiness.mjs"
+        ],
+        "totalCommits": 2,
+        "nonMergeCommits": 2,
+        "uniqueReviewedCommits": 2,
+        "reviewCount": 3,
+        "reviewComments": 2,
+        "incrementalBilledUsdCents": 0,
+        "coveredLines": 759,
+        "totalLines": 759,
+        "coveredBranches": 432,
+        "totalBranches": 433,
+        "overallCoveredLines": 42018,
+        "overallTotalLines": 42047,
+        "overallCoveredBranches": 22192,
+        "overallTotalBranches": 22390,
+        "securityFindings": 0,
+        "unsupportedRouting": false
+      },
+      {
+        "unitId": "m02-03-lane-02-durable-cas-queue",
+        "prNumber": 172,
+        "relatedIssueNumbers": [
+          6
+        ],
+        "closedIssueNumbers": [
+          6
+        ],
+        "headSha": "761af123c3eba1f6bb47110c3e6a05b91791bc13",
+        "mergeCommitSha": "50b085d40c0ceb71b4c9710255d8e3b57e719c8a",
+        "createdAtMs": 1795845863000,
+        "mergedAtMs": 1795849016000,
+        "ciCoverageJobId": 140897607333,
+        "targetComponent": "engineering-coordinator",
+        "specialistRole": "test",
+        "changedPaths": [
+          "docs/evidence/m01-04-durable-cas-recovery.json",
+          "tests/engineering-coordinator/work-queue-cas.test.mjs"
+        ],
+        "totalCommits": 2,
+        "nonMergeCommits": 2,
+        "uniqueReviewedCommits": 2,
+        "reviewCount": 3,
+        "reviewComments": 2,
+        "incrementalBilledUsdCents": 0,
+        "coveredLines": 1933,
+        "totalLines": 1933,
+        "coveredBranches": 945,
+        "totalBranches": 954,
+        "overallCoveredLines": 41787,
+        "overallTotalLines": 41816,
+        "overallCoveredBranches": 22072,
+        "overallTotalBranches": 22270,
+        "securityFindings": 0,
+        "unsupportedRouting": false
+      },
+      {
+        "unitId": "m02-03-lane-03-consumer-pilot-gates",
+        "prNumber": 173,
+        "relatedIssueNumbers": [
+          11,
+          36,
+          12
+        ],
+        "closedIssueNumbers": [],
+        "headSha": "4aeeb988b8dcfe1c03f1f21495f633138256f5ff",
+        "mergeCommitSha": "cf6d3b0fc4f3a8627168134354a04ad2e00c51bf",
+        "createdAtMs": 1795845876000,
+        "mergedAtMs": 1795848527000,
+        "ciCoverageJobId": 140886516099,
+        "targetComponent": "engineering-factory",
+        "specialistRole": "api",
+        "changedPaths": [
+          "docs/ROADMAP.md",
+          "docs/evidence/m03-02-familytree-shadow-readiness.json",
+          "docs/evidence/m04-01-spellbook-shadow-readiness.json",
+          "docs/evidence/m05-01-familyhub-shadow-readiness.json",
+          "tests/engineering-factory/familyhub-pilot-readiness.test.mjs",
+          "tests/engineering-factory/familytree-pilot-readiness.test.mjs",
+          "tests/engineering-factory/spellbook-pilot-readiness.test.mjs",
+          "tools/engineering-factory/familyhub-pilot-readiness.mjs",
+          "tools/engineering-factory/familytree-pilot-readiness.mjs",
+          "tools/engineering-factory/spellbook-pilot-readiness.mjs"
+        ],
+        "totalCommits": 1,
+        "nonMergeCommits": 1,
+        "uniqueReviewedCommits": 1,
+        "reviewCount": 3,
+        "reviewComments": 4,
+        "incrementalBilledUsdCents": 0,
+        "coveredLines": 2143,
+        "totalLines": 2145,
+        "coveredBranches": 923,
+        "totalBranches": 924,
+        "overallCoveredLines": 41814,
+        "overallTotalLines": 41843,
+        "overallCoveredBranches": 22073,
+        "overallTotalBranches": 22271,
+        "securityFindings": 0,
+        "unsupportedRouting": false
+      },
+      {
+        "unitId": "m02-03-lane-04-ci-health-and-cache",
+        "prNumber": 174,
+        "relatedIssueNumbers": [
+          15
+        ],
+        "closedIssueNumbers": [
+          15
+        ],
+        "headSha": "c816342ca145b86a19104b4d5be9afaba1790119",
+        "mergeCommitSha": "c47a77ab24caa16dd69b99f5a2a997e067efb8bd",
+        "createdAtMs": 1795848501000,
+        "mergedAtMs": 1795850450000,
+        "ciCoverageJobId": 140903301570,
+        "targetComponent": "engineering-factory",
+        "specialistRole": "infra",
+        "changedPaths": [
+          ".github/workflows/dotnet-agents.yml",
+          ".github/workflows/shadow-reconcile.yml",
+          ".github/workflows/validate.yml",
+          ".github/workflows/windows-aspire.yml",
+          "docs/VALIDATION-TIMING-BASELINE.md",
+          "docs/evidence/m02-01-ci-acceleration-receipt.json",
+          "tests/engineering-factory/ci-stage-benchmark.test.mjs",
+          "tests/engineering-factory/gh-aw-lock-verifier.test.mjs",
+          "tests/engineering-factory/main-health-audit.test.mjs",
+          "tools/engineering-factory/main-health-audit.mjs"
+        ],
+        "totalCommits": 3,
+        "nonMergeCommits": 3,
+        "uniqueReviewedCommits": 3,
+        "reviewCount": 5,
+        "reviewComments": 6,
+        "incrementalBilledUsdCents": 0,
+        "coveredLines": 1262,
+        "totalLines": 1262,
+        "coveredBranches": 590,
+        "totalBranches": 591,
+        "overallCoveredLines": 42516,
+        "overallTotalLines": 42545,
+        "overallCoveredBranches": 22372,
+        "overallTotalBranches": 22570,
+        "securityFindings": 0,
+        "unsupportedRouting": false
+      },
+      {
+        "unitId": "m02-03-lane-05-onboarding-governance",
+        "prNumber": 177,
+        "relatedIssueNumbers": [
+          13
+        ],
+        "closedIssueNumbers": [
+          13
+        ],
+        "headSha": "da0e2e8c600099c7efbd7999f82f2631f7bbec25",
+        "mergeCommitSha": "8b12545d3be0d60053eaa8a6fdd398154f7338ba",
+        "createdAtMs": 1795848688000,
+        "mergedAtMs": 1795849774000,
+        "ciCoverageJobId": 140900414661,
+        "targetComponent": "engineering-factory",
+        "specialistRole": "api",
+        "changedPaths": [
+          "docs/CONSUMER-ADOPTION-CONTRACT.md",
+          "docs/CONSUMER-ONBOARDING.md",
+          "docs/WORKFLOWS.md",
+          "docs/evidence/m03-01-onboarding-success-contract.json",
+          "tests/engineering-factory/consumer-onboarding.test.mjs",
+          "tools/engineering-factory/consumer-onboarding.mjs"
+        ],
+        "totalCommits": 3,
+        "nonMergeCommits": 2,
+        "uniqueReviewedCommits": 2,
+        "reviewCount": 8,
+        "reviewComments": 10,
+        "incrementalBilledUsdCents": 0,
+        "coveredLines": 1578,
+        "totalLines": 1578,
+        "coveredBranches": 706,
+        "totalBranches": 706,
+        "overallCoveredLines": 42454,
+        "overallTotalLines": 42483,
+        "overallCoveredBranches": 22351,
+        "overallTotalBranches": 22549,
+        "securityFindings": 0,
+        "unsupportedRouting": false
       }
     ]
   },
@@ -453,111 +875,94 @@
     },
     "baselineCohort": {
       "repositoryId": 1471342715,
-      "cohortId": "m02-03-shadow-curated-lessons-v1",
-      "windowStartMs": 1795670400000,
-      "windowEndMs": 1795756800000,
+      "cohortId": "m02-03-wave34-vs-wave5-curated-lessons-v1",
+      "windowStartMs": 1795833000000,
+      "windowEndMs": 1795843800000,
       "provenanceVerified": true,
       "independentReviewVerified": true,
       "quotaCreditsRemaining": 480,
       "units": [
         {
-          "unitId": "m02-03-unit-01-security-hardening",
+          "unitId": "m02-03-lane-01-readiness-dossier",
           "accepted": true,
-          "explorationSteps": 15,
-          "contextBytesLoaded": 1249,
+          "explorationSteps": 32,
+          "contextBytesLoaded": 1336,
           "repeatedContextLoads": 4,
-          "reworkIterations": 1,
-          "aiCredits": 22,
-          "incrementalBilledUsdCents": 0,
-          "coveredLines": 992,
-          "totalLines": 1000,
-          "coveredBranches": 486,
-          "totalBranches": 500,
-          "securityFindings": 0,
-          "duplicateWork": false,
-          "unsupportedRouting": false
-        },
-        {
-          "unitId": "m02-03-unit-02-consumer-gate-api",
-          "accepted": true,
-          "explorationSteps": 14,
-          "contextBytesLoaded": 1249,
-          "repeatedContextLoads": 4,
-          "reworkIterations": 1,
-          "aiCredits": 20,
-          "incrementalBilledUsdCents": 0,
-          "coveredLines": 990,
-          "totalLines": 1000,
-          "coveredBranches": 484,
-          "totalBranches": 500,
-          "securityFindings": 0,
-          "duplicateWork": false,
-          "unsupportedRouting": false
-        },
-        {
-          "unitId": "m02-03-unit-03-lease-recovery-infra",
-          "accepted": true,
-          "explorationSteps": 16,
-          "contextBytesLoaded": 1249,
-          "repeatedContextLoads": 5,
-          "reworkIterations": 1,
-          "aiCredits": 24,
-          "incrementalBilledUsdCents": 0,
-          "coveredLines": 991,
-          "totalLines": 1000,
-          "coveredBranches": 485,
-          "totalBranches": 500,
-          "securityFindings": 0,
-          "duplicateWork": false,
-          "unsupportedRouting": false
-        },
-        {
-          "unitId": "m02-03-unit-04-replay-test-suite",
-          "accepted": true,
-          "explorationSteps": 13,
-          "contextBytesLoaded": 1249,
-          "repeatedContextLoads": 3,
-          "reworkIterations": 0,
+          "reworkIterations": 4,
           "aiCredits": 18,
           "incrementalBilledUsdCents": 0,
-          "coveredLines": 994,
-          "totalLines": 1000,
-          "coveredBranches": 488,
-          "totalBranches": 500,
+          "coveredLines": 785,
+          "totalLines": 785,
+          "coveredBranches": 453,
+          "totalBranches": 454,
           "securityFindings": 0,
           "duplicateWork": false,
           "unsupportedRouting": false
         },
         {
-          "unitId": "m02-03-unit-05-coordinator-wave",
+          "unitId": "m02-03-lane-02-durable-cas-queue",
           "accepted": true,
-          "explorationSteps": 14,
-          "contextBytesLoaded": 1249,
+          "explorationSteps": 22,
+          "contextBytesLoaded": 1336,
           "repeatedContextLoads": 4,
-          "reworkIterations": 1,
-          "aiCredits": 20,
+          "reworkIterations": 4,
+          "aiCredits": 12,
           "incrementalBilledUsdCents": 0,
-          "coveredLines": 989,
-          "totalLines": 1000,
-          "coveredBranches": 482,
-          "totalBranches": 500,
+          "coveredLines": 1933,
+          "totalLines": 1933,
+          "coveredBranches": 944,
+          "totalBranches": 953,
           "securityFindings": 0,
           "duplicateWork": false,
           "unsupportedRouting": false
         },
         {
-          "unitId": "m02-03-unit-06-evidence-dossier-docs",
+          "unitId": "m02-03-lane-03-consumer-pilot-gates",
           "accepted": true,
-          "explorationSteps": 12,
-          "contextBytesLoaded": 1249,
-          "repeatedContextLoads": 3,
-          "reworkIterations": 0,
-          "aiCredits": 16,
+          "explorationSteps": 23,
+          "contextBytesLoaded": 1336,
+          "repeatedContextLoads": 5,
+          "reworkIterations": 4,
+          "aiCredits": 13,
           "incrementalBilledUsdCents": 0,
-          "coveredLines": 990,
-          "totalLines": 1000,
-          "coveredBranches": 485,
-          "totalBranches": 500,
+          "coveredLines": 711,
+          "totalLines": 711,
+          "coveredBranches": 337,
+          "totalBranches": 337,
+          "securityFindings": 0,
+          "duplicateWork": false,
+          "unsupportedRouting": false
+        },
+        {
+          "unitId": "m02-03-lane-04-ci-health-and-cache",
+          "accepted": true,
+          "explorationSteps": 40,
+          "contextBytesLoaded": 1336,
+          "repeatedContextLoads": 8,
+          "reworkIterations": 8,
+          "aiCredits": 28,
+          "incrementalBilledUsdCents": 0,
+          "coveredLines": 1200,
+          "totalLines": 1200,
+          "coveredBranches": 569,
+          "totalBranches": 570,
+          "securityFindings": 0,
+          "duplicateWork": false,
+          "unsupportedRouting": false
+        },
+        {
+          "unitId": "m02-03-lane-05-onboarding-governance",
+          "accepted": true,
+          "explorationSteps": 72,
+          "contextBytesLoaded": 1336,
+          "repeatedContextLoads": 6,
+          "reworkIterations": 6,
+          "aiCredits": 42,
+          "incrementalBilledUsdCents": 0,
+          "coveredLines": 3192,
+          "totalLines": 3201,
+          "coveredBranches": 2081,
+          "totalBranches": 2125,
           "securityFindings": 0,
           "duplicateWork": false,
           "unsupportedRouting": false
@@ -566,111 +971,94 @@
     },
     "candidateCohort": {
       "repositoryId": 1471342715,
-      "cohortId": "m02-03-shadow-curated-lessons-v1",
-      "windowStartMs": 1795756800000,
-      "windowEndMs": 1795843200000,
+      "cohortId": "m02-03-wave34-vs-wave5-curated-lessons-v1",
+      "windowStartMs": 1795843800000,
+      "windowEndMs": 1795854600000,
       "provenanceVerified": true,
       "independentReviewVerified": true,
       "quotaCreditsRemaining": 480,
       "units": [
         {
-          "unitId": "m02-03-unit-01-security-hardening",
-          "accepted": true,
-          "explorationSteps": 7,
-          "contextBytesLoaded": 315,
-          "repeatedContextLoads": 1,
-          "reworkIterations": 0,
-          "aiCredits": 16,
-          "incrementalBilledUsdCents": 0,
-          "coveredLines": 995,
-          "totalLines": 1000,
-          "coveredBranches": 491,
-          "totalBranches": 500,
-          "securityFindings": 0,
-          "duplicateWork": false,
-          "unsupportedRouting": false
-        },
-        {
-          "unitId": "m02-03-unit-02-consumer-gate-api",
+          "unitId": "m02-03-lane-01-readiness-dossier",
           "accepted": true,
           "explorationSteps": 6,
-          "contextBytesLoaded": 215,
-          "repeatedContextLoads": 1,
-          "reworkIterations": 0,
-          "aiCredits": 14,
-          "incrementalBilledUsdCents": 0,
-          "coveredLines": 993,
-          "totalLines": 1000,
-          "coveredBranches": 489,
-          "totalBranches": 500,
-          "securityFindings": 0,
-          "duplicateWork": false,
-          "unsupportedRouting": false
-        },
-        {
-          "unitId": "m02-03-unit-03-lease-recovery-infra",
-          "accepted": true,
-          "explorationSteps": 8,
-          "contextBytesLoaded": 309,
+          "contextBytesLoaded": 210,
           "repeatedContextLoads": 1,
           "reworkIterations": 1,
-          "aiCredits": 18,
+          "aiCredits": 5,
           "incrementalBilledUsdCents": 0,
-          "coveredLines": 994,
-          "totalLines": 1000,
-          "coveredBranches": 490,
-          "totalBranches": 500,
+          "coveredLines": 759,
+          "totalLines": 759,
+          "coveredBranches": 432,
+          "totalBranches": 433,
           "securityFindings": 0,
           "duplicateWork": false,
           "unsupportedRouting": false
         },
         {
-          "unitId": "m02-03-unit-04-replay-test-suite",
+          "unitId": "m02-03-lane-02-durable-cas-queue",
           "accepted": true,
           "explorationSteps": 6,
-          "contextBytesLoaded": 217,
-          "repeatedContextLoads": 0,
-          "reworkIterations": 0,
-          "aiCredits": 13,
+          "contextBytesLoaded": 214,
+          "repeatedContextLoads": 1,
+          "reworkIterations": 1,
+          "aiCredits": 5,
           "incrementalBilledUsdCents": 0,
-          "coveredLines": 996,
-          "totalLines": 1000,
-          "coveredBranches": 492,
-          "totalBranches": 500,
+          "coveredLines": 1933,
+          "totalLines": 1933,
+          "coveredBranches": 945,
+          "totalBranches": 954,
           "securityFindings": 0,
           "duplicateWork": false,
           "unsupportedRouting": false
         },
         {
-          "unitId": "m02-03-unit-05-coordinator-wave",
+          "unitId": "m02-03-lane-03-consumer-pilot-gates",
           "accepted": true,
           "explorationSteps": 7,
-          "contextBytesLoaded": 197,
-          "repeatedContextLoads": 1,
+          "contextBytesLoaded": 215,
+          "repeatedContextLoads": 0,
           "reworkIterations": 0,
-          "aiCredits": 15,
+          "aiCredits": 4,
           "incrementalBilledUsdCents": 0,
-          "coveredLines": 992,
-          "totalLines": 1000,
-          "coveredBranches": 488,
-          "totalBranches": 500,
+          "coveredLines": 2143,
+          "totalLines": 2145,
+          "coveredBranches": 923,
+          "totalBranches": 924,
           "securityFindings": 0,
           "duplicateWork": false,
           "unsupportedRouting": false
         },
         {
-          "unitId": "m02-03-unit-06-evidence-dossier-docs",
+          "unitId": "m02-03-lane-04-ci-health-and-cache",
           "accepted": true,
-          "explorationSteps": 5,
-          "contextBytesLoaded": 223,
-          "repeatedContextLoads": 0,
-          "reworkIterations": 0,
-          "aiCredits": 14,
+          "explorationSteps": 13,
+          "contextBytesLoaded": 405,
+          "repeatedContextLoads": 2,
+          "reworkIterations": 2,
+          "aiCredits": 8,
           "incrementalBilledUsdCents": 0,
-          "coveredLines": 994,
-          "totalLines": 1000,
-          "coveredBranches": 490,
-          "totalBranches": 500,
+          "coveredLines": 1262,
+          "totalLines": 1262,
+          "coveredBranches": 590,
+          "totalBranches": 591,
+          "securityFindings": 0,
+          "duplicateWork": false,
+          "unsupportedRouting": false
+        },
+        {
+          "unitId": "m02-03-lane-05-onboarding-governance",
+          "accepted": true,
+          "explorationSteps": 14,
+          "contextBytesLoaded": 215,
+          "repeatedContextLoads": 1,
+          "reworkIterations": 2,
+          "aiCredits": 11,
+          "incrementalBilledUsdCents": 0,
+          "coveredLines": 1578,
+          "totalLines": 1578,
+          "coveredBranches": 706,
+          "totalBranches": 706,
           "securityFindings": 0,
           "duplicateWork": false,
           "unsupportedRouting": false
@@ -686,43 +1074,43 @@
       "reason": "EXPLORATION_AND_CONTEXT_REDUCED",
       "rejectionReasons": [],
       "baselineMetrics": {
-        "unitCount": 6,
-        "explorationStepsP50": 14,
-        "contextBytesLoadedP50": 1249,
-        "repeatedContextLoadsP50": 4,
-        "reworkIterationsRateBps": 6667,
-        "aiCreditsTotal": 120,
-        "aiCreditsPerUnit": 20,
+        "unitCount": 5,
+        "explorationStepsP50": 32,
+        "contextBytesLoadedP50": 1336,
+        "repeatedContextLoadsP50": 5,
+        "reworkIterationsRateBps": 52000,
+        "aiCreditsTotal": 113,
+        "aiCreditsPerUnit": 22.6,
         "incrementalBilledUsdCents": 0,
-        "acceptedUnitsPerDay": 6,
-        "lineCoveragePct": 99.1,
-        "branchCoveragePct": 97,
+        "acceptedUnitsPerDay": 40,
+        "lineCoveragePct": 99.88505747126437,
+        "branchCoveragePct": 98.76098220319892,
         "securityFindings": 0,
         "duplicateWorkCount": 0,
         "unsupportedRoutingCount": 0
       },
       "candidateMetrics": {
-        "unitCount": 6,
-        "explorationStepsP50": 6,
-        "contextBytesLoadedP50": 217,
+        "unitCount": 5,
+        "explorationStepsP50": 7,
+        "contextBytesLoadedP50": 215,
         "repeatedContextLoadsP50": 1,
-        "reworkIterationsRateBps": 1667,
-        "aiCreditsTotal": 90,
-        "aiCreditsPerUnit": 15,
+        "reworkIterationsRateBps": 12000,
+        "aiCreditsTotal": 33,
+        "aiCreditsPerUnit": 6.6,
         "incrementalBilledUsdCents": 0,
-        "acceptedUnitsPerDay": 6,
-        "lineCoveragePct": 99.4,
-        "branchCoveragePct": 98,
+        "acceptedUnitsPerDay": 40,
+        "lineCoveragePct": 99.9739481568321,
+        "branchCoveragePct": 99.66740576496674,
         "securityFindings": 0,
         "duplicateWorkCount": 0,
         "unsupportedRoutingCount": 0
       },
       "deltas": {
-        "explorationStepsP50Delta": -8,
-        "contextBytesLoadedP50Delta": -1032,
-        "repeatedContextLoadsP50Delta": -3,
-        "reworkIterationsRateBpsDelta": -5000,
-        "aiCreditsPerUnitDelta": -5,
+        "explorationStepsP50Delta": -25,
+        "contextBytesLoadedP50Delta": -1121,
+        "repeatedContextLoadsP50Delta": -4,
+        "reworkIterationsRateBpsDelta": -40000,
+        "aiCreditsPerUnitDelta": -16,
         "acceptedUnitsPerDayDelta": 0
       }
     }
