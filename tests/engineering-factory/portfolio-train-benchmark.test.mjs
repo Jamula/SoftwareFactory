@@ -1,17 +1,24 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
 import {
   LOGICAL_LANE_CLASSIFICATION,
   LOGICAL_LANE_TIERS,
+  M01_EXIT_ANCHOR_ISSUE,
   PINNED_DOTNET_MAF_RUNTIME,
   PINNED_NODE_RUNTIME,
+  SHARED_M01_ANCHOR_TARGET_OUTCOMES,
+  SHARED_M02_COHORT_TARGET_OUTCOMES,
+  SHARED_M02_EXIT_ISSUES,
   SOFTWARE_FACTORY_REPOSITORY,
   SOFTWARE_FACTORY_REPOSITORY_ID,
   SPELLBOOK_MAX_CONCURRENCY,
   THROUGHPUT_COHORT_MULTIPLIERS,
   TWO_MINUTE_DRAIN_STRETCH_MS,
+  UNATTENDED_COPILOT_ACTOR,
   allocatePortfolioCapacityAndSimulateTrains,
-  evaluateDotnetConsolidationBenchmark
+  evaluateDotnetConsolidationBenchmark,
+  evaluateSharedFiveOutcomeM02Cohort
 } from '../../tools/engineering-factory/portfolio-train-benchmark.mjs';
 
 const sha = ch => ch.repeat(40);
@@ -1407,4 +1414,447 @@ test('retains Node as authoritative on CI overhead regressions, unmeasured/synth
   ]) {
     assert.equal(evaluateDotnetConsolidationBenchmark(invalid).reason, 'EVIDENCE_UNKNOWN');
   }
+});
+
+test('verifies committed m02-04-maf-throughput-cohort.json receipt across Waves 2-4 trains, .NET 10 MAF 1.28.0 benchmark, and pending #10 provenance separation', () => {
+  const receiptUrl = new URL('../../docs/evidence/m02-04-maf-throughput-cohort.json', import.meta.url);
+  const receipt = JSON.parse(readFileSync(receiptUrl, 'utf8'));
+
+  assert.equal(receipt.schemaVersion, 'm02-04-maf-throughput-cohort-v1');
+  assert.equal(receipt.issue, 16);
+  assert.equal(receipt.evaluatedMainHeadSha, 'ec438f54088f30856c2df6ff626e894dde2a0100');
+  assert.deepEqual(receipt.sharedClosureIssues, [...SHARED_M02_EXIT_ISSUES]);
+  assert.equal(receipt.m01AnchorIssue, M01_EXIT_ANCHOR_ISSUE);
+  assert.equal(receipt.provenance.multiCohortLadderRetired, true);
+  assert.equal(receipt.provenance.keepIssue16Open, true);
+  assert.equal(receipt.provenance.unattendedCopilotOutcomesCompleted, 0);
+  assert.equal(receipt.provenance.unattendedCopilotOutcomesRequired, SHARED_M02_COHORT_TARGET_OUTCOMES);
+  assert.equal(receipt.provenance.incrementalSpendUsd, 0);
+
+  // Verify .NET 10.0.404 MAF 1.28.0 --smoke and --benchmark receipts
+  assert.equal(receipt.dotnetMafCliReceipts.dotnetSdkVersion, '10.0.404');
+  assert.equal(receipt.dotnetMafCliReceipts.smokeOutput.version, '1.28.0');
+  assert.equal(receipt.dotnetMafCliReceipts.smokeOutput.superstepsCompleted, 9);
+  assert.equal(receipt.dotnetMafCliReceipts.smokeOutput.priorSuperstepsRepeated, 0);
+  assert.equal(receipt.dotnetMafCliReceipts.smokeOutput.incrementalSpendUsd, 0);
+  assert.deepEqual(
+    receipt.dotnetMafCliReceipts.benchmarkOutput.logicalLaneSimulations.map(s => s.logicalLanes),
+    [12, 50, 100]
+  );
+
+  // Deterministically replay Waves 2, 3 (21-PR parallel Squash Merge Queue train #145-#165), and 4 (#166-#169)
+  for (const [waveKey, expectedCount, expectedFinalSha] of [
+    ['wave2', 7, 'cec2745b7b8a21e77ad9f2839d4255d42305d419'],
+    ['wave3', 21, 'b0924c3807f797e6090e1dc3e1e65fc9caa07550'],
+    ['wave4', 4, 'ec438f54088f30856c2df6ff626e894dde2a0100']
+  ]) {
+    const sim = receipt.waveTrainSimulations[waveKey];
+    const replayed = allocatePortfolioCapacityAndSimulateTrains(sim.input);
+    assert.deepEqual(replayed, sim.evaluation);
+    assert.equal(replayed.valid, true);
+    assert.equal(replayed.repositoryResults[0].train.trainStatus, 'TRAIN_DRAINED');
+    assert.equal(replayed.repositoryResults[0].train.mergedPrs.length, expectedCount);
+    assert.equal(replayed.repositoryResults[0].train.isolatedCandidates.length, 0);
+    assert.equal(replayed.repositoryResults[0].train.finalMainSha, expectedFinalSha);
+  }
+  const wave3SortedPrs = [...receipt.waveTrainSimulations.wave3.evaluation.repositoryResults[0].train.mergedPrs].sort((a, b) => a - b);
+  assert.deepEqual(wave3SortedPrs, Array.from({length: 21}, (_, idx) => 145 + idx));
+
+  // Deterministically replay single-runtime consolidation benchmark
+  const replayedConsolidation = evaluateDotnetConsolidationBenchmark(receipt.consolidationBenchmark.input);
+  assert.deepEqual(replayedConsolidation, receipt.consolidationBenchmark.evaluation);
+  assert.equal(replayedConsolidation.valid, true);
+  assert.equal(replayedConsolidation.recommendation, 'retain-node-authoritative');
+
+  // Deterministically replay shared 5-outcome M02 cohort gate
+  const replayedShared = evaluateSharedFiveOutcomeM02Cohort({
+    ...receipt.sharedFiveOutcomeM02Cohort.parameters,
+    portfolioInput: receipt.waveTrainSimulations.wave4.input,
+    benchmarkInput: receipt.consolidationBenchmark.input
+  });
+  assert.deepEqual(replayedShared, receipt.sharedFiveOutcomeM02Cohort.evaluation);
+  assert.equal(replayedShared.valid, true);
+  assert.equal(replayedShared.provenanceSeparated, true);
+  assert.equal(replayedShared.runtimePosture, 'dual-runtime-retain-node-authoritative');
+  assert.equal(replayedShared.cohortComplete, false);
+  assert.equal(replayedShared.m02ExitReady, false);
+  assert.equal(replayedShared.keepIssue16Open, true);
+  assert.equal(replayedShared.status, 'PENDING_UNATTENDED_COPILOT_COHORT');
+  assert.equal(replayedShared.reason, 'PENDING_M01_10_AND_SHARED_5_ISSUE_COHORT');
+  assert.equal(replayedShared.engineeringWaveSummary.totalMergedPrs, 32);
+  assert.equal(replayedShared.unattendedCohortSummary.acceptedCount, 0);
+  assert.equal(replayedShared.unattendedCohortSummary.remainingRequiredCount, 5);
+});
+
+const makeUnattendedOutcome = (idx, overrides = {}) => ({
+  issue: 200 + idx,
+  pr: 300 + idx,
+  provenanceKind: 'unattended-copilot-issue-outcome',
+  agentActor: UNATTENDED_COPILOT_ACTOR,
+  m01CohortMember: idx <= 3,
+  parallelBatchGroup: idx <= 2 ? 'm01-parallel-pair' : null,
+  reviewRepairVerified: idx === 3,
+  headSha: String(idx).padStart(40, '7'),
+  squashMergeSha: String(idx).padStart(40, '8'),
+  assignedAtMs: 1795900000000 + idx * 60000,
+  mergedAtMs: 1795901800000 + idx * 60000,
+  mergeQueueDurationMs: 180000 + idx * 5000,
+  ownedPaths: [`tools/unattended-lane-${idx}.mjs`],
+  coveredLines: 990,
+  totalLines: 1000,
+  coveredBranches: 970,
+  totalBranches: 1000,
+  checksPassed: true,
+  securityClear: true,
+  independentReview: true,
+  unresolvedFindings: 0,
+  mainHealthyAfterMerge: true,
+  rollbackReady: true,
+  reworkIterations: idx === 3 ? 1 : 0,
+  routineHumanInterventions: 0,
+  duplicateDispatches: 0,
+  unauthorizedWrites: 0,
+  incrementalSpendMicros: 0,
+  ...overrides
+});
+
+const makeSharedCohortInput = (overrides = {}) => {
+  const portfolioInput = {
+    stop: false,
+    budget: baseBudget({active: 0, maxActive: 4}),
+    repositories: [
+      factoryRepo({
+        candidates: [
+          makeTrainCandidate(168, {
+            simulatedSquashSha: WORKLOAD_SHA,
+            reviewState: 'COMMENTED_CLEAR'
+          })
+        ]
+      })
+    ],
+    workItems: [makeWorkItem(SOFTWARE_FACTORY_REPOSITORY_ID, 16, 1)]
+  };
+  return {
+    stop: false,
+    repositoryId: SOFTWARE_FACTORY_REPOSITORY_ID,
+    repository: SOFTWARE_FACTORY_REPOSITORY,
+    headSha: WORKLOAD_SHA,
+    policy: {minLinePercent: 98, minBranchPercent: 95},
+    billingHardStopVerified: true,
+    incrementalSpendMicros: 0,
+    portfolioInput,
+    benchmarkInput: benchmarkInput(),
+    engineeringWaves: [
+      {
+        waveId: 'wave-4',
+        provenanceKind: 'session-orchestrated-merge-queue-wave',
+        initialMainSha: MAIN_SHA,
+        finalMainSha: WORKLOAD_SHA,
+        windowStartMs: 1795800000000,
+        windowEndMs: 1795803600000,
+        prNumbers: [166, 167, 168, 169],
+        mergeQueueDurationsMs: [138000, 204000, 186000, 180000],
+        postMergeMainFailures: 0,
+        incrementalSpendMicros: 0
+      }
+    ],
+    unattendedOutcomes: [1, 2, 3, 4, 5].map(idx => makeUnattendedOutcome(idx)),
+    ...overrides
+  };
+};
+
+test('evaluates shared 5-outcome M02 cohort completion, composition requirements, and fail-closed regression gates', () => {
+  // Eligible 5-outcome real @copilot cohort closes #16 alongside #14/#18/#137
+  const eligible = evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput());
+  assert.equal(eligible.valid, true);
+  assert.equal(eligible.cohortComplete, true);
+  assert.equal(eligible.m02ExitReady, true);
+  assert.equal(eligible.keepIssue16Open, false);
+  assert.equal(eligible.status, 'SHARED_5_OUTCOME_COHORT_VERIFIED');
+  assert.equal(eligible.reason, 'SHARED_M02_COHORT_ELIGIBLE');
+  assert.equal(eligible.runtimePosture, 'dotnet-10-single-runtime-consolidation-eligible');
+  assert.equal(eligible.m01AnchorTargetOutcomes, SHARED_M01_ANCHOR_TARGET_OUTCOMES);
+  assert.equal(eligible.unattendedCohortSummary.acceptedCount, 5);
+  assert.equal(eligible.unattendedCohortSummary.remainingRequiredCount, 0);
+  assert.equal(eligible.unattendedCohortSummary.m01MemberCount, 3);
+  assert.equal(eligible.unattendedCohortSummary.parallelBatchVerified, true);
+  assert.equal(eligible.unattendedCohortSummary.reviewRepairLoopVerified, true);
+  assert.equal(eligible.unattendedCohortSummary.totalReworkIterations, 1);
+  assert.equal(eligible.unattendedCohortSummary.reworkRateBps, 2000);
+
+  // Enrolled Spellbook (97/90) and FamilyTree (95/90) policies work cleanly
+  const sbCohort = evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({
+    repositoryId: 200004,
+    repository: 'example/spellbook',
+    policy: {minLinePercent: 97, minBranchPercent: 90},
+    portfolioInput: {
+      stop: false,
+      budget: baseBudget({active: 0, maxActive: 4}),
+      repositories: [
+        spellbookRepo({
+          candidates: [makeTrainCandidate(77, {simulatedSquashSha: WORKLOAD_SHA, coveredLines: 975, coveredBranches: 910})]
+        })
+      ],
+      workItems: []
+    }
+  }));
+  assert.equal(sbCohort.valid, true);
+  assert.equal(sbCohort.cohortComplete, true);
+
+  const ftCohort = evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({
+    repositoryId: 200003,
+    repository: 'example/family-tree',
+    policy: {minLinePercent: 95, minBranchPercent: 90},
+    portfolioInput: {
+      stop: false,
+      budget: baseBudget({active: 0, maxActive: 4}),
+      repositories: [
+        familyTreeRepo({
+          candidates: [makeTrainCandidate(78, {simulatedSquashSha: WORKLOAD_SHA, coveredLines: 955, coveredBranches: 905})]
+        })
+      ],
+      workItems: []
+    }
+  }));
+  assert.equal(ftCohort.valid, true);
+  assert.equal(ftCohort.cohortComplete, true);
+
+  // Incomplete composition at 5 outcomes stays open without claiming completion
+  for (const outcomes of [
+    [1, 2, 3, 4, 5].map(idx => makeUnattendedOutcome(idx, {m01CohortMember: idx <= 2})),
+    [1, 2, 3, 4, 5].map(idx => makeUnattendedOutcome(idx, {parallelBatchGroup: null})),
+    [1, 2, 3, 4, 5].map(idx => makeUnattendedOutcome(idx, {reviewRepairVerified: false, reworkIterations: 0}))
+  ]) {
+    const inc = evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({unattendedOutcomes: outcomes}));
+    assert.equal(inc.valid, true);
+    assert.equal(inc.cohortComplete, false);
+    assert.equal(inc.keepIssue16Open, true);
+    assert.equal(inc.status, 'INCOMPLETE_COHORT_COMPOSITION');
+    assert.equal(inc.reason, 'COHORT_COMPOSITION_REQUIREMENTS_UNMET');
+  }
+
+  // Provenance conflation: smuggling a session-orchestrated wave PR (#168) or wrong provenanceKind is rejected
+  assert.equal(
+    evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({
+      unattendedOutcomes: [makeUnattendedOutcome(1, {pr: 168})]
+    })).reason,
+    'PROVENANCE_CONFLATION_REJECTED'
+  );
+  assert.equal(
+    evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({
+      unattendedOutcomes: [makeUnattendedOutcome(1, {provenanceKind: 'manual-pr'})]
+    })).reason,
+    'PROVENANCE_CONFLATION_REJECTED'
+  );
+  assert.equal(
+    evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({
+      engineeringWaves: [{...makeSharedCohortInput().engineeringWaves[0], provenanceKind: 'unattended'}]
+    })).reason,
+    'PROVENANCE_CONFLATION_REJECTED'
+  );
+
+  // Actor, spend, repair cap, human intervention, gate, coverage, and parallel overlap regressions
+  assert.equal(
+    evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({
+      unattendedOutcomes: [makeUnattendedOutcome(1, {agentActor: 'cyrusjamula'})]
+    })).reason,
+    'UNVERIFIED_UNATTENDED_ACTOR'
+  );
+  assert.equal(
+    evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({
+      unattendedOutcomes: [makeUnattendedOutcome(1, {incrementalSpendMicros: null})]
+    })).reason,
+    'SPEND_UNKNOWN_OR_EXCEEDED'
+  );
+  assert.equal(
+    evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({
+      engineeringWaves: [{...makeSharedCohortInput().engineeringWaves[0], incrementalSpendMicros: null}]
+    })).reason,
+    'SPEND_UNKNOWN_OR_EXCEEDED'
+  );
+  assert.equal(
+    evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({incrementalSpendMicros: null})).reason,
+    'SPEND_UNKNOWN_OR_EXCEEDED'
+  );
+  assert.equal(
+    evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({billingHardStopVerified: false})).reason,
+    'SPEND_UNKNOWN_OR_EXCEEDED'
+  );
+  assert.equal(
+    evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({
+      unattendedOutcomes: [makeUnattendedOutcome(1, {reworkIterations: 6})]
+    })).reason,
+    'REPAIR_BUDGET_EXCEEDED'
+  );
+  assert.equal(
+    evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({
+      unattendedOutcomes: [makeUnattendedOutcome(1, {routineHumanInterventions: 1})]
+    })).reason,
+    'ROUTINE_HUMAN_INTERVENTION_DETECTED'
+  );
+  assert.equal(
+    evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({
+      unattendedOutcomes: [makeUnattendedOutcome(1, {unauthorizedWrites: 1})]
+    })).reason,
+    'QUALITY_OR_SAFETY_GATE_FAILED'
+  );
+  assert.equal(
+    evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({
+      unattendedOutcomes: [makeUnattendedOutcome(1, {coveredLines: 970})]
+    })).reason,
+    'COVERAGE_BELOW_POLICY'
+  );
+  assert.equal(
+    evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({
+      unattendedOutcomes: [
+        makeUnattendedOutcome(1, {parallelBatchGroup: 'grp-1', ownedPaths: ['tools/shared']}),
+        makeUnattendedOutcome(2, {parallelBatchGroup: 'grp-1', ownedPaths: ['tools/shared/file.mjs']})
+      ]
+    })).reason,
+    'PARALLEL_LANE_PATH_OVERLAP'
+  );
+
+  // Top-level, identity, policy, portfolio/train, benchmark, and wave failure gates
+  assert.equal(evaluateSharedFiveOutcomeM02Cohort(null).reason, 'INPUT_UNKNOWN');
+  assert.equal(evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({incrementalSpendMicros: -1})).reason, 'INPUT_UNKNOWN');
+  assert.equal(evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({stop: true})).reason, 'STOPPED');
+  assert.equal(
+    evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({repositoryId: 999, repository: SOFTWARE_FACTORY_REPOSITORY})).reason,
+    'REPOSITORY_IDENTITY_MISMATCH'
+  );
+  assert.equal(
+    evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({
+      repositoryId: SOFTWARE_FACTORY_REPOSITORY_ID,
+      repository: 'jamula/softwarefactory'
+    })).reason,
+    'REPOSITORY_IDENTITY_MISMATCH'
+  );
+  assert.equal(
+    evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({policy: {minLinePercent: 97, minBranchPercent: 95}})).reason,
+    'POLICY_BELOW_MINIMUM'
+  );
+  assert.equal(
+    evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({portfolioInput: null})).reason,
+    'INPUT_UNKNOWN'
+  );
+  assert.equal(
+    evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({
+      portfolioInput: {
+        stop: false,
+        budget: baseBudget({active: 0, maxActive: 4}),
+        repositories: [spellbookRepo()],
+        workItems: []
+      }
+    })).reason,
+    'INTEGRATION_TRAIN_UNHEALTHY'
+  );
+  assert.equal(
+    evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({
+      portfolioInput: {
+        stop: false,
+        budget: baseBudget({active: 0, maxActive: 4}),
+        repositories: [factoryRepo({candidates: [makeTrainCandidate(1, {checksPassed: false, simulatedSquashSha: WORKLOAD_SHA})]})],
+        workItems: []
+      }
+    })).reason,
+    'INTEGRATION_TRAIN_UNHEALTHY'
+  );
+  assert.equal(
+    evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({
+      portfolioInput: {
+        stop: false,
+        budget: baseBudget({active: 0, maxActive: 4}),
+        repositories: [factoryRepo({candidates: [makeTrainCandidate(1, {simulatedSquashSha: SQUASH_1, reviewState: 'COMMENTED_CLEAR'})]})],
+        workItems: []
+      }
+    })).reason,
+    'HEAD_SHA_MISMATCH'
+  );
+  assert.equal(
+    evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({benchmarkInput: {...benchmarkInput(), stop: true}})).reason,
+    'STOPPED'
+  );
+  assert.equal(
+    evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({
+      benchmarkInput: benchmarkInput({
+        workload: SQUASH_1,
+        nodeBaseline: {...nodeBaselineProfile(), workload: SQUASH_1},
+        dotnetMafCandidate: {...dotnetMafCandidateProfile(), workload: SQUASH_1},
+        cohorts: null
+      })
+    })).reason,
+    'HEAD_SHA_MISMATCH'
+  );
+  assert.equal(
+    evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({
+      benchmarkInput: benchmarkInput({dotnetMafCandidate: null, cohorts: null})
+    })).reason,
+    'MAF_CANDIDATE_REQUIRED'
+  );
+  assert.equal(
+    evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({
+      benchmarkInput: benchmarkInput({dotnetMafCandidate: {...dotnetMafCandidateProfile(), checkpointResumeVerified: false}})
+    })).reason,
+    'MAF_ARCHITECTURE_OR_SAFETY_UNVERIFIED'
+  );
+  assert.equal(
+    evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({
+      benchmarkInput: benchmarkInput({dotnetMafCandidate: {...dotnetMafCandidateProfile(), securityReviewed: false}})
+    })).reason,
+    'REVIEW_OR_ROLLBACK_UNREADY'
+  );
+  assert.equal(
+    evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({
+      benchmarkInput: benchmarkInput({dotnetMafCandidate: {...dotnetMafCandidateProfile(), coveredLines: 970}})
+    })).reason,
+    'MAF_COVERAGE_BELOW_POLICY'
+  );
+  assert.equal(
+    evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({
+      engineeringWaves: [{...makeSharedCohortInput().engineeringWaves[0], postMergeMainFailures: 1}]
+    })).reason,
+    'WAVE_MAIN_FAILURE_DETECTED'
+  );
+  assert.equal(
+    evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({
+      engineeringWaves: [{...makeSharedCohortInput().engineeringWaves[0], finalMainSha: SQUASH_1}]
+    })).reason,
+    'HEAD_SHA_MISMATCH'
+  );
+  assert.equal(
+    evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({
+      engineeringWaves: [
+        {...makeSharedCohortInput().engineeringWaves[0], waveId: 'wave-3', initialMainSha: sha('9'), finalMainSha: MAIN_SHA},
+        {...makeSharedCohortInput().engineeringWaves[0], initialMainSha: SQUASH_1}
+      ]
+    })).reason,
+    'WAVE_CHAIN_DISCONTINUITY'
+  );
+  assert.equal(
+    evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({
+      engineeringWaves: [
+        makeSharedCohortInput().engineeringWaves[0],
+        {...makeSharedCohortInput().engineeringWaves[0], waveId: 'wave-dup-pr', initialMainSha: WORKLOAD_SHA, finalMainSha: SQUASH_1}
+      ]
+    })).reason,
+    'ENGINEERING_WAVE_UNKNOWN'
+  );
+  assert.equal(
+    evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({
+      engineeringWaves: [{...makeSharedCohortInput().engineeringWaves[0], incrementalSpendMicros: -1}]
+    })).reason,
+    'ENGINEERING_WAVE_UNKNOWN'
+  );
+  assert.equal(
+    evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({
+      unattendedOutcomes: [makeUnattendedOutcome(1, {reviewRepairVerified: true, reworkIterations: 0})]
+    })).reason,
+    'OUTCOME_SCHEMA_INVALID'
+  );
+  assert.equal(
+    evaluateSharedFiveOutcomeM02Cohort(makeSharedCohortInput({
+      unattendedOutcomes: [makeUnattendedOutcome(1, {incrementalSpendMicros: -1})]
+    })).reason,
+    'OUTCOME_SCHEMA_INVALID'
+  );
 });

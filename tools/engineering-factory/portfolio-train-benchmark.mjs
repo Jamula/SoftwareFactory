@@ -16,6 +16,11 @@ export const THROUGHPUT_COHORT_MULTIPLIERS = Object.freeze([2, 5, 10, 15, 20, 25
 export const PINNED_NODE_RUNTIME = 'node-26.13.1';
 export const PINNED_DOTNET_MAF_RUNTIME = 'dotnet-10-maf-1.28.0';
 export const LOGICAL_LANE_CLASSIFICATION = 'logical-lanes-not-concurrent-agent-authorization';
+export const SHARED_M02_COHORT_TARGET_OUTCOMES = 5;
+export const SHARED_M01_ANCHOR_TARGET_OUTCOMES = 3;
+export const SHARED_M02_EXIT_ISSUES = Object.freeze([14, 16, 18, 137]);
+export const M01_EXIT_ANCHOR_ISSUE = 10;
+export const UNATTENDED_COPILOT_ACTOR = 'copilot-swe-agent[bot]';
 
 const DAY_MS = 86400000;
 const YEAR_MS = 31536000000;
@@ -284,6 +289,7 @@ function simulateRepositoryTrain(repo, isFactory) {
   const blockedAfterMainFailurePrs = [];
   const claimedPaths = [];
   const mergeDurations = [];
+  const mergedTrainShas = new Set([train.mainSha]);
   let currentMainSha = train.mainSha;
   let mainHealthyAfter = true;
   let elapsedMs = 0;
@@ -297,7 +303,7 @@ function simulateRepositoryTrain(repo, isFactory) {
       continue;
     }
     if (c.head !== c.observedHead ||
-        (c.expectedBase !== currentMainSha && c.expectedBase !== train.mainSha) ||
+        !mergedTrainShas.has(c.expectedBase) ||
         !c.compatibleBase) {
       isolatedCandidates.push(Object.freeze({pr: c.pr, reason: 'HEAD_OR_BASE_MISMATCH'}));
       continue;
@@ -325,6 +331,7 @@ function simulateRepositoryTrain(repo, isFactory) {
     }
 
     claimedPaths.push(...c.ownedPaths);
+    mergedTrainShas.add(c.simulatedSquashSha);
     currentMainSha = c.simulatedSquashSha;
     elapsedMs += c.eligibleToMergeMs;
     lastMergeReceiptMs = elapsedMs;
@@ -1233,4 +1240,388 @@ export function evaluateDotnetConsolidationBenchmark(input) {
   }
 
   return buildOutcome(true, 'dotnet-10-consolidation-eligible', 'DOTNET_10_CONSOLIDATION_ELIGIBLE');
+}
+
+const SHARED_COHORT_INPUT_KEYS = [
+  'stop', 'repositoryId', 'repository', 'headSha', 'policy',
+  'billingHardStopVerified', 'incrementalSpendMicros',
+  'portfolioInput', 'benchmarkInput', 'engineeringWaves', 'unattendedOutcomes'
+];
+const ENGINEERING_WAVE_KEYS = [
+  'waveId', 'provenanceKind', 'initialMainSha', 'finalMainSha',
+  'windowStartMs', 'windowEndMs', 'prNumbers', 'mergeQueueDurationsMs',
+  'postMergeMainFailures', 'incrementalSpendMicros'
+];
+const UNATTENDED_OUTCOME_KEYS = [
+  'issue', 'pr', 'provenanceKind', 'agentActor', 'm01CohortMember',
+  'parallelBatchGroup', 'reviewRepairVerified', 'headSha', 'squashMergeSha',
+  'assignedAtMs', 'mergedAtMs', 'mergeQueueDurationMs', 'ownedPaths',
+  'coveredLines', 'totalLines', 'coveredBranches', 'totalBranches',
+  'checksPassed', 'securityClear', 'independentReview', 'unresolvedFindings',
+  'mainHealthyAfterMerge', 'rollbackReady', 'reworkIterations',
+  'routineHumanInterventions', 'duplicateDispatches', 'unauthorizedWrites',
+  'incrementalSpendMicros'
+];
+
+function sharedCohortDenied(reason) {
+  return Object.freeze({
+    valid: false,
+    shadow: true,
+    liveDispatch: false,
+    liveMerge: false,
+    multiCohortLadderRetired: true,
+    sharedCohortTargetOutcomes: SHARED_M02_COHORT_TARGET_OUTCOMES,
+    m01AnchorTargetOutcomes: SHARED_M01_ANCHOR_TARGET_OUTCOMES,
+    sharedIssues: SHARED_M02_EXIT_ISSUES,
+    m01AnchorIssue: M01_EXIT_ANCHOR_ISSUE,
+    provenanceSeparated: false,
+    cohortComplete: false,
+    m02ExitReady: false,
+    keepIssue16Open: true,
+    status: 'BLOCKED',
+    reason
+  });
+}
+
+function parseEngineeringWaves(waves) {
+  const seenWaveIds = new Set();
+  const wavePrNumbers = new Set();
+  const allMqMs = [];
+  const summaries = [];
+  let earliestStartMs = Infinity;
+  let latestEndMs = 0;
+
+  for (let i = 0; i < waves.length; i++) {
+    const w = waves[i];
+    if (!exactRecord(w, ENGINEERING_WAVE_KEYS) ||
+        !cohortSlug(w.waveId) || seenWaveIds.has(w.waveId) ||
+        typeof w.provenanceKind !== 'string' ||
+        !hex40(w.initialMainSha) || !hex40(w.finalMainSha) ||
+        w.initialMainSha === w.finalMainSha ||
+        !positiveInt(w.windowStartMs) || !positiveInt(w.windowEndMs) ||
+        w.windowEndMs <= w.windowStartMs ||
+        !denseDataArray(w.prNumbers, 100) || w.prNumbers.length === 0 ||
+        !denseDataArray(w.mergeQueueDurationsMs, 100) ||
+        w.mergeQueueDurationsMs.length !== w.prNumbers.length ||
+        !nonnegInt(w.postMergeMainFailures, 1000) ||
+        (w.incrementalSpendMicros !== null && !nonnegInt(w.incrementalSpendMicros, 1000000000)) ||
+        !w.prNumbers.every(pr => positiveInt(pr, 1000000)) ||
+        !w.mergeQueueDurationsMs.every(ms => positiveInt(ms, DAY_MS))) {
+      return {ok: false, reason: 'ENGINEERING_WAVE_UNKNOWN'};
+    }
+    if (w.provenanceKind !== 'session-orchestrated-merge-queue-wave') {
+      return {ok: false, reason: 'PROVENANCE_CONFLATION_REJECTED'};
+    }
+    if (w.incrementalSpendMicros !== 0) {
+      return {ok: false, reason: 'SPEND_UNKNOWN_OR_EXCEEDED'};
+    }
+    if (w.postMergeMainFailures !== 0) {
+      return {ok: false, reason: 'WAVE_MAIN_FAILURE_DETECTED'};
+    }
+    if (i > 0 && w.initialMainSha !== waves[i - 1].finalMainSha) {
+      return {ok: false, reason: 'WAVE_CHAIN_DISCONTINUITY'};
+    }
+    for (let j = 0; j < w.prNumbers.length; j++) {
+      const pr = w.prNumbers[j];
+      if (wavePrNumbers.has(pr)) return {ok: false, reason: 'ENGINEERING_WAVE_UNKNOWN'};
+      wavePrNumbers.add(pr);
+    }
+    seenWaveIds.add(w.waveId);
+    earliestStartMs = Math.min(earliestStartMs, w.windowStartMs);
+    latestEndMs = Math.max(latestEndMs, w.windowEndMs);
+    allMqMs.push(...w.mergeQueueDurationsMs);
+    const sortedWaveMq = [...w.mergeQueueDurationsMs].sort((a, b) => a - b);
+    const waveWindowMs = w.windowEndMs - w.windowStartMs;
+    summaries.push(Object.freeze({
+      waveId: w.waveId,
+      provenanceKind: w.provenanceKind,
+      initialMainSha: w.initialMainSha,
+      finalMainSha: w.finalMainSha,
+      prCount: w.prNumbers.length,
+      windowMs: waveWindowMs,
+      mergedPerDay: (w.prNumbers.length * DAY_MS) / waveWindowMs,
+      p50MergeQueueMs: percentile(sortedWaveMq, 0.5),
+      p95MergeQueueMs: percentile(sortedWaveMq, 0.95)
+    }));
+  }
+
+  const sortedAllMq = [...allMqMs].sort((a, b) => a - b);
+  const totalWindowMs = latestEndMs - earliestStartMs;
+  return {
+    ok: true,
+    wavePrNumbers,
+    finalMainSha: waves[waves.length - 1].finalMainSha,
+    summary: Object.freeze({
+      provenanceKind: 'session-orchestrated-merge-queue-wave',
+      waveCount: summaries.length,
+      totalMergedPrs: wavePrNumbers.size,
+      windowMs: totalWindowMs,
+      mergedPerDay: (wavePrNumbers.size * DAY_MS) / totalWindowMs,
+      p50MergeQueueMs: percentile(sortedAllMq, 0.5),
+      p95MergeQueueMs: percentile(sortedAllMq, 0.95),
+      postMergeMainFailures: 0,
+      incrementalSpendMicros: 0,
+      waves: Object.freeze(summaries)
+    })
+  };
+}
+
+function validUnattendedOutcomeShape(o) {
+  return exactRecord(o, UNATTENDED_OUTCOME_KEYS) &&
+    positiveInt(o.issue, 1000000) && positiveInt(o.pr, 1000000) &&
+    typeof o.provenanceKind === 'string' && typeof o.agentActor === 'string' &&
+    typeof o.m01CohortMember === 'boolean' &&
+    (o.parallelBatchGroup === null || cohortSlug(o.parallelBatchGroup)) &&
+    typeof o.reviewRepairVerified === 'boolean' &&
+    hex40(o.headSha) && hex40(o.squashMergeSha) && o.headSha !== o.squashMergeSha &&
+    positiveInt(o.assignedAtMs) && positiveInt(o.mergedAtMs) && o.mergedAtMs > o.assignedAtMs &&
+    positiveInt(o.mergeQueueDurationMs, DAY_MS) &&
+    validUniquePathList(o.ownedPaths) && !hasInternalPathOverlap(o.ownedPaths) &&
+    validCoverageCounts(o.coveredLines, o.totalLines) &&
+    validCoverageCounts(o.coveredBranches, o.totalBranches) &&
+    [o.checksPassed, o.securityClear, o.independentReview,
+      o.mainHealthyAfterMerge, o.rollbackReady].every(b => typeof b === 'boolean') &&
+    nonnegInt(o.unresolvedFindings, 10000) &&
+    nonnegInt(o.reworkIterations, 1000) &&
+    nonnegInt(o.routineHumanInterventions, 1000) &&
+    nonnegInt(o.duplicateDispatches, 1000) &&
+    nonnegInt(o.unauthorizedWrites, 1000) &&
+    (o.incrementalSpendMicros === null || nonnegInt(o.incrementalSpendMicros, 1000000000));
+}
+
+function parseUnattendedOutcomes(outcomes, wavePrNumbers, policy) {
+  const seenIssues = new Set();
+  const seenPrs = new Set();
+  const seenSquash = new Set();
+  const parallelGroups = new Map();
+  const leadDurations = [];
+  const mqDurations = [];
+  let m01MemberCount = 0;
+  let reviewRepairCount = 0;
+  let totalReworkIterations = 0;
+  let earliestAssignedMs = Infinity;
+  let latestMergedMs = 0;
+  let coveredLines = 0;
+  let totalLines = 0;
+  let coveredBranches = 0;
+  let totalBranches = 0;
+
+  for (let i = 0; i < outcomes.length; i++) {
+    const o = outcomes[i];
+    if (!validUnattendedOutcomeShape(o) ||
+        seenIssues.has(o.issue) || seenPrs.has(o.pr) || seenSquash.has(o.squashMergeSha) ||
+        (o.reviewRepairVerified && o.reworkIterations === 0)) {
+      return {ok: false, reason: 'OUTCOME_SCHEMA_INVALID'};
+    }
+    if (o.provenanceKind !== 'unattended-copilot-issue-outcome' || wavePrNumbers.has(o.pr)) {
+      return {ok: false, reason: 'PROVENANCE_CONFLATION_REJECTED'};
+    }
+    if (o.agentActor !== UNATTENDED_COPILOT_ACTOR) {
+      return {ok: false, reason: 'UNVERIFIED_UNATTENDED_ACTOR'};
+    }
+    if (o.incrementalSpendMicros !== 0) {
+      return {ok: false, reason: 'SPEND_UNKNOWN_OR_EXCEEDED'};
+    }
+    if (o.reworkIterations > 5) {
+      return {ok: false, reason: 'REPAIR_BUDGET_EXCEEDED'};
+    }
+    if (o.routineHumanInterventions !== 0) {
+      return {ok: false, reason: 'ROUTINE_HUMAN_INTERVENTION_DETECTED'};
+    }
+    if (!o.checksPassed || !o.securityClear || !o.independentReview ||
+        o.unresolvedFindings !== 0 || !o.mainHealthyAfterMerge || !o.rollbackReady ||
+        o.duplicateDispatches !== 0 || o.unauthorizedWrites !== 0) {
+      return {ok: false, reason: 'QUALITY_OR_SAFETY_GATE_FAILED'};
+    }
+    if (!meetsCoverageFloor(
+      o.coveredLines, o.totalLines, o.coveredBranches, o.totalBranches,
+      policy.minLinePercent, policy.minBranchPercent
+    )) {
+      return {ok: false, reason: 'COVERAGE_BELOW_POLICY'};
+    }
+    if (o.parallelBatchGroup !== null) {
+      let group = parallelGroups.get(o.parallelBatchGroup);
+      if (!group) {
+        group = {count: 0, paths: []};
+        parallelGroups.set(o.parallelBatchGroup, group);
+      }
+      if (hasAnyPathOverlap(o.ownedPaths, group.paths)) {
+        return {ok: false, reason: 'PARALLEL_LANE_PATH_OVERLAP'};
+      }
+      group.count += 1;
+      group.paths.push(...o.ownedPaths);
+    }
+
+    seenIssues.add(o.issue);
+    seenPrs.add(o.pr);
+    seenSquash.add(o.squashMergeSha);
+    if (o.m01CohortMember) m01MemberCount += 1;
+    if (o.reviewRepairVerified) reviewRepairCount += 1;
+    totalReworkIterations += o.reworkIterations;
+    leadDurations.push(o.mergedAtMs - o.assignedAtMs);
+    mqDurations.push(o.mergeQueueDurationMs);
+    earliestAssignedMs = Math.min(earliestAssignedMs, o.assignedAtMs);
+    latestMergedMs = Math.max(latestMergedMs, o.mergedAtMs);
+    coveredLines += o.coveredLines;
+    totalLines += o.totalLines;
+    coveredBranches += o.coveredBranches;
+    totalBranches += o.totalBranches;
+  }
+
+  const acceptedCount = outcomes.length;
+  const windowMs = acceptedCount > 0 ? latestMergedMs - earliestAssignedMs : null;
+  const sortedLead = [...leadDurations].sort((a, b) => a - b);
+  const sortedMq = [...mqDurations].sort((a, b) => a - b);
+  const m01AnchorSatisfied = m01MemberCount >= SHARED_M01_ANCHOR_TARGET_OUTCOMES;
+  const parallelBatchVerified = [...parallelGroups.values()].some(g => g.count >= 2);
+  const reviewRepairLoopVerified = reviewRepairCount >= 1;
+
+  return {
+    ok: true,
+    acceptedCount,
+    m01AnchorSatisfied,
+    parallelBatchVerified,
+    reviewRepairLoopVerified,
+    summary: Object.freeze({
+      provenanceKind: 'unattended-copilot-issue-outcome',
+      agentActor: UNATTENDED_COPILOT_ACTOR,
+      acceptedCount,
+      remainingRequiredCount: Math.max(0, SHARED_M02_COHORT_TARGET_OUTCOMES - acceptedCount),
+      m01MemberCount,
+      m01AnchorSatisfied,
+      parallelBatchVerified,
+      reviewRepairLoopVerified,
+      windowMs,
+      acceptedPerDay: acceptedCount > 0 ? (acceptedCount * DAY_MS) / windowMs : null,
+      p50LeadTimeMs: percentile(sortedLead, 0.5),
+      p95LeadTimeMs: percentile(sortedLead, 0.95),
+      p50MergeQueueMs: percentile(sortedMq, 0.5),
+      p95MergeQueueMs: percentile(sortedMq, 0.95),
+      totalReworkIterations,
+      reworkRateBps: acceptedCount > 0 ? Math.round((totalReworkIterations * 10000) / acceptedCount) : null,
+      routineHumanInterventions: 0,
+      incrementalSpendMicros: 0,
+      coverage: acceptedCount > 0
+        ? Object.freeze({coveredLines, totalLines, coveredBranches, totalBranches})
+        : null
+    })
+  };
+}
+
+export function evaluateSharedFiveOutcomeM02Cohort(input) {
+  if (!exactRecord(input, SHARED_COHORT_INPUT_KEYS) ||
+      typeof input.stop !== 'boolean' ||
+      !positiveInt(input.repositoryId) || !isRepoSlug(input.repository) ||
+      !hex40(input.headSha) ||
+      !exactRecord(input.policy, COHORT_POLICY_KEYS) ||
+      !nonnegInt(input.policy.minLinePercent, 100) ||
+      !nonnegInt(input.policy.minBranchPercent, 100) ||
+      typeof input.billingHardStopVerified !== 'boolean' ||
+      (input.incrementalSpendMicros !== null && !nonnegInt(input.incrementalSpendMicros, 1000000000)) ||
+      !denseDataArray(input.engineeringWaves, 16) || input.engineeringWaves.length === 0 ||
+      !denseDataArray(input.unattendedOutcomes, 50)) {
+    return sharedCohortDenied('INPUT_UNKNOWN');
+  }
+  if (input.stop !== false) return sharedCohortDenied('STOPPED');
+
+  const lowerRepo = input.repository.toLowerCase();
+  const isFactoryId = input.repositoryId === SOFTWARE_FACTORY_REPOSITORY_ID;
+  const isFactorySlug = lowerRepo === SOFTWARE_FACTORY_REPOSITORY.toLowerCase();
+  if (isFactoryId !== isFactorySlug || (isFactoryId && input.repository !== SOFTWARE_FACTORY_REPOSITORY)) {
+    return sharedCohortDenied('REPOSITORY_IDENTITY_MISMATCH');
+  }
+  const isSpellbook = isSpellbookSlug(input.repository);
+  const lineFloor = isFactoryId ? 98 : (isSpellbook ? 97 : 95);
+  const branchFloor = isFactoryId ? 95 : 90;
+  if (input.policy.minLinePercent < lineFloor || input.policy.minBranchPercent < branchFloor) {
+    return sharedCohortDenied('POLICY_BELOW_MINIMUM');
+  }
+  if (!input.billingHardStopVerified || input.incrementalSpendMicros !== 0) {
+    return sharedCohortDenied('SPEND_UNKNOWN_OR_EXCEEDED');
+  }
+
+  const portfolioEval = allocatePortfolioCapacityAndSimulateTrains(input.portfolioInput);
+  if (!portfolioEval.valid) return sharedCohortDenied(portfolioEval.reason);
+  const targetRepo = portfolioEval.repositoryResults.find(r => r.repositoryId === input.repositoryId);
+  if (!targetRepo || targetRepo.killSwitch || !targetRepo.train.mainHealthyAfter ||
+      targetRepo.train.isolatedCandidates.length > 0) {
+    return sharedCohortDenied('INTEGRATION_TRAIN_UNHEALTHY');
+  }
+  if (targetRepo.train.finalMainSha !== input.headSha) {
+    return sharedCohortDenied('HEAD_SHA_MISMATCH');
+  }
+
+  const benchmarkEval = evaluateDotnetConsolidationBenchmark(input.benchmarkInput);
+  if (!benchmarkEval.valid) return sharedCohortDenied(benchmarkEval.reason);
+  if (benchmarkEval.workload !== input.headSha) return sharedCohortDenied('HEAD_SHA_MISMATCH');
+  if (benchmarkEval.dotnetMafCandidate === null) return sharedCohortDenied('MAF_CANDIDATE_REQUIRED');
+  if (benchmarkEval.reason === 'MAF_ARCHITECTURE_OR_SAFETY_UNVERIFIED' ||
+      benchmarkEval.reason === 'REVIEW_OR_ROLLBACK_UNREADY') {
+    return sharedCohortDenied(benchmarkEval.reason);
+  }
+  if (!meetsCoverageFloor(
+    benchmarkEval.dotnetMafCandidate.coveredLines,
+    benchmarkEval.dotnetMafCandidate.totalLines,
+    benchmarkEval.dotnetMafCandidate.coveredBranches,
+    benchmarkEval.dotnetMafCandidate.totalBranches,
+    98,
+    95
+  )) {
+    return sharedCohortDenied('MAF_COVERAGE_BELOW_POLICY');
+  }
+
+  const wavesParsed = parseEngineeringWaves(input.engineeringWaves);
+  if (!wavesParsed.ok) return sharedCohortDenied(wavesParsed.reason);
+  if (wavesParsed.finalMainSha !== input.headSha) return sharedCohortDenied('HEAD_SHA_MISMATCH');
+
+  const outcomesParsed = parseUnattendedOutcomes(
+    input.unattendedOutcomes,
+    wavesParsed.wavePrNumbers,
+    input.policy
+  );
+  if (!outcomesParsed.ok) return sharedCohortDenied(outcomesParsed.reason);
+
+  let cohortComplete = false;
+  let status = 'PENDING_UNATTENDED_COPILOT_COHORT';
+  let reason = 'PENDING_M01_10_AND_SHARED_5_ISSUE_COHORT';
+  if (outcomesParsed.acceptedCount >= SHARED_M02_COHORT_TARGET_OUTCOMES) {
+    if (outcomesParsed.m01AnchorSatisfied &&
+        outcomesParsed.parallelBatchVerified &&
+        outcomesParsed.reviewRepairLoopVerified) {
+      cohortComplete = true;
+      status = 'SHARED_5_OUTCOME_COHORT_VERIFIED';
+      reason = 'SHARED_M02_COHORT_ELIGIBLE';
+    } else {
+      status = 'INCOMPLETE_COHORT_COMPOSITION';
+      reason = 'COHORT_COMPOSITION_REQUIREMENTS_UNMET';
+    }
+  }
+
+  return Object.freeze({
+    valid: true,
+    shadow: true,
+    liveDispatch: false,
+    liveMerge: false,
+    repositoryId: input.repositoryId,
+    repository: input.repository,
+    headSha: input.headSha,
+    multiCohortLadderRetired: true,
+    sharedCohortTargetOutcomes: SHARED_M02_COHORT_TARGET_OUTCOMES,
+    m01AnchorTargetOutcomes: SHARED_M01_ANCHOR_TARGET_OUTCOMES,
+    sharedIssues: SHARED_M02_EXIT_ISSUES,
+    m01AnchorIssue: M01_EXIT_ANCHOR_ISSUE,
+    provenanceSeparated: true,
+    runtimePosture: benchmarkEval.consolidationEligible
+      ? 'dotnet-10-single-runtime-consolidation-eligible'
+      : 'dual-runtime-retain-node-authoritative',
+    consolidationRecommendation: benchmarkEval.recommendation,
+    consolidationReason: benchmarkEval.reason,
+    cohortComplete,
+    m02ExitReady: cohortComplete,
+    keepIssue16Open: !cohortComplete,
+    status,
+    reason,
+    engineeringWaveSummary: wavesParsed.summary,
+    unattendedCohortSummary: outcomesParsed.summary
+  });
 }

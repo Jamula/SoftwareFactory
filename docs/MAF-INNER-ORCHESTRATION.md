@@ -64,6 +64,19 @@ flowchart LR
 - Spans are emitted on both `ActivitySource("Microsoft.Agents.AI.Workflows")` (via `.WithOpenTelemetry(...)`) and `ActivitySource("SoftwareFactory.Agents")` with W3C `traceparent` propagation and strictly allowlisted low-cardinality tags (`sf.stage`, `sf.lane`, `sf.superstep`, `sf.outcome`, `sf.reason`). Raw prompts, issue bodies, tokens, exception text, and PII are never recorded.
 - `--benchmark` executes `12` / `50` / `100` logical lanes in bounded parallel batches (`Task.WhenAll` up to `ConfiguredWorkerCap`, recording `ObservedPeakConcurrency` and `ExecutedBatches`) and marks `2x`–`25x` cohort slots `UNMEASURED_BASELINE_REQUIRED` until real matched baseline/candidate cohort inputs (`>= 5` finite comparable accepted units with zero coverage, quality, or cost regressions) are supplied.
 
+## Superstep workflow, integration-train, and shared 5-outcome cohort receipt (`#16`)
+
+`docs/evidence/m02-04-maf-throughput-cohort.json` records the deterministic `M02.04` ([#16](https://github.com/Jamula/SoftwareFactory/issues/16)) benchmark and integration-train evaluation on `main` @ `ec438f54088f30856c2df6ff626e894dde2a0100`, verified through `allocatePortfolioCapacityAndSimulateTrains`, `evaluateDotnetConsolidationBenchmark`, and `evaluateSharedFiveOutcomeM02Cohort` in `tools/engineering-factory/portfolio-train-benchmark.mjs`:
+
+1. **`.NET 10.0.404` MAF `1.28.0` GA `--smoke`, `--benchmark`, and hosted cross-OS CI receipts**:
+   - `--smoke` completes `9` Pregel supersteps (`repairIterationsUsed: 1`, `checkpointSaved: true`, `checkpointResumed: true`, `priorSuperstepsRepeated: 0`, `$0` spend) and `--benchmark` executes `12` / `50` / `100` logical lanes (`195.298ms` / `74.968ms` / `144.431ms`, `duplicatePathLeases: 0`, `crossRepoLeaks: 0`).
+   - Hosted GitHub Actions runs on `ec438f54088f30856c2df6ff626e894dde2a0100` (`46112285635` Linux Node `26.13.1` `test-coverage` at `41787/41816` lines `99.93%` and `22069/22267` branches `99.11%`; `46112285657` Linux + Windows `.NET 10.0.404` `SoftwareFactory.Agents` at `1737/1739` lines `99.88%` and `786/798` branches `98.49%`; `46112285658` Windows Aspire runtime) evaluate deterministically to `retain-node-authoritative` (`dual-runtime-retain-node-authoritative`), keeping Node `26.13.1` authoritative for outer evaluators while `.NET 10` MAF `1.28.0` executes inner specialist workflows.
+2. **Contiguous `Waves 2–4` Squash Merge Queue integration-train replay**:
+   - Replays all `32` contiguous Squash Merge Queue commits advancing `main` from `c77612ec3f4e89d792b3b77741718824318ca676` to `ec438f54088f30856c2df6ff626e894dde2a0100`: Wave 2 (`7` PRs: `#140`, `#141`, `#142`, `#139`, `#144`, `#120`, `#143`), the `21`-PR Wave 3 parallel Squash Merge Queue integration train (`#145`–`#165`, including `11` parallel non-overlapping PRs merged within `284s` between `2026-11-28T02:30:52Z` and `02:35:36Z`), and Wave 4 (`4` PRs: `#169`, `#166`, `#167`, `#168`), with `p50MergeQueueMs = 186000`, `p95MergeQueueMs = 438000`, `0` path overlaps within each wave, and `0` post-merge `main` failures.
+3. **Streamlined shared `5`-outcome `@copilot` cohort gate and provenance separation**:
+   - Retires the artificial `2x`–`25x` multi-cohort ceremony ladder (`multiCohortLadderRetired: true`) in favor of the owner-approved shared `5`-issue real `copilot-swe-agent[bot]` cohort across [#14](https://github.com/Jamula/SoftwareFactory/issues/14), [#16](https://github.com/Jamula/SoftwareFactory/issues/16), [#18](https://github.com/Jamula/SoftwareFactory/issues/18), and [#137](https://github.com/Jamula/SoftwareFactory/issues/137) anchored by [#10](https://github.com/Jamula/SoftwareFactory/issues/10)'s `3` real issues (`>= 2` parallel non-overlapping issues + `>= 1` review-repair loop) plus `2` additional real issues.
+   - Enforces strict provenance separation (`PROVENANCE_CONFLATION_REJECTED` if session-orchestrated wave PRs are supplied as unattended `@copilot` outcomes) and keeps `#16` open (`status: 'PENDING_UNATTENDED_COPILOT_COHORT'`, `keepIssue16Open: true`, `0/5` completed) until all `5` unattended `copilot-swe-agent[bot]` outcomes land on healthy protected `main` with `0` routine human interventions and `$0` billed spend.
+
 ## Local commands and CI verification
 
 ```bash
@@ -83,4 +96,7 @@ dotnet build apphost.cs --configuration Release --no-restore
 
 # Verify selective curated-lessons & exploration/rework cohort evaluator (#14)
 node --test tests/engineering-factory/curated-lessons.test.mjs
+
+# Verify portfolio integration-train, .NET 10 consolidation, and M02.04 cohort receipt (#16)
+node --test tests/engineering-factory/portfolio-train-benchmark.test.mjs
 ```
