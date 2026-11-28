@@ -6,6 +6,69 @@ This document defines SoftwareFactory's versioned, read-only, deterministic **MC
 
 ---
 
+## Running the stdio server
+
+From the repository root, run `node bin/softwarefactory-mcp.mjs` or `npm run mcp`.
+The executable is also registered as `softwarefactory-mcp` in `package.json`.
+The process exchanges one JSON-RPC message per line on stdin and stdout; stdout
+is reserved for protocol messages. Use `node` directly (or `npm run --silent mcp`)
+for protocol clients, since npm's normal script banner can pollute stdout.
+No additional npm runtime dependency is needed.
+The workspace registration in `.vscode/mcp.json` starts the same server in VS Code.
+
+For Copilot CLI, add an entry to `~/.copilot/mcp-config.json`, replacing the
+path with the absolute path to this checkout:
+
+```json
+{
+  "mcpServers": {
+    "softwarefactory": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["/path/to/SoftwareFactory/bin/softwarefactory-mcp.mjs"],
+      "tools": ["*"]
+    }
+  }
+}
+```
+
+Other MCP stdio clients, including Copilot App, Copilot Coding Agent, Claude
+Code, Codex, and .NET `IChatClient` MCP integrations, can launch the same
+command using their respective client configuration. Client and provider
+authorization, entitlement, and budget checks remain separate.
+
+The CLI enrolls only `Jamula/SoftwareFactory` (repository ID `1471342715`);
+this is a read-only context, not permission to dispatch, merge, or access
+consumer repositories. To use consumer tools, a trusted operator may set
+`SOFTWAREFACTORY_MCP_AUTHORIZED_REPOSITORIES` in the server process environment
+to a JSON array of authorized repository entries. This replaces the default
+list, so include the factory entry if it is also needed. Each consumer entry
+must carry its repository ID and name and any stricter coverage floors and
+trusted lane configuration applicable to it. Invalid enrollment prevents the
+server from starting; MCP requests cannot enroll repositories. Do not put
+credentials in enrollment metadata.
+For nonempty lane plans, the operator must also supply `trustedFiles` on the
+enrollment entry: an inventory of exact, trusted repository file paths, not
+directories or glob patterns. Task and active-reservation paths must match the
+inventory exactly; missing inventory fails closed. The server validates path
+syntax and protected-path exclusions but does not inspect the filesystem to
+verify that an inventory entry is a file.
+
+For example, a launcher can supply synthetic entries like:
+
+```json
+[
+  { "repositoryId": 1471342715, "repository": "Jamula/SoftwareFactory" },
+  { "repositoryId": 22001100, "repository": "Synthetic/Consumer", "coverage": { "line": 97, "branch": 92 } }
+]
+```
+
+Knowledge-map requests still require a revision and a freshness timestamp.
+Results are advisory and do not replace trusted evidence, independent review,
+or consumer-specific gates.
+
+---
+
 ## Architectural Boundaries
 
 1. **External deterministic merge authority (`externalMergeAuthorityOnly: true`):**
@@ -27,11 +90,13 @@ This document defines SoftwareFactory's versioned, read-only, deterministic **MC
 - Accepts either a dense plain array of single-line JSON strings or a `\n` / `\r\n`-delimited stream chunk, enforcing `MAX_MCP_FRAMED_LINES = 100` (`FRAMED_BATCH_LIMIT_EXCEEDED` above `100` lines), rejecting empty batches (`EMPTY_FRAMED_BATCH`) and embedded `\r` / `\n` frame-injection characters (`EMBEDDED_NEWLINE_IN_FRAME`), and validating `context` fail-closed (`INVALID_CONNECTOR_CONTEXT`).
 - Enforces `MAX_MCP_REQUEST_BYTES = 65,536` UTF-8 bytes per line (`-32600` `PAYLOAD_TOO_LARGE` without parsing oversized frames), omits responses for JSON-RPC notifications, and escapes `\u2028` / `\u2029` so every entry in `responses` (and `framedOutput`) is guaranteed newline-free.
 
+`startMcpStdioServer({ input, output, env, context })` streams newline-delimited JSON-RPC `2.0` frames over `input` / `output` (defaulting to `process.stdin` / `process.stdout`), enforces `MAX_MCP_REQUEST_BYTES` and fatal UTF-8 decoding before parsing, preserves request ordering under backpressure, awaits write completion callbacks and observes stream errors/closure across the server lifetime, omits notification responses, and keeps `output` strictly reserved for JSON-RPC frames. `runMcpStdioCli({ input, output, stderr, env })` backs `bin/softwarefactory-mcp.mjs` with bounded enrollment validation and `stderr`-only diagnostics.
+
 | Method | Purpose | Response Contract |
 | --- | --- | --- |
 | `initialize` | Negotiate MCP `2025-06-18` capabilities | Returns `{ protocolVersion: "2025-06-18", capabilities: { tools: { listChanged: false } }, serverInfo: { name: "softwarefactory-mcp-connector", version: "1.0.0" } }` |
 | `ping` | Liveness check | Returns `{}` |
-| `tools/list` | Enumerate read-only tools | Returns the 4 frozen tool descriptors with strict JSON Schemas (`additionalProperties: false`) |
+| `tools/list` | Enumerate read-only tools | Returns the 8 read-only tool descriptors and their input schemas |
 | `tools/call` | Invoke a read-only tool | Returns `{ isError, content: [{ type: "text", text }], structuredContent }`; fails closed with `CONNECTOR_STOPPED` if `context.killSwitch` or `context.stop` is active |
 
 ### Read-Only Tools (`tools/call`)
@@ -50,6 +115,14 @@ This document defines SoftwareFactory's versioned, read-only, deterministic **MC
    - Rejects any `ownedPaths` overlapping `FORBIDDEN_CONTROL_PLANE_PATHS` or `.lock.yml` (`FORBIDDEN_CONTROL_PLANE_PATH`), returning bounded `{ ownedPaths, forbiddenControlPlanePaths, maxRepairIterations }`.
 4. **`validate_provider_isolation`**:
    - Executes `validateMultiAgentConnectorConfig(arguments)` for `github-copilot`, `openai-codex`, or `anthropic-claude` adapters.
+5. **`plan_disjoint_lanes`**:
+   - Wraps `planLanes` (`tools/engineering-coordinator/planner.mjs`) to verify non-overlapping lane ownership, DAG dependencies, protected-path exclusions, and exact enrolled `trustedFiles` inventories without dispatching agents.
+6. **`build_consumer_onboarding_plan`**:
+   - Wraps `buildReadOnlyOnboardingPlan` and optional `evaluateConsumerOnboardingSuccess` (`tools/engineering-factory/consumer-onboarding.mjs`), binding outcomes to enrolled identity, stricter coverage floors, and discovered repository security gates without enrolling or activating a consumer.
+7. **`select_scoped_guidance_and_lessons`**:
+   - Wraps `selectScopedGuidanceAndLessons` (`tools/engineering-factory/curated-lessons.mjs`) within the enrolled repository, revision, clock, and coverage floors; selection is not authorization.
+8. **`get_factory_board_snapshot`**:
+   - Wraps `fetchFactoryBoardSnapshot` (`tools/engineering-factory/factory-board.mjs`) for read-only milestone, issue, PR, and Merge Queue inspection when a trusted read-only `boardTransport` is explicitly injected into `startMcpStdioServer`. The default CLI makes zero live provider calls and fails closed (`BOARD_TRANSPORT_REQUIRED`) when no transport is injected; board data does not authorize actions.
 
 ---
 

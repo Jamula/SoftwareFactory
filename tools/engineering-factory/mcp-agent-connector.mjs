@@ -1,6 +1,10 @@
 // Read-only, deterministic MCP server and multi-agent isolation connector (#136).
 import { createHash } from 'node:crypto';
 import { types } from 'node:util';
+import { planLanes } from '../engineering-coordinator/planner.mjs';
+import { buildReadOnlyOnboardingPlan, evaluateConsumerOnboardingSuccess } from './consumer-onboarding.mjs';
+import { selectScopedGuidanceAndLessons } from './curated-lessons.mjs';
+import { fetchFactoryBoardSnapshot } from './factory-board.mjs';
 import {
   SPECIALIST_ROLES,
   validateKnowledgeMap,
@@ -79,6 +83,14 @@ const READ_ONLY_TOOL_ANNOTATIONS = Object.freeze({
   destructiveHint: false,
   openWorldHint: false
 });
+
+const freezeDeep = value => {
+  if (value !== null && typeof value === 'object' && !Object.isFrozen(value)) {
+    Object.values(value).forEach(freezeDeep);
+    Object.freeze(value);
+  }
+  return value;
+};
 
 export const MCP_CONNECTOR_TOOLS = Object.freeze([
   Object.freeze({
@@ -196,7 +208,35 @@ export const MCP_CONNECTOR_TOOLS = Object.freeze([
       })
     }),
     annotations: READ_ONLY_TOOL_ANNOTATIONS
-  })
+  }),
+  ...[
+    ['plan_disjoint_lanes', 'Plan disjoint authorized lanes without dispatching.', ['repositoryId', 'tasks'], {
+      repositoryId: { type: 'integer', minimum: 1 }, tasks: { type: 'array', maxItems: 250, items: { type: 'object' } },
+      active: { type: 'array', maxItems: 32, items: { type: 'object' } }, policy: { type: 'object' }
+    }],
+    ['build_consumer_onboarding_plan', 'Build a read-only consumer onboarding plan and optional success evaluation.', ['repositoryId', 'discovery'], {
+      repositoryId: { type: 'integer', minimum: 1 }, discovery: { type: 'object' }, success: { type: 'object' }
+    }],
+    ['select_scoped_guidance_and_lessons', 'Select authorized, scoped guidance and lessons.', [
+      'repositoryId', 'repositorySlug', 'expectedHeadSha', 'nowMs', 'targetComponent',
+      'specialistRole', 'changedPaths', 'guidanceEntries', 'curatedLessons'
+    ], {
+      repositoryId: { type: 'integer', minimum: 1 }, repositorySlug: { type: 'string' },
+      expectedHeadSha: { type: 'string' }, nowMs: { type: 'integer', minimum: 0 },
+      targetComponent: { type: 'string' }, specialistRole: { type: 'string' },
+      changedPaths: { type: 'array', maxItems: 200, items: { type: 'string' } },
+      guidanceEntries: { type: 'array', maxItems: 100, items: { type: 'object' } },
+      curatedLessons: { type: 'array', maxItems: 200, items: { type: 'object' } }, issueNumber: { type: 'integer', minimum: 1 },
+      policy: { type: 'object' }, checkpointEvidence: { type: 'object' }, externalKnowledgeStoreRequired: { type: 'boolean' }
+    }],
+    ['get_factory_board_snapshot', 'Read an authorized board using an injected read-only transport.', ['repositoryId'], {
+      repositoryId: { type: 'integer', minimum: 1 }, repository: { type: 'string', maxLength: 160 }
+    }]
+  ].map(([name, description, required, properties]) => freezeDeep({
+    name, description,
+    inputSchema: { type: 'object', additionalProperties: false, required, properties },
+    annotations: READ_ONLY_TOOL_ANNOTATIONS
+  }))
 ]);
 
 const FORBIDDEN_OBJECT_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
@@ -743,7 +783,8 @@ export function createCopilotOnlyRollbackState(reason, verifiedCopilotBudget) {
 const isValidRpcId = id =>
   id === null ||
   Number.isSafeInteger(id) ||
-  (typeof id === 'string' && id.length > 0 && id.length <= 128 && !/[\u0000-\u001f\u007f]/.test(id));
+  (typeof id === 'string' && id.length > 0 && id.length <= 128 &&
+    !/[\u0000-\u001f\u007f]/.test(id) && !containsSecretToken(id));
 
 const jsonRpcError = (id, code, message, reason) => Object.freeze({
   jsonrpc: '2.0',
@@ -787,7 +828,8 @@ function parseAuthorizedRepositories(authorizedRepositories) {
       'coverage',
       'revision',
       'projectConfig',
-      'lanes'
+      'lanes',
+      'trustedFiles'
     ]) || !isPositiveInt(item.repositoryId) || !isRepoName(item.repository)) {
       return { ok: false, reason: 'AUTHORIZATION_CONTEXT_INVALID' };
     }
@@ -802,6 +844,13 @@ function parseAuthorizedRepositories(authorizedRepositories) {
     }
     const defaultBranch = item.defaultBranch === undefined ? 'main' : item.defaultBranch;
     if (!isBranchName(defaultBranch) || (item.revision !== undefined && !isSha40(item.revision))) {
+      return { ok: false, reason: 'AUTHORIZATION_CONTEXT_INVALID' };
+    }
+    if (item.trustedFiles !== undefined &&
+        (!isDenseArray(item.trustedFiles, 256) ||
+         !item.trustedFiles.every(path => isRepoPath(path) && !path.endsWith('.lock.yml') &&
+           !FORBIDDEN_CONTROL_PLANE_PATHS.some(blocked => pathsOverlap(path, blocked))) ||
+         !isUnique(item.trustedFiles) || !arePathsDisjoint(item.trustedFiles))) {
       return { ok: false, reason: 'AUTHORIZATION_CONTEXT_INVALID' };
     }
     const minLine = isFactoryId ? 98 : 95;
@@ -828,14 +877,68 @@ function parseAuthorizedRepositories(authorizedRepositories) {
       coverageThresholds,
       revision: item.revision,
       projectConfig: item.projectConfig,
-      lanes: item.lanes
+      lanes: item.lanes,
+      trustedFiles: item.trustedFiles
     });
     byName.add(lowerName);
   }
   return { ok: true, byId };
 }
 
+const validEnrolledLanes = lanes =>
+  isDenseArray(lanes, 32) && lanes.length > 0 &&
+  lanes.every(lane => hasAllowedKeys(lane, ['id', 'specialist', 'owners']) &&
+    isSlug(lane.id) && SPECIALIST_ROLES.includes(lane.specialist) &&
+    isDenseArray(lane.owners, 32) && lane.owners.length > 0 && lane.owners.every(isRepoPath)) &&
+  isUnique(lanes.map(lane => lane.id)) && arePathsDisjoint(lanes.flatMap(lane => lane.owners));
+
+const enrolledLanesMatchRoster = (enrolledLanes, rosterLanes) =>
+  enrolledLanes.length === rosterLanes.length &&
+  enrolledLanes.every(lane => {
+    const match = rosterLanes.find(candidate => candidate.id === lane.id);
+    return Boolean(match) &&
+      (match.specialist === undefined || match.specialist === null ||
+       !SPECIALIST_ROLES.includes(match.specialist) || match.specialist === lane.specialist) &&
+      lane.owners.length === match.owners.length &&
+      lane.owners.every(owner => match.owners.includes(owner));
+  });
+
+const factoryCatalogLanes = () => {
+  const catalog = softwareFactoryCatalog('0'.repeat(40), [
+    ...new Set([...defaultSoftwareFactoryTestInventory(), MCP_CONNECTOR_TEST_SUITE])
+  ]);
+  const laneMap = new Map();
+  for (const comp of catalog.components) {
+    if (!laneMap.has(comp.owner)) {
+      laneMap.set(comp.owner, { id: comp.owner, specialist: comp.specialty, owners: [] });
+    }
+    laneMap.get(comp.owner).owners.push(comp.root);
+  }
+  return [...laneMap.values()];
+};
+
+export function validateMcpConnectorEnrollment(authorizedRepositories) {
+  const context = { authorizedRepositories };
+  if (!isValidConnectorContext(context)) return false;
+  const tree = inspectBoundedPlainTree(authorizedRepositories);
+  if (!tree.valid || tree.hasSecret) return false;
+  const auth = parseAuthorizedRepositories(authorizedRepositories);
+  if (!auth.ok) return false;
+  return [...auth.byId.values()].every(entry =>
+    (entry.lanes === undefined || validEnrolledLanes(entry.lanes)) &&
+    (entry.repositoryId !== DEFAULT_FACTORY_SCOPE.repositoryId || entry.lanes === undefined ||
+      enrolledLanesMatchRoster(entry.lanes, factoryCatalogLanes())) &&
+    (entry.projectConfig === undefined ||
+      (validateProjectConfig(entry.projectConfig) &&
+       entry.projectConfig.project.repository === entry.repository &&
+       entry.projectConfig.project.defaultBranch === entry.defaultBranch &&
+       (entry.lanes === undefined || enrolledLanesMatchRoster(entry.lanes, entry.projectConfig.lanes)))));
+}
+
 function buildSanitizedKnowledgeMap(entry, revision, nowMs, requestedTestInventory) {
+  if (entry.lanes !== undefined && !validEnrolledLanes(entry.lanes)) {
+    return { ok: false, reason: 'INVALID_LANE_OWNERSHIP' };
+  }
   if (entry.projectConfig !== undefined) {
     if (!validateProjectConfig(entry.projectConfig) ||
         entry.projectConfig.project.repository !== entry.repository ||
@@ -844,6 +947,9 @@ function buildSanitizedKnowledgeMap(entry, revision, nowMs, requestedTestInvento
     }
     if (entry.projectConfig.project.defaultBranch !== entry.defaultBranch) {
       return { ok: false, reason: 'BRANCH_METADATA_CONFLICT' };
+    }
+    if (entry.lanes !== undefined && !enrolledLanesMatchRoster(entry.lanes, entry.projectConfig.lanes)) {
+      return { ok: false, reason: 'LANE_ROSTER_CONFLICT' };
     }
     const check = validateKnowledgeMap(entry.projectConfig.knowledgeMap, {
       repository: entry.repository,
@@ -901,6 +1007,9 @@ function buildSanitizedKnowledgeMap(entry, revision, nowMs, requestedTestInvento
       specialist: lane.specialist,
       owners: Object.freeze(lane.owners)
     })));
+    if (entry.lanes !== undefined && !enrolledLanesMatchRoster(entry.lanes, lanes)) {
+      return { ok: false, reason: 'LANE_ROSTER_CONFLICT' };
+    }
     const components = Object.freeze(catalog.components.map(comp => Object.freeze({
       id: comp.component,
       lane: comp.owner,
@@ -916,14 +1025,6 @@ function buildSanitizedKnowledgeMap(entry, revision, nowMs, requestedTestInvento
 
   if (entry.lanes === undefined) {
     return { ok: false, reason: 'KNOWLEDGE_MAP_UNAVAILABLE' };
-  }
-  if (!isDenseArray(entry.lanes, 32) || entry.lanes.length === 0 ||
-      !entry.lanes.every(lane => hasAllowedKeys(lane, ['id', 'specialist', 'owners']) &&
-        isSlug(lane.id) && SPECIALIST_ROLES.includes(lane.specialist) &&
-        isDenseArray(lane.owners, 32) && lane.owners.length > 0 && lane.owners.every(isRepoPath)) ||
-      !isUnique(entry.lanes.map(lane => lane.id)) ||
-      !arePathsDisjoint(entry.lanes.flatMap(lane => lane.owners))) {
-    return { ok: false, reason: 'INVALID_LANE_OWNERSHIP' };
   }
   const lanes = Object.freeze(entry.lanes.map(lane => Object.freeze({
     id: lane.id,
@@ -1266,6 +1367,173 @@ function handleGetBoundedWorkItemContext(args, context) {
   }, false);
 }
 
+const wrapperDenied = reason => toolCallOutcome({ shadow: true, readOnly: true, reason }, true);
+
+function inspectAdditionalArguments(name, args) {
+  const tree = inspectBoundedPlainTree(args);
+  if (!tree.valid || !tree.hasSecret || name !== 'build_consumer_onboarding_plan' ||
+      !isPlainObject(args.success)) return tree;
+  const copy = structuredClone(args);
+  const packages = [copy.success.onboardingPackage];
+  if (isDenseArray(copy.success.rollbackProof?.cohortPackages, 256)) {
+    packages.push(...copy.success.rollbackProof.cohortPackages);
+  }
+  for (const pkg of packages) {
+    if (!isPlainObject(pkg) || !Object.hasOwn(pkg, 'credentials')) continue;
+    if (Object.hasOwn(pkg, 'credentialMetadata')) return tree;
+    const metadata = pkg.credentials;
+    if (!hasAllowedKeys(metadata, [
+      'credentialId', 'scope', 'allowedRepositories', 'sharedAdminToken', 'persistedInCheckout'
+    ]) || metadata.sharedAdminToken !== false || metadata.persistedInCheckout !== false) return tree;
+    if (!isPlainObject(pkg.workflowPin) || pkg.workflowPin.persistCredentials !== false) return tree;
+    delete pkg.credentials;
+    delete pkg.workflowPin.persistCredentials;
+    pkg.credentialMetadata = {
+      credentialId: metadata.credentialId, scope: metadata.scope,
+      allowedRepositories: metadata.allowedRepositories
+    };
+  }
+  return inspectBoundedPlainTree(copy);
+}
+
+function handleAdditionalTool(name, args, context) {
+  const tree = inspectAdditionalArguments(name, args);
+  if (!tree.valid || tree.hasSecret) return wrapperDenied('INVALID_OR_SECRET_ARGUMENTS');
+  const auth = parseAuthorizedRepositories(context.authorizedRepositories);
+  if (!auth.ok) return wrapperDenied(auth.reason);
+  const entry = auth.byId.get(args.repositoryId);
+  if (!entry) return wrapperDenied('UNAUTHORIZED_REPOSITORY');
+  let result;
+  if (name === 'plan_disjoint_lanes') {
+    if (!hasAllowedKeys(args, ['repositoryId', 'tasks'], ['active', 'policy'])) return wrapperDenied('INVALID_PLAN_ARGUMENTS');
+    if (entry.lanes !== undefined && !validEnrolledLanes(entry.lanes)) return wrapperDenied('INVALID_LANE_OWNERSHIP');
+    let config = entry.projectConfig;
+    if (config === undefined) {
+      if (entry.repositoryId === DEFAULT_FACTORY_SCOPE.repositoryId) {
+        const map = buildSanitizedKnowledgeMap(entry, '0'.repeat(40), 0);
+        if (!map.ok) return wrapperDenied(map.reason);
+        config = {
+          schemaVersion: 1,
+          project: { key: 'softwarefactory', repository: entry.repository, defaultBranch: entry.defaultBranch },
+          execution: { enabled: false, mode: 'shadow', stop: false },
+          limits: { maxConcurrentLanes: 1, leaseMs: 1000, maxAttempts: 1, baseDelayMs: 1, maxDelayMs: 1 },
+          adapters: { workTracker: 'mock', engineeringAgent: 'mock', state: 'sqlite' },
+          lanes: map.lanes.map(lane => ({ id: lane.id, owners: [...lane.owners], prompt: 'docs/ENGINEERING-STANDARDS.md' }))
+        };
+      } else if (entry.lanes !== undefined) {
+        config = {
+          schemaVersion: 1,
+          project: { key: 'enrolled-consumer', repository: entry.repository, defaultBranch: entry.defaultBranch },
+          execution: { enabled: false, mode: 'shadow', stop: false },
+          limits: { maxConcurrentLanes: Math.min(8, entry.lanes.length), leaseMs: 1000, maxAttempts: 1, baseDelayMs: 1, maxDelayMs: 1 },
+          adapters: { workTracker: 'mock', engineeringAgent: 'mock', state: 'sqlite' },
+          lanes: entry.lanes.map(lane => ({ id: lane.id, specialist: lane.specialist, owners: [...lane.owners], prompt: 'docs/ENGINEERING-STANDARDS.md' }))
+        };
+      }
+    }
+    if (!validateProjectConfig(config) || config.project.repository !== entry.repository ||
+        config.project.defaultBranch !== entry.defaultBranch) return wrapperDenied('INVALID_PROJECT_CONFIG');
+    if (entry.lanes !== undefined && !enrolledLanesMatchRoster(entry.lanes, config.lanes)) {
+      return wrapperDenied('LANE_ROSTER_CONFLICT');
+    }
+    if (args.policy !== undefined &&
+        (!isPlainObject(args.policy) ||
+         (args.policy.repository !== undefined && args.policy.repository !== entry.repository) ||
+         (args.policy.defaultBranch !== undefined && args.policy.defaultBranch !== entry.defaultBranch) ||
+         (args.policy.coverage !== undefined &&
+          !policyMeetsCoverageFloor(args.policy, entry.coverageThresholds.line, entry.coverageThresholds.branch)))) {
+      return wrapperDenied('INVALID_PLAN_POLICY');
+    }
+    const inventories = [args.tasks, args.active ?? []];
+    if (inventories.some(items => !isDenseArray(items, 250) || items.some(item =>
+      !isPlainObject(item) || !isDenseArray(item.paths, 256) || item.paths.length === 0 ||
+      item.paths.some(path => typeof path !== 'string' || path.endsWith('.lock.yml') ||
+        FORBIDDEN_CONTROL_PLANE_PATHS.some(blocked => pathsOverlap(path, blocked)))))) {
+      return wrapperDenied('INVALID_OR_PROTECTED_PATH');
+    }
+    if (inventories.some(items => items.some(item => item.paths.some(path =>
+      entry.trustedFiles === undefined || !entry.trustedFiles.includes(path))))) {
+      return wrapperDenied('TRUSTED_FILE_INVENTORY_REQUIRED');
+    }
+    if (inventories.some(items => items.some(item => {
+      if (typeof item.lane !== 'string') return true;
+      const matchedLane = config.lanes.find(lane => lane.id === item.lane);
+      return !matchedLane || item.paths.some(path =>
+        !matchedLane.owners.some(owner => pathsOverlap(path, owner)));
+    }))) {
+      return wrapperDenied('UNENROLLED_LANE_WORK');
+    }
+    result = planLanes(config, args.tasks, args.active, args.policy);
+    return toolCallOutcome(result, !['SHADOW_PLAN', 'NO_READY_WORK'].includes(result.reason));
+  }
+  if (name === 'build_consumer_onboarding_plan') {
+    if (!hasAllowedKeys(args, ['repositoryId', 'discovery'], ['success']) ||
+        !isPlainObject(args.discovery) || args.discovery.repositoryId !== entry.repositoryId ||
+        args.discovery.repository !== entry.repository) return wrapperDenied('INVALID_ONBOARDING_ARGUMENTS');
+    const coverage = args.discovery.stricterCoverageThresholds;
+    if (coverage !== undefined && (!hasAllowedKeys(coverage, ['line', 'branch']) ||
+        coverage.line < entry.coverageThresholds.line || coverage.branch < entry.coverageThresholds.branch)) {
+      return wrapperDenied('COVERAGE_FLOOR_VIOLATION');
+    }
+    const plan = buildReadOnlyOnboardingPlan(args.discovery);
+    if (plan.valid && plan.policy.defaultBranch !== entry.defaultBranch) {
+      return wrapperDenied('DEFAULT_BRANCH_MISMATCH');
+    }
+    if (plan.valid && (plan.localGates.minLineCoverage < entry.coverageThresholds.line ||
+        plan.localGates.minBranchCoverage < entry.coverageThresholds.branch)) {
+      return wrapperDenied('LOCAL_GATE_BELOW_ENROLLMENT');
+    }
+    const success = args.success === undefined ? undefined : evaluateConsumerOnboardingSuccess(args.success);
+    if (success?.valid || success?.shadowOnboarded === true) {
+      const pkg = args.success.onboardingPackage;
+      if (!plan.valid || pkg.repositoryId !== entry.repositoryId ||
+          pkg.policy.repository !== entry.repository || pkg.policy.defaultBranch !== entry.defaultBranch ||
+          pkg.stackProfile !== plan.stackProfile || pkg.policy.mergeMethod !== plan.policy.mergeMethod ||
+          pkg.workflowPin.reviewedWorkflowSha !== plan.workflowPin.reviewedWorkflowSha ||
+          pkg.workflowPin.reviewedCheckoutSha !== plan.workflowPin.reviewedCheckoutSha ||
+          pkg.policy.creditLimit > plan.policy.creditLimit ||
+          pkg.policy.riskClasses.some(risk => !plan.policy.riskClasses.includes(risk)) ||
+          pkg.policy.reviewers.some(reviewer => !plan.policy.reviewers.some(
+            authorized => authorized.toLowerCase() === reviewer.toLowerCase())) ||
+          pkg.policy.owners.length !== plan.policy.owners.length ||
+          pkg.policy.owners.some(owner => !plan.policy.owners.some(
+            expected => expected.prefix === owner.prefix && expected.owner === owner.owner)) ||
+          pkg.policy.coverage.line < Math.max(entry.coverageThresholds.line, plan.policy.coverage.line) ||
+          pkg.policy.coverage.branch < Math.max(entry.coverageThresholds.branch, plan.policy.coverage.branch) ||
+          pkg.localGates.minLineCoverage < Math.max(entry.coverageThresholds.line, plan.localGates.minLineCoverage) ||
+          pkg.localGates.minBranchCoverage < Math.max(entry.coverageThresholds.branch, plan.localGates.minBranchCoverage) ||
+          pkg.policy.maxActive > plan.policy.maxActive ||
+          pkg.localGates.maxConcurrency > plan.localGates.maxConcurrency ||
+          plan.localGates.requiredChecks.some(check => !pkg.localGates.requiredChecks.some(
+            candidate => candidate.name === check.name && candidate.appId === check.appId))) {
+        return wrapperDenied('ONBOARDING_IDENTITY_OR_GATE_MISMATCH');
+      }
+    }
+    result = success === undefined ? { plan } : { plan, success };
+    return toolCallOutcome(result, !plan.valid || (success !== undefined && !success.valid));
+  }
+  if (name === 'select_scoped_guidance_and_lessons') {
+    if (args.repositorySlug !== entry.repository) return wrapperDenied('CROSS_REPO_ACCESS_DENIED');
+    if ((entry.revision !== undefined && args.expectedHeadSha !== entry.revision) ||
+        (context.nowMs !== undefined && args.nowMs !== context.nowMs)) return wrapperDenied('STALE_CONTEXT');
+    if (args.policy !== undefined && !isPlainObject(args.policy)) return wrapperDenied('INVALID_SELECTION_INPUT');
+    const policy = { ...args.policy };
+    if ((policy.minLineCoveragePct !== undefined && policy.minLineCoveragePct < entry.coverageThresholds.line) ||
+        (policy.minBranchCoveragePct !== undefined && policy.minBranchCoveragePct < entry.coverageThresholds.branch)) {
+      return wrapperDenied('COVERAGE_FLOOR_VIOLATION');
+    }
+    policy.minLineCoveragePct ??= entry.coverageThresholds.line;
+    policy.minBranchCoveragePct ??= entry.coverageThresholds.branch;
+    result = selectScopedGuidanceAndLessons({ ...args, policy });
+    return toolCallOutcome(result, !result.valid);
+  }
+  if (!hasAllowedKeys(args, ['repositoryId'], ['repository']) ||
+      (args.repository !== undefined && args.repository !== entry.repository)) {
+    return wrapperDenied('INVALID_BOARD_ARGUMENTS');
+  }
+  return wrapperDenied('BOARD_TRANSPORT_REQUIRED');
+}
+
 export function handleMcpConnectorRequest(rawOrObject, context = {}) {
   let envelope;
   if (typeof rawOrObject === 'string') {
@@ -1400,6 +1668,10 @@ export function handleMcpConnectorRequest(rawOrObject, context = {}) {
       const outcome = validateMultiAgentConnectorConfig(toolArgs);
       return jsonRpcResult(responseId, toolCallOutcome(outcome, !outcome.valid));
     }
+    if (['plan_disjoint_lanes', 'build_consumer_onboarding_plan',
+      'select_scoped_guidance_and_lessons', 'get_factory_board_snapshot'].includes(envelope.params.name)) {
+      return jsonRpcResult(responseId, handleAdditionalTool(envelope.params.name, toolArgs, context));
+    }
     return jsonRpcError(responseId, -32602, 'INVALID_PARAMS', 'UNKNOWN_TOOL');
   }
 
@@ -1515,6 +1787,243 @@ export function processMcpFramedMessages(lines, context = {}) {
     responses: Object.freeze(responses),
     framedOutput: responses.length === 0 ? '' : `${responses.join('\n')}\n`
   });
+}
+
+// Transport is injected separately from JSON-only authorization context; defaults never reach gh or fetch.
+export async function startMcpStdioServer({ input = process.stdin, output = process.stdout, env = process.env, context = {} } = {}) {
+  void env;
+  let transport;
+  let requestContext = context;
+  if (isPlainObject(context) && Object.hasOwn(context, 'boardTransport')) {
+    transport = context.boardTransport;
+    requestContext = Object.fromEntries(Object.entries(context).filter(([key]) => key !== 'boardTransport'));
+  }
+  const validTransport = isPlainObject(transport) &&
+    hasAllowedKeys(transport, ['request']) && typeof transport.request === 'function';
+  let streamFailure = input.errored ?? output.errored ??
+    (output.destroyed || !output.writable ? new Error('OUTPUT_CLOSED') : null);
+  const failureWaiters = new Set();
+  const failStream = error => {
+    streamFailure ??= error;
+    for (const rejectWaiter of failureWaiters) rejectWaiter(streamFailure);
+    failureWaiters.clear();
+  };
+  const untilSettledOrFailed = promise => {
+    if (streamFailure !== null) return Promise.reject(streamFailure);
+    let rejectWaiter;
+    const race = new Promise((resolve, reject) => {
+      rejectWaiter = reject;
+      failureWaiters.add(rejectWaiter);
+      promise.then(resolve, reject);
+    });
+    return race.finally(() => { failureWaiters.delete(rejectWaiter); });
+  };
+  const onError = error => failStream(error);
+  const onClose = () => failStream(new Error('OUTPUT_CLOSED'));
+  output.on('error', onError);
+  output.on('close', onClose);
+  let pending = Buffer.alloc(0);
+  let oversized = false;
+  let activeWrite = Promise.resolve();
+  const boardRateLimits = new Map();
+  const writeFrame = async response => {
+    if (response === null) return;
+    let onDrain;
+    try {
+      let drainDone = Promise.resolve();
+      const writeDone = new Promise((resolve, reject) => {
+        if (!output.write(`${serializeMcpStdioFrame(response)}\n`, 'utf8', error => {
+          if (error) reject(error);
+          else resolve();
+        })) {
+          drainDone = new Promise(resolveDrain => {
+            onDrain = resolveDrain;
+            output.once('drain', onDrain);
+          });
+        }
+      });
+      activeWrite = writeDone.then(
+        () => {},
+        () => new Promise(resolve => process.nextTick(resolve))
+      );
+      await untilSettledOrFailed(Promise.all([writeDone, drainDone]));
+    } finally {
+      if (onDrain !== undefined) output.off('drain', onDrain);
+    }
+  };
+  const handleFrame = async () => {
+    let response;
+    if (oversized) {
+      response = jsonRpcError(null, -32600, 'INVALID_REQUEST', 'PAYLOAD_TOO_LARGE');
+    } else {
+      let text;
+      try {
+        const bytes = pending.length && pending[pending.length - 1] === 13 ? pending.subarray(0, -1) : pending;
+        text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+      } catch {
+        response = jsonRpcError(null, -32700, 'PARSE_ERROR', 'MALFORMED_JSON');
+      }
+      if (text !== undefined) response = handleMcpConnectorRequest(text, requestContext);
+      if (validTransport && response?.result?.structuredContent?.reason === 'BOARD_TRANSPORT_REQUIRED') {
+        const envelope = JSON.parse(text);
+        const entry = parseAuthorizedRepositories(requestContext.authorizedRepositories).byId.get(envelope.params.arguments.repositoryId);
+        let rateLimitState = boardRateLimits.get(entry.repositoryId);
+        if (rateLimitState === undefined) {
+          rateLimitState = {};
+          boardRateLimits.set(entry.repositoryId, rateLimitState);
+        }
+        const controller = new AbortController();
+        let timer;
+        let active = true;
+        try {
+          const snapshot = await untilSettledOrFailed(Promise.race([
+            fetchFactoryBoardSnapshot({
+              repo: entry.repository,
+              rateLimitState,
+              execGh: async () => { throw new Error('DISABLED'); },
+              request: (url, options) => {
+                if (!active) throw new Error('BOARD_READ_EXPIRED');
+                return transport.request(url, { ...options, signal: controller.signal });
+              }
+            }),
+            new Promise((_, reject) => {
+              timer = setTimeout(() => reject(new Error('BOARD_READ_TIMEOUT')), 5000);
+            })
+          ]));
+          const inspected = inspectBoundedPlainTree(snapshot);
+          response = snapshot.ok !== true
+            ? jsonRpcResult(envelope.id, wrapperDenied('BOARD_READ_FAILED'))
+            : inspected.valid && !inspected.hasSecret &&
+            Buffer.byteLength(JSON.stringify(snapshot)) <= MAX_MCP_REQUEST_BYTES
+            ? jsonRpcResult(envelope.id, toolCallOutcome(snapshot, false))
+            : jsonRpcResult(envelope.id, wrapperDenied('BOARD_RESULT_UNSAFE'));
+        } catch {
+          if (streamFailure !== null) throw streamFailure;
+          response = jsonRpcResult(envelope.id, wrapperDenied('BOARD_READ_FAILED'));
+        } finally {
+          active = false;
+          controller.abort();
+          clearTimeout(timer);
+        }
+      }
+    }
+    pending = Buffer.alloc(0);
+    oversized = false;
+    await writeFrame(response);
+  };
+  const chunks = [];
+  let inputEnded = input.readableEnded === true || input.destroyed === true;
+  let notifyPump;
+  const wakePump = () => {
+    const fn = notifyPump;
+    notifyPump = undefined;
+    fn?.();
+  };
+  const onData = chunk => {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    input.pause();
+    wakePump();
+  };
+  const onInputEnd = () => {
+    inputEnded = true;
+    wakePump();
+  };
+  const onInputError = error => failStream(error);
+  const onInputClose = () => {
+    inputEnded = true;
+    wakePump();
+  };
+  input.on('data', onData);
+  input.on('end', onInputEnd);
+  input.on('error', onInputError);
+  input.on('close', onInputClose);
+  try {
+    while (true) {
+      if (chunks.length === 0 && !inputEnded) {
+        input.resume();
+        await untilSettledOrFailed(new Promise(resolve => { notifyPump = resolve; }));
+        continue;
+      }
+      if (streamFailure !== null) throw streamFailure;
+      if (chunks.length === 0) break;
+      const bytes = chunks.shift();
+      let start = 0;
+      while (start < bytes.length) {
+        const newline = bytes.indexOf(10, start);
+        const end = newline < 0 ? bytes.length : newline;
+        const part = bytes.subarray(start, end);
+        if (!oversized) {
+          if (pending.length + part.length > MAX_MCP_REQUEST_BYTES + 1) {
+            oversized = true;
+            pending = Buffer.alloc(0);
+          } else {
+            pending = Buffer.concat([pending, part]);
+          }
+        }
+        if (newline < 0) break;
+        if (pending.length > MAX_MCP_REQUEST_BYTES &&
+            pending[pending.length - 1] !== 13) oversized = true;
+        await handleFrame();
+        start = newline + 1;
+      }
+    }
+    if (pending.length || oversized) {
+      if (pending.length > MAX_MCP_REQUEST_BYTES) oversized = true;
+      await handleFrame();
+    }
+  } finally {
+    input.off('data', onData);
+    input.off('end', onInputEnd);
+    input.off('error', onInputError);
+    input.off('close', onInputClose);
+    input.pause();
+    activeWrite.finally(() => {
+      output.off('error', onError);
+      output.off('close', onClose);
+    });
+  }
+}
+
+export async function runMcpStdioCli({
+  input = process.stdin,
+  output = process.stdout,
+  stderr = process.stderr,
+  env = process.env
+} = {}) {
+  if (env === null || typeof env !== 'object') {
+    stderr.write('Invalid MCP repository enrollment.\n');
+    return 1;
+  }
+  const rawEnrollment = env.SOFTWAREFACTORY_MCP_AUTHORIZED_REPOSITORIES;
+  let authorizedRepositories = [{
+    repositoryId: DEFAULT_FACTORY_SCOPE.repositoryId,
+    repository: DEFAULT_FACTORY_SCOPE.repository
+  }];
+  let valid = true;
+  if (rawEnrollment !== undefined) {
+    if (typeof rawEnrollment !== 'string' ||
+        Buffer.byteLength(rawEnrollment, 'utf8') > MAX_MCP_REQUEST_BYTES) {
+      valid = false;
+    } else {
+      try {
+        authorizedRepositories = JSON.parse(rawEnrollment);
+        valid = validateMcpConnectorEnrollment(authorizedRepositories);
+      } catch {
+        valid = false;
+      }
+    }
+  }
+  if (!valid) {
+    stderr.write('Invalid MCP repository enrollment.\n');
+    return 1;
+  }
+  try {
+    await startMcpStdioServer({ input, output, env, context: { authorizedRepositories } });
+    return 0;
+  } catch {
+    stderr.write('MCP server stopped.\n');
+    return 1;
+  }
 }
 
 function resolveVerifiedCopilotBudget(input, authorValidation, reviewerValidation) {

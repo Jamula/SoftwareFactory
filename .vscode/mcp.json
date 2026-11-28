@@ -1,0 +1,9 @@
+{
+  "servers": {
+    "softwarefactory": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["bin/softwarefactory-mcp.mjs"]
+    }
+  }
+}

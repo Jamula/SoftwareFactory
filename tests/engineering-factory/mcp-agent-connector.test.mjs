@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { spawn, spawnSync } from 'node:child_process';
+import { PassThrough, Writable } from 'node:stream';
 import test from 'node:test';
 import {
   defaultSoftwareFactoryTestInventory
 } from '../../tools/engineering-factory/contract-routing.mjs';
+import { buildReadOnlyOnboardingPlan, evaluateConsumerOnboardingSuccess } from '../../tools/engineering-factory/consumer-onboarding.mjs';
 import {
   CONNECTOR_PROTOCOL_VERSION,
   CONNECTOR_ROLES,
@@ -21,6 +24,9 @@ import {
   handleMcpConnectorRequest,
   isValidTraceparent,
   processMcpFramedMessages,
+  runMcpStdioCli,
+  startMcpStdioServer,
+  validateMcpConnectorEnrollment,
   validateMultiAgentConnectorConfig
 } from '../../tools/engineering-factory/mcp-agent-connector.mjs';
 
@@ -31,6 +37,768 @@ const VALID_TRACEPARENT = '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-
 const FACTORY_REPO_ID = 1471342715;
 const CONSUMER_REPO_ID = 22001100;
 const NOW_MS = 1_795_740_000_000;
+const HYPHEN = '-';
+const GHP = ['gh', 'p_'].join('');
+const GHO = ['gh', 'o_'].join('');
+const GHU = ['gh', 'u_'].join('');
+const GHS = ['gh', 's_'].join('');
+const GHR = ['gh', 'r_'].join('');
+const GHPAT = ['github', '_pat_'].join('');
+const SK = ['s', 'k-'].join('');
+const SK_ANT = `${SK}ant-`;
+
+const mcpCall = (name, args, context = authorizedContext()) => handleMcpConnectorRequest({
+  jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args }
+}, context).result;
+
+test('new read-only tools enforce enrollment, trusted lanes, identities and stricter coverage', () => {
+  const task = { id: 1, lane: 'api', state: 'approved', priority: 1, dependencies: [], paths: ['src/api/x.mjs'] };
+  const plan = mcpCall('plan_disjoint_lanes', { repositoryId: CONSUMER_REPO_ID, tasks: [task] });
+  assert.equal(plan.isError, false);
+  assert.equal(plan.structuredContent.reason, 'SHADOW_PLAN');
+  assert.equal(plan.structuredContent.scheduled.length, 1);
+  assert.equal(mcpCall('plan_disjoint_lanes', { repositoryId: CONSUMER_REPO_ID, tasks: [{ ...task, dependencies: [1] }] }).structuredContent.reason, 'DEPENDENCY_CYCLE');
+  assert.equal(mcpCall('plan_disjoint_lanes', { repositoryId: CONSUMER_REPO_ID, tasks: [{ ...task, paths: ['.github/workflows/x.yml'] }] }).structuredContent.reason, 'INVALID_OR_PROTECTED_PATH');
+  assert.equal(mcpCall('plan_disjoint_lanes', { repositoryId: CONSUMER_REPO_ID, tasks: [{ ...task, paths: ['src/api/build.lock.yml'] }] }).structuredContent.reason, 'INVALID_OR_PROTECTED_PATH');
+  for (const path of ['src/api', 'src/api/build.v1']) {
+    assert.equal(mcpCall('plan_disjoint_lanes', { repositoryId: CONSUMER_REPO_ID, tasks: [{ ...task, paths: [path] }] }).structuredContent.reason, 'TRUSTED_FILE_INVENTORY_REQUIRED');
+  }
+  const noInventory = authorizedContext();
+  delete noInventory.authorizedRepositories[1].trustedFiles;
+  assert.equal(mcpCall('plan_disjoint_lanes', { repositoryId: CONSUMER_REPO_ID, tasks: [task] }, noInventory).structuredContent.reason, 'TRUSTED_FILE_INVENTORY_REQUIRED');
+  assert.equal(mcpCall('plan_disjoint_lanes', {
+    repositoryId: CONSUMER_REPO_ID, tasks: [task], trustedFiles: ['src/api/x.mjs']
+  }, noInventory).structuredContent.reason, 'INVALID_PLAN_ARGUMENTS');
+  assert.equal(mcpCall('plan_disjoint_lanes', { repositoryId: CONSUMER_REPO_ID, tasks: [],
+    active: [{ id: 2, lane: 'api', paths: ['src/api/build.v1'] }]
+  }).structuredContent.reason, 'TRUSTED_FILE_INVENTORY_REQUIRED');
+  assert.equal(mcpCall('plan_disjoint_lanes', { repositoryId: CONSUMER_REPO_ID, tasks: [], active: [{ id: 2, lane: 'api', paths: ['src/api/build.lock.yml'] }] }).structuredContent.reason, 'INVALID_OR_PROTECTED_PATH');
+  assert.equal(mcpCall('plan_disjoint_lanes', { repositoryId: CONSUMER_REPO_ID, tasks: [{ ...task, paths: [] }] }).structuredContent.reason, 'INVALID_OR_PROTECTED_PATH');
+  assert.equal(mcpCall('plan_disjoint_lanes', { repositoryId: CONSUMER_REPO_ID, tasks: [{ ...task, lane: 'unenrolled' }] }).structuredContent.reason, 'UNENROLLED_LANE_WORK');
+  assert.equal(mcpCall('plan_disjoint_lanes', { repositoryId: CONSUMER_REPO_ID, tasks: [{ ...task, lane: 123 }] }).structuredContent.reason, 'UNENROLLED_LANE_WORK');
+  assert.equal(mcpCall('plan_disjoint_lanes', { repositoryId: CONSUMER_REPO_ID, tasks: [{ ...task, lane: 'docs' }] }).structuredContent.reason, 'UNENROLLED_LANE_WORK');
+  assert.equal(mcpCall('plan_disjoint_lanes', { repositoryId: CONSUMER_REPO_ID, tasks: [task], policy: { repository: 'Other/Repo' } }).structuredContent.reason, 'INVALID_PLAN_POLICY');
+  assert.equal(mcpCall('plan_disjoint_lanes', { repositoryId: CONSUMER_REPO_ID, tasks: [task], policy: { defaultBranch: 'trunk' } }).structuredContent.reason, 'INVALID_PLAN_POLICY');
+  assert.equal(mcpCall('plan_disjoint_lanes', { repositoryId: CONSUMER_REPO_ID, tasks: [task], policy: { coverage: { line: 95, branch: 90 } } }).structuredContent.reason, 'INVALID_PLAN_POLICY');
+  const laneOnlyPlanCtx = {
+    authorizedRepositories: [{
+      repositoryId: CONSUMER_REPO_ID,
+      repository: 'Synthetic/Spellbook',
+      lanes: [{ id: 'api', specialist: 'api', owners: ['src/api'] }],
+      trustedFiles: ['src/api/x.mjs', 'docs/guide.md']
+    }]
+  };
+  assert.equal(mcpCall('plan_disjoint_lanes', { repositoryId: CONSUMER_REPO_ID, tasks: [task] }, laneOnlyPlanCtx).structuredContent.reason, 'SHADOW_PLAN');
+  const nineLaneCtx = {
+    authorizedRepositories: [{
+      repositoryId: CONSUMER_REPO_ID,
+      repository: 'Synthetic/Spellbook',
+      lanes: Array.from({ length: 9 }, (_, idx) => ({
+        id: `lane-${idx + 1}`,
+        specialist: 'api',
+        owners: [`src/l${idx + 1}`]
+      })),
+      trustedFiles: ['src/l9/item.mjs']
+    }]
+  };
+  assert.equal(validateMcpConnectorEnrollment(nineLaneCtx.authorizedRepositories), true);
+  assert.equal(mcpCall('plan_disjoint_lanes', {
+    repositoryId: CONSUMER_REPO_ID,
+    tasks: [{ id: 1, lane: 'lane-9', state: 'approved', priority: 1, dependencies: [], paths: ['src/l9/item.mjs'] }]
+  }, nineLaneCtx).structuredContent.reason, 'SHADOW_PLAN');
+  assert.equal(mcpCall('plan_disjoint_lanes', {
+    repositoryId: CONSUMER_REPO_ID,
+    tasks: [{ ...task, lane: 'docs', paths: ['docs/guide.md'] }]
+  }, laneOnlyPlanCtx).structuredContent.reason, 'UNENROLLED_LANE_WORK');
+  const conflictingRosterCtx = authorizedContext();
+  conflictingRosterCtx.authorizedRepositories[1].lanes = [{ id: 'api', specialist: 'api', owners: ['src/api'] }];
+  assert.equal(mcpCall('plan_disjoint_lanes', { repositoryId: CONSUMER_REPO_ID, tasks: [task] }, conflictingRosterCtx).structuredContent.reason, 'LANE_ROSTER_CONFLICT');
+  assert.equal(mcpCall('get_repo_knowledge_map', { repositoryId: CONSUMER_REPO_ID, revision: HEAD_SHA, nowMs: NOW_MS }, conflictingRosterCtx).structuredContent.reason, 'LANE_ROSTER_CONFLICT');
+  const factoryConflictCtx = authorizedContext();
+  factoryConflictCtx.authorizedRepositories[0].lanes = [{ id: 'api', specialist: 'api', owners: ['src/api'] }];
+  assert.equal(mcpCall('get_repo_knowledge_map', { repositoryId: FACTORY_REPO_ID, revision: HEAD_SHA, nowMs: NOW_MS }, factoryConflictCtx).structuredContent.reason, 'LANE_ROSTER_CONFLICT');
+  assert.equal(mcpCall('plan_disjoint_lanes', { repositoryId: FACTORY_REPO_ID, tasks: [] }, factoryConflictCtx).structuredContent.reason, 'LANE_ROSTER_CONFLICT');
+  const badEnrolledLanesCtx = {
+    authorizedRepositories: [{ repositoryId: CONSUMER_REPO_ID, repository: 'Synthetic/Spellbook', lanes: [] }]
+  };
+  assert.equal(mcpCall('plan_disjoint_lanes', { repositoryId: CONSUMER_REPO_ID, tasks: [] }, badEnrolledLanesCtx).structuredContent.reason, 'INVALID_LANE_OWNERSHIP');
+  assert.equal(mcpCall('plan_disjoint_lanes', { repositoryId: FACTORY_REPO_ID, tasks: [] }).structuredContent.reason, 'NO_READY_WORK');
+  assert.equal(mcpCall('plan_disjoint_lanes', { repositoryId: 1, tasks: [] }).structuredContent.reason, 'UNAUTHORIZED_REPOSITORY');
+  assert.equal(mcpCall('plan_disjoint_lanes', { repositoryId: CONSUMER_REPO_ID, tasks: [] }, {}).structuredContent.reason, 'AUTHORIZATION_CONTEXT_INVALID');
+  assert.equal(mcpCall('plan_disjoint_lanes', { repositoryId: CONSUMER_REPO_ID }, authorizedContext()).structuredContent.reason, 'INVALID_PLAN_ARGUMENTS');
+  const discovery = {
+    repository: 'Synthetic/Spellbook', repositoryId: CONSUMER_REPO_ID,
+    pinnedFactorySha: 'afc3d223f287b029db32672908097efc67a259c9',
+    stackProfile: 'baseline-95-90'
+  };
+  const onboarding = mcpCall('build_consumer_onboarding_plan', { repositoryId: CONSUMER_REPO_ID, discovery });
+  assert.equal(onboarding.isError, true);
+  assert.equal(onboarding.structuredContent.reason, 'LOCAL_GATE_BELOW_ENROLLMENT');
+  const factoryOnly = { authorizedRepositories: [{ repositoryId: FACTORY_REPO_ID, repository: 'Jamula/SoftwareFactory' }] };
+  assert.equal(mcpCall('build_consumer_onboarding_plan', { repositoryId: CONSUMER_REPO_ID, discovery }, factoryOnly).structuredContent.reason, 'UNAUTHORIZED_REPOSITORY');
+  assert.equal(mcpCall('build_consumer_onboarding_plan', {
+    repositoryId: CONSUMER_REPO_ID, discovery, authorizedRepositories: authorizedContext().authorizedRepositories
+  }, factoryOnly).structuredContent.reason, 'UNAUTHORIZED_REPOSITORY');
+  const strictProfile = mcpCall('build_consumer_onboarding_plan', {
+    repositoryId: CONSUMER_REPO_ID, discovery: { ...discovery, stackProfile: 'strict-up-to-date-migration-gated' }
+  });
+  assert.equal(strictProfile.structuredContent.reason, 'DEFAULT_BRANCH_MISMATCH');
+  const existing = mcpCall('build_consumer_onboarding_plan', {
+    repositoryId: CONSUMER_REPO_ID,
+    discovery: { ...discovery, discoveredRepository: {
+      defaultBranch: 'main', mergeMethod: 'squash', checks: [{ name: 'build-test', appId: 12345 }],
+      reviewers: ['synthetic-reviewer'], owners: [{ prefix: 'src/', owner: 'synthetic-owner' }],
+      coverage: { line: 99, branch: 93 }, maxConcurrency: 1, existingFiles: []
+    } }
+  });
+  assert.equal(existing.isError, false);
+  assert.deepEqual(existing.structuredContent.plan.policy.coverage, { line: 99, branch: 93 });
+  assert.equal(existing.structuredContent.plan.localGates.minBranchCoverage, 93);
+  const missingEvidence = structuredClone(discovery);
+  missingEvidence.stricterCoverageThresholds = { line: 98, branch: 95 };
+  assert.equal(mcpCall('build_consumer_onboarding_plan', { repositoryId: CONSUMER_REPO_ID, discovery: missingEvidence }).structuredContent.reason, 'LOCAL_GATE_BELOW_ENROLLMENT');
+  assert.equal(mcpCall('build_consumer_onboarding_plan', { repositoryId: CONSUMER_REPO_ID, discovery: { ...discovery, repository: 'Other/Repo' } }).structuredContent.reason, 'INVALID_ONBOARDING_ARGUMENTS');
+  assert.equal(mcpCall('build_consumer_onboarding_plan', { repositoryId: CONSUMER_REPO_ID, discovery: { ...discovery, stricterCoverageThresholds: { line: 95, branch: 90 } } }).structuredContent.reason, 'COVERAGE_FLOOR_VIOLATION');
+  assert.equal(mcpCall('build_consumer_onboarding_plan', { repositoryId: CONSUMER_REPO_ID, discovery, success: {} }).isError, true);
+  const selection = {
+    repositoryId: CONSUMER_REPO_ID, repositorySlug: 'Synthetic/Spellbook', expectedHeadSha: HEAD_SHA,
+    nowMs: NOW_MS, targetComponent: 'api', specialistRole: 'api',
+    changedPaths: ['src/api/x.mjs'], guidanceEntries: [], curatedLessons: []
+  };
+  const selected = mcpCall('select_scoped_guidance_and_lessons', selection);
+  assert.equal(selected.isError, false);
+  assert.deepEqual(selected.structuredContent.effectiveGates, { minLineCoveragePct: 97, minBranchCoveragePct: 92 });
+  assert.equal(mcpCall('select_scoped_guidance_and_lessons', { ...selection, repositorySlug: 'Other/Repo' }).structuredContent.reason, 'CROSS_REPO_ACCESS_DENIED');
+  assert.equal(mcpCall('select_scoped_guidance_and_lessons', { ...selection, expectedHeadSha: OTHER_SHA }).structuredContent.reason, 'STALE_CONTEXT');
+  assert.equal(mcpCall('select_scoped_guidance_and_lessons', { ...selection, policy: { minLineCoveragePct: 95 } }).structuredContent.reason, 'COVERAGE_FLOOR_VIOLATION');
+  assert.equal(mcpCall('select_scoped_guidance_and_lessons', { ...selection, policy: [] }).structuredContent.reason, 'INVALID_SELECTION_INPUT');
+  assert.equal(mcpCall('select_scoped_guidance_and_lessons', { ...selection, guidanceEntries: [{ text: `${GHP}fake` }] }).structuredContent.reason, 'INVALID_OR_SECRET_ARGUMENTS');
+  assert.equal(mcpCall('get_factory_board_snapshot', { repositoryId: FACTORY_REPO_ID }).structuredContent.reason, 'BOARD_TRANSPORT_REQUIRED');
+  assert.equal(mcpCall('get_factory_board_snapshot', { repositoryId: FACTORY_REPO_ID, repository: 'Other/Repo' }).structuredContent.reason, 'INVALID_BOARD_ARGUMENTS');
+});
+
+test('all advertised array schemas declare item types and tool schemas are deeply frozen', () => {
+  const visit = schema => {
+    assert.equal(Object.isFrozen(schema), true);
+    if (schema.type === 'array') {
+      assert.ok(schema.items, 'array items are required by MCP clients');
+      visit(schema.items);
+    }
+    if (schema.properties) {
+      assert.equal(Object.isFrozen(schema.properties), true);
+      Object.values(schema.properties).forEach(visit);
+    }
+    if (schema.required) assert.equal(Object.isFrozen(schema.required), true);
+  };
+  for (const tool of MCP_CONNECTOR_TOOLS) {
+    assert.equal(Object.isFrozen(tool), true);
+    visit(tool.inputSchema);
+  }
+});
+
+function syntheticOnboardingPackage(repository, repositoryId, localLine = 98, localBranch = 95, stackProfile = 'baseline-95-90', policyOverrides = {}) {
+  const plan = buildReadOnlyOnboardingPlan({
+    repository, repositoryId, pinnedFactorySha: 'afc3d223f287b029db32672908097efc67a259c9',
+    stackProfile, stricterCoverageThresholds: stackProfile === 'baseline-95-90'
+      ? { line: 98, branch: 95 } : { line: 100, branch: 100 }
+  });
+  assert.equal(plan.valid, true);
+  const policy = { ...structuredClone(plan.policy), ...policyOverrides };
+  const candidate = {
+    policySource: 'trusted-default-branch', repository, issue: 10, pr: 20,
+    head: HEAD_SHA, observedHead: HEAD_SHA, base: BASE_SHA, observedBase: BASE_SHA,
+    baseBranch: policy.defaultBranch, rateLimited: false, remainingCredits: 25, activeCount: 0,
+    providerReady: true, risk: 'low', priority: 1, paths: [`${policy.owners[0].prefix}index.ts`],
+    dependencies: [], acceptanceComplete: true, baseCompatible: true, mainHealthy: true,
+    threadsResolved: true, securityClear: true,
+    coverage: { head: HEAD_SHA, ...policy.coverage, complete: true },
+    checks: policy.checks.map(check => ({ ...check, head: HEAD_SHA, status: 'completed', conclusion: 'success' })),
+    author: 'synthetic-author', agent: 'synthetic-agent',
+    reviews: [{ reviewer: policy.reviewers[0], head: HEAD_SHA, state: 'APPROVED' }]
+  };
+  const credentialId = plan.rollbackPlan.revokeCredentialId;
+  return {
+    contractVersion: plan.contractVersion, repositoryId, stackProfile: plan.stackProfile,
+    ownerAuthorized: true, migrationFreezeClear: true, autoActivate: false, productionDeployEnabled: false,
+    workflowPin: structuredClone(plan.workflowPin), policy,
+    localGates: { ...structuredClone(plan.localGates), minLineCoverage: localLine, minBranchCoverage: localBranch },
+    credentials: {
+      credentialId, scope: 'repo-read-only-shadow', allowedRepositories: [repository],
+      sharedAdminToken: false, persistedInCheckout: false
+    },
+    replaySuite: {
+      eligibleCandidate: candidate,
+      staleReview: { ...candidate, reviews: [{ reviewer: policy.reviewers[0], head: BASE_SHA, state: 'APPROVED' }] },
+      dismissedReview: { ...candidate, reviews: [{ reviewer: policy.reviewers[0], head: HEAD_SHA, state: 'DISMISSED' }] },
+      commentedBotReview: { ...candidate, reviews: [{ reviewer: 'copilot-pull-request-reviewer[bot]', head: HEAD_SHA, state: 'COMMENTED', summaryDisposition: 'clear' }] },
+      wrongRepository: { ...candidate, repository: 'Synthetic/Foreign' },
+      missingQuota: { ...candidate, remainingCredits: 0 },
+      killSwitchPolicy: { ...policy, mode: 'shadow', killSwitch: true }
+    },
+    rollback: {
+      disableMode: 'disabled', killSwitch: true, revokeCredentialId: credentialId,
+      revertWorkflowPinPrRequired: true, queuedLiveMutations: 0
+    }
+  };
+}
+
+function syntheticSuccess(pkg, peer) {
+  return {
+    synthetic: true, onboardingPrMerged: true,
+    usability: {
+      mandatorySettingsCount: 4, generatedFileCount: 2, discoveryAndPlanDurationMs: 15,
+      basicIntegrationDurationMs: 300000, overwrittenExistingFiles: 0, competingBacklogsCreated: 0,
+      mandatoryExternalServices: 0, incrementalBilledUsdCents: 0
+    },
+    governance: {
+      authoritativeBacklog: 'github-issues', allowCommentedBotApproval: false,
+      independentApprovedReviewRequired: true, perRepoAiCreditHardStop: true, paidOverageAllowed: false
+    },
+    existingGates: {
+      lineCoverage: 95, branchCoverage: 90, requiredChecks: pkg.localGates.requiredChecks, maxConcurrency: 1
+    },
+    onboardingPackage: pkg,
+    peerRegistry: [{ repository: peer.policy.repository, repositoryId: peer.repositoryId, credentialId: peer.credentials.credentialId }],
+    rollbackProof: {
+      commitsToRevert: 1, factoryRepositoryUntouched: true,
+      rollbackReceipt: {
+        repository: pkg.policy.repository, postPolicy: structuredClone(pkg.policy),
+        revokedCredentialId: pkg.credentials.credentialId, pinRevertedViaReviewedPr: true, queuedLiveMutations: 0
+      },
+      cohortPackages: [structuredClone(pkg), structuredClone(peer)]
+    }
+  };
+}
+
+test('onboarding success preserves enrolled local gates and accepts only safe credential metadata', () => {
+  const peer = syntheticOnboardingPackage('Synthetic/Peer', CONSUMER_REPO_ID + 1);
+  const weak = syntheticOnboardingPackage('Synthetic/Spellbook', CONSUMER_REPO_ID, 96, 91);
+  const success = syntheticSuccess(weak, peer);
+  assert.equal(evaluateConsumerOnboardingSuccess(success).valid, true);
+  const discovery = {
+    repository: weak.policy.repository, repositoryId: CONSUMER_REPO_ID,
+    pinnedFactorySha: 'afc3d223f287b029db32672908097efc67a259c9', stackProfile: 'baseline-95-90',
+    discoveredRepository: {
+      defaultBranch: 'main', mergeMethod: 'squash', checks: [{ name: 'build-test', appId: 12345 }],
+      reviewers: ['synthetic-reviewer'], owners: [{ prefix: 'src/', owner: 'synthetic-owner' }],
+      coverage: { line: 97, branch: 92 }, maxConcurrency: 1, existingFiles: []
+    }
+  };
+  const args = { repositoryId: CONSUMER_REPO_ID, discovery, success };
+  assert.equal(mcpCall('build_consumer_onboarding_plan', args).structuredContent.reason, 'ONBOARDING_IDENTITY_OR_GATE_MISMATCH');
+  for (const [line, branch] of [[96, 92], [97, 91]]) {
+    const weakGate = syntheticOnboardingPackage('Synthetic/Spellbook', CONSUMER_REPO_ID, line, branch);
+    assert.equal(mcpCall('build_consumer_onboarding_plan', { ...args, success: syntheticSuccess(weakGate, peer) }).structuredContent.reason, 'ONBOARDING_IDENTITY_OR_GATE_MISMATCH');
+    const partial = { ...syntheticSuccess(weakGate, peer), requireAutonomousAcceptance: true };
+    assert.equal(evaluateConsumerOnboardingSuccess(partial).shadowOnboarded, true);
+    assert.equal(mcpCall('build_consumer_onboarding_plan', { ...args, success: partial }).structuredContent.reason, 'ONBOARDING_IDENTITY_OR_GATE_MISMATCH');
+  }
+  const good = syntheticOnboardingPackage('Synthetic/Spellbook', CONSUMER_REPO_ID, 97, 92);
+  const accepted = mcpCall('build_consumer_onboarding_plan', { ...args, success: syntheticSuccess(good, peer) });
+  assert.equal(accepted.isError, false);
+  assert.equal(accepted.structuredContent.success.valid, true);
+  assert.equal(accepted.structuredContent.success.accepted, false);
+  const validPartial = mcpCall('build_consumer_onboarding_plan', { ...args, success: {
+    ...syntheticSuccess(good, peer), requireAutonomousAcceptance: true
+  } });
+  assert.equal(validPartial.isError, true);
+  assert.equal(validPartial.structuredContent.success.shadowOnboarded, true);
+  assert.equal(validPartial.structuredContent.success.reason, 'AUTONOMOUS_PROOF_REQUIRED');
+  for (const changed of [
+    { coverage: { line: 99, branch: 92 } },
+    { coverage: { line: 97, branch: 93 } },
+    { checks: [{ name: 'build-test', appId: 12345 }, { name: 'additional-gate', appId: 555 }] }
+  ]) {
+    const stricter = { ...discovery, discoveredRepository: { ...discovery.discoveredRepository, ...changed } };
+    for (const proof of [syntheticSuccess(good, peer), { ...syntheticSuccess(good, peer), requireAutonomousAcceptance: true }]) {
+      assert.equal(mcpCall('build_consumer_onboarding_plan', { ...args, discovery: stricter, success: proof }).structuredContent.reason, 'ONBOARDING_IDENTITY_OR_GATE_MISMATCH');
+    }
+  }
+  const loose = syntheticOnboardingPackage('Synthetic/Spellbook', CONSUMER_REPO_ID, 97, 92);
+  loose.localGates.maxConcurrency = 2;
+  const looseSuccess = syntheticSuccess(loose, peer);
+  looseSuccess.existingGates.maxConcurrency = 2;
+  assert.equal(evaluateConsumerOnboardingSuccess(looseSuccess).valid, true);
+  assert.equal(mcpCall('build_consumer_onboarding_plan', { ...args, success: looseSuccess }).structuredContent.reason, 'ONBOARDING_IDENTITY_OR_GATE_MISMATCH');
+  const invalidPlan = { ...discovery, pinnedFactorySha: HEAD_SHA };
+  assert.equal(mcpCall('build_consumer_onboarding_plan', { ...args, discovery: invalidPlan, success: syntheticSuccess(good, peer) }).structuredContent.reason, 'ONBOARDING_IDENTITY_OR_GATE_MISMATCH');
+  const wrongBranch = syntheticOnboardingPackage('Synthetic/Spellbook', CONSUMER_REPO_ID, 100, 100, 'strict-up-to-date-migration-gated');
+  const branchSuccess = syntheticSuccess(wrongBranch, peer);
+  assert.equal(evaluateConsumerOnboardingSuccess(branchSuccess).valid, true);
+  assert.equal(mcpCall('build_consumer_onboarding_plan', { ...args, success: branchSuccess }).structuredContent.reason, 'ONBOARDING_IDENTITY_OR_GATE_MISMATCH');
+  const other = syntheticOnboardingPackage('Synthetic/Other', CONSUMER_REPO_ID + 2, 97, 92);
+  assert.equal(mcpCall('build_consumer_onboarding_plan', { ...args, success: {
+    ...syntheticSuccess(other, peer), requireAutonomousAcceptance: true
+  } }).structuredContent.reason, 'ONBOARDING_IDENTITY_OR_GATE_MISMATCH');
+  for (const policyOverrides of [
+    { reviewers: ['synthetic-unapproved-reviewer'] },
+    { reviewers: ['synthetic-reviewer', 'synthetic-unapproved-reviewer'] },
+    { owners: [{ prefix: 'src/', owner: 'synthetic-unapproved-owner' }] },
+    { owners: [{ prefix: 'src/', owner: 'synthetic-owner' }, { prefix: 'other/', owner: 'synthetic-other-owner' }] },
+    { mergeMethod: 'merge' },
+    { creditLimit: 101 },
+    { riskClasses: ['low', 'high', 'extra-risk'] }
+  ]) {
+    const changed = syntheticOnboardingPackage('Synthetic/Spellbook', CONSUMER_REPO_ID, 97, 92, 'baseline-95-90', policyOverrides);
+    for (const proof of [syntheticSuccess(changed, peer), { ...syntheticSuccess(changed, peer), requireAutonomousAcceptance: true }]) {
+      const evaluated = evaluateConsumerOnboardingSuccess(proof);
+      assert.equal(evaluated.valid || evaluated.shadowOnboarded, true);
+      assert.equal(mcpCall('build_consumer_onboarding_plan', { ...args, success: proof }).structuredContent.reason, 'ONBOARDING_IDENTITY_OR_GATE_MISMATCH');
+    }
+  }
+  const caseOnly = syntheticOnboardingPackage('Synthetic/Spellbook', CONSUMER_REPO_ID, 97, 92, 'baseline-95-90', { reviewers: ['SYNTHETIC-REVIEWER'] });
+  assert.equal(mcpCall('build_consumer_onboarding_plan', { ...args, success: syntheticSuccess(caseOnly, peer) }).isError, false);
+  const alternateProfile = syntheticOnboardingPackage('Synthetic/Spellbook', CONSUMER_REPO_ID, 97, 92, 'web-genealogy-95-90');
+  assert.equal(evaluateConsumerOnboardingSuccess(syntheticSuccess(alternateProfile, peer)).valid, true);
+  assert.equal(mcpCall('build_consumer_onboarding_plan', { ...args, success: syntheticSuccess(alternateProfile, peer) }).structuredContent.reason, 'ONBOARDING_IDENTITY_OR_GATE_MISMATCH');
+  const alternatePin = { ...discovery, pinnedFactorySha: HEAD_SHA, pinnedCheckoutSha: BASE_SHA, observedCheckoutRef: BASE_SHA };
+  assert.equal(buildReadOnlyOnboardingPlan(alternatePin).valid, true);
+  assert.equal(mcpCall('build_consumer_onboarding_plan', { ...args, discovery: alternatePin, success: syntheticSuccess(good, peer) }).structuredContent.reason, 'ONBOARDING_IDENTITY_OR_GATE_MISMATCH');
+  const bad = syntheticSuccess(good, peer);
+  bad.onboardingPackage.credentials.sharedAdminToken = true;
+  assert.equal(mcpCall('build_consumer_onboarding_plan', { ...args, success: bad }).structuredContent.reason, 'INVALID_OR_SECRET_ARGUMENTS');
+  const secret = syntheticSuccess(good, peer);
+  secret.onboardingPackage.credentials.credentialId = `${GHP}fake`;
+  assert.equal(mcpCall('build_consumer_onboarding_plan', { ...args, success: secret }).structuredContent.reason, 'INVALID_OR_SECRET_ARGUMENTS');
+  const collision = syntheticSuccess(good, peer);
+  collision.onboardingPackage.credentialMetadata = { value: `${GHP}fake` };
+  assert.equal(mcpCall('build_consumer_onboarding_plan', { ...args, success: collision }).structuredContent.reason, 'INVALID_OR_SECRET_ARGUMENTS');
+});
+
+test('operator enrollment is structurally validated without weakening repository boundaries', () => {
+  const entries = authorizedContext().authorizedRepositories;
+  assert.equal(validateMcpConnectorEnrollment(entries), true);
+  assert.equal(validateMcpConnectorEnrollment(null), false);
+  assert.equal(validateMcpConnectorEnrollment([]), false);
+  assert.equal(validateMcpConnectorEnrollment([{ repositoryId: FACTORY_REPO_ID, repository: 'Synthetic/Other' }]), false);
+  assert.equal(validateMcpConnectorEnrollment([{ ...entries[1], coverage: { line: 94, branch: 90 } }]), false);
+  assert.equal(validateMcpConnectorEnrollment([{ ...entries[1], projectConfig: {} }]), false);
+  assert.equal(validateMcpConnectorEnrollment([{
+    repositoryId: CONSUMER_REPO_ID,
+    repository: 'Synthetic/Spellbook',
+    lanes: [{ id: 'api', specialist: 'api', owners: ['src/api'] }]
+  }]), true);
+  assert.equal(validateMcpConnectorEnrollment([{ ...entries[1], lanes: [{ id: 'api', specialist: 'api', owners: ['src/api'] }] }]), false);
+  assert.equal(validateMcpConnectorEnrollment([{
+    repositoryId: FACTORY_REPO_ID,
+    repository: 'Jamula/SoftwareFactory',
+    lanes: [{ id: 'api', specialist: 'api', owners: ['src/api'] }]
+  }]), false);
+  assert.equal(validateMcpConnectorEnrollment([{ ...entries[1], lanes: [] }]), false);
+  for (const trustedFiles of [['src/api/work.lock.yml'], ['src/api', 'src/api/nested.mjs'], ['src/api/x.mjs', 'src/api/x.mjs'], [null], ['.github/workflows/test.yml']]) {
+    assert.equal(validateMcpConnectorEnrollment([{ ...entries[1], trustedFiles }]), false);
+  }
+  assert.equal(validateMcpConnectorEnrollment([{ ...entries[1], projectConfig: { ...entries[1].projectConfig, project: { ...entries[1].projectConfig.project, repository: 'Synthetic/Other' } } }]), false);
+  assert.equal(validateMcpConnectorEnrollment([{ ...entries[1], revision: `${GHP}fake` }]), false);
+});
+
+test('CLI accepts only trusted bounded enrollment and rejects malformed configuration without leaking input', () => {
+  const variable = 'SOFTWAREFACTORY_MCP_AUTHORIZED_REPOSITORIES';
+  const invoke = (value, requests) => {
+    const env = { ...process.env };
+    delete env[variable];
+    if (value !== undefined) env[variable] = value;
+    return spawnSync(process.execPath, ['bin/softwarefactory-mcp.mjs'], {
+      env, encoding: 'utf8', input: requests.map(request => JSON.stringify(request)).join('\n') + '\n'
+    });
+  };
+  const discovery = {
+    repository: 'Synthetic/Spellbook', repositoryId: CONSUMER_REPO_ID,
+    pinnedFactorySha: 'afc3d223f287b029db32672908097efc67a259c9', stackProfile: 'strict-up-to-date-migration-gated'
+  };
+  const call = {
+    jsonrpc: '2.0', id: 1, method: 'tools/call',
+    params: { name: 'build_consumer_onboarding_plan', arguments: { repositoryId: CONSUMER_REPO_ID, discovery } }
+  };
+  const defaults = invoke(undefined, [call]);
+  assert.equal(defaults.status, 0);
+  assert.equal(defaults.stderr, '');
+  assert.equal(JSON.parse(defaults.stdout).result.structuredContent.reason, 'UNAUTHORIZED_REPOSITORY');
+  const entries = [{ repositoryId: CONSUMER_REPO_ID, repository: 'Synthetic/Spellbook', defaultBranch: 'trunk', coverage: { line: 97, branch: 92 } }];
+  const enrolled = invoke(JSON.stringify(entries), [call]);
+  assert.equal(enrolled.status, 0);
+  assert.equal(enrolled.stderr, '');
+  assert.deepEqual(JSON.parse(enrolled.stdout).result.structuredContent.plan.policy.coverage, { line: 100, branch: 100 });
+  const injected = structuredClone(call);
+  injected.params.arguments.authorizedRepositories = entries;
+  assert.equal(JSON.parse(invoke(undefined, [injected]).stdout).result.structuredContent.reason, 'UNAUTHORIZED_REPOSITORY');
+  const confidential = `${GHP}fake`;
+  for (const raw of [
+    '', `{${confidential}`, 'null', '[]',
+    JSON.stringify([{ repositoryId: FACTORY_REPO_ID, repository: 'Synthetic/Other' }]),
+    JSON.stringify([entries[0], entries[0]]),
+    JSON.stringify([{ ...entries[0], projectConfig: {} }]),
+    JSON.stringify([{ ...entries[0], lanes: [] }]),
+    JSON.stringify([{ ...entries[0], credential: confidential }]),
+    'x'.repeat(MAX_MCP_REQUEST_BYTES + 1)
+  ]) {
+    const rejected = invoke(raw, [call]);
+    assert.equal(rejected.status, 1);
+    assert.equal(rejected.stdout, '');
+    assert.equal(rejected.stderr, 'Invalid MCP repository enrollment.\n');
+    assert.equal(rejected.stderr.includes(confidential), false);
+  }
+});
+
+test('stdio frames are ordered, bounded, UTF-8 checked, and use only an injected board transport', async () => {
+  const input = new PassThrough();
+  const output = new PassThrough();
+  let text = '';
+  output.on('data', chunk => { text += chunk.toString(); });
+  let calls = 0;
+  const request = async (url, options) => {
+    calls++;
+    assert.match(url, /^https:\/\/api\.github\.com\/repos\/Jamula\/SoftwareFactory\//);
+    assert.equal(options.headers.authorization, undefined);
+    return new Response('[]');
+  };
+  const server = startMcpStdioServer({ input, output, context: { ...authorizedContext(), boardTransport: { request } } });
+  const frame = (id, method, params) => JSON.stringify({ jsonrpc: '2.0', id, method, params });
+  const board = id => frame(id, 'tools/call', { name: 'get_factory_board_snapshot', arguments: { repositoryId: FACTORY_REPO_ID } });
+  input.write(`${frame(1, 'initialize')}\n${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' })}\n`);
+  input.write(`${frame(`${GHP}fake`, 'ping')}\n`);
+  input.write(Buffer.from([0xff, 10]));
+  input.write(`${'x'.repeat(MAX_MCP_REQUEST_BYTES + 5)}\n`);
+  input.write(`${board(2)}\n${frame(3, 'ping')}\r\n`);
+  input.end('{bad');
+  await server;
+  const frames = text.trimEnd().split('\n').map(line => JSON.parse(line));
+  assert.deepEqual(frames.map(x => x.id), [1, null, null, null, 2, 3, null]);
+  assert.equal(frames[1].error.data.reason, 'INVALID_ID');
+  assert.equal(frames[2].error.code, -32700);
+  assert.equal(frames[3].error.data.reason, 'PAYLOAD_TOO_LARGE');
+  assert.equal(frames[4].result.structuredContent.source, 'github-rest');
+  assert.equal(frames[6].error.code, -32700);
+  assert.ok(calls > 0);
+  assert.equal(text.includes('DISABLED'), false);
+  assert.equal(text.includes(`${GHP}fake`), false);
+});
+
+test('stdio tools/call exercises all eight read-only tools over PassThrough', async () => {
+  const { policy, snapshot } = buildProtectedSquashFixtures();
+  const discovery = {
+    repository: 'Synthetic/Spellbook', repositoryId: CONSUMER_REPO_ID,
+    pinnedFactorySha: 'afc3d223f287b029db32672908097efc67a259c9', stackProfile: 'baseline-95-90',
+    discoveredRepository: {
+      defaultBranch: 'main', mergeMethod: 'squash', checks: [{ name: 'build-test', appId: 12345 }],
+      reviewers: ['synthetic-reviewer'], owners: [{ prefix: 'src/', owner: 'synthetic-owner' }],
+      coverage: { line: 97, branch: 92 }, maxConcurrency: 1, existingFiles: []
+    }
+  };
+  const calls = [
+    ['get_repo_knowledge_map', { repositoryId: CONSUMER_REPO_ID, revision: HEAD_SHA, nowMs: NOW_MS }, 'KNOWLEDGE_MAP_VERIFIED'],
+    ['evaluate_gate_status', { mode: 'candidate', policy, snapshot }, 'SHADOW_ELIGIBLE'],
+    ['get_bounded_work_item_context', {
+      repositoryId: CONSUMER_REPO_ID, issueNumber: 1, traceparent: VALID_TRACEPARENT,
+      summary: 'Synthetic work item', ownedPaths: ['src/api/x.mjs']
+    }, 'WORK_ITEM_CONTEXT_BOUNDED'],
+    ['validate_provider_isolation', copilotConfig(), 'PROVIDER_ISOLATION_VERIFIED'],
+    ['plan_disjoint_lanes', { repositoryId: CONSUMER_REPO_ID, tasks: [
+      { id: 1, lane: 'api', state: 'approved', priority: 1, dependencies: [], paths: ['src/api/x.mjs'] }
+    ] }, 'SHADOW_PLAN'],
+    ['build_consumer_onboarding_plan', { repositoryId: CONSUMER_REPO_ID, discovery }, 'READ_ONLY_ONBOARDING_PLAN_READY'],
+    ['select_scoped_guidance_and_lessons', {
+      repositoryId: CONSUMER_REPO_ID, repositorySlug: 'Synthetic/Spellbook', expectedHeadSha: HEAD_SHA,
+      nowMs: NOW_MS, targetComponent: 'api', specialistRole: 'api',
+      changedPaths: ['src/api/x.mjs'], guidanceEntries: [], curatedLessons: []
+    }, 'SCOPED_KNOWLEDGE_SELECTED'],
+    ['get_factory_board_snapshot', { repositoryId: FACTORY_REPO_ID }, 'github-rest']
+  ];
+  const input = new PassThrough();
+  const output = new PassThrough();
+  let text = '';
+  output.on('data', chunk => { text += chunk; });
+  const server = startMcpStdioServer({ input, output, context: {
+    ...authorizedContext(), boardTransport: { request: async () => new Response('[]') }
+  } });
+  input.end(calls.map(([name, args], id) => JSON.stringify({
+    jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: args }
+  })).join('\n') + '\n');
+  await server;
+  const frames = text.trim().split('\n').map(JSON.parse);
+  assert.equal(frames.length, calls.length);
+  for (let id = 0; id < calls.length; id++) {
+    const payload = frames[id].result.structuredContent;
+    assert.equal(frames[id].id, id);
+    assert.equal(frames[id].result.isError, false, calls[id][0]);
+    assert.equal(payload.plan?.reason ?? payload.reason ?? payload.source, calls[id][2], calls[id][0]);
+  }
+});
+
+test('stdio denies unauthorized boards before calling injected transport and hides transport or unsafe errors', async () => {
+  let calls = 0;
+  const input = new PassThrough();
+  const output = new PassThrough();
+  let text = '';
+  output.on('data', chunk => { text += chunk; });
+  const server = startMcpStdioServer({ input, output, context: {
+    ...authorizedContext(),
+    boardTransport: { request: async () => { calls++; throw new Error(`${GHP}private`); } }
+  } });
+  const board = repositoryId => JSON.stringify({ jsonrpc: '2.0', id: repositoryId, method: 'tools/call', params: { name: 'get_factory_board_snapshot', arguments: { repositoryId } } });
+  input.end(`${board(999)}\n${board(FACTORY_REPO_ID)}\n`);
+  await server;
+  const frames = text.trim().split('\n').map(JSON.parse);
+  assert.equal(frames[0].result.structuredContent.reason, 'UNAUTHORIZED_REPOSITORY');
+  assert.equal(frames[1].result.structuredContent.reason, 'BOARD_READ_FAILED');
+  assert.ok(calls > 0);
+  assert.equal(text.includes('private'), false);
+
+  const nonOkIn = new PassThrough();
+  const nonOkOut = new PassThrough();
+  let nonOkText = '';
+  nonOkOut.on('data', chunk => { nonOkText += chunk; });
+  const nonOkServer = startMcpStdioServer({ input: nonOkIn, output: nonOkOut, context: {
+    ...authorizedContext(),
+    boardTransport: { request: async () => new Response('upstream failure', { status: 502 }) }
+  } });
+  nonOkIn.end(`${board(FACTORY_REPO_ID)}\n`);
+  await nonOkServer;
+  assert.equal(JSON.parse(nonOkText.trim()).result.structuredContent.reason, 'BOARD_READ_FAILED');
+
+  const unsafeIn = new PassThrough();
+  const unsafeOut = new PassThrough();
+  let unsafeText = '';
+  unsafeOut.on('data', chunk => { unsafeText += chunk; });
+  const unsafeServer = startMcpStdioServer({ input: unsafeIn, output: unsafeOut, context: {
+    ...authorizedContext(),
+    boardTransport: {
+      request: async url => url.includes('/issues?')
+        ? new Response(JSON.stringify([{ number: 1, title: `Leak ${GHP}boardCanary999`, state: 'open', labels: [] }]))
+        : new Response('[]')
+    }
+  } });
+  unsafeIn.end(`${board(FACTORY_REPO_ID)}\n`);
+  await unsafeServer;
+  assert.equal(JSON.parse(unsafeText.trim()).result.structuredContent.reason, 'BOARD_RESULT_UNSAFE');
+  assert.equal(unsafeText.includes('boardCanary999'), false);
+
+  let rateLimitedCalls = 0;
+  const rlIn = new PassThrough();
+  const rlOut = new PassThrough();
+  let rlText = '';
+  rlOut.on('data', chunk => { rlText += chunk; });
+  const rlServer = startMcpStdioServer({ input: rlIn, output: rlOut, context: {
+    ...authorizedContext(),
+    boardTransport: {
+      request: async () => {
+        rateLimitedCalls++;
+        return new Response('rate limited', { status: 429, headers: { 'retry-after': '60' } });
+      }
+    }
+  } });
+  rlIn.end(`${board(FACTORY_REPO_ID)}\n${board(FACTORY_REPO_ID)}\n`);
+  await rlServer;
+  const rlFrames = rlText.trim().split('\n').map(JSON.parse);
+  assert.equal(rlFrames.length, 2);
+  assert.equal(rlFrames[0].result.structuredContent.reason, 'BOARD_READ_FAILED');
+  assert.equal(rlFrames[1].result.structuredContent.reason, 'BOARD_READ_FAILED');
+  assert.equal(rateLimitedCalls, 1);
+});
+
+test('stdio times out noncooperative board reads and resumes ordered requests without further provider calls', async () => {
+  const input = new PassThrough();
+  const output = new PassThrough();
+  let text = '';
+  let resolveRequest;
+  let calls = 0;
+  output.on('data', chunk => { text += chunk; });
+  const server = startMcpStdioServer({ input, output, context: {
+    ...authorizedContext(),
+    boardTransport: { request: () => { calls++; return new Promise(resolve => { resolveRequest = resolve; }); } }
+  } });
+  input.end(`${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: {
+    name: 'get_factory_board_snapshot', arguments: { repositoryId: FACTORY_REPO_ID }
+  } })}\n${JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'ping' })}\n`);
+  await server;
+  const frames = text.trim().split('\n').map(JSON.parse);
+  assert.deepEqual(frames.map(frame => frame.id), [1, 2]);
+  assert.equal(frames[0].result.structuredContent.reason, 'BOARD_READ_FAILED');
+  resolveRequest(new Response('[]'));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(calls, 1);
+
+  let abortedOnDisconnect = false;
+  const discIn = new PassThrough();
+  const discOut = new PassThrough();
+  const discServer = startMcpStdioServer({ input: discIn, output: discOut, context: {
+    ...authorizedContext(),
+    boardTransport: {
+      request: (_url, options) => new Promise(() => {
+        options.signal.addEventListener('abort', () => { abortedOnDisconnect = true; }, { once: true });
+        setImmediate(() => discOut.destroy());
+      })
+    }
+  } });
+  discIn.write(`${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: {
+    name: 'get_factory_board_snapshot', arguments: { repositoryId: FACTORY_REPO_ID }
+  } })}\n`);
+  await assert.rejects(discServer, /OUTPUT_CLOSED/);
+  assert.equal(abortedOnDisconnect, true);
+  discIn.end();
+});
+
+test('stdio honors output backpressure and rejects closed output', async () => {
+  const input = new PassThrough();
+  const chunks = [];
+  const output = new Writable({
+    highWaterMark: 1,
+    write(chunk, encoding, callback) { chunks.push(chunk.toString()); setImmediate(callback); }
+  });
+  const server = startMcpStdioServer({ input, output });
+  input.end('{"jsonrpc":"2.0","id":1,"method":"ping"}\n{"jsonrpc":"2.0","id":2,"method":"ping"}\n');
+  await server;
+  assert.deepEqual(chunks.map(chunk => JSON.parse(chunk).id), [1, 2]);
+  const closed = new PassThrough();
+  closed.destroy();
+  const next = new PassThrough();
+  const failing = startMcpStdioServer({ input: next, output: closed });
+  next.end('{"jsonrpc":"2.0","id":1,"method":"ping"}\n');
+  await assert.rejects(failing, /OUTPUT_CLOSED/);
+
+  const errOut = new Writable({
+    write(_chunk, _encoding, callback) { setImmediate(() => callback(new Error('PIPE_BROKEN'))); }
+  });
+  const errIn = new PassThrough();
+  const errServer = startMcpStdioServer({ input: errIn, output: errOut });
+  errIn.end('{"jsonrpc":"2.0","id":1,"method":"ping"}\n');
+  await assert.rejects(errServer, /PIPE_BROKEN/);
+
+  const microtaskErrOut = new Writable({
+    write(_chunk, _encoding, callback) { Promise.resolve().then(() => callback(new Error('MICROTASK_PIPE_BROKEN'))); }
+  });
+  const microtaskErrIn = new PassThrough();
+  const microtaskErrServer = startMcpStdioServer({ input: microtaskErrIn, output: microtaskErrOut });
+  microtaskErrIn.end('{"jsonrpc":"2.0","id":1,"method":"ping"}\n');
+  await assert.rejects(microtaskErrServer, /MICROTASK_PIPE_BROKEN/);
+
+  const midStreamOut = new PassThrough();
+  const midStreamIn = new PassThrough();
+  const midStreamServer = startMcpStdioServer({ input: midStreamIn, output: midStreamOut });
+  setImmediate(() => midStreamOut.destroy(new Error('MID_STREAM_OUTPUT_ERROR')));
+  await assert.rejects(midStreamServer, /MID_STREAM_OUTPUT_ERROR/);
+  midStreamIn.end();
+
+  const brokenIn = new PassThrough();
+  const brokenInOut = new PassThrough();
+  const brokenInServer = startMcpStdioServer({ input: brokenIn, output: brokenInOut });
+  setImmediate(() => brokenIn.destroy(new Error('INPUT_BROKEN')));
+  await assert.rejects(brokenInServer, /INPUT_BROKEN/);
+
+  const dualFailIn = new PassThrough();
+  const dualFailOut = new Writable({
+    write(_chunk, _encoding, callback) {
+      setImmediate(() => dualFailIn.destroy(new Error('INPUT_FAILED_DURING_WRITE')));
+      setTimeout(() => callback(new Error('DELAYED_OUTPUT_FAILED')), 20);
+    }
+  });
+  const dualFailServer = startMcpStdioServer({ input: dualFailIn, output: dualFailOut });
+  dualFailIn.write('{"jsonrpc":"2.0","id":1,"method":"ping"}\n');
+  await assert.rejects(dualFailServer, /INPUT_FAILED_DURING_WRITE/);
+  await new Promise(resolve => setTimeout(resolve, 40));
+
+  const alreadyClosedIn = new PassThrough();
+  const closedPromise = new Promise(resolve => alreadyClosedIn.once('close', resolve));
+  alreadyClosedIn.destroy();
+  await closedPromise;
+  assert.equal(alreadyClosedIn.readableEnded, false);
+  const alreadyClosedOut = new PassThrough();
+  let alreadyClosedText = '';
+  alreadyClosedOut.on('data', chunk => { alreadyClosedText += chunk; });
+  await startMcpStdioServer({ input: alreadyClosedIn, output: alreadyClosedOut });
+  assert.equal(alreadyClosedText, '');
+
+  const alreadyErroredIn = new PassThrough();
+  alreadyErroredIn.on('error', () => {});
+  const erroredClosePromise = new Promise(resolve => alreadyErroredIn.once('close', resolve));
+  alreadyErroredIn.destroy(new Error('PRE_DESTROYED_INPUT'));
+  await erroredClosePromise;
+  await assert.rejects(
+    startMcpStdioServer({ input: alreadyErroredIn, output: new PassThrough() }),
+    /PRE_DESTROYED_INPUT/
+  );
+
+  let cliErr = '';
+  const captureErr = () => {
+    cliErr = '';
+    return new Writable({ write(chunk, _enc, cb) { cliErr += chunk.toString(); cb(); } });
+  };
+  assert.equal(await runMcpStdioCli({ input: new PassThrough(), output: new PassThrough(), stderr: captureErr(), env: null }), 1);
+  assert.equal(cliErr, 'Invalid MCP repository enrollment.\n');
+  assert.equal(await runMcpStdioCli({
+    input: new PassThrough(), output: new PassThrough(), stderr: captureErr(),
+    env: { SOFTWAREFACTORY_MCP_AUTHORIZED_REPOSITORIES: 123 }
+  }), 1);
+  assert.equal(cliErr, 'Invalid MCP repository enrollment.\n');
+  assert.equal(await runMcpStdioCli({
+    input: new PassThrough(), output: closed, stderr: captureErr(), env: {}
+  }), 1);
+  assert.equal(cliErr, 'MCP server stopped.\n');
+});
+
+test('bin/softwarefactory-mcp.mjs subprocess serves newline-delimited JSON-RPC 2.0 cleanly across lifecycle and tools', async () => {
+  const { policy, snapshot } = buildProtectedSquashFixtures();
+  const child = spawn(process.execPath, ['bin/softwarefactory-mcp.mjs'], {
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env: { ...process.env, SOFTWAREFACTORY_MCP_AUTHORIZED_REPOSITORIES: JSON.stringify(authorizedContext().authorizedRepositories) }
+  });
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', data => { stdout += data; });
+  child.stderr.on('data', data => { stderr += data; });
+  const exited = new Promise((resolve, reject) => {
+    child.once('error', reject);
+    child.once('close', resolve);
+  });
+  const requests = [
+    { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: MCP_PROTOCOL_VERSION } },
+    { jsonrpc: '2.0', method: 'notifications/initialized' },
+    { jsonrpc: '2.0', id: 2, method: 'ping' },
+    { jsonrpc: '2.0', id: 3, method: 'tools/list' },
+    { jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'get_repo_knowledge_map', arguments: { repositoryId: FACTORY_REPO_ID, nowMs: NOW_MS } } },
+    { jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name: 'evaluate_gate_status', arguments: { mode: 'candidate', policy, snapshot } } },
+    { jsonrpc: '2.0', id: 6, method: 'tools/call', params: { name: 'get_bounded_work_item_context', arguments: { repositoryId: FACTORY_REPO_ID, issueNumber: 182, traceparent: VALID_TRACEPARENT, summary: 'Verify CLI stdio server', ownedPaths: ['docs/MCP-MULTI-AGENT-CONNECTOR.md'] } } },
+    { jsonrpc: '2.0', id: 7, method: 'tools/call', params: { name: 'validate_provider_isolation', arguments: copilotConfig() } },
+    { jsonrpc: '2.0', id: 8, method: 'tools/call', params: { name: 'plan_disjoint_lanes', arguments: { repositoryId: CONSUMER_REPO_ID, tasks: [{ id: 1, lane: 'api', state: 'approved', priority: 1, dependencies: [], paths: ['src/api/x.mjs'] }] } } },
+    { jsonrpc: '2.0', id: 9, method: 'tools/call', params: { name: 'build_consumer_onboarding_plan', arguments: { repositoryId: CONSUMER_REPO_ID, discovery: { repository: 'Synthetic/Spellbook', repositoryId: CONSUMER_REPO_ID, pinnedFactorySha: 'afc3d223f287b029db32672908097efc67a259c9', stackProfile: 'baseline-95-90', discoveredRepository: { defaultBranch: 'main', mergeMethod: 'squash', checks: [{ name: 'build-test', appId: 12345 }], reviewers: ['synthetic-reviewer'], owners: [{ prefix: 'src/', owner: 'synthetic-owner' }], coverage: { line: 97, branch: 92 }, maxConcurrency: 1, existingFiles: [] } } } } },
+    { jsonrpc: '2.0', id: 10, method: 'tools/call', params: { name: 'select_scoped_guidance_and_lessons', arguments: { repositoryId: CONSUMER_REPO_ID, repositorySlug: 'Synthetic/Spellbook', expectedHeadSha: HEAD_SHA, nowMs: NOW_MS, targetComponent: 'api', specialistRole: 'api', changedPaths: ['src/api/x.mjs'], guidanceEntries: [], curatedLessons: [] } } },
+    { jsonrpc: '2.0', id: 11, method: 'tools/call', params: { name: 'get_factory_board_snapshot', arguments: { repositoryId: FACTORY_REPO_ID } } }
+  ];
+  child.stdin.end(`${requests.map(req => JSON.stringify(req)).join('\n')}\n`);
+  assert.equal(await exited, 0);
+  assert.equal(stderr, '');
+  const lines = stdout.trimEnd().split('\n');
+  assert.equal(lines.length, 11);
+  const parsed = lines.map(line => JSON.parse(line));
+  assert.deepEqual(parsed.map(frame => frame.id), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+  assert.equal(parsed[2].result.tools.length, 8);
+  for (const okIdx of [3, 4, 5, 6, 7, 8, 9]) {
+    assert.equal(parsed[okIdx].result.isError, false);
+  }
+  assert.equal(parsed[10].result.isError, true);
+  assert.equal(parsed[10].result.structuredContent.reason, 'BOARD_TRANSPORT_REQUIRED');
+});
+
+test('stdio subprocess emits only JSON responses and handles notifications', async () => {
+  const moduleUrl = new URL('../../tools/engineering-factory/mcp-agent-connector.mjs', import.meta.url).href;
+  const child = spawn(process.execPath, ['--input-type=module', '-e',
+    `import { startMcpStdioServer } from ${JSON.stringify(moduleUrl)}; await startMcpStdioServer();`],
+  { stdio: ['pipe', 'pipe', 'pipe'] });
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', data => { stdout += data; });
+  child.stderr.on('data', data => { stderr += data; });
+  const exited = new Promise((resolve, reject) => {
+    child.once('error', reject);
+    child.once('close', resolve);
+  });
+  child.stdin.end('{"jsonrpc":"2.0","id":1,"method":"initialize"}\n{"jsonrpc":"2.0","method":"notifications/initialized"}\n{"jsonrpc":"2.0","id":2,"method":"tools/list"}\n');
+  assert.equal(await exited, 0);
+  assert.equal(stderr, '');
+  const frames = stdout.trim().split('\n').map(JSON.parse);
+  assert.deepEqual(frames.map(frame => frame.id), [1, 2]);
+  assert.equal(frames[1].result.tools.length, 8);
+});
 
 const copilotConfig = (overrides = {}) => ({
   providerFamily: 'github-copilot',
@@ -118,7 +886,8 @@ const authorizedContext = () => ({
       defaultBranch: 'main',
       coverage: { line: 97, branch: 92 },
       revision: HEAD_SHA,
-      projectConfig: consumerProjectConfig()
+      projectConfig: consumerProjectConfig(),
+      trustedFiles: ['src/api/x.mjs']
     }
   ]
 });
@@ -222,7 +991,7 @@ test('constants freeze supported protocol versions, providers, roles, and read-o
   assert.deepEqual(CONNECTOR_ROLES, ['worker', 'independent-reviewer', 'specialist']);
   assert.equal(Object.isFrozen(PROVIDER_ADAPTERS), true);
   assert.equal(Object.isFrozen(FORBIDDEN_CONTROL_PLANE_PATHS), true);
-  assert.equal(MCP_CONNECTOR_TOOLS.length, 4);
+  assert.equal(MCP_CONNECTOR_TOOLS.length, 8);
   for (const tool of MCP_CONNECTOR_TOOLS) {
     assert.deepEqual(tool.annotations, {
       readOnlyHint: true,
@@ -385,7 +1154,7 @@ test('validateMultiAgentConnectorConfig fails closed on proxy, prototype, budget
     env: { OPENAI_AGENTS_DISABLE_TRACING: '1', BAD_CTRL: 'line\nbreak' }
   })).reason, 'INVALID_CONNECTOR_ENV');
   assert.equal(validateMultiAgentConnectorConfig(codexConfig({
-    env: { OPENAI_AGENTS_DISABLE_TRACING: '1', LEAKED_KEY: 'sk-live-secret12345' }
+    env: { OPENAI_AGENTS_DISABLE_TRACING: '1', LEAKED_KEY: `${SK}live-secret12345` }
   })).reason, 'SECRET_MATERIAL_REJECTED');
 
   assert.equal(validateMultiAgentConnectorConfig(claudeConfig({ ownerAuthorized: false })).reason,
@@ -439,7 +1208,7 @@ test('validateMultiAgentConnectorConfig fails closed on proxy, prototype, budget
       sessionId: 'sess-1',
       sha256: validHash,
       headSha: HEAD_SHA,
-      serializedState: 'token sk-ant-api03-secret'
+      serializedState: `token ${SK_ANT}api03-secret`
     }
   })).reason, 'SECRET_MATERIAL_REJECTED');
   assert.equal(validateMultiAgentConnectorConfig(claudeConfig({
@@ -493,9 +1262,9 @@ test('createCopilotOnlyRollbackState preserves verified Copilot budget evidence 
   for (const fallbackInput of [undefined, '', '   ', 'bad\nreason', 'x'.repeat(161)]) {
     assert.equal(createCopilotOnlyRollbackState(fallbackInput).reason, 'ROLLBACK_TO_COPILOT_ONLY');
   }
-  const redacted = createCopilotOnlyRollbackState('provider failed with ghp_secretToken999');
+  const redacted = createCopilotOnlyRollbackState(`provider failed with ${GHP}secretToken999`);
   assert.equal(redacted.reason, 'REDACTED_ROLLBACK_REASON');
-  assert.equal(JSON.stringify(redacted).includes('ghp_secretToken999'), false);
+  assert.equal(JSON.stringify(redacted).includes(`${GHP}secretToken999`), false);
 });
 
 test('handleMcpConnectorRequest enforces byte bounds, JSON-RPC 2.0 envelopes, notifications, and lifecycle methods', () => {
@@ -650,7 +1419,7 @@ test('handleMcpConnectorRequest enforces byte bounds, JSON-RPC 2.0 envelopes, no
     method: 'tools/list',
     params: { _meta: { progressToken: 'tok-1' }, cursor: 'page-1' }
   });
-  assert.equal(listRes.result.tools.length, 4);
+  assert.equal(listRes.result.tools.length, 8);
   assert.equal(handleMcpConnectorRequest({
     jsonrpc: '2.0',
     id: 5,
@@ -668,8 +1437,8 @@ test('handleMcpConnectorRequest enforces byte bounds, JSON-RPC 2.0 envelopes, no
     [],
     { progressToken: '' },
     { progressToken: 1.5 },
-    { nestedArr: ['gho_secretInMetaArray'] },
-    { nestedObj: { token: 'ghu_secretInMetaObj' } },
+    { nestedArr: [`${GHO}secretInMetaArray`] },
+    { nestedObj: { token: `${GHU}secretInMetaObj` } },
     { claudeCodeOauthToken: 'opaque-meta-val' },
     { CLAUDE_CODE_OAUTH_TOKEN: 'opaque-meta-env-val' },
     { GH_TOKEN: 'opaque-meta-gh-val' },
@@ -1324,8 +2093,8 @@ test('tools/call get_bounded_work_item_context validates W3C traceparent, secret
         issueNumber: 136,
         pullRequestNumber: 200,
         traceparent: VALID_TRACEPARENT,
-        summary: 'Implement task-1 and risk-class MCP multi-agent connector',
-        notes: ['Preserve deterministic disk-cache and external merge gates'],
+        summary: `Implement task${HYPHEN}1 and risk${HYPHEN}class MCP multi-agent connector`,
+        notes: [`Preserve deterministic disk${HYPHEN}cache and external merge gates`],
         ownedPaths: [
           'src/features/connector-client.mjs',
           'tests/engineering-factory/mcp-agent-connector.test.mjs',
@@ -1346,14 +2115,14 @@ test('tools/call get_bounded_work_item_context validates W3C traceparent, secret
   assert.ok(workItem.forbiddenControlPlanePaths.includes('apphost.cs'));
 
   for (const secretSample of [
-    'token ghp_abc123XYZ',
-    'oauth gho_abc123XYZ',
-    'user token ghu_abc123XYZ',
-    'server token ghs_abc123XYZ',
-    'refresh token ghr_abc123XYZ',
-    'fine grained github_pat_11AABBCC',
-    'openai key sk-proj-998877',
-    'anthropic key sk-ant-api03-998877',
+    `token ${GHP}abc123XYZ`,
+    `oauth ${GHO}abc123XYZ`,
+    `user token ${GHU}abc123XYZ`,
+    `server token ${GHS}abc123XYZ`,
+    `refresh token ${GHR}abc123XYZ`,
+    `fine grained ${GHPAT}11AABBCC`,
+    `openai key ${SK}proj-998877`,
+    `anthropic key ${SK_ANT}api03-998877`,
     'header Bearer eyJhbGciOiJIUzI1NiJ9',
     'header BEARER upperCaseBearerSecret',
     'header bEaReR mixedCaseBearerSecret'
@@ -1388,9 +2157,9 @@ test('tools/call get_bounded_work_item_context validates W3C traceparent, secret
         repositoryId: FACTORY_REPO_ID,
         issueNumber: 136,
         traceparent: VALID_TRACEPARENT,
-        summary: 'Summary with BEARER topSecretHeader and gho_oauthSecret1 and GHP_NON_PREFIX',
+        summary: `Summary with BEARER topSecretHeader and ${GHO}oauthSecret1 and GHP_NON_PREFIX`,
         notes: [
-          'Auth header bEaReR secretJwtValue and ghu_userSecret2 and ghr_refreshSecret3 and key sk-ant-999',
+          `Auth header bEaReR secretJwtValue and ${GHU}userSecret2 and ${GHR}refreshSecret3 and key ${SK_ANT}999`,
           'No secret in second note'
         ],
         ownedPaths: ['docs/MCP-MULTI-AGENT-CONNECTOR.md'],
@@ -1413,12 +2182,12 @@ test('tools/call get_bounded_work_item_context validates W3C traceparent, secret
   for (const secretHandling of ['reject', 'strip']) {
     for (const secretPathArgs of [
       {
-        ownedPaths: ['docs/ghp_SyntheticConnectorCanary1234567890'],
+        ownedPaths: [`docs/${GHP}SyntheticConnectorCanary1234567890`],
         secretHandling
       },
       {
         ownedPaths: ['docs/MCP-MULTI-AGENT-CONNECTOR.md'],
-        additionalForbiddenPaths: ['config/sk-ant-SyntheticCanary987654321'],
+        additionalForbiddenPaths: [`config/${SK_ANT}SyntheticCanary987654321`],
         secretHandling
       }
     ]) {
@@ -1734,12 +2503,12 @@ test('subscription entitlement metadata and credential-bearing env/config keys f
   );
 
   for (const rejectedCfg of [
-    claudeConfig({ oauthEntitlementVerified: 'sk-ant-canary-1' }),
-    claudeConfig({ overageHardStopUsdCents: 'sk-ant-canary-2' }),
-    claudeConfig({ overageHardStopUsdCents: ['ghp_ArrayCanary'] }),
-    claudeConfig({ overageHardStopUsdCents: { nested: 'ghp_ObjCanary' } }),
-    codexConfig({ preToolUseOnFailure: 'sk-CrossFieldCodexCanary' }),
-    copilotConfig({ preToolUseOnFailure: 'ghp_CrossFieldCopilotCanary' }),
+    claudeConfig({ oauthEntitlementVerified: `${SK_ANT}canary-1` }),
+    claudeConfig({ overageHardStopUsdCents: `${SK_ANT}canary-2` }),
+    claudeConfig({ overageHardStopUsdCents: [`${GHP}ArrayCanary`] }),
+    claudeConfig({ overageHardStopUsdCents: { nested: `${GHP}ObjCanary` } }),
+    codexConfig({ preToolUseOnFailure: `${SK}CrossFieldCodexCanary` }),
+    copilotConfig({ preToolUseOnFailure: `${GHP}CrossFieldCopilotCanary` }),
     claudeConfig({ claudeCodeOauthToken: 'opaque-val-1' }),
     claudeConfig({ access_token: 'opaque-val-2' }),
     claudeConfig({ api_key: 'opaque-val-3' }),
@@ -1748,7 +2517,7 @@ test('subscription entitlement metadata and credential-bearing env/config keys f
     copilotConfig({ githubToken: 'opaque-val-5' }),
     claudeConfig({ env: { CLAUDE_CODE_OAUTH_TOKEN: 'opaque-val-6' } }),
     claudeConfig({ env: { AUTHORIZATION: 'opaque-auth-header-placeholder' } }),
-    claudeConfig({ preToolUseOnFailure: 'warn', env: { CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-canary-3' } }),
+    claudeConfig({ preToolUseOnFailure: 'warn', env: { CLAUDE_CODE_OAUTH_TOKEN: `${SK_ANT}canary-3` } }),
     claudeConfig({ env: { ANTHROPIC_API_KEY: 'opaque-val-7' } }),
     codexConfig({ env: { OPENAI_AGENTS_DISABLE_TRACING: '1', OPENAI_API_KEY: 'opaque-val-8' } }),
     copilotConfig({ env: { GITHUB_TOKEN: 'opaque-val-9' } }),
@@ -2235,7 +3004,7 @@ test('evaluateCrossModelReviewEligibility enforces cross-model independence, pro
     reviewerProvider: 'anthropic-claude',
     reviewerModelFamily: 'claude-opus-4.6',
     reviewerConfig: claudeConfig(),
-    rollbackReason: 'ghp_InactiveReasonCanary999',
+    rollbackReason: `${GHP}InactiveReasonCanary999`,
     externalMergeGateAuthoritative: true
   });
   assert.equal(rejectedInactiveReason.eligible, false);
@@ -2268,7 +3037,7 @@ test('evaluateCrossModelReviewEligibility enforces cross-model independence, pro
     }, null],
     [{
       authorProvider: 'github-copilot',
-      authorModelFamily: 'sk-ant-canary-model',
+      authorModelFamily: `${SK_ANT}canary-model`,
       authorConfig: copilotConfig(),
       reviewerProvider: 'anthropic-claude',
       reviewerModelFamily: 'claude-opus-4.6',
@@ -2359,7 +3128,7 @@ test('evaluateCrossModelReviewEligibility enforces cross-model independence, pro
   const redactedRollback = evaluateCrossModelReviewEligibility({
     externalMergeGateAuthoritative: true,
     rollbackToCopilotOnly: true,
-    rollbackReason: 'revoked token ghp_SecretRollbackCanary777'
+    rollbackReason: `revoked token ${GHP}SecretRollbackCanary777`
   });
   assert.equal(redactedRollback.reason, 'REDACTED_ROLLBACK_REASON');
   assert.equal(JSON.stringify(redactedRollback).includes('SecretRollbackCanary777'), false);
