@@ -190,7 +190,7 @@ const VERIFIED_GITHUB_URL_SPAN_PATTERN =
 const OUTER_WRAPPER_TRIM_PATTERN =
   /^[`'"([<{*_~“”‘’«»\u2012-\u2015]+|[`'")\]>},;.!?*_~“”‘’«»\u2012-\u2015]+$/g;
 const MARKDOWN_LINK_PATTERN =
-  /(?<![A-Za-z0-9_./:\\-])\[([^\[\]\r\n]+)\]\(\s*(<[^<>\s]+>|[^\s()]+)(?:\s+(?:"([^"\r\n]*)"|'([^'\r\n]*)'|\(([^()\r\n]*)\)))?\s*\)(?!\S*\.\.)(?=(?:[`'")\]>},;.!?*_~“”‘’«»\u2012-\u2015])*(?:$|\s))/g;
+  /(?<![A-Za-z0-9_./:\\-])\[((?:\\[\s\S]|[^\[\]\\])+)\]\(\s*(<[^<>\s]+>|[^\s()]+)(?:\s+(?:"((?:\\[\s\S]|[^"\\])*)"|'((?:\\[\s\S]|[^'\\])*)'|\(((?:\\[\s\S]|[^()\\])*)\)))?\s*\)(?!\S*\.\.)(?=(?:[`'")\]>},;.!?*_~“”‘’«»\u2012-\u2015])*(?:$|\s))/g;
 const IDNA_DOT_PATTERN = /[\u3002\uFF0E\uFF61]/g;
 const PERCENT_RUN_PATTERN = /(?:%[0-9a-fA-F]{2})+/g;
 const UTF8_DECODER = new TextDecoder('utf-8', {fatal: false});
@@ -474,14 +474,15 @@ function countPolarityReversers(segment) {
 }
 
 function isUnconditionalRejectionClause(text, matchIndex, matchLength) {
-  const bounds = clauseAndSentenceBoundsAt(text, matchIndex, matchLength);
-  const sentence = text.slice(bounds.start, bounds.end);
-  if (hasCarveoutAroundClause(text, bounds) || /['"`“”‘’]/.test(sentence)) return false;
-  const prefix = text.slice(bounds.start, matchIndex);
+  const normalized = text.replaceAll('_', ' ');
+  const bounds = clauseAndSentenceBoundsAt(normalized, matchIndex, matchLength);
+  const sentence = normalized.slice(bounds.start, bounds.end);
+  if (hasCarveoutAroundClause(normalized, bounds) || /['"`“”‘’]/.test(sentence)) return false;
+  const prefix = normalized.slice(bounds.start, matchIndex);
   const immediateMatch = IMMEDIATE_REJECTION_PREFIX_PATTERN.exec(prefix);
   if (immediateMatch === null) return false;
   const beforeVerb = prefix.slice(0, immediateMatch.index);
-  const suffix = text.slice(matchIndex + matchLength, bounds.end);
+  const suffix = normalized.slice(matchIndex + matchLength, bounds.end);
   return ALLOWED_REJECTION_LEAD_PATTERN.test(beforeVerb) &&
     countPolarityReversers(beforeVerb) === 0 &&
     countPolarityReversers(suffix) === 0;
@@ -560,8 +561,11 @@ function hasDisallowedGithubHostToken(text, expectedSlugLower) {
   }
   const remainingText = text.replace(
     MARKDOWN_LINK_PATTERN,
-    (_, label, _dest, dqTitle, sqTitle, parenTitle) =>
-      ` ${label} ${dqTitle ?? sqTitle ?? parenTitle ?? ''} `
+    (_, label, _dest, dqTitle, sqTitle, parenTitle) => {
+      const unescapedLabel = label.replace(/\\([\s\S])/g, '$1');
+      const unescapedTitle = (dqTitle ?? sqTitle ?? parenTitle ?? '').replace(/\\([\s\S])/g, '$1');
+      return ` ${unescapedLabel} ${unescapedTitle} `;
+    }
   );
   for (const rawPart of remainingText.split(/\s+/)) {
     if (rawPart.length === 0) continue;
@@ -608,11 +612,12 @@ function isValidProhibitedVerbChain(between, suffix) {
 }
 
 function isNegatedSafetyProhibition(text, matchIndex, matchLength) {
-  const bounds = clauseAndSentenceBoundsAt(text, matchIndex, matchLength);
-  if (hasCarveoutAroundClause(text, bounds)) return false;
+  const normalized = text.replaceAll('_', ' ');
+  const bounds = clauseAndSentenceBoundsAt(normalized, matchIndex, matchLength);
+  if (hasCarveoutAroundClause(normalized, bounds)) return false;
 
-  const prefix = text.slice(bounds.start, matchIndex);
-  const suffix = text.slice(matchIndex + matchLength, bounds.end);
+  const prefix = normalized.slice(bounds.start, matchIndex);
+  const suffix = normalized.slice(matchIndex + matchLength, bounds.end);
   if (countPolarityReversers(prefix) !== 1 || countPolarityReversers(suffix) !== 0) {
     return false;
   }
