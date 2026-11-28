@@ -10,6 +10,11 @@ export const PINNED_GHAW_RELEASE = Object.freeze({
   verified: true
 });
 
+export const PINNED_GHAW_DETECTION_CONCLUSION_SCRIPT_SHA256 =
+  '63f302c76492b6bde7052889282d030724cde0379ba2b3e38f16882d956c1972';
+export const PINNED_FACTORY_POLICY_SCAN_RUN_SHA256 =
+  'f80ecd1a1eb7d1afe69e912592699647f0a4fcf4da5148db05fcaaa5a383c970';
+
 const MAX_SOURCE_CHARS = 262144;
 const FORBIDDEN_CONTROL_RE = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/;
 const HEX40_RE = /^[a-f0-9]{40}$/;
@@ -36,13 +41,13 @@ const MAX_IF_DEPTH = 16;
 const isHex40 = value => typeof value === 'string' && HEX40_RE.test(value);
 const isHex64 = value => typeof value === 'string' && HEX64_RE.test(value);
 
-function isDenseHex40Array(value, maxLen = 64) {
+function isDenseHexArray(value, checkItem, maxLen = 64) {
   if (types.isProxy(value) || !Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype ||
       value.length > maxLen || Reflect.ownKeys(value).length !== value.length + 1) {
     return false;
   }
   for (let i = 0; i < value.length; i++) {
-    if (!isOwnEnumerableData(value, String(i)) || !isHex40(value[i])) return false;
+    if (!isOwnEnumerableData(value, String(i)) || !checkItem(value[i])) return false;
   }
   return true;
 }
@@ -177,6 +182,14 @@ export function computeBodySha256(markdownSource) {
   const extracted = extractFrontmatterParts(markdownSource);
   if (extracted === null) return null;
   return createHash('sha256').update(extracted.normalizedBody, 'utf8').digest('hex');
+}
+
+export function computeNormalizedScriptSha256(scriptSource) {
+  const normalized = normalizeText(scriptSource);
+  if (normalized === null) return null;
+  const trimmed = normalized.trim();
+  if (trimmed.length === 0) return null;
+  return createHash('sha256').update(trimmed, 'utf8').digest('hex');
 }
 
 function compareSemver(left, right) {
@@ -702,15 +715,33 @@ function collectMandatoryConjuncts(node) {
   return [node];
 }
 
-function astHasBypassCall(node) {
+function astHasCallNamed(node, namesSet) {
   if (node.kind === 'Call') {
-    return BYPASS_CALL_NAMES.has(node.name) || node.args.some(astHasBypassCall);
+    return namesSet.has(node.name) || node.args.some(arg => astHasCallNamed(arg, namesSet));
   }
   if (node.kind === 'And' || node.kind === 'Or' || node.kind === 'Compare') {
-    return astHasBypassCall(node.left) || astHasBypassCall(node.right);
+    return astHasCallNamed(node.left, namesSet) || astHasCallNamed(node.right, namesSet);
   }
-  if (node.kind === 'Not') return astHasBypassCall(node.expr);
+  if (node.kind === 'Not') return astHasCallNamed(node.expr, namesSet);
   return false;
+}
+
+const STATUS_CHECK_CALL_NAMES = new Set(['always', 'failure', 'cancelled', 'success']);
+
+function astHasBypassCall(node) {
+  return astHasCallNamed(node, BYPASS_CALL_NAMES);
+}
+
+function stepIfPreservesPriorSuccess(parsedStepIf) {
+  if (parsedStepIf === undefined || parsedStepIf === null || astHasBypassCall(parsedStepIf)) {
+    return false;
+  }
+  if (!astHasCallNamed(parsedStepIf, STATUS_CHECK_CALL_NAMES)) {
+    return true;
+  }
+  return collectMandatoryConjuncts(parsedStepIf).some(
+    c => c.kind === 'Call' && c.name === 'success' && c.args.length === 0
+  );
 }
 
 function isIdentCompareLiteral(node, op, expectedPath, expectedLiteral) {
@@ -771,8 +802,251 @@ function astHasUnsafeStatusOverride(node, negated = false) {
 const STEP_OUTPUT_REF_RE = /^\$\{\{\s*steps\.([A-Za-z_][A-Za-z0-9_-]*)\.outputs\.[A-Za-z_][A-Za-z0-9_-]*\s*\}\}$/;
 const STEP_OUTCOME_REF_RE = /^\$\{\{\s*steps\.([A-Za-z_][A-Za-z0-9_-]*)\.outcome\s*\}\}$/;
 const DETECTION_GUARD_REF_RE = /^\$\{\{\s*steps\.detection_guard\.outputs\.run_detection\s*\}\}$/;
-const FORBIDDEN_SUCCESS_OVERRIDE_RE = /setOutput\(\s*['"](?:success|conclusion)['"]\s*,\s*['"](?:true|success)['"]\s*\)/;
+const NEEDS_OUTPUT_TYPES_REF_RE = /^\$\{\{\s*needs\.([A-Za-z_][A-Za-z0-9_-]*)\.outputs\.output_types\s*\}\}$/;
+const NEEDS_HAS_PATCH_REF_RE = /^\$\{\{\s*needs\.([A-Za-z_][A-Za-z0-9_-]*)\.outputs\.has_patch\s*\}\}$/;
+const PINNED_GHAW_DETECTION_GUARD_RUN_SHA256 =
+  'cd263ee1576f187c6631de7e4e336dfadb2b8f71404f70dfccaa319b2530af44';
+const UNCONDITIONAL_DETECTION_GUARD_RUN_SHA256 =
+  '09fc5d5793d63171201ff6034a92a2c9201437b57dcbcb6f3cfbfa0621fd8f19';
+const PINNED_CLEAR_AGENT_USAGE_RUN_SHA256 =
+  'c93a5242d91f278481809a338d359e8c976f21e030dbbd395410c7eec1a5d4f7';
+const PINNED_SHADOW_RECONCILE_OPTIN_RUN_SHA256 =
+  'fb54fe1118f487e97b5c0ae0941ff48f484ab1f76ad6cace70d9464290a84949';
+const THREAT_DETECT_FLAG_RE = /^--[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const THREAT_DETECT_VAL_RE = /^[A-Za-z0-9_./][A-Za-z0-9_./-]*$/;
+const SIMPLE_POSIX_TEST_LINE_RE = /^test "\$[A-Z][A-Z0-9_]*" = [A-Za-z0-9_./-]+$/;
+const VALID_ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+function isStrictThreatDetectCommand(cmdText) {
+  if (cmdText.includes('\n')) return false;
+  const tokens = cmdText.trim().split(' ').filter(tok => tok.length > 0);
+  if (tokens.length === 0 || tokens[0] !== 'threat-detect') return false;
+  let idx = 1;
+  while (idx < tokens.length) {
+    if (!THREAT_DETECT_FLAG_RE.test(tokens[idx])) return false;
+    idx++;
+    if (idx < tokens.length && !tokens[idx].startsWith('-')) {
+      if (!THREAT_DETECT_VAL_RE.test(tokens[idx])) return false;
+      idx++;
+    }
+  }
+  return true;
+}
+const PINNED_REDACTION_SCRIPT_SHA256S = new Set([
+  '26a88c8a5717600f5fd310e6421561c072ac7381d95edfd5fc081bc82fcc93be',
+  'bf99a81555fbc952f9f2173d234c6071a0fa01ba181cb046fc12f88ef7294ff3'
+]);
 const VERIFIED_SCAN_OUTPUT_KEYS = Object.freeze(['scan_verified', 'detection_success', 'detection_conclusion']);
+const FORBIDDEN_SCAN_ENV_KEYS = new Set([
+  'node_options',
+  'node_path',
+  'runner_temp',
+  'path',
+  'bash_env',
+  'env',
+  'ld_preload',
+  'ld_library_path',
+  'shellopts',
+  'bashopts',
+  'ps4',
+  'ifs',
+  'home'
+]);
+const ALLOWED_CHECKOUT_WITH_KEYS = new Set([
+  'persist-credentials',
+  'repository',
+  'ref',
+  'fetch-depth',
+  'clean',
+  'sparse-checkout',
+  'sparse-checkout-cone-mode',
+  'submodules',
+  'lfs',
+  'path',
+  'filter',
+  'show-progress'
+]);
+
+function isSafeScanEnv(envValue) {
+  if (envValue === undefined) return true;
+  if (!isMapObject(envValue)) return false;
+  return Object.keys(envValue).every(key => {
+    if (!VALID_ENV_KEY_RE.test(key)) return false;
+    const lower = key.toLowerCase();
+    return !lower.startsWith('input_') &&
+      !lower.startsWith('git_') &&
+      !lower.startsWith('bash_func_') &&
+      !lower.startsWith('github_') &&
+      !lower.startsWith('npm_config_') &&
+      !FORBIDDEN_SCAN_ENV_KEYS.has(lower);
+  });
+}
+
+function normalizeCheckoutWith(withMap) {
+  if (!isMapObject(withMap)) return null;
+  const normalized = Object.create(null);
+  for (const [key, value] of Object.entries(withMap)) {
+    const lower = key.toLowerCase();
+    if (!ALLOWED_CHECKOUT_WITH_KEYS.has(lower) || Object.hasOwn(normalized, lower)) {
+      return null;
+    }
+    normalized[lower] = value;
+  }
+  return normalized;
+}
+
+function resolveValidDetectionGuardDep(step) {
+  const guardDigest = computeNormalizedScriptSha256(step.run);
+  if (guardDigest === UNCONDITIONAL_DETECTION_GUARD_RUN_SHA256) return '*';
+  if (guardDigest !== PINNED_GHAW_DETECTION_GUARD_RUN_SHA256 ||
+      !isMapObject(step.env) ||
+      Object.keys(step.env).length !== 2 ||
+      typeof step.env.OUTPUT_TYPES !== 'string' ||
+      typeof step.env.HAS_PATCH !== 'string') {
+    return null;
+  }
+  const outMatch = NEEDS_OUTPUT_TYPES_REF_RE.exec(step.env.OUTPUT_TYPES.trim());
+  const patchMatch = NEEDS_HAS_PATCH_REF_RE.exec(step.env.HAS_PATCH.trim());
+  if (outMatch === null || patchMatch === null || outMatch[1] !== patchMatch[1]) {
+    return null;
+  }
+  return outMatch[1];
+}
+
+const ALLOWED_SETUP_NODE_WITH_KEYS = new Set(['node-version', 'package-manager-cache', 'check-latest']);
+
+function isSafeSetupStepBeforePolicyScan(step, usesLower) {
+  if (step.if !== undefined || step.env !== undefined) return false;
+  if (usesLower.startsWith('actions/checkout@')) return true;
+  if (!usesLower.startsWith('actions/setup-node@')) return false;
+  if (step.with === undefined) return true;
+  if (!isMapObject(step.with)) return false;
+  const seen = new Set();
+  for (const [key, value] of Object.entries(step.with)) {
+    const lower = key.toLowerCase();
+    if (!ALLOWED_SETUP_NODE_WITH_KEYS.has(lower) || seen.has(lower)) return false;
+    if (lower === 'package-manager-cache' && value !== false) return false;
+    seen.add(lower);
+  }
+  return true;
+}
+
+function hasFailClosedPosixRefPreamble(runText, expectedBranchRef) {
+  const lines = runText
+    .split('\n')
+    .map(line => line.trim())
+    .filter(line => line.length > 0 && !line.startsWith('#'));
+  if (lines.length < 3 || lines[0] !== 'set -euo pipefail') return false;
+  let sawRef = false;
+  let sawProtected = false;
+  for (let i = 1; i < lines.length; i++) {
+    if (!SIMPLE_POSIX_TEST_LINE_RE.test(lines[i])) break;
+    if (lines[i] === `test "$GITHUB_REF" = ${expectedBranchRef}`) sawRef = true;
+    if (lines[i] === 'test "$GITHUB_REF_PROTECTED" = true') sawProtected = true;
+    if (sawRef && sawProtected) return true;
+  }
+  return false;
+}
+
+function resolveJobProtectedBranchProvenance(job, jobAst, expectedBranchRef, outerEnvSafe) {
+  if (!outerEnvSafe || toleratesError(job) || job.defaults !== undefined || job.container !== undefined ||
+      !isSafeScanEnv(job.env) || jobAst === null || astHasBypassCall(jobAst) || !Array.isArray(job.steps)) {
+    return {jobWideForDownstream: false, trustedCheckoutStepIndices: new Set()};
+  }
+  const conjuncts = collectMandatoryConjuncts(jobAst);
+  const hasRef = conjuncts.some(c => isIdentCompareLiteral(c, '==', 'github.ref', expectedBranchRef));
+  const hasProtected = conjuncts.some(c =>
+    isIdentCompareLiteral(c, '==', 'github.ref_protected', true) ||
+    isIdentCompareLiteral(c, '==', 'github.ref_protected', 'true')
+  );
+  if (!hasRef || !hasProtected) {
+    return {jobWideForDownstream: false, trustedCheckoutStepIndices: new Set()};
+  }
+
+  let jobWideForDownstream = false;
+  let preambleCompleted = false;
+  let onlyInertSetupSoFar = true;
+  const pendingInertCheckoutIndices = [];
+  const promotedInertCheckoutIndices = [];
+  const guardOutputStepIds = new Set();
+  const trustedCheckoutStepIndices = new Set();
+  for (let idx = 0; idx < job.steps.length; idx++) {
+    const step = job.steps[idx];
+    const parsedStepIf = step.if === undefined
+      ? null
+      : (typeof step.if === 'string' ? parseIfExpression(step.if) : undefined);
+    const stepOverridesFailure = step.if !== undefined && !stepIfPreservesPriorSuccess(parsedStepIf);
+    if (stepOverridesFailure) {
+      onlyInertSetupSoFar = false;
+      pendingInertCheckoutIndices.length = 0;
+      for (const prevIdx of promotedInertCheckoutIndices) {
+        trustedCheckoutStepIndices.delete(prevIdx);
+      }
+      promotedInertCheckoutIndices.length = 0;
+    }
+    const usesLower = typeof step.uses === 'string' ? step.uses.toLowerCase() : null;
+    if (usesLower !== null && usesLower.startsWith('actions/checkout@')) {
+      if (preambleCompleted && !stepOverridesFailure) {
+        trustedCheckoutStepIndices.add(idx);
+      } else if (!stepOverridesFailure && parsedStepIf !== null) {
+        const stepConjuncts = collectMandatoryConjuncts(parsedStepIf);
+        const gatedByPriorOptin = [...guardOutputStepIds].some(guardId =>
+          stepConjuncts.some(c =>
+            isIdentCompareLiteral(c, '==', `steps.${guardId}.outputs.enabled`, 'true')
+          )
+        );
+        if (gatedByPriorOptin) trustedCheckoutStepIndices.add(idx);
+      } else if (step.if === undefined && onlyInertSetupSoFar) {
+        pendingInertCheckoutIndices.push(idx);
+      }
+    }
+    if (usesLower !== null) {
+      const normalizedWith = usesLower.startsWith('actions/checkout@') ? normalizeCheckoutWith(step.with) : null;
+      const inertSetup = !toleratesError(step) &&
+        isSafeSetupStepBeforePolicyScan(step, usesLower) &&
+        (!usesLower.startsWith('actions/checkout@') ||
+          (normalizedWith !== null && normalizedWith['persist-credentials'] === false && normalizedWith.path === undefined));
+      if (!inertSetup) {
+        onlyInertSetupSoFar = false;
+        pendingInertCheckoutIndices.length = 0;
+      }
+      continue;
+    }
+    if (typeof step.run !== 'string' || toleratesError(step) || step.if !== undefined ||
+        step['working-directory'] !== undefined ||
+        (step.shell !== undefined && step.shell !== 'bash') ||
+        !isSafeScanEnv(step.env)) {
+      onlyInertSetupSoFar = false;
+      pendingInertCheckoutIndices.length = 0;
+      continue;
+    }
+    if (onlyInertSetupSoFar && hasFailClosedPosixRefPreamble(step.run, expectedBranchRef)) {
+      jobWideForDownstream = true;
+      preambleCompleted = true;
+      for (const pendingIdx of pendingInertCheckoutIndices) {
+        trustedCheckoutStepIndices.add(pendingIdx);
+        promotedInertCheckoutIndices.push(pendingIdx);
+      }
+    }
+    if (onlyInertSetupSoFar && expectedBranchRef === 'refs/heads/main' && typeof step.id === 'string' &&
+        computeNormalizedScriptSha256(step.run) === PINNED_SHADOW_RECONCILE_OPTIN_RUN_SHA256) {
+      guardOutputStepIds.add(step.id);
+    }
+    onlyInertSetupSoFar = false;
+    pendingInertCheckoutIndices.length = 0;
+  }
+  return {jobWideForDownstream, trustedCheckoutStepIndices};
+}
+
+function isValidRedactionStep(step, usesLower) {
+  if (step.if === undefined || !usesLower.startsWith('actions/github-script@') ||
+      !isMapObject(step.with) || Object.keys(step.with).length !== 1 ||
+      typeof step.with.script !== 'string' || step.with.script.includes('${{')) {
+    return false;
+  }
+  const digest = computeNormalizedScriptSha256(step.with.script);
+  return digest !== null && PINNED_REDACTION_SCRIPT_SHA256S.has(digest);
+}
 
 function isDetectionGuardCompare(node, expectedLiteral) {
   return isIdentCompareLiteral(node, '==', 'steps.detection_guard.outputs.run_detection', expectedLiteral);
@@ -804,30 +1078,60 @@ function isCompilerDetectionConclusionIf(ast) {
 }
 
 function isAllowedThreatScanStepIf(step, stepAst) {
-  if (isAlwaysZeroArgCall(stepAst)) return true;
   if (step.id === 'redact_detection_logs' || step.id === 'redact_detection_artifacts') {
     return isCompilerDetectionStepIf(stepAst);
   }
   if (step.id === 'detection_conclusion') {
     return isCompilerDetectionConclusionIf(stepAst);
   }
-  return false;
+  return isAlwaysZeroArgCall(stepAst);
 }
 
-function isValidActionConclusionProducer(step, precedingUnconditionalStepIds) {
+function isValidGhAwSetupStep(step, usesLower, releaseCommit) {
+  if (usesLower !== `github/gh-aw/actions/setup@${releaseCommit}` || step.if !== undefined) {
+    return false;
+  }
+  if (step.with === undefined) return true;
+  if (!isMapObject(step.with)) return false;
+  return Object.entries(step.with).every(([key, val]) =>
+    key.toLowerCase() !== 'destination' ||
+    (typeof val === 'string' && val.trim() === '${{ runner.temp }}/gh-aw/actions')
+  );
+}
+
+function isValidActionConclusionProducer(
+  step,
+  precedingUnconditionalStepIds,
+  precedingDetectionPrereqs,
+  trustedDetectionDigests
+) {
   if (step.id !== 'detection_conclusion' ||
+      step.if === undefined ||
+      !precedingDetectionPrereqs.actionsTamperFree ||
+      !precedingDetectionPrereqs.hasValidGuard ||
+      !precedingDetectionPrereqs.hasRedactLogs ||
+      !precedingDetectionPrereqs.hasRedactArtifacts ||
       typeof step.uses !== 'string' ||
       !step.uses.toLowerCase().startsWith('actions/github-script@') ||
       !isMapObject(step.env) ||
+      Object.keys(step.env).length !== 3 ||
       step.env.GH_AW_DETECTION_CONTINUE_ON_ERROR !== 'false' ||
       typeof step.env.RUN_DETECTION !== 'string' ||
       !DETECTION_GUARD_REF_RE.test(step.env.RUN_DETECTION.trim()) ||
       typeof step.env.DETECTION_AGENTIC_EXECUTION_OUTCOME !== 'string' ||
       !isMapObject(step.with) ||
+      Object.keys(step.with).length !== 1 ||
       typeof step.with.script !== 'string' ||
-      step.with.script.includes('${{') ||
-      !step.with.script.includes('parse_threat_detection_results.cjs') ||
-      FORBIDDEN_SUCCESS_OVERRIDE_RE.test(step.with.script)) {
+      step.with.script.includes('${{')) {
+    return false;
+  }
+  const scriptDigest = computeNormalizedScriptSha256(step.with.script);
+  if (scriptDigest === null || !trustedDetectionDigests.has(scriptDigest)) {
+    return false;
+  }
+  if ((scriptDigest === PINNED_GHAW_DETECTION_CONCLUSION_SCRIPT_SHA256 ||
+       step.with.script.includes('RUNNER_TEMP')) &&
+      !precedingDetectionPrereqs.hasGhAwSetup) {
     return false;
   }
   const outcomeMatch = STEP_OUTCOME_REF_RE.exec(step.env.DETECTION_AGENTIC_EXECUTION_OUTCOME.trim());
@@ -989,6 +1293,20 @@ function isTrustedControlPlaneCheckout(withMap, releaseCommit, trustedShas) {
   const trimmedRef = withMap.ref.trim();
   return trimmedRef === 'refs/heads/main' || trustedShas.has(trimmedRef);
 }
+
+function isTrustedScanJobCheckout(checkoutWith, releaseCommit, trustedShas, lockOn) {
+  if (checkoutWith.path !== undefined) return {ok: false, needsUpstreamRefProvenance: false};
+  if (checkoutWith.ref === undefined && checkoutWith.repository === undefined) {
+    const safeTriggerSet = !Object.hasOwn(lockOn, 'pull_request') &&
+      !Object.hasOwn(lockOn, 'pull_request_target') &&
+      !Object.hasOwn(lockOn, 'pull_request_review');
+    return {ok: safeTriggerSet, needsUpstreamRefProvenance: true};
+  }
+  return {
+    ok: isTrustedControlPlaneCheckout(checkoutWith, releaseCommit, trustedShas),
+    needsUpstreamRefProvenance: false
+  };
+}
 function normalizeNeeds(needsField) {
   if (typeof needsField === 'string') return [needsField];
   if (Array.isArray(needsField) && needsField.length > 0 && needsField.every(item => typeof item === 'string')) {
@@ -1015,14 +1333,31 @@ function stepAttemptsMainMerge(step) {
 }
 
 export function verifyGhAwWorkflowLock(input) {
-  const optionalKeys = ['pinnedRelease', 'workQueueProtocol', 'workQueueRef', 'trustedControlPlaneShas'];
+  const optionalKeys = [
+    'pinnedRelease',
+    'workQueueProtocol',
+    'workQueueRef',
+    'trustedControlPlaneShas',
+    'trustedDetectionScriptSha256s',
+    'trustedPolicyScanRunSha256s'
+  ];
   if (!isPlainRecord(input, ['markdownSource', 'lockYamlSource'], optionalKeys)) {
     return deny('INVALID_LOCK_INPUT');
   }
-  if (input.trustedControlPlaneShas !== undefined && !isDenseHex40Array(input.trustedControlPlaneShas)) {
+  if ((input.trustedControlPlaneShas !== undefined && !isDenseHexArray(input.trustedControlPlaneShas, isHex40)) ||
+      (input.trustedDetectionScriptSha256s !== undefined && !isDenseHexArray(input.trustedDetectionScriptSha256s, isHex64)) ||
+      (input.trustedPolicyScanRunSha256s !== undefined && !isDenseHexArray(input.trustedPolicyScanRunSha256s, isHex64))) {
     return deny('INVALID_LOCK_INPUT');
   }
   const trustedShas = new Set(input.trustedControlPlaneShas ?? []);
+  const trustedDetectionDigests = new Set([
+    PINNED_GHAW_DETECTION_CONCLUSION_SCRIPT_SHA256,
+    ...(input.trustedDetectionScriptSha256s ?? [])
+  ]);
+  const trustedPolicyScanDigests = new Set([
+    PINNED_FACTORY_POLICY_SCAN_RUN_SHA256,
+    ...(input.trustedPolicyScanRunSha256s ?? [])
+  ]);
   const normalizedLock = normalizeText(input.lockYamlSource);
   if (normalizedLock === null || normalizeText(input.markdownSource) === null) {
     return deny('INVALID_LOCK_INPUT');
@@ -1087,6 +1422,7 @@ export function verifyGhAwWorkflowLock(input) {
   const evaluationJobIds = [];
   const threatScanJobs = [];
   const safeOutputJobs = [];
+  const workflowEnvSafeForScan = lockDoc.defaults === undefined && isSafeScanEnv(lockDoc.env);
 
   for (const [jobId, job] of Object.entries(lockDoc.jobs)) {
     if (!isMapObject(job)) return deny('INVALID_LOCK_YAML');
@@ -1100,6 +1436,10 @@ export function verifyGhAwWorkflowLock(input) {
     if (!isSafeOutput && toleratesError(job)) {
       return deny('MISSING_THREAT_SCAN_GATE');
     }
+    if (isThreatScan && (!workflowEnvSafeForScan || job.defaults !== undefined ||
+        job.container !== undefined || !isSafeScanEnv(job.env))) {
+      return deny('MISSING_THREAT_SCAN_GATE');
+    }
 
     if (job.uses !== undefined) {
       if (!isPinnedUses(job.uses)) return deny('UNPINNED_ACTION_REFERENCE');
@@ -1110,7 +1450,17 @@ export function verifyGhAwWorkflowLock(input) {
     }
 
     const validScanOutputStepIds = new Set();
+    const actionConclusionGuardDeps = new Map();
     const precedingUnconditionalScanStepIds = new Set();
+    const precedingDetectionPrereqs = {
+      hasGhAwSetup: false,
+      actionsTamperFree: true,
+      hasValidGuard: false,
+      guardEvalDep: null,
+      hasRedactLogs: false,
+      hasRedactArtifacts: false
+    };
+    let scanNeedsRefProvenance = false;
     let jobHasWriteScope = false;
     if (isSafeOutput) {
       if (!isMapObject(job.permissions)) return deny('EXCESSIVE_SAFE_OUTPUT_PERMISSION');
@@ -1128,16 +1478,27 @@ export function verifyGhAwWorkflowLock(input) {
     } else {
       const jobPerms = isReadOnlyPermissions(job.permissions);
       if (!jobPerms.ok) return deny('AGENT_JOB_WRITE_PERMISSION');
-      if (isThreatScan) threatScanJobs.push({jobId, job, validScanOutputStepIds});
-      else evaluationJobIds.push({jobId, job});
+      if (isThreatScan) {
+        threatScanJobs.push({
+          jobId,
+          job,
+          validScanOutputStepIds,
+          actionConclusionGuardDeps,
+          getNeedsRefProvenance: () => scanNeedsRefProvenance
+        });
+      } else {
+        evaluationJobIds.push({jobId, job});
+      }
     }
 
     if (job.uses === undefined) {
       if (!Array.isArray(job.steps) || job.steps.length === 0) return deny('INVALID_LOCK_YAML');
       let hasUnconditionalThreatScanRunStep = false;
+      let canRegisterPolicyScanProducer = true;
       for (const step of job.steps) {
         if (!isMapObject(step)) return deny('INVALID_LOCK_YAML');
         if (!isSafeOutput && toleratesError(step)) return deny('MISSING_THREAT_SCAN_GATE');
+        if (isThreatScan && !isSafeScanEnv(step.env)) return deny('MISSING_THREAT_SCAN_GATE');
         if (isThreatScan && step.if !== undefined) {
           const stepAst = parseIfExpression(step.if);
           if (stepAst === null || !isAllowedThreatScanStepIf(step, stepAst)) {
@@ -1153,33 +1514,95 @@ export function verifyGhAwWorkflowLock(input) {
             return deny('PINNED_RELEASE_MISMATCH');
           }
           if (usesLower.startsWith('actions/checkout@')) {
-            if (!isMapObject(step.with) || step.with['persist-credentials'] !== false) {
+            const checkoutWith = normalizeCheckoutWith(step.with);
+            if (checkoutWith === null || checkoutWith['persist-credentials'] !== false) {
               return deny('CHECKOUT_CREDENTIALS_PERSISTED');
             }
-            if (typeof step.with.repository === 'string' &&
-                step.with.repository.toLowerCase() === 'github/gh-aw' &&
-                step.with.ref !== releaseCheck.release.commit) {
+            if (typeof checkoutWith.repository === 'string' &&
+                checkoutWith.repository.toLowerCase() === 'github/gh-aw' &&
+                checkoutWith.ref !== releaseCheck.release.commit) {
               return deny('PINNED_RELEASE_MISMATCH');
             }
             if (jobHasWriteScope &&
-                !isTrustedControlPlaneCheckout(step.with, releaseCheck.release.commit, trustedShas)) {
+                (!isSafeScanEnv(lockDoc.env) || !isSafeScanEnv(job.env) || !isSafeScanEnv(step.env) ||
+                 !isTrustedControlPlaneCheckout(checkoutWith, releaseCheck.release.commit, trustedShas))) {
               return deny('UNTRUSTED_SAFE_OUTPUT_CHECKOUT');
             }
+            if (isThreatScan) {
+              const scanCheckout = isTrustedScanJobCheckout(
+                checkoutWith,
+                releaseCheck.release.commit,
+                trustedShas,
+                lockDoc.on
+              );
+              if (!scanCheckout.ok) return deny('MISSING_THREAT_SCAN_GATE');
+              if (scanCheckout.needsUpstreamRefProvenance) scanNeedsRefProvenance = true;
+            }
           }
-          if (isThreatScan && isValidActionConclusionProducer(step, precedingUnconditionalScanStepIds)) {
-            validScanOutputStepIds.add(step.id);
+          if (isThreatScan) {
+            const safeForPolicy = isSafeSetupStepBeforePolicyScan(step, usesLower);
+            if (!safeForPolicy) {
+              canRegisterPolicyScanProducer = false;
+            }
+            if (isValidGhAwSetupStep(step, usesLower, releaseCheck.release.commit)) {
+              precedingDetectionPrereqs.hasGhAwSetup = true;
+            } else if (step.id === 'redact_detection_logs' && isValidRedactionStep(step, usesLower)) {
+              precedingDetectionPrereqs.hasRedactLogs = true;
+            } else if (step.id === 'redact_detection_artifacts' && isValidRedactionStep(step, usesLower)) {
+              precedingDetectionPrereqs.hasRedactArtifacts = true;
+            } else if (step.id === 'detection_conclusion') {
+              if (isValidActionConclusionProducer(
+                step,
+                precedingUnconditionalScanStepIds,
+                precedingDetectionPrereqs,
+                trustedDetectionDigests
+              )) {
+                validScanOutputStepIds.add(step.id);
+                actionConclusionGuardDeps.set(step.id, precedingDetectionPrereqs.guardEvalDep);
+              }
+              precedingDetectionPrereqs.actionsTamperFree = false;
+            } else if (!safeForPolicy) {
+              precedingDetectionPrereqs.actionsTamperFree = false;
+            }
           }
         }
         if (step.run !== undefined) {
           if (typeof step.run !== 'string' || step.run.includes('${{')) {
             return deny('UNSAFE_RUN_INTERPOLATION');
           }
-          if (isThreatScan && step.if === undefined && step.run.trim().length > 0) {
-            hasUnconditionalThreatScanRunStep = true;
-            if (typeof step.id === 'string' && /^[A-Za-z_][A-Za-z0-9_-]*$/.test(step.id)) {
-              precedingUnconditionalScanStepIds.add(step.id);
-              validScanOutputStepIds.add(step.id);
+          if (isThreatScan) {
+            if (step['working-directory'] !== undefined ||
+                (step.shell !== undefined && step.shell !== 'bash')) {
+              return deny('MISSING_THREAT_SCAN_GATE');
             }
+            const normalizedRunSha = computeNormalizedScriptSha256(step.run);
+            let runSafeForDetectionModules = normalizedRunSha === PINNED_CLEAR_AGENT_USAGE_RUN_SHA256;
+            if (step.id === 'detection_guard') {
+              const guardDep = resolveValidDetectionGuardDep(step);
+              if (guardDep !== null) {
+                precedingDetectionPrereqs.hasValidGuard = true;
+                precedingDetectionPrereqs.guardEvalDep = guardDep;
+                runSafeForDetectionModules = true;
+              }
+            }
+            if (step.if === undefined && step.run.trim().length > 0) {
+              hasUnconditionalThreatScanRunStep = true;
+              const isStrictThreatDetectCmd = isStrictThreatDetectCommand(step.run);
+              const isTrustedPolicyRun = trustedPolicyScanDigests.has(normalizedRunSha);
+              if (isStrictThreatDetectCmd || isTrustedPolicyRun) {
+                runSafeForDetectionModules = true;
+              }
+              if (typeof step.id === 'string' && /^[A-Za-z_][A-Za-z0-9_-]*$/.test(step.id)) {
+                precedingUnconditionalScanStepIds.add(step.id);
+                if (canRegisterPolicyScanProducer && isTrustedPolicyRun) {
+                  validScanOutputStepIds.add(step.id);
+                }
+              }
+            }
+            if (!runSafeForDetectionModules) {
+              precedingDetectionPrereqs.actionsTamperFree = false;
+            }
+            canRegisterPolicyScanProducer = false;
           }
         }
       }
@@ -1220,12 +1643,40 @@ export function verifyGhAwWorkflowLock(input) {
   }
 
   if (threatScanJobs.length === 0) return deny('MISSING_THREAT_SCAN_GATE');
+  const evalJobIdSet = new Set(evaluationJobIds.map(entry => entry.jobId));
+  const evalRefProvenanceIds = new Set(
+    evaluationJobIds
+      .filter(({job}) =>
+        resolveJobProtectedBranchProvenance(job, parseIfExpression(job.if), 'refs/heads/main', workflowEnvSafeForScan).jobWideForDownstream
+      )
+      .map(({jobId}) => jobId)
+  );
   const threatScanById = new Map(threatScanJobs.map(entry => [entry.jobId, entry]));
-  for (const {job} of threatScanJobs) {
+  for (const scanEntry of threatScanJobs) {
+    const {job, validScanOutputStepIds, actionConclusionGuardDeps, getNeedsRefProvenance} = scanEntry;
+    for (const [stepId, guardDep] of actionConclusionGuardDeps.entries()) {
+      if (guardDep !== '*' && !evalJobIdSet.has(guardDep)) {
+        validScanOutputStepIds.delete(stepId);
+      }
+    }
+    if (job.outputs !== undefined) {
+      for (const verifiedKey of VERIFIED_SCAN_OUTPUT_KEYS) {
+        if (Object.hasOwn(job.outputs, verifiedKey) &&
+            !declaresVerifiedStepOutput(job, verifiedKey, validScanOutputStepIds)) {
+          return deny('MISSING_THREAT_SCAN_GATE');
+        }
+      }
+    }
     const needs = normalizeNeeds(job.needs);
     if (needs === null || !evaluationJobIds.every(evalJob => needs.includes(evalJob.jobId))) {
       return deny('MISSING_THREAT_SCAN_GATE');
     }
+    const scanSelfProvenance = resolveJobProtectedBranchProvenance(
+      job,
+      job.if === undefined ? null : parseIfExpression(job.if),
+      'refs/heads/main',
+      workflowEnvSafeForScan
+    ).trustedCheckoutStepIndices.size > 0;
     if (job.if !== undefined) {
       const scanAst = parseIfExpression(job.if);
       if (scanAst === null || (scanAst.kind === 'Literal' && scanAst.value === false) ||
@@ -1246,6 +1697,15 @@ export function verifyGhAwWorkflowLock(input) {
       if (!validEvalGate) {
         return deny('MISSING_THREAT_SCAN_GATE');
       }
+      if (getNeedsRefProvenance() && !scanSelfProvenance &&
+          !evaluationJobIds.some(evalJob =>
+            evalRefProvenanceIds.has(evalJob.jobId) &&
+            scanConjuncts.some(c => isIdentCompareLiteral(c, '==', `needs.${evalJob.jobId}.result`, 'success'))
+          )) {
+        return deny('MISSING_THREAT_SCAN_GATE');
+      }
+    } else if (getNeedsRefProvenance() && !evaluationJobIds.every(evalJob => evalRefProvenanceIds.has(evalJob.jobId))) {
+      return deny('MISSING_THREAT_SCAN_GATE');
     }
   }
 
@@ -1302,5 +1762,614 @@ export function verifyGhAwWorkflowLock(input) {
     lockSha256: createHash('sha256').update(normalizedLock, 'utf8').digest('hex'),
     pinnedRelease: releaseCheck.release,
     workQueueProtocol: policyCheck.protocol
+  });
+}
+
+const SUPPORTED_EVENT_MATRIX_TRIGGERS = new Set([
+  'workflow_dispatch',
+  'schedule',
+  'issues',
+  'pull_request_target',
+  'pull_request_review',
+  'workflow_run',
+  'push'
+]);
+const REQUIRED_CORE_EVENT_TRIGGERS = Object.freeze([
+  'issues',
+  'pull_request_target',
+  'workflow_run',
+  'push',
+  'workflow_dispatch'
+]);
+const ALLOWED_ISSUES_TYPES = new Set([
+  'opened', 'edited', 'labeled', 'unlabeled', 'closed',
+  'reopened', 'assigned', 'unassigned', 'milestoned', 'demilestoned'
+]);
+const ALLOWED_PULL_TARGET_TYPES = new Set([
+  'opened', 'reopened', 'synchronize', 'ready_for_review',
+  'closed', 'converted_to_draft', 'labeled', 'unlabeled', 'edited'
+]);
+const ALLOWED_PULL_REVIEW_TYPES = new Set(['submitted', 'edited', 'dismissed']);
+const DEFAULT_OFF_ENABLE_VARS = Object.freeze([
+  'vars.FACTORY_GHAW_ENABLED',
+  'vars.FACTORY_SHADOW_ENABLED'
+]);
+const ALLOWED_GITHUB_CONTEXT_PATHS = new Set([
+  'github.repository',
+  'github.repository_id',
+  'github.ref',
+  'github.ref_protected',
+  'github.event_name',
+  'github.workflow_sha',
+  'github.sha',
+  'github.actor',
+  'github.actor_id',
+  'github.triggering_actor',
+  'github.run_id',
+  'github.run_number',
+  'github.run_attempt',
+  'github.workflow',
+  'github.workflow_ref',
+  'github.job',
+  'github.base_ref',
+  'github.workspace',
+  'github.api_url',
+  'github.server_url',
+  'github.graphql_url'
+]);
+const ALLOWED_TYPED_EVENT_PATHS = new Set([
+  'github.event.action',
+  'github.event.number',
+  'github.event.issue.number',
+  'github.event.pull_request.number',
+  'github.event.pull_request.head.sha',
+  'github.event.pull_request.base.sha',
+  'github.event.pull_request.base.ref',
+  'github.event.pull_request.head.repo.id',
+  'github.event.pull_request.base.repo.id',
+  'github.event.review.id',
+  'github.event.workflow_run.id',
+  'github.event.workflow_run.run_attempt',
+  'github.event.workflow_run.head_sha',
+  'github.event.workflow_run.head_repository.id',
+  'github.event.workflow_run.repository.id',
+  'github.event.check_suite.id',
+  'github.event.check_suite.head_sha'
+]);
+const VALID_TARGET_BRANCH_RE = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,119}$/;
+
+function isValidTargetBranch(branch) {
+  return typeof branch === 'string' &&
+    VALID_TARGET_BRANCH_RE.test(branch) &&
+    !branch.includes('..') &&
+    !branch.includes('//') &&
+    !branch.endsWith('/') &&
+    !branch.endsWith('.lock');
+}
+
+function parseTenMinuteRecoverySchedule(scheduleField) {
+  if (!Array.isArray(scheduleField) || scheduleField.length !== 1 || !isMapObject(scheduleField[0])) {
+    return null;
+  }
+  const entry = scheduleField[0];
+  if (Object.keys(entry).length !== 1 || typeof entry.cron !== 'string') return null;
+  const cron = entry.cron.trim();
+  const parts = cron.split(' ');
+  if (parts.length !== 5 || parts[1] !== '*' || parts[2] !== '*' || parts[3] !== '*' || parts[4] !== '*') {
+    return null;
+  }
+  const minuteSpec = parts[0];
+  let minuteOffsets = null;
+  if (minuteSpec === '*/10') {
+    minuteOffsets = [0, 10, 20, 30, 40, 50];
+  } else {
+    const rangeStep = /^([0-9])-(5[0-9])\/10$/.exec(minuteSpec);
+    if (rangeStep !== null && Number(rangeStep[2]) >= Number(rangeStep[1]) + 50) {
+      const base = Number(rangeStep[1]);
+      minuteOffsets = [base, base + 10, base + 20, base + 30, base + 40, base + 50];
+    } else {
+      const tokens = minuteSpec.split(',');
+      if (tokens.length === 6 && tokens.every(tok => /^(?:[0-9]|[1-5][0-9])$/.test(tok))) {
+        const nums = tokens.map(Number);
+        if (nums[0] < 10 && nums.every((val, idx) => val === nums[0] + idx * 10)) {
+          minuteOffsets = nums;
+        }
+      }
+    }
+  }
+  if (minuteOffsets === null) return null;
+  return {
+    cron,
+    offMinute: minuteOffsets[0] !== 0,
+    minuteOffsets
+  };
+}
+
+function isNonEmptyUniqueSubset(list, allowedSet) {
+  return Array.isArray(list) &&
+    list.length > 0 &&
+    new Set(list).size === list.length &&
+    list.every(item => typeof item === 'string' && allowedSet.has(item));
+}
+
+function isExactSingleStringArray(list, expected) {
+  return Array.isArray(list) && list.length === 1 && list[0] === expected;
+}
+
+function isValidEventTriggerConfig(triggerName, cfg, targetBranch) {
+  if (!isMapObject(cfg)) return false;
+  const keys = Object.keys(cfg);
+  if (triggerName === 'workflow_dispatch') {
+    return keys.every(key => key === 'inputs') && (cfg.inputs === undefined || isMapObject(cfg.inputs));
+  }
+  if (triggerName === 'issues') {
+    return keys.length === 1 && keys[0] === 'types' && isNonEmptyUniqueSubset(cfg.types, ALLOWED_ISSUES_TYPES);
+  }
+  if (triggerName === 'pull_request_target') {
+    return keys.every(key => key === 'branches' || key === 'types') &&
+      isExactSingleStringArray(cfg.branches, targetBranch) &&
+      (cfg.types === undefined || isNonEmptyUniqueSubset(cfg.types, ALLOWED_PULL_TARGET_TYPES));
+  }
+  if (triggerName === 'pull_request_review') {
+    return keys.length === 1 && keys[0] === 'types' && isNonEmptyUniqueSubset(cfg.types, ALLOWED_PULL_REVIEW_TYPES);
+  }
+  if (triggerName === 'workflow_run') {
+    return keys.every(key => key === 'workflows' || key === 'types' || key === 'branches') &&
+      Array.isArray(cfg.workflows) &&
+      cfg.workflows.length > 0 &&
+      cfg.workflows.length <= 16 &&
+      new Set(cfg.workflows).size === cfg.workflows.length &&
+      cfg.workflows.every(name => typeof name === 'string' && name.trim().length > 0) &&
+      isExactSingleStringArray(cfg.types, 'completed') &&
+      (cfg.branches === undefined || isExactSingleStringArray(cfg.branches, targetBranch));
+  }
+  return keys.length === 1 && keys[0] === 'branches' && isExactSingleStringArray(cfg.branches, targetBranch);
+}
+
+function stripSingleQuotedExpressionLiterals(exprText) {
+  let out = '';
+  let i = 0;
+  while (i < exprText.length) {
+    if (exprText[i] !== "'") {
+      out += exprText[i];
+      i++;
+      continue;
+    }
+    i++;
+    let closed = false;
+    while (i < exprText.length) {
+      if (exprText[i] === "'") {
+        if (exprText[i + 1] === "'") {
+          i += 2;
+          continue;
+        }
+        i++;
+        closed = true;
+        break;
+      }
+      i++;
+    }
+    if (!closed) return null;
+    out += ' ';
+  }
+  return out;
+}
+
+function expressionHasUntrustedEventText(exprText) {
+  const stripped = stripSingleQuotedExpressionLiterals(exprText);
+  if (stripped === null) return true;
+  for (const match of stripped.matchAll(/(?<![.A-Za-z0-9_-])github(?:\.[A-Za-z0-9_-]+)*/gi)) {
+    const afterIdx = match.index + match[0].length;
+    if (stripped.slice(afterIdx).trimStart().startsWith('[')) return true;
+    const normalizedRef = match[0].toLowerCase();
+    if (!ALLOWED_GITHUB_CONTEXT_PATHS.has(normalizedRef) && !ALLOWED_TYPED_EVENT_PATHS.has(normalizedRef)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function stringHasUntrustedInterpolation(rawValue, isIfField) {
+  if (!rawValue.includes('${{') && !rawValue.includes('}}')) {
+    return isIfField ? expressionHasUntrustedEventText(rawValue) : false;
+  }
+  let offset = 0;
+  while (offset < rawValue.length) {
+    const nextOpen = rawValue.indexOf('${{', offset);
+    const nextClose = rawValue.indexOf('}}', offset);
+    if (nextOpen === -1) {
+      if (nextClose !== -1) return true;
+      return isIfField ? expressionHasUntrustedEventText(rawValue.slice(offset)) : false;
+    }
+    if (nextClose !== -1 && nextClose < nextOpen) return true;
+    if (isIfField && expressionHasUntrustedEventText(rawValue.slice(offset, nextOpen))) {
+      return true;
+    }
+    let inSingle = false;
+    let end = nextOpen + 3;
+    while (end < rawValue.length) {
+      if (rawValue[end] === "'") {
+        inSingle = !inSingle;
+      } else if (!inSingle && rawValue[end] === '}' && rawValue[end + 1] === '}') {
+        break;
+      }
+      end++;
+    }
+    if (end >= rawValue.length) return true;
+    if (expressionHasUntrustedEventText(rawValue.slice(nextOpen + 3, end))) {
+      return true;
+    }
+    offset = end + 2;
+  }
+  return false;
+}
+
+function nodeHasUntrustedInterpolation(node, mode = 'root') {
+  if (typeof node === 'string') {
+    return stringHasUntrustedInterpolation(node, false);
+  }
+  if (Array.isArray(node)) {
+    const elemMode = mode === 'stepsArray' ? 'step' : 'generic';
+    return node.some(item => nodeHasUntrustedInterpolation(item, elemMode));
+  }
+  if (!isMapObject(node)) return false;
+  for (const [key, value] of Object.entries(node)) {
+    if (mode === 'step' && key === 'run') continue;
+    if (typeof value === 'string') {
+      const isIfExpr = (mode === 'job' || mode === 'step') && key === 'if';
+      if (stringHasUntrustedInterpolation(value, isIfExpr)) return true;
+    } else {
+      let childMode = 'generic';
+      if (mode === 'root' && key === 'jobs') childMode = 'jobsMap';
+      else if (mode === 'jobsMap') childMode = 'job';
+      else if (mode === 'job' && key === 'steps') childMode = 'stepsArray';
+      if (nodeHasUntrustedInterpolation(value, childMode)) return true;
+    }
+  }
+  return false;
+}
+
+const ALLOWED_CONCURRENCY_GROUP_IDENTS = new Set([
+  'github.repository',
+  'github.repository_id',
+  'github.ref',
+  'github.workflow',
+  'github.job',
+  'github.base_ref'
+]);
+
+function isScopeStableConcurrencyGroup(group) {
+  if (typeof group !== 'string' || group.trim().length === 0) return false;
+  for (const expr of scanTemplateExpressions(group)) {
+    const tokens = tokenizeIfExpression(expr.content.trim());
+    if (tokens === null || tokens.length !== 1 || tokens[0].type !== 'ident' ||
+        !ALLOWED_CONCURRENCY_GROUP_IDENTS.has(tokens[0].value.toLowerCase())) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function isValidNonCancellingConcurrency(concurrency) {
+  return isMapObject(concurrency) &&
+    Object.keys(concurrency).length === 2 &&
+    isScopeStableConcurrencyGroup(concurrency.group) &&
+    concurrency['cancel-in-progress'] === false;
+}
+
+function isTrustedCheckoutRefValueNode(node, expectedBranchRef) {
+  return (node.kind === 'Ident' && node.path === 'github.workflow_sha') ||
+    (node.kind === 'Literal' && node.value === expectedBranchRef);
+}
+
+function classifyEventMatrixCheckoutRef(rawRef, targetBranch, trustedShas) {
+  if (typeof rawRef !== 'string') return 'untrusted';
+  const trimmed = rawRef.trim();
+  const expectedBranchRef = `refs/heads/${targetBranch}`;
+  if (trimmed === expectedBranchRef || trustedShas.has(trimmed)) {
+    return 'static_trusted';
+  }
+  if (!trimmed.startsWith('${{') || !trimmed.endsWith('}}')) {
+    return 'untrusted';
+  }
+  const ast = parseIfExpression(trimmed);
+  if (ast === null || astHasBypassCall(ast)) return 'untrusted';
+  if (isTrustedCheckoutRefValueNode(ast, expectedBranchRef)) return 'workflow_sha';
+  return ast.kind === 'Or' &&
+    isTrustedCheckoutRefValueNode(ast.right, expectedBranchRef) &&
+    ast.left.kind === 'And' &&
+    isTrustedCheckoutRefValueNode(ast.left.right, expectedBranchRef)
+    ? 'workflow_sha'
+    : 'untrusted';
+}
+
+export function verifyEventTriggerMatrix(lockYamlSource, options) {
+  let requireRecoverySchedule = true;
+  let allowPartialTriggers = false;
+  let targetBranch = 'main';
+  let trustedShas = new Set();
+  if (options !== undefined) {
+    const allowedOptionKeys = [
+      'requireRecoverySchedule',
+      'allowPartialTriggers',
+      'targetBranch',
+      'trustedControlPlaneShas'
+    ];
+    if (!isPlainRecord(options, [], allowedOptionKeys)) {
+      return deny('INVALID_LOCK_INPUT');
+    }
+    if ((options.requireRecoverySchedule !== undefined && typeof options.requireRecoverySchedule !== 'boolean') ||
+        (options.allowPartialTriggers !== undefined && typeof options.allowPartialTriggers !== 'boolean') ||
+        (options.targetBranch !== undefined && !isValidTargetBranch(options.targetBranch)) ||
+        (options.trustedControlPlaneShas !== undefined && !isDenseHexArray(options.trustedControlPlaneShas, isHex40))) {
+      return deny('INVALID_LOCK_INPUT');
+    }
+    if (options.requireRecoverySchedule !== undefined) requireRecoverySchedule = options.requireRecoverySchedule;
+    if (options.allowPartialTriggers !== undefined) allowPartialTriggers = options.allowPartialTriggers;
+    if (options.targetBranch !== undefined) targetBranch = options.targetBranch;
+    if (options.trustedControlPlaneShas !== undefined) trustedShas = new Set(options.trustedControlPlaneShas);
+  }
+
+  const normalizedLock = normalizeText(lockYamlSource);
+  if (normalizedLock === null) return deny('INVALID_LOCK_INPUT');
+
+  const lockDoc = parseStrictYaml(normalizedLock);
+  if (lockDoc === null || !isMapObject(lockDoc.on) || Object.keys(lockDoc.on).length === 0 ||
+      lockDoc.permissions === undefined || !isMapObject(lockDoc.jobs) || Object.keys(lockDoc.jobs).length === 0) {
+    return deny('INVALID_LOCK_YAML');
+  }
+
+  const topPerms = isReadOnlyPermissions(lockDoc.permissions);
+  if (!topPerms.ok) {
+    return deny(topPerms.hasWrite ? 'TOP_LEVEL_WRITE_PERMISSION' : 'INVALID_TOP_LEVEL_PERMISSIONS');
+  }
+
+  const onKeys = Object.keys(lockDoc.on);
+  for (const triggerName of onKeys) {
+    if (!SUPPORTED_EVENT_MATRIX_TRIGGERS.has(triggerName)) {
+      return deny('UNSUPPORTED_EVENT_TRIGGER');
+    }
+  }
+
+  let scheduleInfo = null;
+  if (Object.hasOwn(lockDoc.on, 'schedule')) {
+    scheduleInfo = parseTenMinuteRecoverySchedule(lockDoc.on.schedule);
+    if (scheduleInfo === null) return deny('INVALID_RECOVERY_SCHEDULE');
+  } else if (requireRecoverySchedule) {
+    return deny('MISSING_RECOVERY_SCHEDULE');
+  }
+
+  const eventTriggers = onKeys.filter(key => key !== 'schedule');
+  if (eventTriggers.length === 0 ||
+      (!allowPartialTriggers && !REQUIRED_CORE_EVENT_TRIGGERS.every(req => Object.hasOwn(lockDoc.on, req)))) {
+    return deny('MISSING_REQUIRED_EVENT_TRIGGER');
+  }
+  for (const triggerName of eventTriggers) {
+    if (!isValidEventTriggerConfig(triggerName, lockDoc.on[triggerName], targetBranch)) {
+      return deny('INVALID_EVENT_TRIGGER_CONFIG');
+    }
+  }
+
+  const hasTopLevelConcurrency = lockDoc.concurrency !== undefined;
+  const hasPullRequestReviewTrigger = Object.hasOwn(lockDoc.on, 'pull_request_review');
+  const hasPullRequestTargetTrigger = Object.hasOwn(lockDoc.on, 'pull_request_target');
+  const expectedBranchRef = `refs/heads/${targetBranch}`;
+  const checkoutProvenanceReqs = [];
+  const jobEntries = Object.entries(lockDoc.jobs);
+
+  for (const [jobId, job] of jobEntries) {
+    if (!isMapObject(job)) return deny('INVALID_LOCK_YAML');
+    if (/merge[-_]pull[-_]request/i.test(jobId)) {
+      return deny('MAIN_MERGE_FORBIDDEN_IN_GHAW');
+    }
+    const isHelper = HELPER_JOB_IDS.has(jobId);
+    const isSafeOutput = jobId.startsWith('safe-outputs') || jobId.startsWith('safe_outputs');
+    if (isSafeOutput) {
+      if (!isMapObject(job.permissions)) return deny('EXCESSIVE_SAFE_OUTPUT_PERMISSION');
+      for (const [scope, level] of Object.entries(job.permissions)) {
+        if (!ALLOWED_SAFE_OUTPUT_SCOPES.has(scope) || (level !== 'read' && level !== 'write') ||
+            (level === 'write' && FORBIDDEN_SAFE_OUTPUT_WRITES.has(scope))) {
+          return deny('EXCESSIVE_SAFE_OUTPUT_PERMISSION');
+        }
+      }
+    } else if (job.permissions !== undefined) {
+      const permsOk = isHelper
+        ? isHelperReadOnlyPermissions(job.permissions)
+        : isReadOnlyPermissions(job.permissions).ok;
+      if (!permsOk) return deny('AGENT_JOB_WRITE_PERMISSION');
+    }
+
+    if (job.uses !== undefined) {
+      if (!isPinnedUses(job.uses)) return deny('UNPINNED_ACTION_REFERENCE');
+    } else {
+      if (!Array.isArray(job.steps) || job.steps.length === 0) return deny('INVALID_LOCK_YAML');
+      for (let stepIdx = 0; stepIdx < job.steps.length; stepIdx++) {
+        const step = job.steps[stepIdx];
+        if (!isMapObject(step)) return deny('INVALID_LOCK_YAML');
+        if (stepAttemptsMainMerge(step)) return deny('MAIN_MERGE_FORBIDDEN_IN_GHAW');
+        if (step.run !== undefined && (typeof step.run !== 'string' || step.run.includes('${{'))) {
+          return deny('UNSAFE_RUN_INTERPOLATION');
+        }
+        if (step.uses !== undefined) {
+          if (!isPinnedUses(step.uses)) return deny('UNPINNED_ACTION_REFERENCE');
+          if (step.uses.toLowerCase().startsWith('actions/checkout@')) {
+            const checkoutWith = normalizeCheckoutWith(step.with);
+            if (checkoutWith === null || checkoutWith['persist-credentials'] !== false) {
+              return deny('CHECKOUT_CREDENTIALS_PERSISTED');
+            }
+            if (!isSafeScanEnv(lockDoc.env) || !isSafeScanEnv(job.env) || !isSafeScanEnv(step.env)) {
+              return deny('UNTRUSTED_PR_CHECKOUT');
+            }
+            let isGhAwCheckout = false;
+            if (checkoutWith.repository !== undefined) {
+              if (typeof checkoutWith.repository !== 'string') return deny('UNTRUSTED_PR_CHECKOUT');
+              const repoTrimmed = checkoutWith.repository.trim();
+              if (repoTrimmed.toLowerCase() === 'github/gh-aw') {
+                isGhAwCheckout = true;
+              } else if (repoTrimmed !== 'Jamula/SoftwareFactory' &&
+                         repoTrimmed !== '${{ github.repository }}') {
+                return deny('UNTRUSTED_PR_CHECKOUT');
+              }
+            }
+            if (isGhAwCheckout) {
+              if (checkoutWith.ref !== PINNED_GHAW_RELEASE.commit) {
+                return deny('UNTRUSTED_PR_CHECKOUT');
+              }
+            } else if (checkoutWith.ref === undefined) {
+              if (hasPullRequestReviewTrigger || hasPullRequestTargetTrigger) {
+                return deny('UNTRUSTED_PR_CHECKOUT');
+              }
+              checkoutProvenanceReqs.push({jobId, stepIdx});
+            } else {
+              const refKind = classifyEventMatrixCheckoutRef(checkoutWith.ref, targetBranch, trustedShas);
+              if (refKind === 'untrusted') return deny('UNTRUSTED_PR_CHECKOUT');
+              if (refKind === 'workflow_sha') {
+                if (hasPullRequestReviewTrigger) return deny('UNTRUSTED_PR_CHECKOUT');
+                checkoutProvenanceReqs.push({jobId, stepIdx});
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  if (nodeHasUntrustedInterpolation(lockDoc, 'root')) {
+    return deny('UNTRUSTED_PR_TEXT_INTERPOLATION');
+  }
+
+  if (hasTopLevelConcurrency && !isValidNonCancellingConcurrency(lockDoc.concurrency)) {
+    return deny('MISSING_CONCURRENCY_GUARD');
+  }
+
+  const workflowEnvSafeForProvenance = lockDoc.defaults === undefined && isSafeScanEnv(lockDoc.env);
+  const disabledJobIds = new Set();
+  const guardedJobIds = new Set();
+  const downstreamRefProvenanceJobIds = new Set();
+  const inheritedRefProvenanceJobIds = new Set();
+  const trustedCheckoutStepsByJob = new Map();
+  const matchedEnableVars = new Set();
+  const parsedJobIfs = new Map();
+
+  for (const [jobId, job] of jobEntries) {
+    if (job.concurrency !== undefined && !isValidNonCancellingConcurrency(job.concurrency)) {
+      return deny('MISSING_CONCURRENCY_GUARD');
+    }
+    const jobAst = job.if === undefined ? null : parseIfExpression(job.if);
+    parsedJobIfs.set(jobId, jobAst);
+    if (jobAst !== null && jobAst.kind === 'Literal' && jobAst.value === false) {
+      disabledJobIds.add(jobId);
+      continue;
+    }
+    if (!hasTopLevelConcurrency && job.concurrency === undefined) {
+      return deny('MISSING_CONCURRENCY_GUARD');
+    }
+    if (jobAst !== null && !astHasBypassCall(jobAst)) {
+      const conjuncts = collectMandatoryConjuncts(jobAst);
+      for (const enableVar of DEFAULT_OFF_ENABLE_VARS) {
+        if (conjuncts.some(c => isIdentCompareLiteral(c, '==', enableVar, 'true'))) {
+          guardedJobIds.add(jobId);
+          matchedEnableVars.add(enableVar.slice('vars.'.length));
+        }
+      }
+      const refProv = resolveJobProtectedBranchProvenance(
+        job,
+        jobAst,
+        expectedBranchRef,
+        workflowEnvSafeForProvenance
+      );
+      if (refProv.jobWideForDownstream) downstreamRefProvenanceJobIds.add(jobId);
+      if (refProv.trustedCheckoutStepIndices.size > 0) {
+        trustedCheckoutStepsByJob.set(jobId, refProv.trustedCheckoutStepIndices);
+      }
+    }
+    if (job.needs === undefined && !guardedJobIds.has(jobId)) {
+      return deny('MISSING_DEFAULT_OFF_GUARD');
+    }
+  }
+
+  const knownJobIds = new Set(Object.keys(lockDoc.jobs));
+  let progress = true;
+  while (progress) {
+    progress = false;
+    for (const [jobId, job] of jobEntries) {
+      if (disabledJobIds.has(jobId)) continue;
+      const needs = normalizeNeeds(job.needs);
+      if (needs === null || !needs.every(dep => knownJobIds.has(dep))) {
+        if (!guardedJobIds.has(jobId)) return deny('MISSING_DEFAULT_OFF_GUARD');
+        continue;
+      }
+      if (job.if === undefined) {
+        if (!guardedJobIds.has(jobId) &&
+            needs.some(dep => guardedJobIds.has(dep)) &&
+            needs.every(dep => guardedJobIds.has(dep) || disabledJobIds.has(dep))) {
+          guardedJobIds.add(jobId);
+          progress = true;
+        }
+        if (!inheritedRefProvenanceJobIds.has(jobId) &&
+            needs.some(dep => downstreamRefProvenanceJobIds.has(dep)) &&
+            needs.every(dep => downstreamRefProvenanceJobIds.has(dep) || disabledJobIds.has(dep))) {
+          inheritedRefProvenanceJobIds.add(jobId);
+          if (!toleratesError(job)) downstreamRefProvenanceJobIds.add(jobId);
+          progress = true;
+        }
+        continue;
+      }
+      const jobAst = parsedJobIfs.get(jobId);
+      if (jobAst === null || astHasUnsafeStatusOverride(jobAst)) {
+        return deny('MISSING_DEFAULT_OFF_GUARD');
+      }
+      const conjuncts = collectMandatoryConjuncts(jobAst);
+      const hasAlways = conjuncts.some(isAlwaysZeroArgCall);
+      const isScanJob = THREAT_SCAN_JOB_IDS.has(jobId);
+      const inheritsFrom = (predSet, allowScanNonSkipped) => needs.some(dep =>
+        predSet.has(dep) &&
+        conjuncts.some(c =>
+          isIdentCompareLiteral(c, '==', `needs.${dep}.result`, 'success') ||
+          (allowScanNonSkipped && isScanJob && hasAlways && isIdentCompareLiteral(c, '!=', `needs.${dep}.result`, 'skipped'))
+        )
+      );
+      if (!guardedJobIds.has(jobId) && inheritsFrom(guardedJobIds, true)) {
+        guardedJobIds.add(jobId);
+        progress = true;
+      }
+      if (!inheritedRefProvenanceJobIds.has(jobId) && inheritsFrom(downstreamRefProvenanceJobIds, false)) {
+        inheritedRefProvenanceJobIds.add(jobId);
+        if (!toleratesError(job)) downstreamRefProvenanceJobIds.add(jobId);
+        progress = true;
+      }
+    }
+  }
+
+  if (guardedJobIds.size === 0 ||
+      jobEntries.some(([jobId]) => !disabledJobIds.has(jobId) && !guardedJobIds.has(jobId))) {
+    return deny('MISSING_DEFAULT_OFF_GUARD');
+  }
+
+  for (const {jobId, stepIdx} of checkoutProvenanceReqs) {
+    if (disabledJobIds.has(jobId)) continue;
+    const stepDominated = trustedCheckoutStepsByJob.get(jobId)?.has(stepIdx) === true;
+    if (!inheritedRefProvenanceJobIds.has(jobId) && !stepDominated) {
+      return deny('UNTRUSTED_PR_CHECKOUT');
+    }
+  }
+
+  return Object.freeze({
+    shadow: true,
+    valid: true,
+    liveDispatch: false,
+    liveMerge: false,
+    reason: 'EVENT_TRIGGER_MATRIX_VERIFIED',
+    triggers: Object.freeze([...onKeys].sort()),
+    recoverySchedule: scheduleInfo === null
+      ? null
+      : Object.freeze({
+          cron: scheduleInfo.cron,
+          intervalMinutes: 10,
+          offMinute: scheduleInfo.offMinute,
+          minuteOffsets: Object.freeze([...scheduleInfo.minuteOffsets])
+        }),
+    defaultOffVars: Object.freeze([...matchedEnableVars].sort()),
+    targetBranch
   });
 }
