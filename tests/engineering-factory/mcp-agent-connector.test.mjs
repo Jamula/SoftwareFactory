@@ -50,6 +50,18 @@ test('new read-only tools enforce enrollment, trusted lanes, identities and stri
   assert.equal(mcpCall('plan_disjoint_lanes', { repositoryId: CONSUMER_REPO_ID, tasks: [{ ...task, dependencies: [1] }] }).structuredContent.reason, 'DEPENDENCY_CYCLE');
   assert.equal(mcpCall('plan_disjoint_lanes', { repositoryId: CONSUMER_REPO_ID, tasks: [{ ...task, paths: ['.github/workflows/x.yml'] }] }).structuredContent.reason, 'INVALID_OR_PROTECTED_PATH');
   assert.equal(mcpCall('plan_disjoint_lanes', { repositoryId: CONSUMER_REPO_ID, tasks: [{ ...task, paths: ['src/api/build.lock.yml'] }] }).structuredContent.reason, 'INVALID_OR_PROTECTED_PATH');
+  for (const path of ['src/api', 'src/api/build.v1']) {
+    assert.equal(mcpCall('plan_disjoint_lanes', { repositoryId: CONSUMER_REPO_ID, tasks: [{ ...task, paths: [path] }] }).structuredContent.reason, 'TRUSTED_FILE_INVENTORY_REQUIRED');
+  }
+  const noInventory = authorizedContext();
+  delete noInventory.authorizedRepositories[1].trustedFiles;
+  assert.equal(mcpCall('plan_disjoint_lanes', { repositoryId: CONSUMER_REPO_ID, tasks: [task] }, noInventory).structuredContent.reason, 'TRUSTED_FILE_INVENTORY_REQUIRED');
+  assert.equal(mcpCall('plan_disjoint_lanes', {
+    repositoryId: CONSUMER_REPO_ID, tasks: [task], trustedFiles: ['src/api/x.mjs']
+  }, noInventory).structuredContent.reason, 'INVALID_PLAN_ARGUMENTS');
+  assert.equal(mcpCall('plan_disjoint_lanes', { repositoryId: CONSUMER_REPO_ID, tasks: [],
+    active: [{ id: 2, lane: 'api', paths: ['src/api/build.v1'] }]
+  }).structuredContent.reason, 'TRUSTED_FILE_INVENTORY_REQUIRED');
   assert.equal(mcpCall('plan_disjoint_lanes', { repositoryId: CONSUMER_REPO_ID, tasks: [], active: [{ id: 2, lane: 'api', paths: ['src/api/build.lock.yml'] }] }).structuredContent.reason, 'INVALID_OR_PROTECTED_PATH');
   assert.equal(mcpCall('plan_disjoint_lanes', { repositoryId: FACTORY_REPO_ID, tasks: [] }).structuredContent.reason, 'NO_READY_WORK');
   assert.equal(mcpCall('plan_disjoint_lanes', { repositoryId: 1, tasks: [] }).structuredContent.reason, 'UNAUTHORIZED_REPOSITORY');
@@ -71,10 +83,7 @@ test('new read-only tools enforce enrollment, trusted lanes, identities and stri
   const strictProfile = mcpCall('build_consumer_onboarding_plan', {
     repositoryId: CONSUMER_REPO_ID, discovery: { ...discovery, stackProfile: 'strict-up-to-date-migration-gated' }
   });
-  assert.equal(strictProfile.isError, false);
-  assert.deepEqual(strictProfile.structuredContent.plan.policy.coverage, { line: 100, branch: 100 });
-  assert.equal(strictProfile.structuredContent.plan.localGates.minLineCoverage, 100);
-  assert.equal(strictProfile.structuredContent.plan.localGates.minBranchCoverage, 100);
+  assert.equal(strictProfile.structuredContent.reason, 'DEFAULT_BRANCH_MISMATCH');
   const existing = mcpCall('build_consumer_onboarding_plan', {
     repositoryId: CONSUMER_REPO_ID,
     discovery: { ...discovery, discoveredRepository: {
@@ -120,10 +129,11 @@ test('all advertised array schemas declare item types', () => {
   for (const tool of MCP_CONNECTOR_TOOLS) visit(tool.inputSchema);
 });
 
-function syntheticOnboardingPackage(repository, repositoryId, localLine = 98, localBranch = 95) {
+function syntheticOnboardingPackage(repository, repositoryId, localLine = 98, localBranch = 95, stackProfile = 'baseline-95-90') {
   const plan = buildReadOnlyOnboardingPlan({
     repository, repositoryId, pinnedFactorySha: 'afc3d223f287b029db32672908097efc67a259c9',
-    stackProfile: 'baseline-95-90', stricterCoverageThresholds: { line: 98, branch: 95 }
+    stackProfile, stricterCoverageThresholds: stackProfile === 'baseline-95-90'
+      ? { line: 98, branch: 95 } : { line: 100, branch: 100 }
   });
   assert.equal(plan.valid, true);
   const policy = structuredClone(plan.policy);
@@ -134,7 +144,7 @@ function syntheticOnboardingPackage(repository, repositoryId, localLine = 98, lo
     providerReady: true, risk: 'low', priority: 1, paths: [`${policy.owners[0].prefix}index.ts`],
     dependencies: [], acceptanceComplete: true, baseCompatible: true, mainHealthy: true,
     threadsResolved: true, securityClear: true,
-    coverage: { head: HEAD_SHA, line: 98, branch: 95, complete: true },
+    coverage: { head: HEAD_SHA, ...policy.coverage, complete: true },
     checks: policy.checks.map(check => ({ ...check, head: HEAD_SHA, status: 'completed', conclusion: 'success' })),
     author: 'synthetic-author', agent: 'synthetic-agent',
     reviews: [{ reviewer: policy.reviewers[0], head: HEAD_SHA, state: 'APPROVED' }]
@@ -200,16 +210,21 @@ test('onboarding success preserves enrolled local gates and accepts only safe cr
   assert.equal(evaluateConsumerOnboardingSuccess(success).valid, true);
   const discovery = {
     repository: weak.policy.repository, repositoryId: CONSUMER_REPO_ID,
-    pinnedFactorySha: 'afc3d223f287b029db32672908097efc67a259c9', stackProfile: 'strict-up-to-date-migration-gated'
+    pinnedFactorySha: 'afc3d223f287b029db32672908097efc67a259c9', stackProfile: 'baseline-95-90',
+    discoveredRepository: {
+      defaultBranch: 'main', mergeMethod: 'squash', checks: [{ name: 'build-test', appId: 12345 }],
+      reviewers: ['synthetic-reviewer'], owners: [{ prefix: 'src/', owner: 'synthetic-owner' }],
+      coverage: { line: 97, branch: 92 }, maxConcurrency: 1, existingFiles: []
+    }
   };
   const args = { repositoryId: CONSUMER_REPO_ID, discovery, success };
-  assert.equal(mcpCall('build_consumer_onboarding_plan', args).structuredContent.reason, 'ONBOARDING_IDENTITY_OR_COVERAGE_MISMATCH');
+  assert.equal(mcpCall('build_consumer_onboarding_plan', args).structuredContent.reason, 'ONBOARDING_IDENTITY_OR_GATE_MISMATCH');
   for (const [line, branch] of [[96, 92], [97, 91]]) {
     const weakGate = syntheticOnboardingPackage('Synthetic/Spellbook', CONSUMER_REPO_ID, line, branch);
-    assert.equal(mcpCall('build_consumer_onboarding_plan', { ...args, success: syntheticSuccess(weakGate, peer) }).structuredContent.reason, 'ONBOARDING_IDENTITY_OR_COVERAGE_MISMATCH');
+    assert.equal(mcpCall('build_consumer_onboarding_plan', { ...args, success: syntheticSuccess(weakGate, peer) }).structuredContent.reason, 'ONBOARDING_IDENTITY_OR_GATE_MISMATCH');
     const partial = { ...syntheticSuccess(weakGate, peer), requireAutonomousAcceptance: true };
     assert.equal(evaluateConsumerOnboardingSuccess(partial).shadowOnboarded, true);
-    assert.equal(mcpCall('build_consumer_onboarding_plan', { ...args, success: partial }).structuredContent.reason, 'ONBOARDING_IDENTITY_OR_COVERAGE_MISMATCH');
+    assert.equal(mcpCall('build_consumer_onboarding_plan', { ...args, success: partial }).structuredContent.reason, 'ONBOARDING_IDENTITY_OR_GATE_MISMATCH');
   }
   const good = syntheticOnboardingPackage('Synthetic/Spellbook', CONSUMER_REPO_ID, 97, 92);
   const accepted = mcpCall('build_consumer_onboarding_plan', { ...args, success: syntheticSuccess(good, peer) });
@@ -222,10 +237,32 @@ test('onboarding success preserves enrolled local gates and accepts only safe cr
   assert.equal(validPartial.isError, true);
   assert.equal(validPartial.structuredContent.success.shadowOnboarded, true);
   assert.equal(validPartial.structuredContent.success.reason, 'AUTONOMOUS_PROOF_REQUIRED');
+  for (const changed of [
+    { coverage: { line: 99, branch: 92 } },
+    { coverage: { line: 97, branch: 93 } },
+    { checks: [{ name: 'build-test', appId: 12345 }, { name: 'additional-gate', appId: 555 }] }
+  ]) {
+    const stricter = { ...discovery, discoveredRepository: { ...discovery.discoveredRepository, ...changed } };
+    for (const proof of [syntheticSuccess(good, peer), { ...syntheticSuccess(good, peer), requireAutonomousAcceptance: true }]) {
+      assert.equal(mcpCall('build_consumer_onboarding_plan', { ...args, discovery: stricter, success: proof }).structuredContent.reason, 'ONBOARDING_IDENTITY_OR_GATE_MISMATCH');
+    }
+  }
+  const loose = syntheticOnboardingPackage('Synthetic/Spellbook', CONSUMER_REPO_ID, 97, 92);
+  loose.localGates.maxConcurrency = 2;
+  const looseSuccess = syntheticSuccess(loose, peer);
+  looseSuccess.existingGates.maxConcurrency = 2;
+  assert.equal(evaluateConsumerOnboardingSuccess(looseSuccess).valid, true);
+  assert.equal(mcpCall('build_consumer_onboarding_plan', { ...args, success: looseSuccess }).structuredContent.reason, 'ONBOARDING_IDENTITY_OR_GATE_MISMATCH');
+  const invalidPlan = { ...discovery, pinnedFactorySha: HEAD_SHA };
+  assert.equal(mcpCall('build_consumer_onboarding_plan', { ...args, discovery: invalidPlan, success: syntheticSuccess(good, peer) }).structuredContent.reason, 'ONBOARDING_IDENTITY_OR_GATE_MISMATCH');
+  const wrongBranch = syntheticOnboardingPackage('Synthetic/Spellbook', CONSUMER_REPO_ID, 100, 100, 'strict-up-to-date-migration-gated');
+  const branchSuccess = syntheticSuccess(wrongBranch, peer);
+  assert.equal(evaluateConsumerOnboardingSuccess(branchSuccess).valid, true);
+  assert.equal(mcpCall('build_consumer_onboarding_plan', { ...args, success: branchSuccess }).structuredContent.reason, 'ONBOARDING_IDENTITY_OR_GATE_MISMATCH');
   const other = syntheticOnboardingPackage('Synthetic/Other', CONSUMER_REPO_ID + 2, 97, 92);
   assert.equal(mcpCall('build_consumer_onboarding_plan', { ...args, success: {
     ...syntheticSuccess(other, peer), requireAutonomousAcceptance: true
-  } }).structuredContent.reason, 'ONBOARDING_IDENTITY_OR_COVERAGE_MISMATCH');
+  } }).structuredContent.reason, 'ONBOARDING_IDENTITY_OR_GATE_MISMATCH');
   const bad = syntheticSuccess(good, peer);
   bad.onboardingPackage.credentials.sharedAdminToken = true;
   assert.equal(mcpCall('build_consumer_onboarding_plan', { ...args, success: bad }).structuredContent.reason, 'INVALID_OR_SECRET_ARGUMENTS');
@@ -247,6 +284,9 @@ test('operator enrollment is structurally validated without weakening repository
   assert.equal(validateMcpConnectorEnrollment([{ ...entries[1], projectConfig: {} }]), false);
   assert.equal(validateMcpConnectorEnrollment([{ ...entries[1], lanes: [{ id: 'api', specialist: 'api', owners: ['src/api'] }] }]), true);
   assert.equal(validateMcpConnectorEnrollment([{ ...entries[1], lanes: [] }]), false);
+  for (const trustedFiles of [['src/api/work.lock.yml'], ['src/api', 'src/api/nested.mjs'], ['src/api/x.mjs', 'src/api/x.mjs'], [null], ['.github/workflows/test.yml']]) {
+    assert.equal(validateMcpConnectorEnrollment([{ ...entries[1], trustedFiles }]), false);
+  }
   assert.equal(validateMcpConnectorEnrollment([{ ...entries[1], projectConfig: { ...entries[1].projectConfig, project: { ...entries[1].projectConfig.project, repository: 'Synthetic/Other' } } }]), false);
   assert.equal(validateMcpConnectorEnrollment([{ ...entries[1], revision: 'gh' + 'p_fake' }]), false);
 });
@@ -273,7 +313,7 @@ test('CLI accepts only trusted bounded enrollment and rejects malformed configur
   assert.equal(defaults.status, 0);
   assert.equal(defaults.stderr, '');
   assert.equal(JSON.parse(defaults.stdout).result.structuredContent.reason, 'UNAUTHORIZED_REPOSITORY');
-  const entries = [{ repositoryId: CONSUMER_REPO_ID, repository: 'Synthetic/Spellbook', coverage: { line: 97, branch: 92 } }];
+  const entries = [{ repositoryId: CONSUMER_REPO_ID, repository: 'Synthetic/Spellbook', defaultBranch: 'trunk', coverage: { line: 97, branch: 92 } }];
   const enrolled = invoke(JSON.stringify(entries), [call]);
   assert.equal(enrolled.status, 0);
   assert.equal(enrolled.stderr, '');
@@ -331,6 +371,57 @@ test('stdio frames are ordered, bounded, UTF-8 checked, and use only an injected
   assert.ok(calls > 0);
   assert.equal(text.includes('DISABLED'), false);
   assert.equal(text.includes('gh' + 'p_fake'), false);
+});
+
+test('stdio tools/call exercises all eight read-only tools over PassThrough', async () => {
+  const { policy, snapshot } = buildProtectedSquashFixtures();
+  const discovery = {
+    repository: 'Synthetic/Spellbook', repositoryId: CONSUMER_REPO_ID,
+    pinnedFactorySha: 'afc3d223f287b029db32672908097efc67a259c9', stackProfile: 'baseline-95-90',
+    discoveredRepository: {
+      defaultBranch: 'main', mergeMethod: 'squash', checks: [{ name: 'build-test', appId: 12345 }],
+      reviewers: ['synthetic-reviewer'], owners: [{ prefix: 'src/', owner: 'synthetic-owner' }],
+      coverage: { line: 97, branch: 92 }, maxConcurrency: 1, existingFiles: []
+    }
+  };
+  const calls = [
+    ['get_repo_knowledge_map', { repositoryId: CONSUMER_REPO_ID, revision: HEAD_SHA, nowMs: NOW_MS }, 'KNOWLEDGE_MAP_VERIFIED'],
+    ['evaluate_gate_status', { mode: 'candidate', policy, snapshot }, 'SHADOW_ELIGIBLE'],
+    ['get_bounded_work_item_context', {
+      repositoryId: CONSUMER_REPO_ID, issueNumber: 1, traceparent: VALID_TRACEPARENT,
+      summary: 'Synthetic work item', ownedPaths: ['src/api/x.mjs']
+    }, 'WORK_ITEM_CONTEXT_BOUNDED'],
+    ['validate_provider_isolation', copilotConfig(), 'PROVIDER_ISOLATION_VERIFIED'],
+    ['plan_disjoint_lanes', { repositoryId: CONSUMER_REPO_ID, tasks: [
+      { id: 1, lane: 'api', state: 'approved', priority: 1, dependencies: [], paths: ['src/api/x.mjs'] }
+    ] }, 'SHADOW_PLAN'],
+    ['build_consumer_onboarding_plan', { repositoryId: CONSUMER_REPO_ID, discovery }, 'READ_ONLY_ONBOARDING_PLAN_READY'],
+    ['select_scoped_guidance_and_lessons', {
+      repositoryId: CONSUMER_REPO_ID, repositorySlug: 'Synthetic/Spellbook', expectedHeadSha: HEAD_SHA,
+      nowMs: NOW_MS, targetComponent: 'api', specialistRole: 'api',
+      changedPaths: ['src/api/x.mjs'], guidanceEntries: [], curatedLessons: []
+    }, 'SCOPED_KNOWLEDGE_SELECTED'],
+    ['get_factory_board_snapshot', { repositoryId: FACTORY_REPO_ID }, 'github-rest']
+  ];
+  const input = new PassThrough();
+  const output = new PassThrough();
+  let text = '';
+  output.on('data', chunk => { text += chunk; });
+  const server = startMcpStdioServer({ input, output, context: {
+    ...authorizedContext(), boardTransport: { request: async () => new Response('[]') }
+  } });
+  input.end(calls.map(([name, args], id) => JSON.stringify({
+    jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: args }
+  })).join('\n') + '\n');
+  await server;
+  const frames = text.trim().split('\n').map(JSON.parse);
+  assert.equal(frames.length, calls.length);
+  for (let id = 0; id < calls.length; id++) {
+    const payload = frames[id].result.structuredContent;
+    assert.equal(frames[id].id, id);
+    assert.equal(frames[id].result.isError, false, calls[id][0]);
+    assert.equal(payload.plan?.reason ?? payload.reason ?? payload.source, calls[id][2], calls[id][0]);
+  }
 });
 
 test('stdio denies unauthorized boards before calling injected transport and hides transport errors', async () => {
@@ -502,7 +593,8 @@ const authorizedContext = () => ({
       defaultBranch: 'main',
       coverage: { line: 97, branch: 92 },
       revision: HEAD_SHA,
-      projectConfig: consumerProjectConfig()
+      projectConfig: consumerProjectConfig(),
+      trustedFiles: ['src/api/x.mjs']
     }
   ]
 });

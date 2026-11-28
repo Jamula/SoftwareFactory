@@ -820,7 +820,8 @@ function parseAuthorizedRepositories(authorizedRepositories) {
       'coverage',
       'revision',
       'projectConfig',
-      'lanes'
+      'lanes',
+      'trustedFiles'
     ]) || !isPositiveInt(item.repositoryId) || !isRepoName(item.repository)) {
       return { ok: false, reason: 'AUTHORIZATION_CONTEXT_INVALID' };
     }
@@ -835,6 +836,13 @@ function parseAuthorizedRepositories(authorizedRepositories) {
     }
     const defaultBranch = item.defaultBranch === undefined ? 'main' : item.defaultBranch;
     if (!isBranchName(defaultBranch) || (item.revision !== undefined && !isSha40(item.revision))) {
+      return { ok: false, reason: 'AUTHORIZATION_CONTEXT_INVALID' };
+    }
+    if (item.trustedFiles !== undefined &&
+        (!isDenseArray(item.trustedFiles, 256) ||
+         !item.trustedFiles.every(path => isRepoPath(path) && !path.endsWith('.lock.yml') &&
+           !FORBIDDEN_CONTROL_PLANE_PATHS.some(blocked => pathsOverlap(path, blocked))) ||
+         !isUnique(item.trustedFiles) || !arePathsDisjoint(item.trustedFiles))) {
       return { ok: false, reason: 'AUTHORIZATION_CONTEXT_INVALID' };
     }
     const minLine = isFactoryId ? 98 : 95;
@@ -861,7 +869,8 @@ function parseAuthorizedRepositories(authorizedRepositories) {
       coverageThresholds,
       revision: item.revision,
       projectConfig: item.projectConfig,
-      lanes: item.lanes
+      lanes: item.lanes,
+      trustedFiles: item.trustedFiles
     });
     byName.add(lowerName);
   }
@@ -1377,6 +1386,10 @@ function handleAdditionalTool(name, args, context) {
         FORBIDDEN_CONTROL_PLANE_PATHS.some(blocked => pathsOverlap(path, blocked)))))) {
       return wrapperDenied('INVALID_OR_PROTECTED_PATH');
     }
+    if (inventories.some(items => items.some(item => item.paths.some(path =>
+      entry.trustedFiles === undefined || !entry.trustedFiles.includes(path))))) {
+      return wrapperDenied('TRUSTED_FILE_INVENTORY_REQUIRED');
+    }
     result = planLanes(config, args.tasks, args.active, args.policy);
     return toolCallOutcome(result, !['SHADOW_PLAN', 'NO_READY_WORK'].includes(result.reason));
   }
@@ -1390,19 +1403,28 @@ function handleAdditionalTool(name, args, context) {
       return wrapperDenied('COVERAGE_FLOOR_VIOLATION');
     }
     const plan = buildReadOnlyOnboardingPlan(args.discovery);
+    if (plan.valid && plan.policy.defaultBranch !== entry.defaultBranch) {
+      return wrapperDenied('DEFAULT_BRANCH_MISMATCH');
+    }
     if (plan.valid && (plan.localGates.minLineCoverage < entry.coverageThresholds.line ||
         plan.localGates.minBranchCoverage < entry.coverageThresholds.branch)) {
       return wrapperDenied('LOCAL_GATE_BELOW_ENROLLMENT');
     }
     const success = args.success === undefined ? undefined : evaluateConsumerOnboardingSuccess(args.success);
-    if ((success?.valid || success?.shadowOnboarded === true) &&
-        (args.success.onboardingPackage?.repositoryId !== entry.repositoryId ||
-        args.success.onboardingPackage?.policy?.repository !== entry.repository ||
-        success.effectiveCoverage?.line < entry.coverageThresholds.line ||
-        success.effectiveCoverage?.branch < entry.coverageThresholds.branch ||
-        args.success.onboardingPackage.localGates.minLineCoverage < entry.coverageThresholds.line ||
-        args.success.onboardingPackage.localGates.minBranchCoverage < entry.coverageThresholds.branch)) {
-      return wrapperDenied('ONBOARDING_IDENTITY_OR_COVERAGE_MISMATCH');
+    if (success?.valid || success?.shadowOnboarded === true) {
+      const pkg = args.success.onboardingPackage;
+      if (!plan.valid || pkg.repositoryId !== entry.repositoryId ||
+          pkg.policy.repository !== entry.repository || pkg.policy.defaultBranch !== entry.defaultBranch ||
+          pkg.policy.coverage.line < Math.max(entry.coverageThresholds.line, plan.policy.coverage.line) ||
+          pkg.policy.coverage.branch < Math.max(entry.coverageThresholds.branch, plan.policy.coverage.branch) ||
+          pkg.localGates.minLineCoverage < Math.max(entry.coverageThresholds.line, plan.localGates.minLineCoverage) ||
+          pkg.localGates.minBranchCoverage < Math.max(entry.coverageThresholds.branch, plan.localGates.minBranchCoverage) ||
+          pkg.policy.maxActive > plan.policy.maxActive ||
+          pkg.localGates.maxConcurrency > plan.localGates.maxConcurrency ||
+          plan.localGates.requiredChecks.some(check => !pkg.localGates.requiredChecks.some(
+            candidate => candidate.name === check.name && candidate.appId === check.appId))) {
+        return wrapperDenied('ONBOARDING_IDENTITY_OR_GATE_MISMATCH');
+      }
     }
     result = success === undefined ? { plan } : { plan, success };
     return toolCallOutcome(result, !plan.valid || (success !== undefined && !success.valid));

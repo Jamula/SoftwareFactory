@@ -47,6 +47,12 @@ must carry its repository ID and name and any stricter coverage floors and
 trusted lane configuration applicable to it. Invalid enrollment prevents the
 server from starting; MCP requests cannot enroll repositories. Do not put
 credentials in enrollment metadata.
+For nonempty lane plans, the operator must also supply `trustedFiles` on the
+enrollment entry: an inventory of exact, trusted repository file paths, not
+directories or glob patterns. Task and active-reservation paths must match the
+inventory exactly; missing inventory fails closed. The server validates path
+syntax and protected-path exclusions but does not inspect the filesystem to
+verify that an inventory entry is a file.
 
 For example, a launcher can supply synthetic entries like:
 
