@@ -1,4 +1,4 @@
-// Deterministic, metadata-only M04 Spellbook pre-activation gate and stricter-policy shadow verifier.
+// Deterministic, metadata-only M03 (M03.02, #11) Spellbook pre-activation gate and stricter-policy shadow verifier.
 import { types } from 'node:util';
 import { evaluate } from './core.mjs';
 import { coverageEvidence } from './coverage-evidence.mjs';
@@ -7,6 +7,8 @@ import {
   verifyIndependentRollback
 } from './consumer-onboarding.mjs';
 
+export const SPELLBOOK_MILESTONE_ID = 'M03.02';
+export const SPELLBOOK_ISSUE_NUMBER = 11;
 export const SPELLBOOK_MIN_LINE_COVERAGE = 97;
 export const SPELLBOOK_MIN_BRANCH_COVERAGE = 90;
 export const SPELLBOOK_DEFAULT_MAX_CONCURRENT_AGENTS = 2;
@@ -26,9 +28,9 @@ export const FORBIDDEN_NON_SPELLBOOK_REPOSITORIES = Object.freeze([
 
 const REQUIRED_INPUT_KEYS = Object.freeze([
   'm01AutonomousAccepted',
-  'familyTreePilotAccepted',
   'onboardingContractAccepted',
   'spellbookRepoReadinessAccepted',
+  'dependsOnFamilyTree',
   'dependsOnFamilyHub',
   'dependsOnM02Speed',
   'stopSwitchActive',
@@ -62,7 +64,6 @@ const ROLE_PATTERNS = Object.freeze({
 
 const UPSTREAM_REASON_BY_GATE = Object.freeze({
   M01_AUTONOMOUS_ISSUE_10: 'UPSTREAM_M01_NOT_ACCEPTED',
-  FAMILYTREE_PILOT_ISSUE_36: 'UPSTREAM_FAMILYTREE_PILOT_NOT_ACCEPTED',
   ONBOARDING_CONTRACT_ISSUE_13: 'UPSTREAM_ONBOARDING_CONTRACT_NOT_ACCEPTED',
   SPELLBOOK_READINESS_ISSUE_103: 'SPELLBOOK_REPO_READINESS_INCOMPLETE',
   SPELLBOOK_SCOPED_OWNER_AUTHORIZATION: 'SPELLBOOK_AUTHORIZATION_REQUIRED',
@@ -426,9 +427,9 @@ export function evaluateSpellbookShadowReadiness(input) {
   const rawScaling = Object.hasOwn(input, 'scalingApproval') ? input.scalingApproval : null;
   if (
     typeof input.m01AutonomousAccepted !== 'boolean' ||
-    typeof input.familyTreePilotAccepted !== 'boolean' ||
     typeof input.onboardingContractAccepted !== 'boolean' ||
     typeof input.spellbookRepoReadinessAccepted !== 'boolean' ||
+    typeof input.dependsOnFamilyTree !== 'boolean' ||
     typeof input.dependsOnFamilyHub !== 'boolean' ||
     typeof input.dependsOnM02Speed !== 'boolean' ||
     typeof input.stopSwitchActive !== 'boolean' ||
@@ -442,7 +443,7 @@ export function evaluateSpellbookShadowReadiness(input) {
   if (input.stopSwitchActive) {
     return shadowDeny('STOPPED');
   }
-  if (input.dependsOnFamilyHub || input.dependsOnM02Speed) {
+  if (input.dependsOnFamilyTree || input.dependsOnFamilyHub || input.dependsOnM02Speed) {
     return shadowDeny('FORBIDDEN_CROSS_MILESTONE_DEPENDENCY');
   }
   if (input.authorization.productionReleaseEnabled) {
@@ -654,7 +655,6 @@ export function evaluateSpellbookShadowReadiness(input) {
 
   const blockingGates = [];
   if (!input.m01AutonomousAccepted) blockingGates.push('M01_AUTONOMOUS_ISSUE_10');
-  if (!input.familyTreePilotAccepted) blockingGates.push('FAMILYTREE_PILOT_ISSUE_36');
   if (!input.onboardingContractAccepted) blockingGates.push('ONBOARDING_CONTRACT_ISSUE_13');
   if (!input.spellbookRepoReadinessAccepted) blockingGates.push('SPELLBOOK_READINESS_ISSUE_103');
   if (!input.authorization.ownerAuthorized) blockingGates.push('SPELLBOOK_SCOPED_OWNER_AUTHORIZATION');

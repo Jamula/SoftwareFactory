@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
-  "milestone": "M03.02",
+  "milestone": "M04.01",
   "issue": 36,
-  "recordedAt": "2026-11-27T10:05:16Z",
+  "recordedAt": "2026-11-28T05:50:08Z",
   "syntheticOnly": true,
   "version": "0.1.0",
   "productReleaseEnabled": false,
@@ -11,6 +11,7 @@
   "sharedAdminTokenUsed": false,
   "liveActivation": false,
   "upstreamM01Accepted": false,
+  "upstreamSpellbookPilotAccepted": false,
   "familyTreeScopedAuthVerified": false,
   "upstreamBlockers": [
     {
@@ -26,8 +27,14 @@
       "requirement": "Shared immutable consumer onboarding contract acceptance"
     },
     {
-      "issue": 36,
+      "issue": 11,
       "milestone": "M03.02",
+      "status": "open",
+      "requirement": "First external consumer pilot acceptance in Spellbook (#11) prior to M04.01 FamilyTree activation"
+    },
+    {
+      "issue": 36,
+      "milestone": "M04.01",
       "status": "gated",
       "requirement": "Separate FamilyTree-scoped owner authorization and consumer readiness (#128/#120) prior to any live enrollment"
     }
@@ -82,6 +89,7 @@
     "ready": false,
     "liveActivation": false,
     "upstreamM01Accepted": false,
+    "upstreamSpellbookPilotAccepted": false,
     "familyTreeScopedAuthVerified": false,
     "onboardingContractVerified": true,
     "shadowDenialsVerified": true,

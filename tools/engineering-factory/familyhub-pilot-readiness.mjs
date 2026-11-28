@@ -16,7 +16,7 @@ export const FAMILYHUB_ISSUE_NUMBER = 12;
 export const FAMILYHUB_READINESS_ISSUE_NUMBER = 81;
 export const UPSTREAM_M01_ISSUE_NUMBER = 10;
 export const UPSTREAM_ONBOARDING_ISSUE_NUMBER = 13;
-export const UPSTREAM_FAMILYTREE_ISSUE_NUMBER = 36;
+export const UPSTREAM_SPELLBOOK_ISSUE_NUMBER = 11;
 export const FAMILYHUB_REQUIRED_CHECK_CONTEXTS = Object.freeze(['copilot-review', 'validate']);
 export const FAMILYHUB_MIN_COVERAGE = Object.freeze({
   line: CONSUMER_BASELINE_COVERAGE.line,
@@ -360,8 +360,8 @@ export function evaluateFamilyHubShadowReadiness(input) {
     return deny('M01_UPSTREAM_NOT_ACCEPTED');
   }
 
-  if (!input.familyTreePilotAccepted) {
-    return deny('FAMILYTREE_PILOT_NOT_ACCEPTED');
+  if (!input.spellbookPilotAccepted) {
+    return deny('SPELLBOOK_PILOT_NOT_ACCEPTED');
   }
 
   if (
@@ -581,7 +581,7 @@ export function evaluateFamilyHubShadowReadiness(input) {
     liveActivation: false,
     liveProductionDeployAllowed: false,
     mutatesGitHub: false,
-    independentOfSpellbookAndM02: true,
+    independentOfFamilyTreeAndM02: true,
     state: 'shadow-ready',
     reason: 'FAMILYHUB_SHADOW_READY_ONLY',
     repository: pkgCheck.repository,

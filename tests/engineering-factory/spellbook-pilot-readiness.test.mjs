@@ -4,6 +4,8 @@ import { readFile } from 'node:fs/promises';
 import {
   FORBIDDEN_NON_SPELLBOOK_REPOSITORIES,
   SPELLBOOK_DEFAULT_MAX_CONCURRENT_AGENTS,
+  SPELLBOOK_ISSUE_NUMBER,
+  SPELLBOOK_MILESTONE_ID,
   SPELLBOOK_MIN_BRANCH_COVERAGE,
   SPELLBOOK_MIN_LINE_COVERAGE,
   SPELLBOOK_REQUIRED_CHECK_ROLES,
@@ -32,7 +34,6 @@ const altHead = 'd'.repeat(40);
 function readyInput(overrides = {}) {
   const cloned = structuredClone(evidence.fixture);
   cloned.m01AutonomousAccepted = true;
-  cloned.familyTreePilotAccepted = true;
   cloned.onboardingContractAccepted = true;
   cloned.spellbookRepoReadinessAccepted = true;
   cloned.authorization.ownerAuthorized = true;
@@ -69,6 +70,8 @@ function withConcurrency(input, { maxConcurrentAgents, policyMaxActive, localMax
 }
 
 test('constants are frozen and evidence JSON matches live shadow replay and pinned checkout SHA', () => {
+  assert.equal(SPELLBOOK_MILESTONE_ID, 'M03.02');
+  assert.equal(SPELLBOOK_ISSUE_NUMBER, 11);
   assert.equal(SPELLBOOK_MIN_LINE_COVERAGE, 97);
   assert.equal(SPELLBOOK_MIN_BRANCH_COVERAGE, 90);
   assert.equal(SPELLBOOK_DEFAULT_MAX_CONCURRENT_AGENTS, 2);
@@ -77,6 +80,8 @@ test('constants are frozen and evidence JSON matches live shadow replay and pinn
   assert.deepEqual(SPELLBOOK_REQUIRED_CHECK_ROLES, ['webkit', 'ios', 'releaseReadiness']);
   assert.equal(Object.isFrozen(FORBIDDEN_NON_SPELLBOOK_REPOSITORIES), true);
 
+  assert.equal(evidence.milestone, 'M03.02');
+  assert.equal(evidence.issue, 11);
   assert.equal(evidence.syntheticOnly, true);
   assert.equal(evidence.mutatesConsumerRepository, false);
   assert.equal(evidence.liveActivation, false);
@@ -108,7 +113,7 @@ test('constants are frozen and evidence JSON matches live shadow replay and pinn
   assert.equal(evaluateSpellbookShadowReadiness(withoutOptionalScaling).ready, true);
 });
 
-test('enforces all upstream acceptance gates (#10 M01, #36 FamilyTree, #13 contract, #103 Spellbook) and scoped authorization', () => {
+test('enforces all upstream acceptance gates (#10 M01, #13 contract, #103 Spellbook), rejects FamilyTree/FamilyHub/M02 coupling, and enforces scoped authorization', () => {
   const m01Blocked = evaluateSpellbookShadowReadiness(readyInput({ m01AutonomousAccepted: false }));
   assert.equal(m01Blocked.ready, false);
   assert.equal(m01Blocked.shadowVerified, true);
@@ -116,12 +121,6 @@ test('enforces all upstream acceptance gates (#10 M01, #36 FamilyTree, #13 contr
   assert.equal(m01Blocked.liveActivation, false);
   assert.equal(m01Blocked.reason, 'UPSTREAM_M01_NOT_ACCEPTED');
   assert.deepEqual(m01Blocked.blockingGates, ['M01_AUTONOMOUS_ISSUE_10']);
-
-  const ftBlocked = evaluateSpellbookShadowReadiness(readyInput({ familyTreePilotAccepted: false }));
-  assert.equal(ftBlocked.ready, false);
-  assert.equal(ftBlocked.shadowVerified, true);
-  assert.equal(ftBlocked.reason, 'UPSTREAM_FAMILYTREE_PILOT_NOT_ACCEPTED');
-  assert.deepEqual(ftBlocked.blockingGates, ['FAMILYTREE_PILOT_ISSUE_36']);
 
   const contractBlocked = evaluateSpellbookShadowReadiness(readyInput({ onboardingContractAccepted: false }));
   assert.equal(contractBlocked.ready, false);
@@ -154,8 +153,12 @@ test('enforces all upstream acceptance gates (#10 M01, #36 FamilyTree, #13 contr
   assert.equal(spendBlocked.reason, 'ZERO_SPEND_UNVERIFIED');
   assert.deepEqual(spendBlocked.blockingGates, ['ZERO_INCREMENTAL_SPEND_VERIFICATION']);
 
-  // Stop switch, forbidden FamilyHub/M02 dependencies, production release, and authorization scope mismatches fail closed
+  // Stop switch, forbidden FamilyTree/FamilyHub/M02 dependencies, production release, and authorization scope mismatches fail closed
   assert.equal(evaluateSpellbookShadowReadiness(readyInput({ stopSwitchActive: true })).reason, 'STOPPED');
+  assert.equal(
+    evaluateSpellbookShadowReadiness(readyInput({ dependsOnFamilyTree: true })).reason,
+    'FORBIDDEN_CROSS_MILESTONE_DEPENDENCY'
+  );
   assert.equal(
     evaluateSpellbookShadowReadiness(readyInput({ dependsOnFamilyHub: true })).reason,
     'FORBIDDEN_CROSS_MILESTONE_DEPENDENCY'
@@ -903,7 +906,7 @@ test('prevents duplicate existing PRs, enforces Spellbook profile isolation, and
   const matrixByScenario = new Map(
     evidence.shadowDenialMatrix.map(row => [row.scenario, row.expectedReason])
   );
-  assert.equal(matrixByScenario.size, 19);
+  assert.equal(matrixByScenario.size, 20);
   const missingOwnersScaling = withConcurrency(baseInput, {
     maxConcurrentAgents: 3,
     policyMaxActive: 3,
@@ -1031,6 +1034,7 @@ test('prevents duplicate existing PRs, enforces Spellbook profile isolation, and
       }
     ],
     ['stop-switch-active-or-kill-switch-tripped', { ...baseInput, stopSwitchActive: true }],
+    ['couple-spellbook-to-familytree', { ...baseInput, dependsOnFamilyTree: true }],
     ['couple-spellbook-to-familyhub-or-m02-speed', { ...baseInput, dependsOnFamilyHub: true }],
     [
       'enable-production-release',
@@ -1108,10 +1112,11 @@ test('rejects live and revoked proxies, getters, non-enumerable properties, symb
     symbolKeyInput,
     missingKeyInput,
     { ...baseInput, extraUnknownKey: true },
+    { ...baseInput, familyTreePilotAccepted: false },
     { ...baseInput, m01AutonomousAccepted: 'true' },
-    { ...baseInput, familyTreePilotAccepted: 1 },
     { ...baseInput, onboardingContractAccepted: null },
     { ...baseInput, spellbookRepoReadinessAccepted: 0 },
+    { ...baseInput, dependsOnFamilyTree: 1 },
     { ...baseInput, dependsOnFamilyHub: 'false' },
     { ...baseInput, dependsOnM02Speed: null },
     { ...baseInput, stopSwitchActive: 0 },
