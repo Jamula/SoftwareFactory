@@ -9,8 +9,8 @@
   "upstreamDependencies": {
     "m01AutonomousIssue": 10,
     "consumerOnboardingIssue": 13,
-    "familyTreePilotIssue": 36,
-    "independentOfSpellbookIssue11": true,
+    "spellbookPilotIssue": 11,
+    "independentOfFamilyTreeIssue36": true,
     "independentOfM02Speed": true
   },
   "currentPosture": {
@@ -18,7 +18,7 @@
     "migrationCompleteVerified": false,
     "authoritativeRepoConfirmed": false,
     "m01AutonomousAccepted": false,
-    "familyTreePilotAccepted": false,
+    "spellbookPilotAccepted": false,
     "separateScopedOwnerAuth": false,
     "productionDeploymentIsolated": true,
     "liveProductionDeployAllowed": false,
@@ -1374,9 +1374,9 @@
       "liveProductionDeployAllowed": false
     },
     {
-      "scenario": "familytree-pilot-unaccepted",
-      "description": "Unaccepted M03 FamilyTree pilot (#36) blocks with FAMILYTREE_PILOT_NOT_ACCEPTED",
-      "expectedReason": "FAMILYTREE_PILOT_NOT_ACCEPTED",
+      "scenario": "spellbook-pilot-unaccepted",
+      "description": "Unaccepted M03 Spellbook pilot (#11) blocks with SPELLBOOK_PILOT_NOT_ACCEPTED",
+      "expectedReason": "SPELLBOOK_PILOT_NOT_ACCEPTED",
       "ready": false,
       "liveActivation": false,
       "liveProductionDeployAllowed": false
@@ -1422,8 +1422,8 @@
       "liveProductionDeployAllowed": false
     },
     {
-      "scenario": "hypothetical-shadow-ready-independent-of-spellbook-and-m02",
-      "description": "Synthetic post-prerequisite shadow readiness passes while keeping spellbookPilotAccepted=false, m02SpeedAccepted=false, liveActivation=false, and liveProductionDeployAllowed=false",
+      "scenario": "hypothetical-shadow-ready-independent-of-familytree-and-m02",
+      "description": "Synthetic post-prerequisite shadow readiness passes with spellbookPilotAccepted=true while keeping familyTreePilotAccepted=false, m02SpeedAccepted=false, liveActivation=false, and liveProductionDeployAllowed=false",
       "expectedReason": "FAMILYHUB_SHADOW_READY_ONLY",
       "ready": true,
       "liveActivation": false,

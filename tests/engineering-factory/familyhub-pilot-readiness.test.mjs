@@ -10,9 +10,9 @@ import {
   FAMILYHUB_MIN_COVERAGE,
   FAMILYHUB_READINESS_ISSUE_NUMBER,
   FAMILYHUB_REQUIRED_CHECK_CONTEXTS,
-  UPSTREAM_FAMILYTREE_ISSUE_NUMBER,
   UPSTREAM_M01_ISSUE_NUMBER,
   UPSTREAM_ONBOARDING_ISSUE_NUMBER,
+  UPSTREAM_SPELLBOOK_ISSUE_NUMBER,
   evaluateFamilyHubShadowReadiness
 } from '../../tools/engineering-factory/familyhub-pilot-readiness.mjs';
 
@@ -39,8 +39,8 @@ function makeReadyFixture() {
   f.ownerFreezeLiftedVerified = true;
   f.authoritativeRepoConfirmed = true;
   f.m01AutonomousAccepted = true;
-  f.familyTreePilotAccepted = true;
-  f.spellbookPilotAccepted = false;
+  f.spellbookPilotAccepted = true;
+  f.familyTreePilotAccepted = false;
   f.m02SpeedAccepted = false;
   f.authorization.separateScopedOwnerAuth = true;
   f.authorization.familyHubReadiness81Verified = true;
@@ -55,7 +55,7 @@ test('M05.01 FamilyHub constants and outputs are frozen and strictly read-only',
   assert.equal(FAMILYHUB_READINESS_ISSUE_NUMBER, 81);
   assert.equal(UPSTREAM_M01_ISSUE_NUMBER, 10);
   assert.equal(UPSTREAM_ONBOARDING_ISSUE_NUMBER, 13);
-  assert.equal(UPSTREAM_FAMILYTREE_ISSUE_NUMBER, 36);
+  assert.equal(UPSTREAM_SPELLBOOK_ISSUE_NUMBER, 11);
   assert.equal(Object.isFrozen(FAMILYHUB_REQUIRED_CHECK_CONTEXTS), true);
   assert.deepEqual(FAMILYHUB_REQUIRED_CHECK_CONTEXTS, ['copilot-review', 'validate']);
   assert.equal(Object.isFrozen(FAMILYHUB_MIN_COVERAGE), true);
@@ -94,9 +94,9 @@ test('recorded M05.01 evidence JSON reproduces CONSUMER_FROZEN and all synthetic
       f.m01AutonomousAccepted = false;
       return f;
     },
-    'familytree-pilot-unaccepted': () => {
+    'spellbook-pilot-unaccepted': () => {
       const f = makeReadyFixture();
-      f.familyTreePilotAccepted = false;
+      f.spellbookPilotAccepted = false;
       return f;
     },
     'commented-only-review-zero-threads': () => {
@@ -135,7 +135,7 @@ test('recorded M05.01 evidence JSON reproduces CONSUMER_FROZEN and all synthetic
       f.liveProductionDeployAllowed = true;
       return f;
     },
-    'hypothetical-shadow-ready-independent-of-spellbook-and-m02': () => makeReadyFixture()
+    'hypothetical-shadow-ready-independent-of-familytree-and-m02': () => makeReadyFixture()
   };
 
   for (const item of evidence.verifiedShadowScenarios) {
@@ -416,24 +416,24 @@ test('enforces emergency stop and Hard Freeze Gate (CONSUMER_FROZEN) across all 
   }
 });
 
-test('requires M01 #10 and FamilyTree #36 acceptance while remaining independent of Spellbook #11 and M02', () => {
+test('requires M01 #10 and Spellbook #11 acceptance while remaining independent of FamilyTree #36 and M02', () => {
   const missingM01 = makeReadyFixture();
   missingM01.m01AutonomousAccepted = false;
   assert.equal(evaluateFamilyHubShadowReadiness(missingM01).reason, 'M01_UPSTREAM_NOT_ACCEPTED');
 
-  const missingFamilyTree = makeReadyFixture();
-  missingFamilyTree.familyTreePilotAccepted = false;
-  assert.equal(evaluateFamilyHubShadowReadiness(missingFamilyTree).reason, 'FAMILYTREE_PILOT_NOT_ACCEPTED');
+  const missingSpellbook = makeReadyFixture();
+  missingSpellbook.spellbookPilotAccepted = false;
+  assert.equal(evaluateFamilyHubShadowReadiness(missingSpellbook).reason, 'SPELLBOOK_PILOT_NOT_ACCEPTED');
 
   const independentFalse = makeReadyFixture();
-  independentFalse.spellbookPilotAccepted = false;
+  independentFalse.familyTreePilotAccepted = false;
   independentFalse.m02SpeedAccepted = false;
   const readyFalse = evaluateFamilyHubShadowReadiness(independentFalse);
   assert.equal(readyFalse.reason, 'FAMILYHUB_SHADOW_READY_ONLY');
-  assert.equal(readyFalse.independentOfSpellbookAndM02, true);
+  assert.equal(readyFalse.independentOfFamilyTreeAndM02, true);
 
   const independentTrue = makeReadyFixture();
-  independentTrue.spellbookPilotAccepted = true;
+  independentTrue.familyTreePilotAccepted = true;
   independentTrue.m02SpeedAccepted = true;
   assert.equal(evaluateFamilyHubShadowReadiness(independentTrue).reason, 'FAMILYHUB_SHADOW_READY_ONLY');
 });
@@ -795,7 +795,7 @@ test('enforces stronger consumer component coverage, core shadow gates, denial s
     liveActivation: false,
     liveProductionDeployAllowed: false,
     mutatesGitHub: false,
-    independentOfSpellbookAndM02: true,
+    independentOfFamilyTreeAndM02: true,
     state: 'shadow-ready',
     reason: 'FAMILYHUB_SHADOW_READY_ONLY',
     repository: 'example/family-hub',
