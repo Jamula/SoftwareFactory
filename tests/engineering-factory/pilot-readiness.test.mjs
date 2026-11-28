@@ -1,4 +1,4 @@
-import test from 'node:test';import assert from 'node:assert/strict';import {readFileSync,readdirSync} from 'node:fs';import {pilotReadiness as check,evaluateSelfPilotCycles as evaluate,verifyM01AutonomousExit as verifyExit,evaluateCustomerOnePilotReadinessDossier as evaluateDossier,M01_STRUCTURAL_PREREQUISITES,M01_CUSTOMER_ONE_PREREQUISITES,M01_CUSTOMER_ONE_SLOS} from '../../tools/engineering-factory/pilot-readiness.mjs';
+import test from 'node:test';import assert from 'node:assert/strict';import {readFileSync,readdirSync} from 'node:fs';import {pilotReadiness as check,evaluateSelfPilotCycles as evaluate,verifyM01AutonomousExit as verifyExit,evaluateCustomerOnePilotReadinessDossier as evaluateDossier,evaluateConsolidatedM01ExitGate as evaluateExitGate,M01_STRUCTURAL_PREREQUISITES,M01_CUSTOMER_ONE_PREREQUISITES,M01_CUSTOMER_ONE_SLOS,M01_CONSOLIDATED_EXIT_CONTRACT} from '../../tools/engineering-factory/pilot-readiness.mjs';
 const p={repositoryId:1,pin:'a'.repeat(40),lineMin:97,branchMin:90,firstPilot:false};
 const e={repositoryId:1,pin:p.pin,enrolled:true,stop:false,upstreamAccepted:true,review:true,coverageLine:97,coverageBranch:90,requiredChecks:true,quotaVerified:true,rollbackVerified:true,securityClear:true};
 const m01Prereqs=Object.fromEntries(M01_STRUCTURAL_PREREQUISITES.map(k=>[k,true]));
@@ -232,26 +232,29 @@ const dossierInput=(extra={})=>({
  ...extra
 });
 
-test('Customer One readiness audit JSON matches deterministic dossier evaluation on b0924c3807f797e6090e1dc3e1e65fc9caa07550',()=>{
+test('Customer One readiness audit JSON matches deterministic dossier and consolidated exit evaluation on ec438f54088f30856c2df6ff626e894dde2a0100',()=>{
  const audit=JSON.parse(readFileSync(new URL('../../docs/evidence/m01-08-readiness-audit.json',import.meta.url),'utf8'));
- assert.equal(audit.evaluatedCommit,'b0924c3807f797e6090e1dc3e1e65fc9caa07550');
- assert.equal(audit.dossierInput.pin,'b0924c3807f797e6090e1dc3e1e65fc9caa07550');
+ assert.equal(audit.evaluatedCommit,'ec438f54088f30856c2df6ff626e894dde2a0100');
+ assert.equal(audit.dossierInput.pin,'ec438f54088f30856c2df6ff626e894dde2a0100');
  assert.equal(audit.repositoryId,1471342715);
  assert.equal(audit.issueNumber,10);
- assert.equal(audit.summary.engineeringFoundationsDeliveredCount,7);
- assert.equal(audit.summary.pilotEntryBlockingCount,3);
+ assert.equal(audit.summary.engineeringFoundationsDeliveredCount,9);
+ assert.equal(audit.summary.pilotEntryBlockingCount,1);
  assert.equal(audit.summary.pilotEntryReady,false);
  assert.equal(audit.summary.m01ExitEvidenceReady,false);
  assert.equal(audit.summary.liveActivation,false);
  assert.equal(audit.summary.accepted,false);
  assert.equal(audit.summary.deliveredLiveUnattendedCycles,0);
+ assert.equal(audit.dossierInput.prerequisites.hardStopBillingVerified,true);
+ assert.equal(audit.dossierInput.prerequisites.nativeCloudSmokeVerified,true);
+ assert.equal(audit.dossierInput.prerequisites.repoScopedLiveAuthVerified,false);
  assert.deepEqual(
   audit.deliveredEngineeringFoundations.map(f=>f.prerequisite),
-  ['noPythonVerified','mainCodeqlHealthy','ghAwLockVerified','workQueueCasVerified','unifiedCliVerified','antiRogueCircuitBreakersVerified','crossOsAspireRuntimeVerified']
+  ['noPythonVerified','mainCodeqlHealthy','ghAwLockVerified','workQueueCasVerified','unifiedCliVerified','antiRogueCircuitBreakersVerified','crossOsAspireRuntimeVerified','hardStopBillingVerified','nativeCloudSmokeVerified']
  );
  assert.deepEqual(
   audit.liveOperationalBlockers.filter(b=>b.prerequisite!==null).map(b=>b.prerequisite),
-  ['hardStopBillingVerified','nativeCloudSmokeVerified','repoScopedLiveAuthVerified']
+  ['repoScopedLiveAuthVerified']
  );
  const trackedComponents=['engineering-coordinator','engineering-factory'].flatMap(pkg=>
   readdirSync(new URL(`../../tools/${pkg}`,import.meta.url))
@@ -260,9 +263,16 @@ test('Customer One readiness audit JSON matches deterministic dossier evaluation
  ).sort();
  assert.equal(trackedComponents.length,70);
  assert.deepEqual(audit.dossierInput.expectedComponents,trackedComponents);
+ assert.deepEqual(audit.consolidatedExitInput.expectedComponents,trackedComponents);
  const actual=evaluateDossier(audit.dossierInput);
- assert.deepEqual(actual.blockingPrerequisites,['hardStopBillingVerified','nativeCloudSmokeVerified','repoScopedLiveAuthVerified']);
+ assert.deepEqual(actual.blockingPrerequisites,['repoScopedLiveAuthVerified']);
  assert.deepEqual(actual,audit.dossierEvaluation);
+ const consolidatedActual=evaluateExitGate(audit.consolidatedExitInput);
+ assert.equal(consolidatedActual.exitGateReady,false);
+ assert.equal(consolidatedActual.reason,'PILOT_ENTRY_BLOCKED');
+ assert.deepEqual(consolidatedActual.blockingPrerequisites,['repoScopedLiveAuthVerified']);
+ assert.equal(consolidatedActual.verifiedPrerequisites.length,9);
+ assert.deepEqual(consolidatedActual,audit.consolidatedExitEvaluation);
 });
 
 test('Customer One dossier evaluates 10-prerequisite matrix, batch drain vs eligible-to-merge, verified-main PR completion, and never counts synthetic cycles as delivered work',()=>{
@@ -729,6 +739,330 @@ test('Customer One dossier fails closed on proxies, getters, custom prototypes, 
    dossierCycle(3)
   ]
  })).reason,'BATCH_BOUNDARY_UNKNOWN');
+
+ assert.equal(traps,0);
+});
+
+const consolidatedCycle=(n,extra={})=>{
+ const head=(10+n).toString(16).padStart(40,'0');
+ const isParallel=n<=2;
+ return {
+  source:'github-hosted',
+  agentLogin:'copilot-swe-agent[bot]',
+  repositoryId:1471342715,
+  issue:300+n,
+  pr:400+n,
+  head,
+  reviewedHead:head,
+  changedFiles:[`tools/engineering-factory/lane-${n}.mjs`,`tests/engineering-factory/lane-${n}.test.mjs`],
+  reviewIndependent:true,
+  checksPassed:true,
+  securityClear:true,
+  threadsResolved:true,
+  squashQueueMerged:true,
+  mainVerified:true,
+  costVerified:true,
+  acceptanceVerified:true,
+  coverageReports:reports(head),
+  humanInterventions:0,
+  incrementalBilledUsdCents:0,
+  unauthorizedWrites:0,
+  duplicateDispatches:0,
+  gateBypasses:0,
+  startedAt:isParallel?10_000+n*1_000:50_000,
+  mergedAt:isParallel?30_000+n*1_000:70_000,
+  reviewFix:n===3,
+  parallelCandidate:isParallel,
+  ...extra
+ };
+};
+
+const consolidatedInput=(extra={})=>({
+ repositoryId:1471342715,
+ pin:'e'.repeat(40),
+ enrolled:true,
+ stop:false,
+ lineMin:98,
+ branchMin:95,
+ prerequisites:{...allCustomerOnePrereqsTrue},
+ expectedComponents:inventory,
+ cycles:[consolidatedCycle(1),consolidatedCycle(2),consolidatedCycle(3)],
+ ...extra
+});
+
+test('Consolidated M01 exit gate enforces >=3 real @copilot issues, >=2 parallel non-overlapping candidates, >=1 review repair, 0 human touches, $0 spend, and 98/95 coverage',()=>{
+ assert.deepEqual(M01_CONSOLIDATED_EXIT_CONTRACT,{
+  minAcceptedIssues:3,
+  minParallelNonOverlappingCandidates:2,
+  minReviewRepairCycles:1,
+  maxHumanInterventions:0,
+  maxIncrementalBilledUsdCents:0,
+  lineMin:98,
+  branchMin:95,
+  requiredAgentLogin:'copilot-swe-agent[bot]'
+ });
+
+ const ready=evaluateExitGate(consolidatedInput());
+ assert.deepEqual(ready,{
+  shadow:true,
+  liveActivation:false,
+  accepted:false,
+  pilotEntryReady:true,
+  exitGateReady:true,
+  m01ExitEvidenceReady:true,
+  reason:'CONSOLIDATED_M01_EXIT_EVIDENCE_READY_ONLY',
+  verifiedPrerequisites:M01_CUSTOMER_ONE_PREREQUISITES,
+  blockingPrerequisites:[],
+  cycleSource:'github-hosted',
+  sampleCount:3,
+  deliveredCycleCount:3,
+  syntheticCycleCount:0,
+  deliveredCyclesShortfallFrom3:0,
+  parallelNonOverlappingCount:2,
+  reviewRepairCount:1,
+  humanInterventions:0,
+  incrementalBilledUsdCents:0
+ });
+
+ // Sequential post-merge reuse of a file from an earlier wave is valid once the earlier PR merged.
+ const postMergeSequentialFileReuse=evaluateExitGate(consolidatedInput({
+  cycles:[
+   consolidatedCycle(1,{changedFiles:['tools/engineering-factory/lane-1.mjs'],startedAt:10_000,mergedAt:20_000,parallelCandidate:true}),
+   consolidatedCycle(2,{changedFiles:['tools/engineering-factory/lane-2.mjs'],startedAt:12_000,mergedAt:22_000,parallelCandidate:true}),
+   consolidatedCycle(3,{changedFiles:['tools/engineering-factory/lane-1.mjs'],startedAt:25_000,mergedAt:35_000,parallelCandidate:false,reviewFix:true})
+  ]
+ }));
+ assert.equal(postMergeSequentialFileReuse.exitGateReady,true);
+
+ // Reverse chronological cycle ordering exercises both interval-overlap arms cleanly.
+ const reverseOrder=evaluateExitGate(consolidatedInput({
+  cycles:[consolidatedCycle(3),consolidatedCycle(2),consolidatedCycle(1)]
+ }));
+ assert.equal(reverseOrder.exitGateReady,true);
+ assert.equal(reverseOrder.parallelNonOverlappingCount,2);
+
+ // Overlapping execution windows with non-parallelCandidate flag still enforce disjoint files, without inflating parallelNonOverlappingCount.
+ const overlapWithoutFlag=evaluateExitGate(consolidatedInput({
+  cycles:[
+   consolidatedCycle(1,{startedAt:10_000,mergedAt:30_000,parallelCandidate:true}),
+   consolidatedCycle(2,{startedAt:12_000,mergedAt:32_000,parallelCandidate:false}),
+   consolidatedCycle(3,{startedAt:50_000,mergedAt:70_000,parallelCandidate:false,reviewFix:true})
+  ]
+ }));
+ assert.equal(overlapWithoutFlag.exitGateReady,false);
+ assert.equal(overlapWithoutFlag.parallelNonOverlappingCount,0);
+ assert.equal(overlapWithoutFlag.reason,'SCENARIO_MISSING');
+
+ // Two parallelCandidate cycles that ran sequentially do not count as parallel non-overlapping candidates.
+ const sequentialFakeParallel=evaluateExitGate(consolidatedInput({
+  cycles:[
+   consolidatedCycle(1,{startedAt:10_000,mergedAt:20_000,parallelCandidate:true}),
+   consolidatedCycle(2,{startedAt:20_000,mergedAt:30_000,parallelCandidate:true}),
+   consolidatedCycle(3,{startedAt:40_000,mergedAt:50_000,parallelCandidate:false,reviewFix:true})
+  ]
+ }));
+ assert.equal(sequentialFakeParallel.exitGateReady,false);
+ assert.equal(sequentialFakeParallel.parallelNonOverlappingCount,0);
+ assert.equal(sequentialFakeParallel.reason,'SCENARIO_MISSING');
+
+ // Missing review-repair scenario fails closed even when >=2 parallel non-overlapping candidates pass.
+ const missingRepair=evaluateExitGate(consolidatedInput({
+  cycles:[consolidatedCycle(1),consolidatedCycle(2),consolidatedCycle(3,{reviewFix:false})]
+ }));
+ assert.equal(missingRepair.exitGateReady,false);
+ assert.equal(missingRepair.parallelNonOverlappingCount,2);
+ assert.equal(missingRepair.reviewRepairCount,0);
+ assert.equal(missingRepair.reason,'SCENARIO_MISSING');
+
+ // Concurrent file overlap (including case-only collisions across cross-OS runners) fails closed immediately.
+ const overlappingFiles=evaluateExitGate(consolidatedInput({
+  cycles:[
+   consolidatedCycle(1,{changedFiles:['tools/engineering-factory/Shared.mjs']}),
+   consolidatedCycle(2,{changedFiles:['tools/engineering-factory/shared.mjs']}),
+   consolidatedCycle(3)
+  ]
+ }));
+ assert.equal(overlappingFiles.exitGateReady,false);
+ assert.equal(overlappingFiles.reason,'PARALLEL_FILE_OVERLAP');
+
+ // Synthetic cycles never count as delivered work.
+ const syntheticOnly=evaluateExitGate(consolidatedInput({
+  cycles:[1,2,3].map(n=>consolidatedCycle(n,{source:'synthetic'}))
+ }));
+ assert.equal(syntheticOnly.pilotEntryReady,true);
+ assert.equal(syntheticOnly.exitGateReady,false);
+ assert.equal(syntheticOnly.reason,'SYNTHETIC_CYCLES_NOT_DELIVERED_WORK');
+ assert.equal(syntheticOnly.deliveredCycleCount,0);
+ assert.equal(syntheticOnly.syntheticCycleCount,3);
+ assert.equal(syntheticOnly.deliveredCyclesShortfallFrom3,3);
+ assert.equal(syntheticOnly.parallelNonOverlappingCount,0);
+ assert.equal(syntheticOnly.reviewRepairCount,0);
+
+ // Any incremental billed spend > 0 fails closed and excludes the cycle from delivered work.
+ const billedSpend=evaluateExitGate(consolidatedInput({
+  cycles:[consolidatedCycle(1,{incrementalBilledUsdCents:1}),consolidatedCycle(2),consolidatedCycle(3)]
+ }));
+ assert.equal(billedSpend.exitGateReady,false);
+ assert.equal(billedSpend.reason,'INCREMENTAL_BILLED_SPEND_NONZERO');
+ assert.equal(billedSpend.incrementalBilledUsdCents,1);
+ assert.equal(billedSpend.deliveredCycleCount,2);
+ assert.equal(billedSpend.parallelNonOverlappingCount,0);
+
+ // Any human intervention > 0 fails closed and excludes the cycle from delivered work.
+ const humanIntervention=evaluateExitGate(consolidatedInput({
+  cycles:[consolidatedCycle(1),consolidatedCycle(2),consolidatedCycle(3,{humanInterventions:1})]
+ }));
+ assert.equal(humanIntervention.exitGateReady,false);
+ assert.equal(humanIntervention.reason,'HUMAN_INTERVENTION_NONZERO');
+ assert.equal(humanIntervention.humanInterventions,1);
+ assert.equal(humanIntervention.deliveredCycleCount,2);
+ assert.equal(humanIntervention.reviewRepairCount,0);
+
+ // Fewer than 3 live cycles remain pending when clean.
+ const pendingTwo=evaluateExitGate(consolidatedInput({cycles:[consolidatedCycle(1),consolidatedCycle(2)]}));
+ assert.equal(pendingTwo.exitGateReady,false);
+ assert.equal(pendingTwo.reason,'LIVE_CYCLES_PENDING');
+ assert.equal(pendingTwo.deliveredCycleCount,2);
+ assert.equal(pendingTwo.deliveredCyclesShortfallFrom3,1);
+
+ const emptyLive=evaluateExitGate(consolidatedInput({cycles:[]}));
+ assert.equal(emptyLive.exitGateReady,false);
+ assert.equal(emptyLive.reason,'LIVE_CYCLES_PENDING');
+ assert.equal(emptyLive.humanInterventions,null);
+ assert.equal(emptyLive.incrementalBilledUsdCents,null);
+
+ assert.equal(evaluateExitGate(consolidatedInput({stop:true})).reason,'STOPPED');
+ assert.equal(evaluateExitGate(consolidatedInput({enrolled:false})).reason,'STOPPED');
+ for(const key of M01_CUSTOMER_ONE_PREREQUISITES){
+  const blocked=evaluateExitGate(consolidatedInput({
+   prerequisites:{...allCustomerOnePrereqsTrue,[key]:false}
+  }));
+  assert.equal(blocked.pilotEntryReady,false);
+  assert.equal(blocked.exitGateReady,false);
+  assert.equal(blocked.reason,'PILOT_ENTRY_BLOCKED');
+  assert.deepEqual(blocked.blockingPrerequisites,[key]);
+ }
+});
+
+test('Consolidated M01 exit gate fails closed on invalid inputs, non-bot identities, malformed paths, coverage shortfalls, and proxy/getter traps',()=>{
+ let traps=0;
+ const trap=()=>{traps++;throw Error('unexpected consolidated exit trap');};
+
+ const inputProxy=new Proxy(consolidatedInput(),{get:trap,getOwnPropertyDescriptor:trap,ownKeys:trap,getPrototypeOf:trap});
+ const getterInput=consolidatedInput();Object.defineProperty(getterInput,'pin',{get:trap,enumerable:true});
+ const missingInput=consolidatedInput();delete missingInput.cycles;
+ for(const bad of [null,'bad',[],Object.create(consolidatedInput()),inputProxy,getterInput,missingInput,{...consolidatedInput(),extra:1}]){
+  const res=evaluateExitGate(bad);
+  assert.equal(res.exitGateReady,false);
+  assert.equal(res.liveActivation,false);
+  assert.equal(res.accepted,false);
+  assert.equal(res.reason,'EVIDENCE_UNKNOWN');
+ }
+
+ for(const badPolicy of [
+  {repositoryId:0},
+  {pin:'bad'},
+  {enrolled:null},
+  {stop:null},
+  {lineMin:97},
+  {lineMin:101},
+  {lineMin:Number.NaN},
+  {branchMin:94},
+  {branchMin:101},
+  {branchMin:Number.NaN}
+ ])assert.equal(evaluateExitGate(consolidatedInput(badPolicy)).reason,'POLICY_UNKNOWN');
+
+ assert.equal(evaluateExitGate(consolidatedInput({repositoryId:2})).reason,'IDENTITY_OR_PIN');
+
+ const badPrereqGetter={...allCustomerOnePrereqsTrue};Object.defineProperty(badPrereqGetter,'hardStopBillingVerified',{get:trap,enumerable:true});
+ for(const badPrereq of [null,[],badPrereqGetter,{...allCustomerOnePrereqsTrue,hardStopBillingVerified:'true'}])
+  assert.equal(evaluateExitGate(consolidatedInput({prerequisites:badPrereq})).reason,'PREREQUISITES_UNKNOWN');
+
+ for(const badComp of [null,[],['INVALID_UPPER'],['core','core']])
+  assert.equal(evaluateExitGate(consolidatedInput({expectedComponents:badComp})).reason,'INVENTORY_UNKNOWN');
+
+ const rowProxy=new Proxy(consolidatedCycle(1),{get:trap,getOwnPropertyDescriptor:trap});
+ const rowGetter=consolidatedCycle(1);Object.defineProperty(rowGetter,'agentLogin',{get:trap,enumerable:true});
+ for(const badCycles of [null,new Array(3),Array(51).fill(consolidatedCycle(1)),[null],[rowProxy],[rowGetter],[{...consolidatedCycle(1),extra:true}]])
+  assert.equal(evaluateExitGate(consolidatedInput({cycles:badCycles})).reason,'CYCLE_INVENTORY_UNKNOWN');
+
+ assert.equal(evaluateExitGate(consolidatedInput({cycles:[consolidatedCycle(1,{source:'manual'})]})).reason,'SOURCE_UNKNOWN');
+ assert.equal(evaluateExitGate(consolidatedInput({
+  cycles:[consolidatedCycle(1,{source:'synthetic'}),consolidatedCycle(2,{source:'github-hosted'}),consolidatedCycle(3)]
+ })).reason,'PROVENANCE_ISOLATION_VIOLATION');
+
+ for(const badAgent of [null,'','@copilot','cyrusjamula','github-actions[bot]'])
+  assert.equal(evaluateExitGate(consolidatedInput({cycles:[consolidatedCycle(1,{agentLogin:badAgent})]})).reason,'AGENT_IDENTITY_UNKNOWN');
+
+ for(const badId of [{repositoryId:2},{issue:0},{pr:0},{head:'bad'},{reviewedHead:'f'.repeat(40)}])
+  assert.equal(evaluateExitGate(consolidatedInput({cycles:[consolidatedCycle(1,badId),consolidatedCycle(2),consolidatedCycle(3)]})).reason,'IDENTITY_OR_REVIEW_UNKNOWN');
+
+ const c2Head=(12).toString(16).padStart(40,'0');
+ for(const dup of [{issue:302},{pr:402},{head:c2Head,reviewedHead:c2Head,coverageReports:reports(c2Head)}])
+  assert.equal(evaluateExitGate(consolidatedInput({cycles:[consolidatedCycle(1,dup),consolidatedCycle(2),consolidatedCycle(3)]})).reason,'DUPLICATE_CYCLE');
+
+ const filesGetter=['tools/a.mjs'];Object.defineProperty(filesGetter,0,{get:trap,enumerable:true});
+ for(const badFiles of [
+  null,
+  [],
+  filesGetter,
+  [123],
+  [''],
+  ['a'.repeat(241)],
+  ['/leading/slash.mjs'],
+  ['trailing/slash/'],
+  ['back\\slash.mjs'],
+  ['double//slash.mjs'],
+  ['control\u0000char.mjs'],
+  ['./dot.mjs'],
+  ['tools/../escape.mjs'],
+  [' tools/padded.mjs'],
+  ['tools/Dup.mjs','tools/dup.mjs']
+ ])assert.equal(evaluateExitGate(consolidatedInput({cycles:[consolidatedCycle(1,{changedFiles:badFiles})]})).reason,'CHANGED_FILES_UNKNOWN');
+
+ for(const badSafety of [
+  {reviewIndependent:false},
+  {checksPassed:false},
+  {securityClear:false},
+  {threadsResolved:false},
+  {squashQueueMerged:false},
+  {mainVerified:false},
+  {costVerified:false},
+  {acceptanceVerified:false},
+  {unauthorizedWrites:1},
+  {duplicateDispatches:1},
+  {gateBypasses:1},
+  {humanInterventions:-1},
+  {humanInterventions:-0},
+  {incrementalBilledUsdCents:-1},
+  {incrementalBilledUsdCents:null}
+ ])assert.equal(evaluateExitGate(consolidatedInput({cycles:[consolidatedCycle(1,badSafety),consolidatedCycle(2),consolidatedCycle(3)]})).reason,'SAFETY_OR_COST_UNKNOWN');
+
+ const c1Head=(11).toString(16).padStart(40,'0');
+ assert.equal(evaluateExitGate(consolidatedInput({
+  cycles:[
+   consolidatedCycle(1,{coverageReports:inventory.map(component=>({component,head:c1Head,lines:97,lineTotal:100,branches:19,branchTotal:20}))}),
+   consolidatedCycle(2),
+   consolidatedCycle(3)
+  ]
+ })).reason,'COVERAGE');
+ assert.equal(evaluateExitGate(consolidatedInput({
+  cycles:[
+   consolidatedCycle(1,{coverageReports:inventory.map(component=>({component,head:c1Head,lines:98,lineTotal:100,branches:18,branchTotal:20}))}),
+   consolidatedCycle(2),
+   consolidatedCycle(3)
+  ]
+ })).reason,'COVERAGE');
+ assert.equal(evaluateExitGate(consolidatedInput({lineMin:99})).reason,'COVERAGE');
+
+ for(const badTiming of [
+  {startedAt:-1},
+  {mergedAt:-1},
+  {startedAt:31_000,mergedAt:31_000},
+  {startedAt:32_000,mergedAt:31_000},
+  {reviewFix:null},
+  {parallelCandidate:'true'}
+ ])assert.equal(evaluateExitGate(consolidatedInput({cycles:[consolidatedCycle(1,badTiming),consolidatedCycle(2),consolidatedCycle(3)]})).reason,'TIMING_OR_SCENARIO_UNKNOWN');
 
  assert.equal(traps,0);
 });
