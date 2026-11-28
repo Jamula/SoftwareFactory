@@ -4818,8 +4818,7 @@
           "waveId": "wave-3-parallel-21-pr-merge-queue",
           "acceptingPr": 155,
           "supportingWavePrs": [
-            129,
-            169
+            129
           ],
           "provenanceKind": "coordinator-dispatched-worktree-and-cloud-agent-wave",
           "agentDispatchVerified": true,
@@ -4992,8 +4991,7 @@
           "waveId": "wave-3-parallel-21-pr-merge-queue",
           "acceptingPr": 150,
           "supportingWavePrs": [
-            120,
-            169
+            120
           ],
           "provenanceKind": "coordinator-dispatched-worktree-and-cloud-agent-wave",
           "agentDispatchVerified": true,
@@ -5216,8 +5214,10 @@
         "parallelTrainVerified": true,
         "reviewRepairVerified": true,
         "reviewRepairOutcomeCount": 13,
-        "windowMs": 75434000,
-        "acceptedPerDay": 16.035209587188803,
+        "windowMs": 75467000,
+        "acceptedPerDay": 16.028197755310266,
+        "prMergeWindowMs": 75434000,
+        "mergedPrsPerDayProxy": 16.035209587188803,
         "p50LeadTimeMs": 6377000,
         "p95LeadTimeMs": 58036000,
         "p50MergeQueueMs": 190000,

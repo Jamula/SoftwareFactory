@@ -2597,7 +2597,15 @@ test('evaluates streamlined M02 cohort readout, consumer policies, partial outco
       totalLines: 1000,
       coveredBranches: 1000,
       totalBranches: 1000
-    }
+    },
+    benchmarkInput: benchmarkInput({
+      dotnetMafCandidate: {
+        ...dotnetMafCandidateProfile(),
+        coveredLines: 1000,
+        coveredBranches: 1000
+      },
+      cohorts: null
+    })
   }));
   assert.equal(fhReadout.streamlinedM02CohortVerified, true, fhReadout.reason);
 
@@ -2610,6 +2618,8 @@ test('evaluates streamlined M02 cohort readout, consumer policies, partial outco
   assert.equal(emptyReadout.reason, 'INSUFFICIENT_ACCEPTED_OUTCOMES');
   assert.equal(emptyReadout.acceptedCohortSummary.windowMs, null);
   assert.equal(emptyReadout.acceptedCohortSummary.acceptedPerDay, null);
+  assert.equal(emptyReadout.acceptedCohortSummary.prMergeWindowMs, null);
+  assert.equal(emptyReadout.acceptedCohortSummary.mergedPrsPerDayProxy, null);
   assert.equal(emptyReadout.acceptedCohortSummary.reworkRateBps, null);
 
   for (const partialPatch of [
@@ -3387,5 +3397,112 @@ test('evaluates streamlined M02 cohort readout, consumer policies, partial outco
       acceptedIssueOutcomes: outOfAncestryOrder
     }).reason,
     'OUTCOME_TIMESTAMP_INCONSISTENT'
+  );
+
+  // Review regression #5: supportingWavePrs must precede acceptingPr across and within waves
+  // Same-wave earlier train index (501 before 502) passes; same-wave later train index (503 on 502) fails
+  const sameWaveValidSup = baseStreamlined.acceptedIssueOutcomes.map((o, idx) =>
+    idx === 1 ? {...o, supportingWavePrs: [501]} : o
+  );
+  assert.equal(
+    evaluateStreamlinedM02CohortReadout({
+      ...baseStreamlined,
+      acceptedIssueOutcomes: sameWaveValidSup
+    }).issue16ExitReady,
+    true
+  );
+  const sameWaveFutureSup = baseStreamlined.acceptedIssueOutcomes.map((o, idx) =>
+    idx === 1 ? {...o, supportingWavePrs: [503]} : o
+  );
+  assert.equal(
+    evaluateStreamlinedM02CohortReadout({
+      ...baseStreamlined,
+      acceptedIssueOutcomes: sameWaveFutureSup
+    }).reason,
+    'UNVERIFIED_MAIN_ANCESTRY'
+  );
+  // Supporting PR from a later wave than acceptingPr (e.g. wave-5 PR 505 attached to wave-4 outcome) fails
+  const twoWaveInput = {
+    ...baseStreamlined,
+    portfolioTrainInputs: [trainWave4, baseStreamlined.portfolioTrainInputs[0]]
+  };
+  const wave4OutcomeWithFutureWave5Sup = makeStreamlinedOutcome(0, 5, {
+    issue: 399,
+    waveId: 'wave-4',
+    acceptingPr: 166,
+    supportingWavePrs: [505],
+    expectedBaseSha: MAIN_SHA,
+    parentMainSha: MAIN_SHA,
+    headSha: HEAD_1,
+    squashMergeSha: SQUASH_1,
+    prCreatedAtMs: 1795799000000,
+    addedToMergeQueueAtMs: 1795800100000,
+    mergedAtMs: 1795800238000,
+    issueClosedAtMs: 1795800300000,
+    mergeQueueDurationMs: 138000,
+    ownedPaths: ['src/feature-166']
+  });
+  assert.equal(
+    evaluateStreamlinedM02CohortReadout({
+      ...twoWaveInput,
+      acceptedIssueOutcomes: [wave4OutcomeWithFutureWave5Sup, ...baseStreamlined.acceptedIssueOutcomes]
+    }).reason,
+    'UNVERIFIED_MAIN_ANCESTRY'
+  );
+  // Supporting PR from an earlier wave whose windowEndMs exceeds outcome.mergedAtMs fails
+  const overlappingPrevWave = [
+    {
+      ...baseStreamlined.engineeringWaves[0],
+      windowStartMs: 1795900000000,
+      windowEndMs: 1795902000000
+    },
+    {
+      ...baseStreamlined.engineeringWaves[1],
+      windowStartMs: 1795900000000,
+      windowEndMs: 1795905000000
+    }
+  ];
+  assert.equal(
+    evaluateStreamlinedM02CohortReadout({
+      ...baseStreamlined,
+      engineeringWaves: overlappingPrevWave
+    }).reason,
+    'UNVERIFIED_MAIN_ANCESTRY'
+  );
+
+  // Review regression #6: 100/100 readout policy enforces >=100/100 on dotnetMafCandidate too
+  assert.equal(
+    evaluateStreamlinedM02CohortReadout(makeStreamlinedInput({
+      repositoryId: 200005,
+      repository: 'example/family-hub',
+      policy: {minLinePercent: 100, minBranchPercent: 100},
+      exactHeadCoverage: {
+        headSha: WORKLOAD_SHA,
+        coveredLines: 1000,
+        totalLines: 1000,
+        coveredBranches: 1000,
+        totalBranches: 1000
+      }
+    })).reason,
+    'MAF_COVERAGE_BELOW_POLICY'
+  );
+
+  // Review regression #7: delayed issueClosedAtMs widens windowMs/acceptedPerDay while preserving prMergeWindowMs
+  const delayedClosureOutcomes = baseStreamlined.acceptedIssueOutcomes.map((o, idx) =>
+    idx === 4 ? {...o, issueClosedAtMs: o.mergedAtMs + 86400000} : o
+  );
+  const delayedClosureRes = evaluateStreamlinedM02CohortReadout({
+    ...baseStreamlined,
+    acceptedIssueOutcomes: delayedClosureOutcomes
+  });
+  assert.equal(delayedClosureRes.issue16ExitReady, true);
+  assert.equal(
+    delayedClosureRes.acceptedCohortSummary.windowMs,
+    delayedClosureRes.acceptedCohortSummary.prMergeWindowMs + 86400000
+  );
+  assert.equal(
+    delayedClosureRes.acceptedCohortSummary.acceptedPerDay <
+      delayedClosureRes.acceptedCohortSummary.mergedPrsPerDayProxy,
+    true
   );
 });

@@ -1353,7 +1353,7 @@ function parseEngineeringWaves(waves) {
       const pr = w.prNumbers[j];
       if (wavePrNumbers.has(pr)) return {ok: false, reason: 'ENGINEERING_WAVE_UNKNOWN'};
       wavePrNumbers.add(pr);
-      waveByPr.set(pr, w);
+      waveByPr.set(pr, {wave: w, waveIndex: i});
     }
     seenWaveIds.add(w.waveId);
     earliestStartMs = Math.min(earliestStartMs, w.windowStartMs);
@@ -1919,6 +1919,25 @@ function validStreamlinedOutcomeShape(o) {
   return o.issueClosedAtMs === null;
 }
 
+function validSupportingAncestry(
+  supPr,
+  acceptWaveEntry,
+  mergedEntry,
+  outcome,
+  waveByPr,
+  mergedTrainCandidateByPr
+) {
+  const supWaveEntry = waveByPr.get(supPr);
+  if (!supWaveEntry || supWaveEntry.waveIndex > acceptWaveEntry.waveIndex) {
+    return false;
+  }
+  if (supWaveEntry.waveIndex < acceptWaveEntry.waveIndex) {
+    return supWaveEntry.wave.windowEndMs <= outcome.mergedAtMs;
+  }
+  const supMergedEntry = mergedTrainCandidateByPr.get(supPr);
+  return supMergedEntry.trainOrderIndex < mergedEntry.trainOrderIndex;
+}
+
 function parseStreamlinedOutcomes(
   outcomes,
   expectedRepoId,
@@ -1943,6 +1962,7 @@ function parseStreamlinedOutcomes(
   let totalReviewThreadsResolved = 0;
   let earliestCreatedMs = Infinity;
   let latestMergedMs = 0;
+  let latestAcceptedAtMs = 0;
 
   for (let i = 0; i < outcomes.length; i++) {
     const o = outcomes[i];
@@ -1966,11 +1986,20 @@ function parseStreamlinedOutcomes(
     if (o.routineHumanInterventions !== 0) {
       return {ok: false, reason: 'ROUTINE_HUMAN_INTERVENTION_DETECTED'};
     }
-    const wave = waveByPr.get(o.acceptingPr);
+    const acceptWaveEntry = waveByPr.get(o.acceptingPr);
     const mergedEntry = mergedTrainCandidateByPr.get(o.acceptingPr);
-    if (!wave || wave.waveId !== o.waveId ||
-        !o.supportingWavePrs.every(pr => waveByPr.has(pr)) ||
+    if (!acceptWaveEntry || acceptWaveEntry.wave.waveId !== o.waveId ||
         !mergedEntry ||
+        !o.supportingWavePrs.every(pr =>
+          validSupportingAncestry(
+            pr,
+            acceptWaveEntry,
+            mergedEntry,
+            o,
+            waveByPr,
+            mergedTrainCandidateByPr
+          )
+        ) ||
         mergedEntry.candidate.head !== o.headSha ||
         mergedEntry.candidate.expectedBase !== o.expectedBaseSha ||
         mergedEntry.parentMainSha !== o.parentMainSha ||
@@ -1979,6 +2008,7 @@ function parseStreamlinedOutcomes(
         !samePathSet(o.ownedPaths, mergedEntry.candidate.ownedPaths)) {
       return {ok: false, reason: 'UNVERIFIED_MAIN_ANCESTRY'};
     }
+    const wave = acceptWaveEntry.wave;
     if (o.addedToMergeQueueAtMs < wave.windowStartMs || o.mergedAtMs > wave.windowEndMs) {
       return {ok: false, reason: 'OUTCOME_TIMESTAMP_INCONSISTENT'};
     }
@@ -2021,6 +2051,7 @@ function parseStreamlinedOutcomes(
     totalReviewThreadsResolved += o.reviewThreadsTotal;
     earliestCreatedMs = Math.min(earliestCreatedMs, o.prCreatedAtMs);
     latestMergedMs = Math.max(latestMergedMs, o.mergedAtMs);
+    latestAcceptedAtMs = Math.max(latestAcceptedAtMs, o.issueClosedAtMs);
   }
 
   ancestryMergeOrder.sort((a, b) => a.trainOrderIndex - b.trainOrderIndex);
@@ -2030,7 +2061,8 @@ function parseStreamlinedOutcomes(
     }
   }
 
-  const windowMs = acceptedIssueCount > 0 ? latestMergedMs - earliestCreatedMs : null;
+  const windowMs = acceptedIssueCount > 0 ? latestAcceptedAtMs - earliestCreatedMs : null;
+  const prMergeWindowMs = acceptedIssueCount > 0 ? latestMergedMs - earliestCreatedMs : null;
   const sortedLead = [...leadDurations].sort((a, b) => a - b);
   const sortedMq = [...mqDurations].sort((a, b) => a - b);
   const sortedRework = [...reworkCounts].sort((a, b) => a - b);
@@ -2056,6 +2088,10 @@ function parseStreamlinedOutcomes(
       reviewRepairOutcomeCount,
       windowMs,
       acceptedPerDay: acceptedIssueCount > 0 ? (acceptedIssueCount * DAY_MS) / windowMs : null,
+      prMergeWindowMs,
+      mergedPrsPerDayProxy: acceptedIssueCount > 0
+        ? (acceptedIssueCount * DAY_MS) / prMergeWindowMs
+        : null,
       p50LeadTimeMs: percentile(sortedLead, 0.5),
       p95LeadTimeMs: percentile(sortedLead, 0.95),
       p50MergeQueueMs: percentile(sortedMq, 0.5),
@@ -2210,8 +2246,8 @@ export function evaluateStreamlinedM02CohortReadout(input) {
     benchmarkEval.dotnetMafCandidate.totalLines,
     benchmarkEval.dotnetMafCandidate.coveredBranches,
     benchmarkEval.dotnetMafCandidate.totalBranches,
-    98,
-    95
+    Math.max(98, input.policy.minLinePercent),
+    Math.max(95, input.policy.minBranchPercent)
   )) {
     return streamlinedCohortDenied('MAF_COVERAGE_BELOW_POLICY');
   }
